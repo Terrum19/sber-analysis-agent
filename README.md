@@ -1,1 +1,1 @@
-# -sber-analysis-agent
+# sber-analysis-agent
