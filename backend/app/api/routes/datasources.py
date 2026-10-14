@@ -35,7 +35,7 @@ def attach_db(
     payload: DatasourceCreate, db: Annotated[DuckDBManager, Depends(get_db)]
 ) -> DatasourceOut:
     try:
-        connector = build_connector(payload.kind, payload.dsn, payload.schema)
+        connector = build_connector(payload.kind, payload.dsn, payload.db_schema)
         with db.lock:
             tables = connector.connect(db)
     except ValueError as error:
