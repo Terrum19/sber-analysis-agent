@@ -77,7 +77,8 @@ DuckDB. Дальше весь аналитический слой работае
 2. `LOAD postgres_scanner` — если не загрузилось, расширения нет:
    `PostgresExtensionUnavailableError`. В замкнутом контуре расширение
    должно быть заранее установлено в образ бэкенда (issue-06).
-3. Если в DSN есть пароль — `CREATE OR REPLACE TEMPORARY SECRET <alias>_secret (TYPE postgres, PASSWORD ...)`.
+3. Если в DSN есть пароль — `CREATE OR REPLACE TEMPORARY SECRET <alias>_secret (TYPE postgres, PASSWORD $password)`;
+   пароль передаётся параметром запроса и не попадает в текст SQL.
 4. `ATTACH 'host=... port=... dbname=... user=...' AS <alias> (TYPE postgres, READ_ONLY[, SECRET <alias>_secret])`.
 5. `SELECT table_name FROM <alias>.information_schema.tables WHERE table_schema = $schema ORDER BY table_name`
    — в список попадают и таблицы, и представления PostgreSQL.
@@ -133,6 +134,22 @@ DuckDB. Дальше весь аналитический слой работае
 его в пуле потоков, подключение к PostgreSQL не блокирует цикл событий.
 `DuckDBManager.query/execute` и вся последовательность `connect()`
 выполняются под `DuckDBManager.lock`.
+
+**Большие схемы.** Проверено на схеме из 1500 таблиц (локальный
+PostgreSQL 17): подключение с лимитом 50 занимает около 0,4 с, повторное — около
+0,1 с. Лимит отбирает первые таблицы в лексикографическом порядке
+(`t1, t10, t100, ...`), а не «самые важные».
+
+### Известные ограничения
+
+- Расширение `postgres_scanner` ещё не установлено в образ бэкенда
+  (issue-06): без сети коннектор вернёт 503.
+- После перезапуска бэкенда источники PostgreSQL нужно подключить заново:
+  строки подключения не сохраняются (и не должны храниться с паролем в файле).
+- У `DUCKDB_PATH` относительный путь по умолчанию (`backend/storage/...`): при запуске
+  из `backend/` или в Docker (`WORKDIR /app`, том `/app/storage`) файл базы окажется
+  не там, где ожидается. Теперь `DuckDBManager` открывается при старте приложения,
+  поэтому путь стоит задавать явно через `.env`.
 
 ### Сообщения об ошибках
 
