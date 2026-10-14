@@ -5,21 +5,23 @@
 
 Запуск:  uvicorn app.main:app --reload --port 8000
 """
+from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
-from typing import AsyncIterator
 
 from fastapi import FastAPI
 
 from app.api.routes import artifacts, chat, dashboards, datasources, sessions
 from app.config import settings
+from app.core.data.duckdb_manager import DuckDBManager
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     """Инициализация ресурсов при старте (DuckDB, реестр, песочница)."""
-    # TODO(round-2): инициализация DuckDBManager, ToolRegistry, WASMRuntime
+    # TODO(round-2): инициализация ToolRegistry, WASMRuntime
+    app.state.db = DuckDBManager(settings.duckdb_path)
     yield
-    # TODO: корректное закрытие ресурсов
+    app.state.db.close()
 
 
 app = FastAPI(
