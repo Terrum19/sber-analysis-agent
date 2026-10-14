@@ -7,9 +7,9 @@ import json
 from typing import Any, TypeVar
 
 from openai import AsyncOpenAI
+from pydantic import BaseModel
 
 from app.config import settings
-from pydantic import BaseModel
 
 T = TypeVar("T", bound=BaseModel)
 

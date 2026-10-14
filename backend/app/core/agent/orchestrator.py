@@ -10,13 +10,13 @@
 from collections.abc import AsyncIterator
 
 from app.api.schemas.chat import ChatRequest
-from app.core.agent.planner import StepPlanner
-from app.core.agent.step_executor import StepExecutor
 from app.core.agent.insight import InsightGenerator
+from app.core.agent.planner import StepPlanner
 from app.core.agent.recovery import with_retry
+from app.core.agent.step_executor import StepExecutor
+from app.core.memory.session_memory import SessionMemory
 from app.core.viz.chart_selector import select_chart
 from app.core.viz.vega_spec_builder import build_vega_spec
-from app.core.memory.session_memory import SessionMemory
 
 
 class AgentOrchestrator:

@@ -6,7 +6,6 @@
 """
 from app.core.viz.vega_spec_builder import build_vega_spec
 
-
 MORPH_MAP = {
     "bar": ["line", "histogram", "table"],
     "line": ["bar", "area", "table"],
