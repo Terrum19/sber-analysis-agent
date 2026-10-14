@@ -37,6 +37,7 @@ backend/
 │   ├── config.py          — pydantic-settings: LLM URL/модель, пути, лимиты (из .env)
 │   │
 │   ├── api/               — тонкий HTTP/SSE слой, без бизнес-логики
+│   │   ├── deps.py             — зависимости FastAPI (get_db: общий DuckDBManager)
 │   │   ├── routes/
 │   │   │   ├── sessions.py     — CRUD сессий диалога
 │   │   │   ├── chat.py         — SSE-эндпоинт диалога (стрим текста/картинок/дашбордов)
@@ -73,7 +74,9 @@ backend/
 │   │   │   ├── connectors/        — единый интерфейс коннекторов
 │   │   │   │   ├── base.py            — BaseConnector (единый контракт)
 │   │   │   │   ├── csv.py             — сырые CSV -> таблицы DuckDB (готов)
-│   │   │   │   ├── postgres.py        — PostgreSQL -> DuckDB (TODO)
+│   │   │   │   ├── factory.py         — build_connector: выбор коннектора по kind
+│   │   │   │   ├── pg_dsn.py          — разбор/проверка DSN PostgreSQL, маскирование пароля
+│   │   │   │   ├── postgres.py        — PostgreSQL -> DuckDB через postgres_scanner (готов)
 │   │   │   │   └── clickhouse.py      — ClickHouse -> DuckDB (TODO)
 │   │   │   ├── profiling.py       — метрики: NaN%, min/max, медиана, квартили, std
 │   │   │   ├── schema_enrichment.py — алиасы + описания колонок (+ бизнес-словарь)
