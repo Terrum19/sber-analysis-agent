@@ -79,15 +79,18 @@ class FakeDuckDB:
         self.existing = list(existing)
         self.failing = failing
         self.statements: list[str] = []
+        self.params: list[dict | None] = []
 
     def execute(self, sql: str, params: dict | None = None) -> None:
         self.statements.append(sql)
+        self.params.append(params)
         for prefix, error in self.failing:
             if sql.startswith(prefix):
                 raise error
 
     def query(self, sql: str, params: dict | None = None) -> list[dict]:
         self.statements.append(sql)
+        self.params.append(params)
         for prefix, error in self.failing:
             if sql.startswith(prefix):
                 raise error
@@ -133,9 +136,8 @@ def test_connect_runs_install_load_attach_in_order_and_creates_views() -> None:
 def test_password_goes_only_to_the_secret() -> None:
     db = FakeDuckDB(tables=["orders"])
     PostgresConnector(DSN).connect(db)
-    leaking = [statement for statement in db.statements if "TopSecret" in statement]
-    assert len(leaking) == 1
-    assert leaking[0].startswith("CREATE OR REPLACE TEMPORARY SECRET")
+    assert not any("TopSecret" in statement for statement in db.statements)
+    assert db.params[db.index_of("CREATE OR REPLACE TEMPORARY SECRET")] == {"password": "TopSecret"}
 
 
 def test_no_secret_without_password() -> None:

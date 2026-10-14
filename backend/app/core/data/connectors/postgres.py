@@ -173,7 +173,8 @@ class PostgresConnector(BaseConnector):
             if self.dsn.password:
                 db.execute(
                     f"CREATE OR REPLACE TEMPORARY SECRET {secret} "
-                    f"(TYPE postgres, PASSWORD {quote_literal(self.dsn.password)})"
+                    "(TYPE postgres, PASSWORD $password)",
+                    {"password": self.dsn.password},
                 )
                 options += f", SECRET {secret}"
             db.execute(
