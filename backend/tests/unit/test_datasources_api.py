@@ -3,6 +3,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app.api.deps import get_db
+from app.config import settings
 from app.core.data.duckdb_manager import DuckDBManager
 from app.main import app
 
@@ -14,6 +15,16 @@ def client():
     yield TestClient(app)
     app.dependency_overrides.clear()
     db.close()
+
+
+def test_lifespan_opens_shared_db(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
+    path = tmp_path / "storage" / "duckdb" / "main.duckdb"
+    monkeypatch.setattr(settings, "duckdb_path", str(path))
+    with TestClient(app) as client:
+        assert client.get("/health").status_code == 200
+        assert isinstance(app.state.db, DuckDBManager)
+        assert app.state.db.query("SELECT 1 AS one") == [{"one": 1}]
+    assert path.exists()
 
 
 def test_invalid_dsn_is_400(client: TestClient) -> None:
