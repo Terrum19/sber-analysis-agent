@@ -28,6 +28,8 @@ class Settings(BaseSettings):
     agent_max_steps: int = 12
     semantic_top_k: int = 5
 
+    postgres_max_tables: int = 50
+
 
 @lru_cache
 def get_settings() -> Settings:
