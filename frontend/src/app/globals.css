@@ -1,0 +1,8 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* Базовые стили платформы: спокойная палитра под бизнес-пользователя */
+body {
+  font-family: system-ui, -apple-system, sans-serif;
+}

@@ -1,0 +1,210 @@
+# Что и где лежит: структура репозитория SberAnalyticalAgent
+
+Документ описывает каждую папку и каждый файл репозитория: зачем он нужен
+и какую роль играет в системе. Обновляется при добавлении новых модулей.
+
+---
+
+## Корень
+
+```
+sberAnalyticalAgent/
+├── README.md              — что это, как поднять локально (одна команда)
+├── CONTRIBUTING.md        — конвенции: как добавить тул, коннектор, промпт
+├── Makefile               — make install / seed / dev / up / test / lint
+├── .env.example           — пример конфигурации (LLM endpoint, пути, лимиты)
+├── .gitignore             — рантайм (storage/), веса (models/), node_modules
+├── docker-compose.yml     — backend + frontend (LLM — отдельно на хосте)
+├── backend/               — FastAPI + Python: весь интеллект системы
+├── frontend/              — Next.js + React: чат и канвас
+├── infra/                 — обвязка запуска (не в корне, чтобы корень был чистым)
+├── docs/                  — живая документация по подсистемам (этот файл здесь же)
+├── data/                  — демо-датасеты + бизнес-словари (для тестов/демо)
+├── scripts/               — утилиты: seed-данные, скачивание модели, миграции
+└── models/                — веса LLM (локально, НЕ в git)
+```
+
+---
+
+## backend/ — ядро системы
+
+```
+backend/
+├── pyproject.toml / requirements.txt  — зависимости (fastapi, duckdb, instructor...)
+├── Dockerfile                          — образ backend для docker compose
+├── app/
+│   ├── main.py            — точка входа FastAPI: роуты, lifespan, /health
+│   ├── config.py          — pydantic-settings: LLM URL/модель, пути, лимиты (из .env)
+│   │
+│   ├── api/               — тонкий HTTP/SSE слой, без бизнес-логики
+│   │   ├── routes/
+│   │   │   ├── sessions.py     — CRUD сессий диалога
+│   │   │   ├── chat.py         — SSE-эндпоинт диалога (стрим текста/картинок/дашбордов)
+│   │   │   ├── datasources.py  — подключение CSV / PostgreSQL / ClickHouse
+│   │   │   ├── dashboards.py   — реестр дашбордов (list/get для повторного доступа)
+│   │   │   └── artifacts.py    — экспорт в Excel/PDF, скачивание
+│   │   └── schemas/            — Pydantic-контракты API (фронт <-> бэк)
+│   │       ├── chat.py         — ChatRequest, ChatEvent (text/chart/dashboard/error/done)
+│   │       ├── datasource.py   — DatasourceCreate/Out
+│   │       └── dashboard.py    — DashboardTile/Config
+│   │
+│   ├── core/              — ЯДРО: агент, данные, тулы, память, визуализация
+│   │   ├── llm/
+│   │   │   ├── client.py            — единый клиент к LLM (OpenAI-совместимый: vLLM/Ollama)
+│   │   │   ├── instructor_service.py — structured output через Instructor + Pydantic
+│   │   │   └── prompts/             — ВСЕ промпты системы, по файлу на задачу
+│   │   │       ├── system_analyst.py   — системный промпт: «ты аналитик + тулы»
+│   │   │       ├── schema_describe.py  — «что передо мной за данные» (сценарий №1)
+│   │   │       ├── alias_gen.py        — 4 человекочитаемых алиаса на колонку
+│   │   │       ├── step_planner.py     — вопрос -> список ResearchStep
+│   │   │       ├── insight_summary.py  — результат -> вывод на бизнес-языке
+│   │   │       └── chart_selector.py   — выбор типа визуализации
+│   │   │
+│   │   ├── agent/          — ОРКЕСТРАЦИЯ: конвейер исследования
+│   │   │   ├── orchestrator.py    — главный цикл: вопрос -> план -> шаги -> инсайт -> viz
+│   │   │   ├── planner.py         — NL -> [ResearchStep] (вызов LLM)
+│   │   │   ├── step_executor.py   — последовательное выполнение шагов
+│   │   │   ├── parser.py          — ROBUST-парсинг вывода LLM (несколько стратегий)
+│   │   │   ├── insight.py         — генерация финального вывода
+│   │   │   └── recovery.py        — ошибки: ретрай шага с текстом ошибки
+│   │   │
+│   │   ├── data/           — слой данных поверх DuckDB
+│   │   │   ├── duckdb_manager.py  — коннекты, temp-таблицы результатов (state cache)
+│   │   │   ├── connectors/        — единый интерфейс коннекторов
+│   │   │   │   ├── base.py            — BaseConnector (единый контракт)
+│   │   │   │   ├── csv.py             — сырые CSV -> таблицы DuckDB (готов)
+│   │   │   │   ├── postgres.py        — PostgreSQL -> DuckDB (TODO)
+│   │   │   │   └── clickhouse.py      — ClickHouse -> DuckDB (TODO)
+│   │   │   ├── profiling.py       — метрики: NaN%, min/max, медиана, квартили, std
+│   │   │   ├── schema_enrichment.py — алиасы + описания колонок (+ бизнес-словарь)
+│   │   │   └── semantic_select.py — топ-5 колонок под запрос (семант. сходство)
+│   │   │
+│   │   ├── tools/          — РЕЕСТР ТУЛОВ (расширяемый; оркестратор не меняется)
+│   │   │   ├── registry.py        — регистрация/диспетчеризация тулов по имени
+│   │   │   ├── base.py            — BaseTool: вход -> DuckDB-таблица
+│   │   │   ├── sql/               — предзаписанные SQL с подстановкой колонок
+│   │   │   │   ├── aggregate.py   — группировка + count/avg/sum
+│   │   │   │   └── time_series.py — агрегация по месяцу/кварталу
+│   │   │   ├── stats/             — статистические тесты
+│   │   │   │   └── correlation.py — корреляция двух колонок
+│   │   │   └── timeseries/        — анализ временных рядов
+│   │   │       ├── seasonality.py — сезонные пики (каждый июль / 12 месяцев)
+│   │   │       └── forecast.py    — экстраполяция/прогноз (TODO)
+│   │   │
+│   │   ├── sandbox/        — выполнение кода, сгенерированного LLM
+│   │   │   ├── wasm_runtime.py    — WASM-песочница: лимиты CPU/RAM + таймаут
+│   │   │   └── codegen_runner.py  — прогон кода шага (когда тула нет)
+│   │   │
+│   │   ├── memory/         — 4 уровня памяти (см. docs/memory.md)
+│   │   │   ├── session_memory.py    — (1) диалог + шаги, sliding window, SQLite
+│   │   │   ├── state_cache.py       — (2) результаты в temp-таблицах DuckDB
+│   │   │   ├── profile_memory.py    — (3) «паспорт данных»: схема/алиасы (JSON)
+│   │   │   └── artifact_registry.py — (4) реестр дашбордов + Vega-конфиги
+│   │   │
+│   │   ├── viz/            — визуализация
+│   │   │   ├── chart_selector.py    — какой график под вопрос
+│   │   │   ├── vega_spec_builder.py — таблица -> Vega-Lite JSON-спека
+│   │   │   └── chart_morph.py       — перерисовать в другой вид БЕЗ вызова LLM
+│   │   │
+│   │   ├── dashboards/     — генерация дашбордов
+│   │   │   ├── models.py        — DashboardSpec: плитки, SQL, Vega
+│   │   │   └── generator.py     — собрать дашборд из визуализаций, сохранить
+│   │   │
+│   │   └── export/         — выгрузка инсайта в делимый файл
+│   │       ├── excel.py           — openpyxl: таблицы + графики -> .xlsx
+│   │       └── pdf.py             — Typst/ReportLab -> .pdf-отчёт
+│   │
+│   ├── models/            — доменные Pydantic-модели (контракты конвейера)
+│   │   ├── research_step.py   — ResearchStep: тул, колонки, флаг LLM-кодген
+│   │   ├── insight.py         — Insight: headline, details, limits
+│   │   └── datasource.py      — Datasource: тип, путь/DSN, таблицы
+│   │
+│   └── workers/           — опц.: фоновые задачи (тяжёлые отчёты, экспорт)
+│
+├── storage/               — РАНТАЙМ-состояние (gitignored)
+│   ├── sessions/          — SQLite/JSON истории диалогов
+│   ├── duckdb/            — *.duckdb: сырые данные + temp-таблицы шагов
+│   ├── profiles/          — «паспорта» данных (JSON)
+│   ├── dashboards/        — сгенерированные дашборды + их Vega/SQL
+│   └── exports/           — .xlsx / .pdf для скачивания
+│
+└── tests/
+    ├── unit/          — парсер шагов, chart_morph, семантический отбор
+    ├── integration/   — коннекторы -> DuckDB -> агент end-to-end
+    └── e2e/           — сценарии: «что передо мной» -> ответ -> график -> дашборд
+```
+
+---
+
+## frontend/ — клиент
+
+```
+frontend/
+├── package.json / tsconfig.json / next.config.mjs / tailwind.config.ts
+├── src/
+│   ├── app/                    — Next.js App Router
+│   │   ├── layout.tsx / globals.css
+│   │   ├── page.tsx                    — главная: создать сессию
+│   │   ├── session/[id]/page.tsx       — экран диалога (чат + канвас)
+│   │   └── dashboard/[id]/page.tsx     — просмотр сохранённого дашборда
+│   ├── components/
+│   │   ├── chat/ChatPanel.tsx          — ввод вопроса + стрим ответов (SSE)
+│   │   ├── canvas/Canvas.tsx           — канвас: клик -> «дообследуй», drag&drop
+│   │   ├── canvas/DashboardTile.tsx    — плитка: рендер Vega-Lite спеки
+│   │   └── charts/ChartRenderer.tsx    — универсальный рендерер (Vega-Lite/ECharts)
+│   ├── store/                  — Zustand: состояние сессии и канваса
+│   │   ├── sessionStore.ts             — сообщения, плитки, выбранный элемент
+│   │   └── canvasStore.ts              — раскладка, запрос дообследования
+│   ├── api/client.ts           — клиент бэкенда: createSession, streamChat (SSE)
+│   └── types/                  — общие типы (дубль контрактов backend schemas)
+│       ├── chat.ts                     — события стрима чата
+│       └── dashboard.ts                — конфиг дашборда
+```
+
+---
+
+## infra/, docs/, data/, scripts/
+
+```
+infra/
+├── local-dev.sh        — подъём backend + frontend локально (замкнутый контур)
+├── nginx.conf         — опц.: раздача фронта + прокси API (SSE без буферизации)
+└── vllm/serve.sh      — запуск Qwen через vLLM (GPU); для CPU/NPU — Ollama
+
+docs/
+├── architecture.md     — конвейер одного хода диалога, ключевые решения
+├── repo_structure.md   — ЭТОТ документ (что и где лежит)
+├── prompts.md          — назначение каждого промпта и как его менять
+├── memory.md           — 4 уровня памяти: реализация и жизненный цикл
+├── data_connectors.md  — как добавить новый источник (CSV/PG/CH)
+└── roadmap.md          — MVP -> финал (чекпоинт 2 -> итог)
+
+data/
+├── sample_datasets/        — demo_users.csv, demo_events.csv (для тестов/демо)
+└── business_dictionary/    — пример бизнес-глоссария пользователя (опц. фича)
+
+scripts/
+├── download_model.sh  — подсказки по скачиванию весов Qwen (в models/, вне git)
+├── seed_demo_data.py  — генерация демо-CSV (100 пользователей + 500 событий)
+└── migrate.py         — опц.: миграции storage (SQLite/реестр)
+```
+
+---
+
+## Ключевые решения, заложенные в структуру
+
+- **Tool Registry + `core/tools/`** — новый стат-тест или SQL-шаблон добавляется
+  файлом, оркестратор (`orchestrator.py`) не меняется.
+- **`core/llm/prompts/` по файлам** — промпт алиасов, планировщика шагов и инсайта
+  версионируется и тестируется независимо от кода.
+- **`parser.py` отдельным модулем** — robust-парсинг вывода LLM вынесен из
+  планировщика, чтобы стратегии парсинга менялись/тестировались изолированно.
+- **`memory/` = 4 модуля** — ровно 4 уровня памяти, каждый со своей зоной
+  ответственности и хранилищем (SQLite / DuckDB temp / JSON / файловый реестр).
+- **`viz/chart_morph.py`** — «перерисуй в другом виде» решается без нового вызова
+  LLM, из сохранённого состояния (state cache).
+- **`dashboards/` + `artifact_registry.py`** — дашборд хранит и SQL, и Vega-спеки,
+  поэтому доступен повторно из чата и из UI (`/dashboard/[id]`).
+- **`sandbox/` изолирован** — WASM-рантайм подменяем, не задевая остальное.
+- **`storage/` целиком в `.gitignore`** — рантайм не мусорит в репозитории;
+  веса моделей (`models/`) тоже вне git.

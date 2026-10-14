@@ -1,1 +1,32 @@
+# --- рантайм-состояние (никогда не в git) ---
+backend/storage/
+*.duckdb
+*.duckdb.wal
+
+# --- веса моделей (крупные бинарники) ---
+models/
+*.gguf
+*.safetensors
+
+# --- Python ---
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
+# --- Node ---
+node_modules/
+.next/
+out/
+
+# --- окружение и мусор ---
+.env
+.DS_Store
+*.log
+
+# --- временные ---
 non/

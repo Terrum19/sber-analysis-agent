@@ -1,0 +1,38 @@
+[project]
+name = "sber-analytical-agent-backend"
+version = "0.1.0"
+description = "AI-Native BI-платформа: диалоговый агент над CSV/PostgreSQL/ClickHouse через DuckDB"
+requires-python = ">=3.11"
+dependencies = [
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.30",
+    "pydantic>=2.7",
+    "pydantic-settings>=2.3",
+    "duckdb>=1.0",
+    "openai>=1.40",        # OpenAI-совместимый клиент к локальному vLLM/Ollama
+    "instructor>=1.3",     # structured output
+    "openpyxl>=3.1",       # экспорт Excel
+    "pandas>=2.2",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.2",
+    "pytest-asyncio>=0.23",
+    "ruff>=0.5",
+]
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["app*"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
