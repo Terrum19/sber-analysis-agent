@@ -196,7 +196,7 @@ def test_attach_csv_uses_loader(tmp_path, db) -> None:
     assert column_types(db, "export")["Сумма"] == "DOUBLE"
 
 
-def test_connector_keeps_other_objects_and_replaces_csv_views(tmp_path, db) -> None:
+def test_connector_keeps_other_objects_and_replaces_csv_tables(tmp_path, db) -> None:
     db.execute("CREATE TABLE orders AS SELECT 1 AS id")
     first = write(tmp_path, "first.csv", b"x\n1\n")
     second = write(tmp_path, "second.csv", b"x\n2\n")
@@ -216,5 +216,37 @@ def test_connector_rolls_back_on_failure(tmp_path, db) -> None:
     with pytest.raises(CSVLoadError):
         connector.connect(db)
     assert connector.reports == []
-    views = db.query("SELECT view_name FROM duckdb_views() WHERE NOT internal")
-    assert views == []
+    assert db.query("SELECT table_name FROM duckdb_tables()") == []
+    assert db.query("SELECT view_name FROM duckdb_views() WHERE NOT internal") == []
+
+
+def test_csv_is_copied_into_a_marked_table(tmp_path, db) -> None:
+    path = write(tmp_path, "export.csv", RUSSIAN_EXPORT.encode("cp1251"))
+    load_csv(db, "export", path)
+    path.unlink()
+    tmp_path.joinpath("export.utf8.csv").unlink()
+    tables = db.query("SELECT table_name, comment FROM duckdb_tables()")
+    assert tables == [{"table_name": "export", "comment": "csv:export.csv"}]
+    assert db.query("SELECT view_name FROM duckdb_views() WHERE NOT internal") == []
+    assert db.query('SELECT round(sum("Сумма"), 2) AS total FROM export') == [{"total": 1156.16}]
+
+
+def test_reload_replaces_legacy_csv_view(tmp_path, db) -> None:
+    path = write(tmp_path, "items.csv", b"x\n7\n")
+    db.execute(f"CREATE VIEW items AS SELECT * FROM read_csv('{path}')")
+    assert CSVConnector({"items": str(path)}).connect(db) == ["items"]
+    assert db.query("SELECT view_name FROM duckdb_views() WHERE NOT internal") == []
+    assert db.query("SELECT table_name FROM duckdb_tables()") == [{"table_name": "items"}]
+
+
+def test_failed_reload_keeps_previous_table(tmp_path, db, monkeypatch) -> None:
+    load_csv(db, "items", write(tmp_path, "items.csv", b"x\n1\n"))
+
+    def broken_scan(*args, **kwargs):
+        raise duckdb.InvalidInputException("broken")
+
+    monkeypatch.setattr(csv_module, "scan", broken_scan)
+    with pytest.raises(CSVLoadError, match="broken"):
+        load_csv(db, "items", write(tmp_path, "other.csv", b"x\n2\n"))
+    assert db.query("SELECT x FROM items") == [{"x": 1}]
+    assert db.query("SELECT comment FROM duckdb_tables()") == [{"comment": "csv:items.csv"}]

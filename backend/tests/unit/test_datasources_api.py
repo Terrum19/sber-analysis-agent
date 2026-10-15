@@ -162,6 +162,7 @@ def test_csv_upload_rejects_empty_file_and_cleans_up(client, storage) -> None:
     assert "пуст" in response.json()["detail"]
     assert list(storage.iterdir()) == []
     db = app.dependency_overrides[get_db]()
+    assert db.query("SELECT table_name FROM duckdb_tables()") == []
     assert db.query("SELECT view_name FROM duckdb_views() WHERE NOT internal") == []
 
 

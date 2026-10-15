@@ -12,6 +12,7 @@ from app.core.data.connectors.postgres import quote_identifier, quote_literal
 logger = logging.getLogger(__name__)
 
 CHUNK_SIZE = 1 << 20
+CSV_MARKER = "csv:"
 DELIMITERS = (";", ",", "\t", "|")
 FALLBACK_ENCODING = "cp1251"
 NUMBER_PATTERN = r"[+-]?(\d{1,3}([ \x{00A0}\x{202F}]\d{3})+|\d+)([.,]\d+)?"
@@ -151,14 +152,36 @@ def number_expression(column: str) -> str:
     cleaned = f"trim({quote_identifier(column)})"
     for separator in GROUP_SEPARATORS:
         cleaned = f"replace({cleaned}, '{separator}', '')"
-    return f"TRY_CAST(replace({cleaned}, ',', '.') AS DOUBLE) AS {quote_identifier(column)}"
+    return f"TRY_CAST(replace({cleaned}, ',', '.') AS DOUBLE)"
 
 
-def view_sql(source: str, numeric: list[str]) -> str:
-    if not numeric:
-        return f"SELECT * FROM {source}"
-    replaced = ", ".join(number_expression(column) for column in numeric)
-    return f"SELECT * REPLACE ({replaced}) FROM {source}"
+def materialize(db, name: str, source: str, marker: str) -> tuple[int, list[str]]:
+    table = quote_identifier(name)
+    with db.lock:
+        db.execute("BEGIN TRANSACTION")
+        try:
+            legacy = db.query(
+                "SELECT view_name FROM duckdb_views() "
+                "WHERE NOT internal AND schema_name = 'main' AND lower(view_name) = lower($name)",
+                {"name": name},
+            )
+            if legacy:
+                db.execute(f"DROP VIEW {table}")
+            db.execute(f"CREATE OR REPLACE TABLE {table} AS SELECT * FROM {source}")
+            types = column_types(db, table)
+            text_columns = [column for column, kind in types if kind == "VARCHAR"]
+            rows, numeric = scan(db, table, text_columns)
+            for column in numeric:
+                db.execute(
+                    f"ALTER TABLE {table} ALTER {quote_identifier(column)} "
+                    f"TYPE DOUBLE USING {number_expression(column)}"
+                )
+            db.execute(f"COMMENT ON TABLE {table} IS {quote_literal(marker)}")
+            db.execute("COMMIT")
+        except duckdb.Error:
+            db.execute("ROLLBACK")
+            raise
+    return rows, numeric
 
 
 def load_csv(db, name: str, path: str | Path) -> CSVReport:
@@ -170,19 +193,15 @@ def load_csv(db, name: str, path: str | Path) -> CSVReport:
     readable, encoding = readable_copy(original)
     delimiter = sniffed_delimiter(db, readable)
     base = {"delim": quote_literal(delimiter)} if delimiter else {}
+    marker = f"{CSV_MARKER}{original.name}"
     failure: duckdb.Error | None = None
     for strategy_index, strategy in enumerate(STRATEGIES):
         source = reader_sql(readable, base | strategy)
         try:
-            types = column_types(db, source)
-            text_columns = [column for column, kind in types if kind == "VARCHAR"]
-            rows, numeric = scan(db, source, text_columns)
+            rows, numeric = materialize(db, name, source, marker)
         except duckdb.Error as error:
             failure = error
             continue
-        db.execute(
-            f"CREATE OR REPLACE VIEW {quote_identifier(name)} AS {view_sql(source, numeric)}"
-        )
         report = CSVReport(
             table=name,
             encoding=encoding,
@@ -210,10 +229,13 @@ def load_csv(db, name: str, path: str | Path) -> CSVReport:
 
 def csv_tables(db) -> set[str]:
     rows = db.query(
-        "SELECT view_name FROM duckdb_views() "
-        "WHERE NOT internal AND schema_name = 'main' AND contains(sql, 'read_csv(')"
+        "SELECT table_name AS name FROM duckdb_tables() "
+        "WHERE schema_name = 'main' AND starts_with(comment, $marker) "
+        "UNION ALL SELECT view_name FROM duckdb_views() "
+        "WHERE NOT internal AND schema_name = 'main' AND contains(sql, 'read_csv(')",
+        {"marker": CSV_MARKER},
     )
-    return {row["view_name"].lower() for row in rows}
+    return {row["name"].lower() for row in rows}
 
 
 def taken_names(db) -> set[str]:
@@ -249,5 +271,5 @@ class CSVConnector(BaseConnector):
 
     def rollback(self, db) -> None:
         for report in self.reports:
-            db.execute(f"DROP VIEW IF EXISTS {quote_identifier(report.table)}")
+            db.execute(f"DROP TABLE IF EXISTS {quote_identifier(report.table)}")
         self.reports = []
