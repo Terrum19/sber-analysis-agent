@@ -2,6 +2,7 @@
 
 LLM не соблюдает формат — парсер должен переживать любой вывод.
 """
+
 import pytest
 
 from app.core.agent.parser import parse_steps

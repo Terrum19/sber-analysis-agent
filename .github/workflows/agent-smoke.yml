@@ -1,0 +1,77 @@
+# Дымовой тест агента против настоящей локальной LLM (Ollama, Qwen 2.5 Coder).
+# Дорогой (скачивание модели ~1 ГБ, ~20 минут) — только ручной запуск.
+# Пока e2e-тесты — заглушки round-2, полезная часть — проверка, что модель
+# поднимается и отвечает через OpenAI-совместимый API, как ждёт бэкенд.
+name: Agent smoke test
+
+on:
+  workflow_dispatch:
+    inputs:
+      model:
+        description: "Модель Ollama (маленькая, чтобы уложиться в CPU-раннер)"
+        default: "qwen2.5-coder:1.5b"
+        required: true
+
+concurrency:
+  group: agent-smoke
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    services:
+      ollama:
+        image: ollama/ollama:latest
+        ports:
+          - 11434:11434
+    env:
+      LLM_BASE_URL: http://localhost:11434/v1
+      LLM_MODEL: ${{ inputs.model }}
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: backend/requirements.txt
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Pull model
+        run: |
+          for _ in $(seq 1 30); do
+            curl -fsS http://localhost:11434/api/version && break
+            sleep 2
+          done
+          curl -fsS http://localhost:11434/api/pull \
+            -d "{\"model\": \"$LLM_MODEL\", \"stream\": false}"
+
+      - name: Model answers via OpenAI-compatible API
+        run: |
+          python - <<'PY'
+          import os
+
+          from openai import OpenAI
+
+          client = OpenAI(base_url=os.environ["LLM_BASE_URL"], api_key="ollama")
+          reply = client.chat.completions.create(
+              model=os.environ["LLM_MODEL"],
+              messages=[{"role": "user", "content": "Ответь одним словом: сколько будет 2+2?"}],
+              temperature=0,
+          )
+          answer = reply.choices[0].message.content
+          print("Ответ модели:", answer)
+          assert answer and answer.strip(), "модель вернула пустой ответ"
+          PY
+
+      - name: Agent end-to-end tests
+        run: pytest -q -rs tests/e2e tests/integration/test_agent_e2e.py

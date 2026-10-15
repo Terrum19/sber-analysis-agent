@@ -4,8 +4,8 @@
 сохранённый результат (state cache) и перестраиваем спеку в другой
 тип. Быстро, дёшево, не нагружает локальную модель.
 """
-from app.core.viz.vega_spec_builder import build_vega_spec
 
+from app.core.viz.vega_spec_builder import build_vega_spec
 
 MORPH_MAP = {
     "bar": ["line", "histogram", "table"],

@@ -4,6 +4,7 @@
 к session_id. Чтобы не взрывать контекст, в промпт идёт скользящее
 окно последних 3-5 сообщений + сжатая выжимка предыдущих шагов.
 """
+
 import json
 from pathlib import Path
 
@@ -32,7 +33,9 @@ class SessionMemory:
 
     def record_step(self, step, result_table: str) -> None:
         """Запомнить выполненный шаг и его результат."""
-        self._state["steps"].append({"step_id": step.step_id, "purpose": step.purpose, "result": result_table})
+        self._state["steps"].append(
+            {"step_id": step.step_id, "purpose": step.purpose, "result": result_table}
+        )
 
     def record_answer(self, answer: str) -> None:
         """Запомнить ответ агента."""

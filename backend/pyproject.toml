@@ -8,6 +8,7 @@ dependencies = [
     "uvicorn[standard]>=0.30",
     "pydantic>=2.7",
     "pydantic-settings>=2.3",
+    "python-multipart>=0.0.9",
     "duckdb>=1.0",
     "openai>=1.40",        # OpenAI-совместимый клиент к локальному vLLM/Ollama
     "instructor>=1.3",     # structured output
@@ -19,6 +20,8 @@ dependencies = [
 dev = [
     "pytest>=8.2",
     "pytest-asyncio>=0.23",
+    "httpx2>=2.0",
+    "coverage>=7.5",
     "ruff>=0.5",
 ]
 
@@ -32,6 +35,19 @@ include = ["app*"]
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
+pythonpath = ["."]
+markers = [
+    "integration: тесты с живыми СУБД (всё в tests/integration/ помечается автоматически)",
+]
+
+[tool.coverage.run]
+branch = true
+source = ["app"]
+
+[tool.coverage.report]
+show_missing = true
+skip_covered = true
+fail_under = 50
 
 [tool.ruff]
 line-length = 100

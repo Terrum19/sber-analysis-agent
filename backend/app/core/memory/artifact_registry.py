@@ -4,6 +4,7 @@
 и JSON-конфиги визуализаций (Vega-Lite). Обеспечивает повторный доступ
 из чата и из UI + перетаскивание элементов на фронтенд-канвасе.
 """
+
 import json
 import time
 import uuid
@@ -37,5 +38,11 @@ class ArtifactRegistry:
         for file in self._dir.glob("*.json"):
             record = json.loads(file.read_text())
             if record.get("session_id") == session_id:
-                out.append({"id": record["id"], "title": record.get("title", ""), "created_at": record["created_at"]})
+                out.append(
+                    {
+                        "id": record["id"],
+                        "title": record.get("title", ""),
+                        "created_at": record["created_at"],
+                    }
+                )
         return out

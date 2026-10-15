@@ -4,7 +4,8 @@ backend/storage/
 *.duckdb.wal
 
 # --- веса моделей (крупные бинарники) ---
-models/
+# Только корневой каталог: без «/» шаблон глотал и backend/app/models/.
+/models/
 *.gguf
 *.safetensors
 
@@ -21,6 +22,8 @@ venv/
 # --- Node ---
 node_modules/
 .next/
+next-env.d.ts
+*.tsbuildinfo
 out/
 
 # --- окружение и мусор ---

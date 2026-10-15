@@ -3,6 +3,7 @@
 Требование: «преобразовать исследование в файл, которым можно быстро
 поделиться и который везде читается» — Excel с таблицами + графиками.
 """
+
 import openpyxl
 from openpyxl.chart import BarChart, Reference
 

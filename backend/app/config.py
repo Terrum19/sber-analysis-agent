@@ -3,6 +3,7 @@
 Все секреты/переключатели провайдеров LLM — только здесь.
 Замкнутый контур: по умолчанию локальный LLM endpoint (Ollama/vLLM).
 """
+
 from functools import lru_cache
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -27,6 +28,8 @@ class Settings(BaseSettings):
     wasm_mem_mb: int = 512
     agent_max_steps: int = 12
     semantic_top_k: int = 5
+
+    postgres_max_tables: int = 50
 
 
 @lru_cache

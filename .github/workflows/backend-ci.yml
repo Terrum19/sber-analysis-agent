@@ -1,0 +1,147 @@
+# Бэкенд: ruff, модульные тесты под coverage и интеграционные тесты с живыми СУБД.
+# Бюджет минут: push при изменениях бэкенда, Python 3.11 (как в Docker-образе) без
+# матрицы, отмена устаревших запусков. PR из веток этого же репозитория уже
+# проверены на push, поэтому для них job пропускается (0 минут); PR из форков
+# проверяются.
+name: Backend CI
+
+on:
+  push:
+    paths:
+      - "backend/**"
+      - ".github/workflows/backend-ci.yml"
+  pull_request:
+    paths:
+      - "backend/**"
+      - ".github/workflows/backend-ci.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: backend-ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  unit:
+    name: Lint & unit tests
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name != github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: backend/requirements.txt
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Ruff
+        run: |
+          ruff check app tests
+          ruff format --check app tests
+
+      - name: Unit tests under coverage
+        run: coverage run -m pytest -q --strict-markers -m "not integration"
+
+      - name: Coverage summary
+        if: always()
+        run: coverage report --format=markdown --fail-under=0 >> "$GITHUB_STEP_SUMMARY"
+
+      # Общий порог — fail_under в pyproject.toml (храповик: поднимать по мере реализации
+      # заглушек round-2). Код коннектора PostgreSQL держим на 100%.
+      - name: Coverage gate
+        run: |
+          coverage report
+          coverage report --fail-under=100 --include="app/core/data/connectors/pg_dsn.py,app/core/data/connectors/postgres.py,app/core/data/connectors/factory.py,app/api/deps.py"
+
+      # Неблокирующий бенчмарк профилирования (issue #6): результат — в summary и артефакте.
+      - name: Profiling benchmark
+        if: always()
+        continue-on-error: true
+        run: |
+          python ../scripts/run_profile_benchmark.py --output profile_benchmark.json \
+            > profile_benchmark.md
+          status=$?
+          { echo "### Бенчмарк профилирования"; cat profile_benchmark.md; } >> "$GITHUB_STEP_SUMMARY"
+          exit $status
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: profile-benchmark
+          path: backend/profile_benchmark.json
+          retention-days: 7
+          if-no-files-found: ignore
+
+      - name: Coverage HTML
+        if: failure()
+        run: coverage html
+
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: coverage-html
+          path: backend/htmlcov
+          retention-days: 7
+
+  integration:
+    name: Integration tests (live databases)
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name != github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: backend
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: sber
+          POSTGRES_PASSWORD: sber
+          POSTGRES_DB: sber_demo
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U sber -d sber_demo"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+      clickhouse:
+        image: clickhouse/clickhouse-server:24.8
+        env:
+          CLICKHOUSE_USER: sber
+          CLICKHOUSE_PASSWORD: sber
+          CLICKHOUSE_DB: sber_demo
+        ports:
+          - 8123:8123
+        options: >-
+          --health-cmd "wget --no-verbose --tries=1 --spider http://localhost:8123/ping"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    env:
+      TEST_POSTGRES_DSN: postgresql://sber:sber@localhost:5432/sber_demo
+      TEST_CLICKHOUSE_DSN: clickhouse://sber:sber@localhost:8123/sber_demo
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: backend/requirements.txt
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Integration tests
+        run: pytest -q -rs --strict-markers -m integration

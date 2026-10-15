@@ -1,0 +1,73 @@
+# Релиз для демонстрации: на тег v* собираются образы бэкенда и фронтенда и
+# прикладываются к GitHub Release архивами docker save вместе с compose-файлом,
+# .env.example и демо-данными — разворачивается без сборки и без интернета.
+# Образы не публикуются в GHCR: у приватных репозиториев на бесплатном тарифе
+# там всего 500 МБ, а вложения релиза в эту квоту не входят.
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Существующий тег, для которого собрать релиз"
+        required: true
+
+concurrency:
+  group: release-${{ inputs.tag || github.ref_name }}
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  bundle:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      VERSION: ${{ inputs.tag || github.ref_name }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag || github.ref }}
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Build backend image
+        uses: docker/build-push-action@v6
+        with:
+          context: backend
+          load: true
+          tags: sber-backend:${{ env.VERSION }}
+          cache-from: type=gha,scope=backend
+
+      - name: Build frontend image
+        uses: docker/build-push-action@v6
+        with:
+          context: frontend
+          load: true
+          tags: sber-frontend:${{ env.VERSION }}
+          cache-from: type=gha,scope=frontend
+
+      - name: Assemble bundle
+        run: |
+          dist="$RUNNER_TEMP/dist"
+          bundle="$RUNNER_TEMP/sber-analytical-agent-$VERSION"
+          mkdir -p "$dist" "$bundle"
+          docker save "sber-backend:$VERSION" | gzip > "$dist/sber-backend-$VERSION.tar.gz"
+          docker save "sber-frontend:$VERSION" | gzip > "$dist/sber-frontend-$VERSION.tar.gz"
+          cp docker-compose.release.yml .env.example "$bundle/"
+          cp -r data "$bundle/data"
+          tar -czf "$dist/sber-analytical-agent-$VERSION.tar.gz" -C "$RUNNER_TEMP" \
+            "sber-analytical-agent-$VERSION"
+          (cd "$dist" && sha256sum ./*.tar.gz > SHA256SUMS)
+          ls -lh "$dist"
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ env.VERSION }}
+          generate_release_notes: true
+          files: |
+            ${{ runner.temp }}/dist/*.tar.gz
+            ${{ runner.temp }}/dist/SHA256SUMS

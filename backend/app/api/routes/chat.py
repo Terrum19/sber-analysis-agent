@@ -3,6 +3,7 @@
 Отдаёт поток событий (SSE): текстовые чанки ответа, картинки по
 готовности, ссылки на дашборды. Оркестрация — в core/agent/orchestrator.py.
 """
+
 from fastapi import APIRouter
 from fastapi.responses import StreamingResponse
 

@@ -13,7 +13,9 @@ def build_vega_spec(chart_type: str, result_table: str, data: list[dict] | None 
     """
     return {
         "$schema": "https://vega.github.io/schema/vega-lite/v5.json",
-        "mark": {"histogram": "bar", "bar": "bar", "line": "line", "scatter": "point"}.get(chart_type, "bar"),
+        "mark": {"histogram": "bar", "bar": "bar", "line": "line", "scatter": "point"}.get(
+            chart_type, "bar"
+        ),
         "data": {"values": data or []},
         "encoding": {},
     }

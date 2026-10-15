@@ -4,6 +4,7 @@ LLM не всегда соблюдает формат, поэтому парсе
 стратегий: строгий JSON -> JSON внутри ```блока -> поимённый поиск
 полей -> запасной вариант «один шаг без тула».
 """
+
 import json
 import re
 
@@ -42,9 +43,7 @@ def _field_regex(raw: str) -> list[ResearchStep]:
     steps: list[ResearchStep] = []
     for i, block in enumerate(re.findall(r"\{[^{}]*tool[^{}]*\}", raw)):
         tool = re.search(r'"tool"\s*:\s*"([^"]+)"', block)
-        steps.append(
-            ResearchStep(step_id=i, tool=tool.group(1) if tool else None)
-        )
+        steps.append(ResearchStep(step_id=i, tool=tool.group(1) if tool else None))
     return steps
 
 

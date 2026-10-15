@@ -2,6 +2,7 @@
 
 Аналогично PostgreSQL: единый диалект SQL поверх ClickHouse-таблиц.
 """
+
 from app.core.data.connectors.base import BaseConnector
 
 

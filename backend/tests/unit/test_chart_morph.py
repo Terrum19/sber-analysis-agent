@@ -1,4 +1,5 @@
 """Unit-тесты морфинга графиков без нового вызова LLM."""
+
 from app.core.viz.chart_morph import morph
 
 

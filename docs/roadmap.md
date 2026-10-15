@@ -9,7 +9,8 @@
 - [ ] Инсайт + авто-визуализация (bar/line/histogram)
 
 ## Финал
-- [ ] Коннекторы PostgreSQL / ClickHouse
+- [x] Коннектор PostgreSQL (postgres_scanner, см. data_connectors.md)
+- [ ] Коннектор ClickHouse
 - [ ] WASM-песочница (лимиты, таймаут) + кодогенерация
 - [ ] chart_morph (смена вида без LLM) + ECharts для тяжёлых дашбордов
 - [ ] Генерация дашбордов + повторный доступ (чат/UI) + drag&drop
