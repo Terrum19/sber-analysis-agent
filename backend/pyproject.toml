@@ -21,6 +21,7 @@ dev = [
     "pytest>=8.2",
     "pytest-asyncio>=0.23",
     "httpx2>=2.0",
+    "coverage>=7.5",
     "ruff>=0.5",
 ]
 
@@ -35,6 +36,15 @@ include = ["app*"]
 asyncio_mode = "auto"
 testpaths = ["tests"]
 pythonpath = ["."]
+
+[tool.coverage.run]
+branch = true
+source = ["app"]
+
+[tool.coverage.report]
+show_missing = true
+skip_covered = true
+fail_under = 50
 
 [tool.ruff]
 line-length = 100

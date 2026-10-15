@@ -1,4 +1,5 @@
-# Бэкенд: ruff + pytest против настоящего PostgreSQL (service container).
+# Бэкенд: ruff + pytest под coverage против настоящего PostgreSQL (service container).
+# Покрытие считается в том же job, чтобы не платить за вторую установку Python и PostgreSQL.
 # Бюджет минут: только push (PR из этого же репозитория уже проверен на push),
 # только при изменениях бэкенда, один job, отмена устаревших запусков.
 name: Backend CI
@@ -57,5 +58,27 @@ jobs:
 
       # test_parser.py импортирует несуществующий app.models (сломан ещё в dev) —
       # убрать --ignore, когда модуль появится.
-      - name: Pytest
-        run: pytest -q --ignore tests/unit/test_parser.py
+      - name: Pytest under coverage
+        run: coverage run -m pytest -q --ignore tests/unit/test_parser.py
+
+      - name: Coverage summary
+        if: always()
+        run: coverage report --format=markdown --fail-under=0 >> "$GITHUB_STEP_SUMMARY"
+
+      # Общий порог — fail_under в pyproject.toml (храповик: поднимать по мере реализации
+      # заглушек round-2). Код коннектора PostgreSQL держим на 100%.
+      - name: Coverage gate
+        run: |
+          coverage report
+          coverage report --fail-under=100 --include="app/core/data/connectors/pg_dsn.py,app/core/data/connectors/postgres.py,app/core/data/connectors/factory.py,app/api/deps.py"
+
+      - name: Coverage HTML
+        if: failure()
+        run: coverage html
+
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: coverage-html
+          path: backend/htmlcov
+          retention-days: 7
