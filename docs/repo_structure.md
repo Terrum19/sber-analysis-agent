@@ -13,7 +13,7 @@ sberAnalyticalAgent/
 ├── CONTRIBUTING.md        — конвенции: как добавить тул, коннектор, промпт
 ├── Makefile               — make install / seed / dev / up / test / lint
 ├── .env.example           — пример конфигурации (LLM endpoint, пути, лимиты)
-├── .gitignore             — рантайм (storage/), веса (models/), node_modules
+├── .gitignore             — рантайм (storage/), веса (models/), data/hk_datasets/, node_modules
 ├── docker-compose.yml     — backend + frontend (LLM — отдельно на хосте)
 ├── backend/               — FastAPI + Python: весь интеллект системы
 ├── frontend/              — Next.js + React: чат и канвас
@@ -185,6 +185,7 @@ docs/
 
 data/
 ├── sample_datasets/        — demo_users.csv, demo_events.csv (для тестов/демо)
+├── hk_datasets/            — датасеты хакатона: только README, CSV вне git (.gitignore)
 └── business_dictionary/    — пример бизнес-глоссария пользователя (опц. фича)
 
 scripts/
