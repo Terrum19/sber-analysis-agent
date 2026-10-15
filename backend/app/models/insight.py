@@ -1,7 +1,9 @@
-from pydantic import BaseModel, Field
+"""Схема итогового инсайта."""
+from pydantic import BaseModel
 
 
 class Insight(BaseModel):
+    """Финальный вывод на бизнес-языке."""
     headline: str
-    details: list[str] = Field(default_factory=list)
-    limits: list[str] = Field(default_factory=list)
+    details: list[str] = []
+    limits: str = ""

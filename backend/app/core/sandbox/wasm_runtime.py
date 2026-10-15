@@ -4,6 +4,10 @@
 с лимитами CPU/RAM и жёстким таймаутом. Замкнутый контур — без сети.
 """
 
+import logging
+
+logger = logging.getLogger(__name__)
+
 from app.config import settings
 
 
@@ -17,7 +21,10 @@ class WASMSandbox:
     def run(self, code: str, payload: dict | None = None) -> dict:
         """Выполнить код с лимитами ресурсов и таймаутом.
 
+        STUB IMPLEMENTATION: Возвращает payload как есть (pass-through).
         TODO(round-2): поднять WASM-рантайм (wasmtime-py / Pyodide-мост),
         передать payload, ограничить CPU/RAM/таймаут, вернуть результат.
         """
-        raise NotImplementedError
+        logger.warning("WASM sandbox — STUB: код не исполняется, возвращается исходные данные")
+        # Stub: возвращаем payload без изменений
+        return {"result": payload.get("data", []) if payload else [], "status": "stub"}

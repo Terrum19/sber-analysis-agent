@@ -15,15 +15,31 @@ from app.core.data.connectors.csv import load_csv
 
 
 class DuckDBManager:
-    """Обёртка над duckdb: подключение источников, temp-таблицы шагов."""
+    """Обёртка над duckdb: подключение источников, temp-таблицы шагов.
+
+    Singleton: все вызовы ``DuckDBManager()`` возвращают один и тот же
+    экземпляр, чтобы исполнитель шагов, генератор инсайтов и кэш работали
+    с общей базой данных без повторного создания соединений.
+    """
+
+    _instance: "DuckDBManager | None" = None
+    _initialized: bool = False
+
+    def __new__(cls, path: str | None = None) -> "DuckDBManager":
+        if cls._instance is None:
+            cls._instance = super().__new__(cls)
+        return cls._instance
 
     def __init__(self, path: str | None = None) -> None:
+        if self._initialized:
+            return
         self._path = path or settings.duckdb_path
         if self._path != ":memory:":
             Path(self._path).parent.mkdir(parents=True, exist_ok=True)
         self._con = duckdb.connect(self._path)
         self._step_counter = 0
         self.lock = threading.RLock()
+        self._initialized = True
 
     def query(self, sql: str, params: dict | None = None) -> list[dict]:
         """Выполнить SELECT и вернуть список словарей."""
@@ -59,3 +75,14 @@ class DuckDBManager:
     def close(self) -> None:
         """Закрыть соединение."""
         self._con.close()
+
+    @classmethod
+    def reset(cls) -> None:
+        """Сбросить singleton (для тестов с разными in-memory БД)."""
+        if cls._instance is not None:
+            try:
+                cls._instance.close()
+            except Exception:
+                pass
+        cls._instance = None
+        cls._initialized = False

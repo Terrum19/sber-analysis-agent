@@ -2,21 +2,35 @@
 
 Замкнутый контур: по умолчанию Ollama/vLLM на localhost.
 Менять провайдера — только через config.settings.llm_base_url/model.
+
+Если переменная окружения USE_FAKE_LLM=true, конструктор возвращает
+FakeLLM вместо реального клиента — для тестирования на CI без локальной модели.
 """
 
-import json
+import logging
+import os
 from typing import Any, TypeVar
 
+import instructor
 from openai import AsyncOpenAI
 from pydantic import BaseModel
 
 from app.config import settings
+
+logger = logging.getLogger(__name__)
 
 T = TypeVar("T", bound=BaseModel)
 
 
 class LLMClient:
     """Обёртка над AsyncOpenAI для локального инференса Qwen."""
+
+    def __new__(cls) -> "LLMClient":
+        if os.getenv("USE_FAKE_LLM", "false").lower() == "true":
+            from app.core.llm.fake_client import FakeLLM
+
+            return FakeLLM()
+        return super().__new__(cls)
 
     def __init__(self) -> None:
         self._client = AsyncOpenAI(
@@ -25,6 +39,7 @@ class LLMClient:
             timeout=settings.llm_timeout_s,
         )
         self.model = settings.llm_model
+        self._instructor = instructor.from_openai(self._client)
 
     async def complete(self, system: str, user: str, **kwargs: Any) -> str:
         """Одиночный completion (без structured output)."""
@@ -42,21 +57,19 @@ class LLMClient:
     async def complete_structured(self, system: str, user: str, schema: type[T]) -> T:
         """Structured output через Instructor (валидация по Pydantic-схеме).
 
-        TODO(round-2): переключить на instructor.from_openai(...).create(...)
+        Использует instructor.from_openai для гарантированно валидного
+        вывода по заданной Pydantic-схеме.
         """
-        raw = await self.complete(system, user)
-        return schema.model_validate(json.loads(_extract_json(raw)))
-
-
-def _extract_json(text: str) -> str:
-    """Вырезает JSON из ответа LLM, даже если обёрнут в ```json ... ```."""
-    text = text.strip()
-    if "```" in text:
-        parts = text.split("```")
-        for part in parts:
-            part = part.removeprefix("json").strip()
-            if part.startswith(("{", "[")):
-                return part
-    start = min((i for i in (text.find("{"), text.find("[")) if i != -1), default=-1)
-    end = max(text.rfind("}"), text.rfind("]"))
-    return text[start : end + 1] if start != -1 and end > start else text
+        try:
+            return await self._instructor.chat.completions.create(
+                model=self.model,
+                messages=[
+                    {"role": "system", "content": system},
+                    {"role": "user", "content": user},
+                ],
+                response_model=schema,
+                temperature=settings.llm_temperature,
+            )
+        except Exception as exc:
+            logger.error("Instructor structured output failed: %s", exc)
+            raise

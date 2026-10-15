@@ -4,10 +4,12 @@
 готовности, ссылки на дашборды. Оркестрация — в core/agent/orchestrator.py.
 """
 
+import json
+
 from fastapi import APIRouter
 from fastapi.responses import StreamingResponse
 
-from app.api.schemas.chat import ChatRequest
+from app.api.schemas.chat import ChatRequest, ChatEvent
 
 router = APIRouter()
 
@@ -16,11 +18,19 @@ router = APIRouter()
 async def chat(payload: ChatRequest) -> StreamingResponse:
     """Один ход диалога: вопрос -> (текст, визуализации, дашборды).
 
-    TODO(round-2): запустить AgentOrchestrator.run(payload) и стримить
-    события через StreamingResponse(media_type="text/event-stream").
+    Запускает AgentOrchestrator.run() и стримит события через StreamingResponse.
+    Каждый элемент — ChatEvent в формате SSE: data: {"type": "...", "data": {...}}
     """
 
-    async def event_stream():  # pragma: no cover - заглушка
-        yield 'data: {"type": "text", "chunk": "TODO: orchestrator"}\n\n'
+    from app.core.agent.orchestrator import AgentOrchestrator
+
+    orchestrator = AgentOrchestrator()
+
+    async def event_stream():
+        """Генерирует SSE-события от оркестратора."""
+        async for event in orchestrator.run(payload):
+            # Валидируем через ChatEvent и сериализуем в JSON
+            chat_event = ChatEvent(**event)
+            yield f"data: {chat_event.model_dump_json()}\n\n"
 
     return StreamingResponse(event_stream(), media_type="text/event-stream")

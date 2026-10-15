@@ -23,13 +23,36 @@ class SessionMemory:
         """Загрузить состояние сессии (TODO: SQLite вместо файла)."""
         self._path.parent.mkdir(parents=True, exist_ok=True)
         file = self._path.with_suffix(f".{self.session_id}.json")
-        return json.loads(file.read_text()) if file.exists() else {"messages": [], "steps": []}
+        return json.loads(file.read_text()) if file.exists() else {
+            "messages": [],
+            "steps": [],
+            "datasource": None,
+            "columns": [],
+        }
+
+    def set_datasource(self, datasource_name: str, columns: list[str]) -> None:
+        """Установить привязанный datasource и его колонки для контекста."""
+        self._state["datasource"] = datasource_name
+        self._state["columns"] = list(columns)
 
     def build_context(self, question: str) -> dict:
-        """Собрать контекст: скользящее окно сообщений + выжимка шагов."""
+        """Собрать контекст: скользящее окно сообщений + выжимка шагов + колонки + словарь."""
         window = self._state["messages"][-5:]
         summary = "; ".join(f"шаг {s['step_id']}: {s['purpose']}" for s in self._state["steps"])
-        return {"messages": window, "summary": summary, "question": question}
+        columns = self._state.get("columns", [])
+        datasource = self._state.get("datasource")
+        
+        # Формируем краткое описание колонок для LLM
+        columns_summary = ", ".join(columns) if columns else "неизвестно"
+        
+        return {
+            "messages": window,
+            "summary": summary,
+            "question": question,
+            "columns": columns,
+            "columns_summary": columns_summary,
+            "datasource": datasource or "raw",
+        }
 
     def record_step(self, step, result_table: str) -> None:
         """Запомнить выполненный шаг и его результат."""
