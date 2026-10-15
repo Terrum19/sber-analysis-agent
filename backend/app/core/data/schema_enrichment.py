@@ -4,6 +4,7 @@
 человекочитаемых алиасов на колонку — т.к. система рассчитана на
 не-разработчика. Учитывает бизнес-словарь пользователя (если есть).
 """
+
 from app.core.data.profiling import profile_table
 from app.core.llm.client import LLMClient
 from app.core.llm.prompts.alias_gen import ALIAS_GEN

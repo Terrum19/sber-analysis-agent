@@ -3,6 +3,7 @@
 Все секреты/переключатели провайдеров LLM — только здесь.
 Замкнутый контур: по умолчанию локальный LLM endpoint (Ollama/vLLM).
 """
+
 from functools import lru_cache
 
 from pydantic_settings import BaseSettings, SettingsConfigDict

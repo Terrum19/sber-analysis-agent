@@ -3,6 +3,7 @@
 Если на шаге нет тула (tool=None) — LLM генерирует код обработки
 данных, который исполняется в WASM-песочнице (см. wasm_runtime.py).
 """
+
 from app.core.data.duckdb_manager import DuckDBManager
 from app.core.sandbox.wasm_runtime import WASMSandbox
 from app.models.research_step import ResearchStep

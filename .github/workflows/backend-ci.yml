@@ -54,7 +54,9 @@ jobs:
         run: pip install -r requirements.txt
 
       - name: Ruff
-        run: ruff check app tests
+        run: |
+          ruff check app tests
+          ruff format --check app tests
 
       # test_parser.py импортирует несуществующий app.models (сломан ещё в dev) —
       # убрать --ignore, когда модуль появится.

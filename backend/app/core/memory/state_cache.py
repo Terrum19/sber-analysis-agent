@@ -4,6 +4,7 @@
 при смене визуализации или лёгкой модификации отчёта не пересчитывать
 тяжёлые запросы заново. Реализация — в core/data/duckdb_manager.py.
 """
+
 from app.core.data.duckdb_manager import DuckDBManager
 
 

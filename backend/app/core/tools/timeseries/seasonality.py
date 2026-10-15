@@ -2,6 +2,7 @@
 
 Пример сценария: «Какой паттерн повторяется каждые 12 месяцев?»
 """
+
 from app.core.tools.base import BaseTool
 
 

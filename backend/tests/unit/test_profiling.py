@@ -1,4 +1,5 @@
 """Unit-тесты семантического отбора колонок."""
+
 from app.core.data.semantic_select import select_columns
 
 

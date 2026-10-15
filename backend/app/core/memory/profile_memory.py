@@ -5,6 +5,7 @@
 сканирования источника заново на каждый вопрос — паспорт всегда в
 контексте агента. Сохраняется в JSON/SQLite при первом подключении.
 """
+
 import json
 from pathlib import Path
 
@@ -20,7 +21,9 @@ class ProfileMemory:
 
     def save(self, table: str, passport: dict) -> None:
         """Сохранить паспорт таблицы."""
-        (self._dir / f"{table}.json").write_text(json.dumps(passport, ensure_ascii=False, default=str))
+        (self._dir / f"{table}.json").write_text(
+            json.dumps(passport, ensure_ascii=False, default=str)
+        )
 
     def load(self, table: str) -> dict:
         """Загрузить паспорт таблицы ({} если ещё не построен)."""

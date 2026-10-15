@@ -3,6 +3,7 @@
 Требование: «преобразовать исследование в файл, которым можно быстро
 поделиться» — Excel (openpyxl) и PDF (Typst/ReportLab).
 """
+
 from fastapi import APIRouter
 from fastapi.responses import FileResponse
 

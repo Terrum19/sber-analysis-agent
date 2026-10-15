@@ -3,6 +3,7 @@
 Пример сценария: «Изменения в поле C предшествуют росту D на 5 дней?»
 (вместе с timeseries/lag.py — поиск лагов и причинных связей).
 """
+
 from app.core.tools.base import BaseTool
 
 

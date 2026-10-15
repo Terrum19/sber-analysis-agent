@@ -3,6 +3,7 @@
 Гарантирует, что вывод LLM (ResearchStep, Insight, DashboardTile)
 валиден по схеме. Невалидный вывод -> ретрай (см. agent/recovery.py).
 """
+
 from pydantic import BaseModel
 
 from app.core.llm.client import LLMClient

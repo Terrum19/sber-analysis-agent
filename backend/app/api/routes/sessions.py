@@ -3,6 +3,7 @@
 Сессия — единица памяти (память уровня 1): session_id -> история
 текстового диалога + история ResearchStep (см. core/memory/session_memory.py).
 """
+
 import uuid
 
 from fastapi import APIRouter

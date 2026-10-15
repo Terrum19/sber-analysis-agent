@@ -3,6 +3,7 @@
 Стратегия: при сбое шага — повторить его с текстом ошибки в промпте
 (самоисправление), затем эскалация пользователю с просьбой уточнить.
 """
+
 import asyncio
 import functools
 from collections.abc import Callable

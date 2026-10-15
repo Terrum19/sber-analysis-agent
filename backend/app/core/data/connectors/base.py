@@ -3,6 +3,7 @@
 Единый контракт для CSV/PostgreSQL/ClickHouse: подготовить объекты в
 DuckDB и вернуть их список. Вся трансформация — уже внутри платформы.
 """
+
 from abc import ABC, abstractmethod
 
 

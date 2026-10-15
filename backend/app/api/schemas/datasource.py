@@ -1,4 +1,5 @@
 """Pydantic-схемы источников данных."""
+
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field

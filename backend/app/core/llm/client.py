@@ -3,6 +3,7 @@
 Замкнутый контур: по умолчанию Ollama/vLLM на localhost.
 Менять провайдера — только через config.settings.llm_base_url/model.
 """
+
 import json
 from typing import Any, TypeVar
 

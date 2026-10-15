@@ -3,6 +3,7 @@
 Требование UX: ответ читается без пояснений автора — «узнали то,
 узнали сё, узнать невозможно» (см. prompts/insight_summary.py).
 """
+
 from app.core.llm.client import LLMClient
 from app.core.llm.prompts.insight_summary import INSIGHT_SUMMARY
 from app.models.insight import Insight

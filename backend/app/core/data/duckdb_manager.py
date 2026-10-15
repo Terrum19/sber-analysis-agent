@@ -4,6 +4,7 @@
 через DuckDB, чтобы SQL применялся к любой сущности под единым
 диалектом. Результаты шагов — temp-таблицы (state cache, память ур. 2).
 """
+
 import threading
 from pathlib import Path
 

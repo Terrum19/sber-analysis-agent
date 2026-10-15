@@ -3,6 +3,7 @@
 Ключевое требование: подключение БЕЗ предобработки — сырые данные
 грузятся в DuckDB, вся трансформация внутри платформы (см. core/data/).
 """
+
 from typing import Annotated
 from uuid import uuid4
 

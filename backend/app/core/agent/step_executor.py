@@ -3,6 +3,7 @@
 Модель модифицирует одну и ту же таблицу цепочкой запросов;
 финальная таблица — основание для инсайта/графика/дашборда.
 """
+
 from app.core.data.duckdb_manager import DuckDBManager
 from app.core.tools.registry import tool_registry
 from app.models.research_step import ResearchStep

@@ -7,6 +7,7 @@
 Каждый результат шага сохраняется в DuckDB как temp_result_vN и
 передаётся на следующий шаг (см. core/memory/state_cache.py).
 """
+
 from collections.abc import AsyncIterator
 
 from app.api.schemas.chat import ChatRequest

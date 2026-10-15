@@ -5,6 +5,7 @@
 
 Запуск:  uvicorn app.main:app --reload --port 8000
 """
+
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 

@@ -3,6 +3,7 @@
 Хранит и Vega-конфиг, и SQL, построивший плитку — чтобы дашборд был
 воспроизводим и доступен повторно (см. core/memory/artifact_registry.py).
 """
+
 from typing import Any
 
 from pydantic import BaseModel, Field
@@ -10,6 +11,7 @@ from pydantic import BaseModel, Field
 
 class DashboardTile(BaseModel):
     """Одна плитка дашборда."""
+
     title: str
     spec: dict[str, Any]
     sql: str | None = None
@@ -18,5 +20,6 @@ class DashboardTile(BaseModel):
 
 class Dashboard(BaseModel):
     """Дашборд: набор плиток, привязанный к сессии."""
+
     title: str
     tiles: list[DashboardTile] = Field(default_factory=list)

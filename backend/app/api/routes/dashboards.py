@@ -3,6 +3,7 @@
 Требование: созданный дашборд доступен повторно из чата и из
 интерфейса платформы (см. core/memory/artifact_registry.py).
 """
+
 from fastapi import APIRouter
 
 router = APIRouter()
