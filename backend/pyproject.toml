@@ -38,6 +38,7 @@ testpaths = ["tests"]
 pythonpath = ["."]
 markers = [
     "integration: тесты с живыми СУБД (всё в tests/integration/ помечается автоматически)",
+    "benchmark: тесты производительности (всё в tests/benchmark/ помечается автоматически)",
 ]
 
 [tool.coverage.run]

@@ -31,6 +31,9 @@ class Settings(BaseSettings):
 
     postgres_max_tables: int = 50
 
+    profile_approx_quantile: bool = True
+    profile_approx_min_rows: int = 100_000
+
 
 @lru_cache
 def get_settings() -> Settings:

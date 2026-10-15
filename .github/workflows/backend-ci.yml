@@ -50,20 +50,22 @@ jobs:
           ruff format --check app tests
 
       - name: Unit tests under coverage
-        run: coverage run -m pytest -q --strict-markers -m "not integration"
+        run: coverage run -m pytest -q --strict-markers -m "not integration and not benchmark"
 
       - name: Coverage summary
         if: always()
         run: coverage report --format=markdown --fail-under=0 >> "$GITHUB_STEP_SUMMARY"
 
       # Общий порог — fail_under в pyproject.toml (храповик: поднимать по мере реализации
-      # заглушек round-2). Код коннектора PostgreSQL держим на 100%.
+      # заглушек round-2). Код коннектора PostgreSQL и профилирования держим на 100%.
       - name: Coverage gate
         run: |
           coverage report
-          coverage report --fail-under=100 --include="app/core/data/connectors/pg_dsn.py,app/core/data/connectors/postgres.py,app/core/data/connectors/factory.py,app/api/deps.py"
+          coverage report --fail-under=100 --include="app/core/data/connectors/pg_dsn.py,app/core/data/connectors/postgres.py,app/core/data/connectors/factory.py,app/api/deps.py,app/core/data/profiling.py,app/core/data/semantic_select.py,app/core/memory/profile_memory.py,app/core/data/schema_enrichment.py"
 
-      # Неблокирующий бенчмарк профилирования (issue #6): результат — в summary и артефакте.
+      # Неблокирующий бенчмарк профилирования (issue #6): 1 000 000 × 50 колонок, только замер.
+      # Лимит 10 с проверяет tests/benchmark локально: у раннеров приватного репозитория
+      # 2 vCPU, на них лимит давал бы ложные срабатывания. Результат — в summary и артефакте.
       - name: Profiling benchmark
         if: always()
         continue-on-error: true
