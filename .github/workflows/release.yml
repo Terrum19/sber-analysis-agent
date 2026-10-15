@@ -46,6 +46,7 @@ jobs:
         uses: docker/build-push-action@v6
         with:
           context: frontend
+          build-args: NEXT_PUBLIC_API_URL=http://backend:8000
           load: true
           tags: sber-frontend:${{ env.VERSION }}
           cache-from: type=gha,scope=frontend

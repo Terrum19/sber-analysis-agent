@@ -1,8 +1,9 @@
 /**
- * Клиент бэкенда: создание сессии, диалог (SSE), дашборды.
+ * Клиент бэкенда: создание сессии, источники данных, диалог (SSE), дашборды.
  * Всё через /api — проксируется на локальный FastAPI (см. next.config.mjs).
  */
 import type { ChatStreamEvent } from "@/types/chat";
+import type { Datasource, DatasourceDbRequest } from "@/types/datasource";
 
 const API = "/api";
 
@@ -15,11 +16,15 @@ export async function createSession(datasourceId?: string): Promise<{ session_id
   return res.json();
 }
 
-/** Подписка на SSE-поток диалога; onEvent вызывается на каждое событие. */
+/**
+ * Подписка на SSE-поток диалога; onEvent вызывается на каждое событие,
+ * onClose — один раз, когда поток закончился, оборвался или был отменён.
+ */
 export function streamChat(
   sessionId: string,
   question: string,
   onEvent: (event: ChatStreamEvent) => void,
+  onClose?: (error?: string) => void,
 ): () => void {
   const controller = new AbortController();
 
@@ -30,6 +35,7 @@ export function streamChat(
       body: JSON.stringify({ session_id: sessionId, question }),
       signal: controller.signal,
     });
+    if (!res.ok) throw new Error(await errorDetail(res));
     const reader = res.body?.getReader();
     const decoder = new TextDecoder();
     if (!reader) return;
@@ -42,12 +48,56 @@ export function streamChat(
       buffer = lines.pop() ?? "";
       for (const line of lines) {
         const data = line.replace(/^data: /, "").trim();
-        if (data) onEvent(JSON.parse(data) as ChatStreamEvent);
+        if (!data) continue;
+        let event: ChatStreamEvent;
+        try {
+          event = JSON.parse(data) as ChatStreamEvent;
+        } catch {
+          continue;
+        }
+        onEvent(event);
       }
     }
-  })();
+  })().then(
+    () => onClose?.(),
+    (error: unknown) => {
+      if (controller.signal.aborted) onClose?.();
+      else onClose?.(error instanceof Error ? error.message : String(error));
+    },
+  );
 
   return () => controller.abort();
+}
+
+/** Загрузить один или несколько сырых CSV (multipart-поле files). */
+export async function attachCsv(files: File[]): Promise<Datasource> {
+  const body = new FormData();
+  for (const file of files) body.append("files", file);
+  const res = await fetch(`${API}/datasources/csv`, { method: "POST", body });
+  if (!res.ok) throw new Error(await errorDetail(res));
+  return res.json();
+}
+
+/** Подключить PostgreSQL / ClickHouse по DSN (только чтение). */
+export async function attachDb(payload: DatasourceDbRequest): Promise<Datasource> {
+  const res = await fetch(`${API}/datasources/db`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ kind: payload.kind, dsn: payload.dsn, schema: payload.schema || null }),
+  });
+  if (!res.ok) throw new Error(await errorDetail(res));
+  return res.json();
+}
+
+async function errorDetail(res: Response): Promise<string> {
+  try {
+    const body = await res.json();
+    if (typeof body?.detail === "string") return body.detail;
+    if (body?.detail) return JSON.stringify(body.detail);
+  } catch {
+    // тело не JSON — достаточно HTTP-статуса
+  }
+  return `HTTP ${res.status}`;
 }
 
 export async function getDashboard(id: string): Promise<Record<string, unknown>> {
