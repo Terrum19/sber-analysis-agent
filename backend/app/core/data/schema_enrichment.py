@@ -5,7 +5,8 @@
 не-разработчика. Учитывает бизнес-словарь пользователя (если есть).
 """
 
-from app.core.data.profiling import profile_table
+from app.config import settings
+from app.core.data.profiling import profile_table, schema_overview
 from app.core.llm.client import LLMClient
 from app.core.llm.prompts.alias_gen import ALIAS_GEN
 from app.core.memory.profile_memory import ProfileMemory
@@ -23,9 +24,8 @@ class SchemaEnricher:
         Результат сохраняется в ProfileMemory («паспорт данных»),
         чтобы не сканировать источник заново на каждый вопрос.
         """
-        profile = profile_table(db, table)
-        prompt = ALIAS_GEN.format(schema=profile, glossary=glossary or {})
+        profile = profile_table(db, table, approx=settings.profile_approx_quantile)
+        prompt = ALIAS_GEN.format(schema=schema_overview(profile), glossary=glossary or {})
         aliases = await self.llm.complete("Ты — аналитик данных.", prompt)
         passport = {"profile": profile, "aliases_raw": aliases, "glossary": glossary}
-        ProfileMemory().save(table, passport)
-        return passport
+        return ProfileMemory().save(table, passport)

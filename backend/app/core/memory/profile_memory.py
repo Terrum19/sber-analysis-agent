@@ -10,6 +10,7 @@ import json
 from pathlib import Path
 
 from app.config import settings
+from app.core.data.profiling import TableProfile, outlier_summary
 
 
 class ProfileMemory:
@@ -19,11 +20,17 @@ class ProfileMemory:
         self._dir = Path(settings.storage_dir) / "profiles"
         self._dir.mkdir(parents=True, exist_ok=True)
 
-    def save(self, table: str, passport: dict) -> None:
+    def save(self, table: str, passport: dict) -> dict:
         """Сохранить паспорт таблицы."""
+        record = dict(passport)
+        profile = record.get("profile")
+        if isinstance(profile, TableProfile):
+            record["profile"] = profile.to_dict()
+            record.setdefault("outliers", outlier_summary(profile))
         (self._dir / f"{table}.json").write_text(
-            json.dumps(passport, ensure_ascii=False, default=str)
+            json.dumps(record, ensure_ascii=False, default=str)
         )
+        return record
 
     def load(self, table: str) -> dict:
         """Загрузить паспорт таблицы ({} если ещё не построен)."""
