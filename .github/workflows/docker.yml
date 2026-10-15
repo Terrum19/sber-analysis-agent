@@ -1,4 +1,5 @@
-# Сборка Docker-образов и проверка, что бэкенд стартует и отвечает на /health.
+# Сборка Docker-образов, проверка, что бэкенд стартует и отвечает на /health,
+# и проверка работы образа без сети (замкнутый контур).
 # Бюджет минут: тяжёлый workflow — только push в dev/main при изменениях,
 # влияющих на образы, плюс ручной запуск; слои кэшируются в GitHub Actions cache.
 name: Docker
@@ -62,6 +63,19 @@ jobs:
       - name: Backend logs
         if: always()
         run: docker logs backend || true
+
+      # Замкнутый контур: без сети коннектор PostgreSQL работает, только если
+      # postgres_scanner уже лежит в образе. Неблокирующий, пока не сделан issue-06
+      # (установка расширения в Dockerfile) — потом убрать continue-on-error.
+      - name: Offline check (no network)
+        continue-on-error: true
+        run: |
+          docker run --rm --network none sber-backend:ci python -c '
+          import duckdb
+          con = duckdb.connect()
+          con.execute("LOAD postgres_scanner")
+          print("postgres_scanner загружается без сети")
+          '
 
       - name: Build frontend image
         uses: docker/build-push-action@v6
