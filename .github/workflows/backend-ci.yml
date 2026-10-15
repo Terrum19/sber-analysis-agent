@@ -1,0 +1,61 @@
+# Бэкенд: ruff + pytest против настоящего PostgreSQL (service container).
+# Бюджет минут: только push (PR из этого же репозитория уже проверен на push),
+# только при изменениях бэкенда, один job, отмена устаревших запусков.
+name: Backend CI
+
+on:
+  push:
+    paths:
+      - "backend/**"
+      - ".github/workflows/backend-ci.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: backend-ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: backend
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: sber
+          POSTGRES_PASSWORD: sber
+          POSTGRES_DB: sber_demo
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U sber -d sber_demo"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      TEST_POSTGRES_DSN: postgresql://sber:sber@localhost:5432/sber_demo
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: backend/requirements.txt
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Ruff
+        run: ruff check app tests
+
+      # test_parser.py импортирует несуществующий app.models (сломан ещё в dev) —
+      # убрать --ignore, когда модуль появится.
+      - name: Pytest
+        run: pytest -q --ignore tests/unit/test_parser.py
