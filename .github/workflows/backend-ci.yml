@@ -63,6 +63,25 @@ jobs:
           coverage report
           coverage report --fail-under=100 --include="app/core/data/connectors/pg_dsn.py,app/core/data/connectors/postgres.py,app/core/data/connectors/factory.py,app/api/deps.py"
 
+      # Неблокирующий бенчмарк профилирования (issue #6): результат — в summary и артефакте.
+      - name: Profiling benchmark
+        if: always()
+        continue-on-error: true
+        run: |
+          python ../scripts/run_profile_benchmark.py --output profile_benchmark.json \
+            > profile_benchmark.md
+          status=$?
+          { echo "### Бенчмарк профилирования"; cat profile_benchmark.md; } >> "$GITHUB_STEP_SUMMARY"
+          exit $status
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: profile-benchmark
+          path: backend/profile_benchmark.json
+          retention-days: 7
+          if-no-files-found: ignore
+
       - name: Coverage HTML
         if: failure()
         run: coverage html
