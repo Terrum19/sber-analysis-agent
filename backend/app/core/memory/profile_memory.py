@@ -56,6 +56,7 @@ SCHEMA = (
         is_constant          BOOLEAN NOT NULL,
         is_unique            BOOLEAN NOT NULL,
         outlier_count        BIGINT,
+        identifier_by        VARCHAR,
         lower_fence          DOUBLE,
         upper_fence          DOUBLE,
         description          VARCHAR,
