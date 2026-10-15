@@ -19,35 +19,99 @@
   (оркестратор берёт до 500 строк, как и `build_vega_spec`).
 
 ## 3. Метапамять: паспорт данных и глоссарий — `core/memory/profile_memory.py`
-- **Хранит:** структуру таблиц, статистику, человекочитаемые алиасы,
-  бизнес-словарь.
+- **Хранит:** структуру таблиц, статистику, описания и человекочитаемые
+  алиасы колонок, бизнес-словарь.
 - **Зачем:** не сканировать источник заново на каждый вопрос; агент
   всегда держит «паспорт» в контексте.
-- **Как:** JSON в `storage/profiles/<таблица>.json`, строится при
-  инициализации подключения (`SchemaEnricher.enrich()`).
-  `ProfileMemory.save()` возвращает сохранённую запись; `load()` отдаёт `{}`,
-  если паспорта ещё нет.
+- **Как:** постоянные (не TEMP) таблицы схемы `_meta` в файле DuckDB
+  (`DUCKDB_PATH`): переживают перезапуск приложения и не пересекаются с
+  таблицами пользователя (коннекторы смотрят только в схему `main`).
+  Строится при подключении (`SchemaEnricher.enrich()`). JSON-файлы
+  `storage/profiles/` больше не используются; старые не переносятся —
+  паспорт построится заново при следующем подключении.
 
-Формат записи:
+### Таблицы
 
-```json
-{
-  "profile": {"table": "...", "row_count": 0, "column_count": 0,
-              "columns": [{"name": "...", "dtype": "...", "kind": "...", "...": "..."}],
-              "profiled_at": "2026-10-15T06:00:00+00:00"},
-  "outliers": {"amount": {"method": "iqr_1.5", "lower_fence": 0.5,
-                          "upper_fence": 4.5, "count": 1}},
-  "aliases_raw": "ответ LLM с алиасами",
-  "glossary": {}
-}
-```
+| Таблица | Строка | Содержимое |
+|---|---|---|
+| `_meta.table_passport` | таблица | `row_count`, `column_count`, `glossary` (JSON), `summary` (заполняется отдельной задачей), `profiled_at`, `enriched_at` |
+| `_meta.column_passport` | колонка, PK `(table_name, column_name)` | `position` (порядок как в `DESCRIBE`), `dtype`, `kind`, статистика `ColumnStats`, описание, алиасы, `fingerprint`, `enriched_at` |
 
-- `profile` — `TableProfile.to_dict()`, все метрики колонок описаны в
-  [data_connectors.md](data_connectors.md#профилирование-при-подключении).
-  Если в `save()` передан объект `TableProfile`, он сериализуется сам.
-- `outliers` — по числовым колонкам: границы Тьюки (1,5·IQR) и число
-  значений за ними. Детекция выбросов (issue-05) переиспользует этот блок
-  и метрики q1/q3/IQR/скошенности из профиля, не сканируя таблицу заново.
+Полный DDL — `SCHEMA` в `profile_memory.py`. Статистика колонки — поля
+`ColumnStats` (см. [data_connectors.md](data_connectors.md#профилирование-при-подключении)),
+но `min`, `max`, `mode` и `distinct` — зарезервированные слова SQL, поэтому
+колонки называются `min_value`, `max_value`, `mode_value`, `distinct_count`.
+Значения без фиксированного типа (`min_value`, `max_value`, `mode_value`,
+`min_date`, `max_date`, `top_values` — `[{value, count}]`) хранятся как `JSON`;
+при загрузке тип восстанавливается по `dtype`: `DATE` -> `date`, `TIMESTAMP*` ->
+`datetime` (у `TIMESTAMPTZ` смещение сохраняется), `UUID` -> `uuid.UUID`.
+Бывший блок `outliers` — `lower_fence`/`upper_fence` (границы Тьюки, 1,5·IQR) и
+`outlier_count`; `outlier_summary(profile)` строит его из загруженного профиля.
+
+Энричинг колонки:
+
+| Колонка | Смысл |
+|---|---|
+| `description` | итоговое описание (не длиннее `ENRICH_DESCRIPTION_MAX_CHARS`, кроме отказа LLM) |
+| `description_original` | описание из источника как есть (`NULL`, если его нет) |
+| `description_source` | `source` / `source_compressed` / `generated` / `none` |
+| `aliases` | `VARCHAR[]`, 0–4 алиаса |
+| `fingerprint` | sha256 от (имя, тип, описание из источника, бизнес-словарь); `NULL` после отказа LLM |
+
+### API `ProfileMemory(db)`
+
+Конструктор принимает `DuckDBManager` и создаёт схему (`CREATE ... IF NOT
+EXISTS`). Записи — одной транзакцией под `DuckDBManager.lock`
+(`DuckDBManager.transaction()`), при ошибке — откат.
+
+- `save_profile(profile, glossary=None)` — upsert строки таблицы и строк
+  колонок (`INSERT ... ON CONFLICT DO UPDATE`): обновляются только
+  статистика, `position`, `dtype`, `kind`; описание, алиасы и `fingerprint`
+  не затираются. Колонки, которых больше нет в таблице, удаляются.
+  `glossary=None` оставляет сохранённый словарь.
+- `load_profile(table) -> TableProfile | None` — профиль, равный
+  сохранённому (`None`, если паспорта нет). `profiled_at` — строка ISO в UTC.
+- `load_glossary(table) -> dict | None`.
+- `save_enrichment(table, rows)` / `load_enrichment(table) -> list[ColumnEnrichment]`
+  (`app/models/enrichment.py`) — описания и алиасы колонок.
+- `delete(table)` — удалить паспорт таблицы.
+
+### Энричинг — `core/data/schema_enrichment.py`
+
+`SchemaEnricher(db, llm=None).enrich(table, comments=None, glossary=None)`:
+
+1. Профиль таблицы -> `save_profile` (статистика обновляется при каждом запуске).
+2. Колонки, у которых `fingerprint` совпал с сохранённым, в LLM не идут.
+3. Описание из `comments` (`BaseConnector.column_comments()`):
+   - пустое, из одних пробелов или совпадает с именем колонки (без учёта
+     регистра) — генерируется LLM по имени, типу и профилю (топ-значения,
+     min/max, доля пропусков) с учётом словаря: `generated`;
+   - не длиннее `ENRICH_DESCRIPTION_MAX_CHARS` (200; длина исходной строки) —
+     остаётся посимвольно как есть, LLM его не переписывает: `source`;
+   - длиннее — LLM сжимает до одного предложения не длиннее порога
+     (промпт `description_compress.py`): `source_compressed`.
+4. Алиасы — до 4 на колонку с учётом итогового описания и словаря (промпт
+   `alias_gen.py`, тот же вызов генерирует недостающие описания). Алиасы
+   без пустых, дублей (без учёта регистра), имени колонки и длиннее 40
+   символов; лишние отбрасываются.
+5. `save_enrichment` — только колонки, обработанные в этом запуске.
+
+Колонки уходят в LLM пачками по `ENRICH_BATCH_SIZE` (25) через
+`LLMClient.complete_structured` (схема `EnrichmentBatch`). LLM вызывается вне
+`db.lock`. В ответе учитываются только запрошенные колонки (лишние — в лог).
+
+Отказ LLM (исключение, невалидный JSON, нет колонки в ответе, пустое или
+слишком длинное описание) не прерывает энричинг: колонка сохраняется с
+описанием из источника (`source`) или без него (`none`), с пустыми алиасами и
+`fingerprint = NULL` — при следующем запуске она снова уйдёт в LLM; пишется
+`logging.warning`. После таймаута или ошибки соединения (`openai.APIConnectionError`)
+LLM до конца запуска больше не вызывается, чтобы каждая пачка не ждала
+`LLM_TIMEOUT_S` с ретраями. Длинное описание из источника при отказе остаётся
+несжатым.
+
+Паспорт хранится по имени таблицы/представления в DuckDB: если позже под
+тем же именем подключат другие данные, статистика обновится, а описания
+и алиасы колонок с теми же именем, типом и комментарием останутся прежними.
 
 ## 4. Реестр артефактов и дашбордов — `core/memory/artifact_registry.py`
 - **Хранит:** дашборды, SQL, построивший плитки, Vega-Lite конфиги.

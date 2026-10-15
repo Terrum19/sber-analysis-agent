@@ -17,3 +17,10 @@ class BaseConnector(ABC):
         db — экземпляр DuckDBManager.
         """
         raise NotImplementedError
+
+    def column_comments(self, db, table: str) -> dict[str, str]:
+        """Описания колонок из источника {колонка: комментарий} (по умолчанию нет).
+
+        table — имя таблицы/представления, которое вернул connect().
+        """
+        return {}

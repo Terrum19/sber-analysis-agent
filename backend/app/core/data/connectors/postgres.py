@@ -82,6 +82,7 @@ class PostgresConnector(BaseConnector):
         digest = hashlib.sha256(f"{self.dsn.masked()}|{self.schema}".encode()).hexdigest()[:10]
         self.identity = f"pg_{digest}"
         self.alias = ""
+        self.sources: dict[str, str] = {}
 
     def __repr__(self) -> str:
         return f"PostgresConnector(dsn={self.dsn.masked()!r}, schema={self.schema!r})"
@@ -93,6 +94,7 @@ class PostgresConnector(BaseConnector):
     def connect(self, db) -> list[str]:
         started = time.perf_counter()
         self.alias = f"{self.identity}_{secrets.token_hex(3)}"
+        self.sources = {}
         self.load_extension(db)
         self.attach(db)
         tables = self.list_tables(db)
@@ -214,11 +216,42 @@ class PostgresConnector(BaseConnector):
                 view,
             )
         taken.add(view.lower())
+        self.sources[view] = table
         target = f"{self.alias}.{quote_identifier(self.schema)}.{quote_identifier(table)}"
         db.execute(
             f"CREATE OR REPLACE TEMP VIEW {quote_identifier(view)} AS SELECT * FROM {target}"
         )
         return view
+
+    def column_comments(self, db, table: str) -> dict[str, str]:
+        """TEMP VIEW не переносит COMMENT ON COLUMN: col_description() читается в PostgreSQL."""
+        source = self.sources.get(table)
+        if source is None:
+            return {}
+        sql = (
+            "SELECT a.attname::text AS column_name, "
+            "col_description(a.attrelid, a.attnum) AS comment "
+            "FROM pg_catalog.pg_attribute a "
+            "JOIN pg_catalog.pg_class c ON c.oid = a.attrelid "
+            "JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace "
+            f"WHERE n.nspname = {quote_literal(self.schema)} AND c.relname = {quote_literal(source)} "
+            "AND a.attnum > 0 AND NOT a.attisdropped"
+        )
+        try:
+            rows = db.query(
+                "SELECT column_name, comment FROM "
+                f"postgres_query({quote_literal(self.alias)}, {quote_literal(sql)}) "
+                "WHERE comment IS NOT NULL"
+            )
+        except duckdb.Error as error:
+            logger.warning(
+                "PostgreSQL %s: не удалось прочитать комментарии колонок «%s»: %s",
+                self.source,
+                table,
+                self.dsn.scrub(str(error)),
+            )
+            return {}
+        return {row["column_name"]: row["comment"] for row in rows}
 
     def fail(self, db, error: Exception) -> NoReturn:
         detail = self.dsn.scrub(str(error))
