@@ -97,12 +97,13 @@ def test_source_is_read_only(schema: str, db: DuckDBManager) -> None:
 
 
 def test_password_is_not_visible_from_sql(schema: str, db: DuckDBManager) -> None:
-    password = parse_dsn(DSN).password
+    if not parse_dsn(DSN).password:
+        pytest.skip("Сервер без пароля: скрывать нечего")
     PostgresConnector(DSN, schema=schema).connect(db)
     paths = db.query("SELECT path FROM duckdb_databases() WHERE type = 'postgres'")
     secrets_rows = db.query("SELECT secret_string FROM duckdb_secrets()")
-    if password:
-        assert all(password not in str(row) for row in paths + secrets_rows)
+    assert paths and all("password" not in row["path"] for row in paths)
+    assert secrets_rows and all("password=redacted" in row["secret_string"] for row in secrets_rows)
 
 
 def test_max_tables_limits_real_schema(schema: str, db: DuckDBManager) -> None:
