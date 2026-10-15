@@ -1,10 +1,14 @@
 # Фронтенд: next lint, проверка типов TypeScript и next build.
-# Бюджет минут: только push, только при изменениях frontend/, один job,
-# кэш ~/.npm (package-lock.json в репозитории нет, ключ — хеш package.json).
+# Бюджет минут: только при изменениях frontend/, один job, npm ci с кэшем по
+# package-lock.json; PR из веток этого же репозитория уже проверены на push (0 минут).
 name: Frontend CI
 
 on:
   push:
+    paths:
+      - "frontend/**"
+      - ".github/workflows/frontend-ci.yml"
+  pull_request:
     paths:
       - "frontend/**"
       - ".github/workflows/frontend-ci.yml"
@@ -19,6 +23,7 @@ permissions:
 
 jobs:
   build:
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name != github.repository
     runs-on: ubuntu-latest
     timeout-minutes: 10
     defaults:
@@ -32,15 +37,11 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: "20"
-
-      - uses: actions/cache@v4
-        with:
-          path: ~/.npm
-          key: npm-${{ runner.os }}-${{ hashFiles('frontend/package.json') }}
-          restore-keys: npm-${{ runner.os }}-
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
 
       - name: Install dependencies
-        run: npm install --no-audit --no-fund
+        run: npm ci --no-audit --no-fund
 
       - name: Lint
         run: npm run lint
