@@ -8,6 +8,7 @@
 import { useEffect, useRef, useState } from "react";
 import { streamChat } from "@/api/client";
 import { useSessionStore } from "@/store/sessionStore";
+import DatasourcePanel from "@/components/chat/DatasourcePanel";
 
 export default function ChatPanel({ sessionId }: { sessionId: string }) {
   const [input, setInput] = useState("");
@@ -69,6 +70,7 @@ export default function ChatPanel({ sessionId }: { sessionId: string }) {
 
   return (
     <div className="flex h-full flex-col p-4">
+      <DatasourcePanel />
       <div className="flex-1 space-y-3 overflow-y-auto">
         {messages.map((m, i) => (
           <div key={i} className={m.role === "user" ? "text-right" : "text-left"}>

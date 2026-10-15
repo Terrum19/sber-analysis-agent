@@ -1,8 +1,9 @@
 /**
- * Клиент бэкенда: создание сессии, диалог (SSE), дашборды.
+ * Клиент бэкенда: создание сессии, источники данных, диалог (SSE), дашборды.
  * Всё через /api — проксируется на локальный FastAPI (см. next.config.mjs).
  */
 import type { ChatStreamEvent } from "@/types/chat";
+import type { Datasource, DatasourceDbRequest } from "@/types/datasource";
 
 const API = "/api";
 
@@ -66,6 +67,26 @@ export function streamChat(
   );
 
   return () => controller.abort();
+}
+
+/** Загрузить один или несколько сырых CSV (multipart-поле files). */
+export async function attachCsv(files: File[]): Promise<Datasource> {
+  const body = new FormData();
+  for (const file of files) body.append("files", file);
+  const res = await fetch(`${API}/datasources/csv`, { method: "POST", body });
+  if (!res.ok) throw new Error(await errorDetail(res));
+  return res.json();
+}
+
+/** Подключить PostgreSQL / ClickHouse по DSN (только чтение). */
+export async function attachDb(payload: DatasourceDbRequest): Promise<Datasource> {
+  const res = await fetch(`${API}/datasources/db`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ kind: payload.kind, dsn: payload.dsn, schema: payload.schema || null }),
+  });
+  if (!res.ok) throw new Error(await errorDetail(res));
+  return res.json();
 }
 
 async function errorDetail(res: Response): Promise<string> {
