@@ -19,6 +19,7 @@ interface SessionState {
   selectedTile: number | null;
   setSession: (id: string) => void;
   addMessage: (msg: Message) => void;
+  appendToLastMessage: (chunk: string) => void;
   addTile: (tile: Tile) => void;
   selectTile: (index: number | null) => void;
 }
@@ -30,6 +31,12 @@ export const useSessionStore = create<SessionState>((set) => ({
   selectedTile: null,
   setSession: (id) => set({ sessionId: id }),
   addMessage: (msg) => set((s) => ({ messages: [...s.messages, msg] })),
+  appendToLastMessage: (chunk) =>
+    set((s) => {
+      const last = s.messages[s.messages.length - 1];
+      if (!last) return {};
+      return { messages: [...s.messages.slice(0, -1), { ...last, content: last.content + chunk }] };
+    }),
   addTile: (tile) => set((s) => ({ tiles: [...s.tiles, tile] })),
   selectTile: (index) => set({ selectedTile: index }),
 }));
