@@ -121,3 +121,62 @@ def test_missing_extension_is_503(client: TestClient, monkeypatch: pytest.Monkey
     )
     assert response.status_code == 503
     assert "postgres_scanner" in response.json()["detail"]
+
+
+@pytest.fixture
+def storage(tmp_path, monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setattr(settings, "storage_dir", str(tmp_path))
+    return tmp_path / "uploads"
+
+
+def test_csv_upload_attaches_every_file(client, storage) -> None:
+    export = "Дата;Сумма\n01.02.2024;1 234,56\n02.02.2024;7,5\n".encode("cp1251")
+    response = client.post(
+        "/api/datasources/csv",
+        files=[
+            ("files", ("Продажи.csv", export, "text/csv")),
+            ("files", ("users.csv", b"id,name\n1,Ann\n", "text/csv")),
+            ("files", ("users.csv", b"id,name\n2,Bob\n", "text/csv")),
+        ],
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["kind"] == "csv"
+    assert body["tables"] == ["prodazhi", "users", "users_2"]
+    folder = storage / body["datasource_id"]
+    assert (folder / "prodazhi.csv").read_bytes() == export
+    db = app.dependency_overrides[get_db]()
+    assert db.query('SELECT sum("Сумма") AS total FROM prodazhi') == [{"total": 1242.06}]
+    assert db.query("SELECT name FROM users_2") == [{"name": "Bob"}]
+
+
+def test_csv_upload_rejects_empty_file_and_cleans_up(client, storage) -> None:
+    response = client.post(
+        "/api/datasources/csv",
+        files=[
+            ("files", ("good.csv", b"a\n1\n", "text/csv")),
+            ("files", ("empty.csv", b"", "text/csv")),
+        ],
+    )
+    assert response.status_code == 400
+    assert "пуст" in response.json()["detail"]
+    assert list(storage.iterdir()) == []
+    db = app.dependency_overrides[get_db]()
+    assert db.query("SELECT table_name FROM duckdb_tables()") == []
+    assert db.query("SELECT view_name FROM duckdb_views() WHERE NOT internal") == []
+
+
+def test_csv_upload_enforces_size_limit(client, storage, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(settings, "csv_max_upload_mb", 1)
+    monkeypatch.setattr(datasources, "UPLOAD_CHUNK", 1024)
+    payload = b"a\n" + b"1\n" * (1024 * 1024)
+    response = client.post(
+        "/api/datasources/csv", files=[("files", ("big.csv", payload, "text/csv"))]
+    )
+    assert response.status_code == 413
+    assert "CSV_MAX_UPLOAD_MB" in response.json()["detail"]
+    assert list(storage.iterdir()) == []
+
+
+def test_csv_upload_without_files_is_rejected(client, storage) -> None:
+    assert client.post("/api/datasources/csv").status_code == 422
