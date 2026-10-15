@@ -63,7 +63,11 @@ services:
       retries: 10
 
   frontend:
-    build: ./frontend
+    # NEXT_PUBLIC_API_URL нужен и при сборке: rewrites() /api/* запекаются в next build.
+    build:
+      context: ./frontend
+      args:
+        NEXT_PUBLIC_API_URL: http://backend:8000
     image: sber-frontend:local
     ports:
       - "3000:3000"
