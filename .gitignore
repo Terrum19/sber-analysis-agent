@@ -4,7 +4,8 @@ backend/storage/
 *.duckdb.wal
 
 # --- веса моделей (крупные бинарники) ---
-models/
+# Только корневой каталог: без «/» шаблон глотал и backend/app/models/.
+/models/
 *.gguf
 *.safetensors
 

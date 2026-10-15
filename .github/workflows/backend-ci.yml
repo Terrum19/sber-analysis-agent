@@ -58,10 +58,8 @@ jobs:
           ruff check app tests
           ruff format --check app tests
 
-      # test_parser.py импортирует несуществующий app.models (сломан ещё в dev) —
-      # убрать --ignore, когда модуль появится.
       - name: Pytest under coverage
-        run: coverage run -m pytest -q --ignore tests/unit/test_parser.py
+        run: coverage run -m pytest -q
 
       - name: Coverage summary
         if: always()
