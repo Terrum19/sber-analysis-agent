@@ -23,8 +23,8 @@ def measure(db, table: str, repeats: int) -> dict:
         return {"table": table, "error": message}
     return {
         "table": table,
-        "rows": profile["row_count"],
-        "columns": len(profile["columns"]),
+        "rows": profile.row_count,
+        "columns": profile.column_count,
         "median_ms": round(statistics.median(timings), 2),
         "min_ms": round(min(timings), 2),
         "max_ms": round(max(timings), 2),
