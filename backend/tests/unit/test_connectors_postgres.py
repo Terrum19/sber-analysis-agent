@@ -432,6 +432,12 @@ def test_column_comments_failure_is_logged_without_secrets(
     assert "TopSecret" not in caplog.text
 
 
+def test_connectors_without_comments_return_empty_dict() -> None:
+    db = FakeDuckDB()
+    assert ClickHouseConnector("clickhouse://localhost").column_comments(db, "events") == {}
+    assert db.statements == []
+
+
 def test_factory_builds_known_kinds_and_rejects_unknown() -> None:
     assert isinstance(build_connector("postgres", DSN, "sales"), PostgresConnector)
     assert build_connector("postgres", DSN, "sales").schema == "sales"
