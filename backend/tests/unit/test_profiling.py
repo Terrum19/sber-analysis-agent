@@ -353,6 +353,74 @@ def test_pharmacy_identifiers_are_categories(db) -> None:
     assert passport["columns"][1]["mean"] is None
 
 
+def test_identifiers_are_found_by_values(db) -> None:
+    db.execute(
+        "CREATE TABLE sales AS SELECT "
+        "10001 + row_index % 40 AS store, "
+        "1001 + row_index % 30 AS product, "
+        "500000 + row_index AS receipt, "
+        "1000 + (row_index * 37) % 9000 AS amount_like, "
+        "2000 + row_index % 25 AS year_like, "
+        "1000 + (row_index % 20) * 400 AS sparse_code, "
+        "row_index % 7 AS small, "
+        "row_index - 50 AS signed, "
+        "CAST(row_index AS DOUBLE) AS floating "
+        "FROM range(400) AS series(row_index)"
+    )
+    db.execute(
+        'ALTER TABLE sales RENAME COLUMN amount_like TO "Цена, руб."; '
+        'ALTER TABLE sales RENAME COLUMN year_like TO "Год выпуска"'
+    )
+    profile = profile_table(db, "sales", approx=False)
+    found = {column.name: (column.kind, column.identifier_by) for column in profile.columns}
+    assert found == {
+        "store": ("identifier", "fixed_width"),
+        "product": ("identifier", "fixed_width"),
+        "receipt": ("identifier", "unique"),
+        "Цена, руб.": ("numeric", None),
+        "Год выпуска": ("numeric", None),
+        "sparse_code": ("numeric", None),
+        "small": ("numeric", None),
+        "signed": ("numeric", None),
+        "floating": ("numeric", None),
+    }
+    store = profile.column("store")
+    assert store.mean is None
+    assert store.min is None
+    assert store.outlier_count is None
+    assert store.distinct == 40
+    assert "store" not in outlier_summary(profile)
+    notes = quality_notes(profile)
+    assert "«store»: коды одной длины из плотного диапазона — считается категорией" in notes
+    assert "«receipt»: целые числа без повторов — похоже на ключ, считается категорией" in notes
+    assert profile.to_dict()["columns"][0]["identifier_by"] == "fixed_width"
+
+
+def test_value_rules_need_enough_evidence(db) -> None:
+    db.execute(
+        "CREATE TABLE tiny AS SELECT 1000 + row_index AS code, row_index AS position, "
+        "CASE WHEN row_index = 0 THEN NULL ELSE 5000 + row_index END AS gappy "
+        "FROM range(5) AS series(row_index)"
+    )
+    db.execute(
+        "CREATE TABLE keys AS SELECT row_index AS key, "
+        "CASE WHEN row_index = 0 THEN NULL ELSE row_index END AS nullable_key "
+        "FROM range(150) AS series(row_index)"
+    )
+    tiny = profile_table(db, "tiny", approx=False)
+    assert {column.kind for column in tiny.columns} == {"numeric"}
+    keys = profile_table(db, "keys", approx=False)
+    assert keys.column("key").identifier_by == "unique"
+    assert keys.column("nullable_key").kind == "numeric"
+
+
+def test_name_rule_is_recorded(db) -> None:
+    make_table(db, "named", "ID_Аптеки BIGINT", [(1,), (2,)])
+    profile = profile_table(db, "named", approx=False)
+    assert profile.column("ID_Аптеки").identifier_by == "name"
+    assert quality_notes(profile) == []
+
+
 def test_reports(db) -> None:
     make_table(
         db,

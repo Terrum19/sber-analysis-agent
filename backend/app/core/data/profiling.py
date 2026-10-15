@@ -31,8 +31,75 @@ TEMPORAL_TYPES = {
 TEXT_TYPES = {"VARCHAR", "UUID"}
 QUANTILES = (0.05, 0.25, 0.5, 0.75, 0.95)
 OUTLIER_FENCE = 1.5
+IDENTIFIER_NOTES = {
+    "unique": "целые числа без повторов — похоже на ключ, считается категорией",
+    "fixed_width": "коды одной длины из плотного диапазона — считается категорией",
+}
 IDENTIFIER_TOKENS = {"id", "код"}
 IDENTIFIER_PREFIX = "идентификатор"
+CODE_MIN_WIDTH = 4
+CODE_MIN_DISTINCT = 10
+CODE_MIN_DENSITY = 0.5
+UNIQUE_KEY_MIN_ROWS = 100
+MEASURE_PREFIXES = (
+    "сумм",
+    "цен",
+    "стоим",
+    "руб",
+    "доход",
+    "выручк",
+    "колич",
+    "кол",
+    "шт",
+    "вес",
+    "кг",
+    "объем",
+    "объём",
+    "показ",
+    "клик",
+    "просмотр",
+    "год",
+    "лет",
+    "возраст",
+    "врем",
+    "длит",
+    "мс",
+    "сек",
+    "мин",
+    "час",
+    "дн",
+    "балл",
+    "оценк",
+    "процент",
+    "amount",
+    "price",
+    "cost",
+    "revenue",
+    "qty",
+    "quantity",
+    "count",
+    "total",
+    "sum",
+    "year",
+    "age",
+    "duration",
+    "score",
+)
+IDENTIFIER_MEASURES = (
+    "min",
+    "max",
+    "mean",
+    "median",
+    "std",
+    "q1",
+    "q3",
+    "iqr",
+    "p05",
+    "p95",
+    "skewness",
+    "kurtosis",
+    "outlier_count",
+)
 
 
 @dataclass
@@ -67,6 +134,7 @@ class ColumnStats:
     is_constant: bool = False
     is_unique: bool = False
     outlier_count: int | None = None
+    identifier_by: str | None = None
 
     def fences(self) -> tuple[float, float] | None:
         if self.q1 is None or self.q3 is None:
@@ -96,11 +164,47 @@ class TableProfile:
         }
 
 
+def name_tokens(name: str) -> list[str]:
+    return [token for token in re.split(r"[\W_]+", name.lower()) if token]
+
+
 def is_identifier_name(name: str) -> bool:
-    tokens = [token for token in re.split(r"[\W_]+", name.lower()) if token]
     return any(
-        token in IDENTIFIER_TOKENS or token.startswith(IDENTIFIER_PREFIX) for token in tokens
+        token in IDENTIFIER_TOKENS or token.startswith(IDENTIFIER_PREFIX)
+        for token in name_tokens(name)
     )
+
+
+def is_measure_name(name: str) -> bool:
+    return any(token.startswith(MEASURE_PREFIXES) for token in name_tokens(name))
+
+
+def identifier_evidence(column: ColumnStats) -> str | None:
+    if column.kind != "numeric" or column.dtype.upper() not in INTEGER_TYPES:
+        return None
+    if column.min is None or column.min < 0 or not column.distinct:
+        return None
+    if is_measure_name(column.name):
+        return None
+    if column.is_unique and column.nulls == 0 and column.distinct >= UNIQUE_KEY_MIN_ROWS:
+        return "unique"
+    width = len(str(column.min))
+    density = column.distinct / (column.max - column.min + 1)
+    if (
+        width >= CODE_MIN_WIDTH
+        and width == len(str(column.max))
+        and column.distinct >= CODE_MIN_DISTINCT
+        and density >= CODE_MIN_DENSITY
+    ):
+        return "fixed_width"
+    return None
+
+
+def mark_identifier(column: ColumnStats, evidence: str) -> None:
+    column.kind = "identifier"
+    column.identifier_by = evidence
+    for measure in IDENTIFIER_MEASURES:
+        setattr(column, measure, None)
 
 
 def classify(dtype: str, name: str = "") -> str:
@@ -296,6 +400,9 @@ def profile_table(
         )
         for entry in schema
     ]
+    for column in columns:
+        if column.kind == "identifier":
+            column.identifier_by = "name"
     profile = TableProfile(
         table=table,
         row_count=0,
@@ -329,6 +436,9 @@ def profile_table(
     frequencies = db.query(f"SELECT {', '.join(expressions)} FROM {source}")[0]
     for index, column in enumerate(columns):
         apply_frequency(index, column, frequencies)
+        evidence = identifier_evidence(column)
+        if evidence:
+            mark_identifier(column, evidence)
     return profile
 
 
@@ -372,6 +482,8 @@ def quality_notes(profile: TableProfile) -> list[str]:
             notes.append(f"{label}: константа ({column.mode})")
         if column.outlier_count:
             notes.append(f"{label}: выбросов за {OUTLIER_FENCE}·IQR — {column.outlier_count}")
+        if column.identifier_by in IDENTIFIER_NOTES:
+            notes.append(f"{label}: {IDENTIFIER_NOTES[column.identifier_by]}")
         if column.kind == "text" and column.is_unique and profile.row_count > 1:
             notes.append(f"{label}: все значения уникальны — похоже на идентификатор")
     return notes
