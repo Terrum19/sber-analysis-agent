@@ -89,6 +89,8 @@ def test_detects_view_change(question: str, expected: str) -> None:
         "Какая таблица содержит клиентов?",
         "Сравни регионы по выручке",
         "Сколько заказов в Москве?",
+        "Сделай группировку по столбцу region",
+        "А теперь посчитай сумму по столбцу amount",
     ],
 )
 def test_new_questions_are_not_morphs(question: str) -> None:

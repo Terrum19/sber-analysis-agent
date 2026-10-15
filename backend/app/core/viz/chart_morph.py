@@ -30,7 +30,7 @@ _TYPE_WORDS = (
     ("scatter", r"точечн|рассеяни|scatter"),
     ("area", r"с заливкой|площадн|area chart"),
     ("line", r"линейн|линией|line chart"),
-    ("bar", r"столбч|столбик|столбц|bar chart"),
+    ("bar", r"столбч|столбик|bar chart"),
 )
 _GENERIC = re.compile(
     r"в другом виде|по-другому|по другому|покажи иначе|"
