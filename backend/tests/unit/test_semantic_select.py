@@ -42,3 +42,10 @@ def test_name_match_beats_type_priority() -> None:
 def test_without_profile_order_is_kept_for_ties() -> None:
     picked = select_columns("Какая средняя выручка?", ["region", "amount"], 1)
     assert picked == ["region"]
+
+
+def test_identifier_columns_not_boosted_for_aggregations() -> None:
+    profile = make_profile({"ID_Аптеки": "identifier", "Сколько_Купили": "numeric"})
+    names = [column.name for column in profile.columns]
+    picked = select_columns("Какое среднее количество?", names, 1, profile)
+    assert picked == ["Сколько_Купили"]

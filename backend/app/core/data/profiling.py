@@ -1,4 +1,5 @@
 import math
+import re
 import uuid
 from dataclasses import asdict, dataclass, field
 from datetime import UTC, date, datetime, time
@@ -30,6 +31,8 @@ TEMPORAL_TYPES = {
 TEXT_TYPES = {"VARCHAR", "UUID"}
 QUANTILES = (0.05, 0.25, 0.5, 0.75, 0.95)
 OUTLIER_FENCE = 1.5
+IDENTIFIER_TOKENS = {"id", "код"}
+IDENTIFIER_PREFIX = "идентификатор"
 
 
 @dataclass
@@ -93,12 +96,17 @@ class TableProfile:
         }
 
 
-def classify(dtype: str) -> str:
+def is_identifier_name(name: str) -> bool:
+    tokens = [token for token in re.split(r"[\W_]+", name.lower()) if token]
+    return any(
+        token in IDENTIFIER_TOKENS or token.startswith(IDENTIFIER_PREFIX) for token in tokens
+    )
+
+
+def classify(dtype: str, name: str = "") -> str:
     normalized = dtype.upper()
-    if normalized in INTEGER_TYPES or normalized in FLOAT_TYPES:
-        return "numeric"
-    if normalized.startswith("DECIMAL"):
-        return "numeric"
+    if normalized in INTEGER_TYPES or normalized in FLOAT_TYPES or normalized.startswith("DECIMAL"):
+        return "identifier" if is_identifier_name(name) else "numeric"
     if normalized in TEMPORAL_TYPES:
         return "temporal"
     if normalized in TEXT_TYPES or normalized.startswith("ENUM"):
@@ -284,7 +292,7 @@ def profile_table(
         ColumnStats(
             name=entry["column_name"],
             dtype=entry["column_type"],
-            kind=classify(entry["column_type"]),
+            kind=classify(entry["column_type"], entry["column_name"]),
         )
         for entry in schema
     ]

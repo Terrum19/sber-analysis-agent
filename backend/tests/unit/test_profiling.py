@@ -280,6 +280,79 @@ def test_classify(dtype: str, kind: str) -> None:
     assert classify(dtype) == kind
 
 
+@pytest.mark.parametrize(
+    ("dtype", "name", "kind"),
+    [
+        ("BIGINT", "ID_Аптеки", "identifier"),
+        ("BIGINT", "ID_Лекарства", "identifier"),
+        ("INTEGER", "id", "identifier"),
+        ("INTEGER", "user_id", "identifier"),
+        ("INTEGER", "Order ID", "identifier"),
+        ("INTEGER", "Код аптеки", "identifier"),
+        ("INTEGER", "код_магазина", "identifier"),
+        ("INTEGER", "Идентификатор клиента", "identifier"),
+        ("DECIMAL(18,0)", "customer_id", "identifier"),
+        ("BIGINT", "Сколько_Купили", "numeric"),
+        ("INTEGER", "Номер события в сессии", "numeric"),
+        ("INTEGER", "Номер позиции", "numeric"),
+        ("INTEGER", "Номер попытки", "numeric"),
+        ("INTEGER", "Количество, шт.", "numeric"),
+        ("INTEGER", "Скидка, %", "numeric"),
+        ("INTEGER", "Показы", "numeric"),
+        ("INTEGER", "paid", "numeric"),
+        ("INTEGER", "valid_count", "numeric"),
+        ("VARCHAR", "Код заказа", "text"),
+        ("VARCHAR", "Код ошибки", "text"),
+        ("DATE", "id_date", "temporal"),
+    ],
+)
+def test_classify_identifier_names(dtype: str, name: str, kind: str) -> None:
+    assert classify(dtype, name) == kind
+
+
+def test_pharmacy_identifiers_are_categories(db) -> None:
+    make_table(
+        db,
+        "drugs",
+        "Дата DATE, ID_Аптеки BIGINT, ID_Лекарства BIGINT, Тип_Лекарства VARCHAR, "
+        "Действующее_Вещество VARCHAR, Сколько_Купили BIGINT",
+        [
+            (date(2024, 10, 1), 10001, 1001, "Жаропонижающее", "Парацетамол", 0),
+            (date(2024, 10, 1), 10001, 1002, "Антибиотик", "Амоксициллин", 3),
+            (date(2024, 10, 1), 10002, 1001, "Жаропонижающее", "Парацетамол", 2),
+            (date(2024, 10, 2), 10002, 1002, "Антибиотик", "Амоксициллин", 1),
+            (date(2024, 10, 2), 10003, 1001, "Жаропонижающее", "Парацетамол", 4),
+            (date(2024, 10, 2), 99999, 1001, "Жаропонижающее", "Парацетамол", 2),
+        ],
+    )
+    profile = profile_table(db, "drugs", approx=False)
+    kinds = {column.name: column.kind for column in profile.columns}
+    assert kinds == {
+        "Дата": "temporal",
+        "ID_Аптеки": "identifier",
+        "ID_Лекарства": "identifier",
+        "Тип_Лекарства": "text",
+        "Действующее_Вещество": "text",
+        "Сколько_Купили": "numeric",
+    }
+    pharmacy = profile.column("ID_Аптеки")
+    for metric in ("min", "max", "mean", "median", "std", "q1", "q3", "iqr", "p05", "p95"):
+        assert getattr(pharmacy, metric) is None
+    assert pharmacy.skewness is None
+    assert pharmacy.outlier_count is None
+    assert pharmacy.distinct == 4
+    assert pharmacy.mode == 10001
+    assert pharmacy.top_values[:2] == [{"value": 10001, "count": 2}, {"value": 10002, "count": 2}]
+    assert profile.column("ID_Лекарства").mode == 1001
+    assert profile.column("Сколько_Купили").mean == pytest.approx(2.0)
+    assert set(outlier_summary(profile)) == {"Сколько_Купили"}
+    assert "- ID_Аптеки: BIGINT (identifier), пропусков 0%" in schema_overview(profile)
+    assert not any("ID_" in note for note in quality_notes(profile))
+    passport = profile.to_dict()
+    assert passport["columns"][1]["kind"] == "identifier"
+    assert passport["columns"][1]["mean"] is None
+
+
 def test_reports(db) -> None:
     make_table(
         db,
