@@ -6,13 +6,14 @@
  */
 import { useEffect, useState } from "react";
 import DashboardTile from "@/components/canvas/DashboardTile";
+import type { DashboardConfig } from "@/types/dashboard";
 
 export default function DashboardPage({ params }: { params: { id: string } }) {
-  const [config, setConfig] = useState<{ title: string; tiles: unknown[] } | null>(null);
+  const [config, setConfig] = useState<Pick<DashboardConfig, "title" | "tiles"> | null>(null);
 
   useEffect(() => {
     fetch(`/api/dashboards/${params.id}`)
-      .then((r) => r.json())
+      .then((r) => r.json() as Promise<DashboardConfig>)
       .then(setConfig)
       .catch(() => setConfig({ title: "Ошибка загрузки", tiles: [] }));
   }, [params.id]);

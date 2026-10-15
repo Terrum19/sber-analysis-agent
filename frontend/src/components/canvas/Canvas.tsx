@@ -10,7 +10,8 @@ import DashboardTile from "@/components/canvas/DashboardTile";
 
 export default function Canvas({ sessionId }: { sessionId: string }) {
   const tiles = useSessionStore((s) => s.tiles);
-  const { selectTile, requestElaboration } = useCanvasStore();
+  const selectTile = useSessionStore((s) => s.selectTile);
+  const requestElaboration = useCanvasStore((s) => s.requestElaboration);
 
   return (
     <div className="h-full overflow-y-auto p-4">
