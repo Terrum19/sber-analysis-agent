@@ -4,11 +4,14 @@ import duckdb
 import pytest
 
 from app.config import settings
+from app.core.data.connectors.clickhouse import ClickHouseConnector
+from app.core.data.connectors.factory import build_connector
 from app.core.data.connectors.pg_dsn import parse_dsn
 from app.core.data.connectors.postgres import (
     PostgresConnectionError,
     PostgresConnector,
     PostgresExtensionUnavailableError,
+    describe_failure,
 )
 
 
@@ -51,11 +54,27 @@ def test_keyword_dsn_is_parsed_with_quotes() -> None:
         "mysql://user:pw@localhost/db",
         "host=localhost dbname='unterminated",
         "postgresql://localhost:notaport/db",
+        "host=localhost dbname",
+        "host=localhost =shop",
     ],
 )
 def test_invalid_dsn_raises_value_error(raw: str) -> None:
     with pytest.raises(ValueError):
         parse_dsn(raw)
+
+
+def test_keyword_dsn_allows_spaces_around_equals() -> None:
+    dsn = parse_dsn("host = db.local   dbname =shop user=  bob")
+    assert dsn.params["host"] == "db.local"
+    assert dsn.params["dbname"] == "shop"
+    assert dsn.params["user"] == "bob"
+
+
+def test_scrub_without_password_is_identity() -> None:
+    dsn = parse_dsn("postgresql://analyst@db.local/shop")
+    assert dsn.password is None
+    assert dsn.scrub("nothing to hide") == "nothing to hide"
+    assert dsn.masked() == "postgresql://analyst@db.local/shop"
 
 
 def test_validation_error_does_not_leak_password() -> None:
@@ -74,10 +93,12 @@ def test_password_is_masked_in_repr_and_str() -> None:
 
 
 class FakeDuckDB:
-    def __init__(self, tables=(), existing=(), failing=()) -> None:
+    def __init__(self, tables=(), existing=(), failing=(), previous=(), stale_views=()) -> None:
         self.tables = list(tables)
         self.existing = list(existing)
         self.failing = failing
+        self.previous = list(previous)
+        self.stale_views = list(stale_views)
         self.statements: list[str] = []
         self.params: list[dict | None] = []
 
@@ -98,6 +119,12 @@ class FakeDuckDB:
             return [{"table_name": table} for table in self.tables]
         if "duckdb_tables()" in sql:
             return [{"name": name} for name in self.existing]
+        if "duckdb_databases()" in sql:
+            return [{"database_name": alias} for alias in self.previous]
+        if "contains(sql, $marker)" in sql and any(
+            params and params["marker"] == f" {alias}." for alias in self.previous
+        ):
+            return [{"view_name": view} for view in self.stale_views]
         return []
 
     def index_of(self, prefix: str) -> int:
@@ -262,3 +289,97 @@ def test_success_is_logged(caplog: pytest.LogCaptureFixture) -> None:
     assert "подключено 2 таблиц" in caplog.text
     assert "db.local" in caplog.text
     assert "TopSecret" not in caplog.text
+
+
+def test_successful_reconnect_releases_previous_alias_after_listing() -> None:
+    connector = PostgresConnector(DSN)
+    old_alias = f"{connector.identity}_0ld0ld"
+    db = FakeDuckDB(tables=["orders"], previous=[old_alias], stale_views=["dropped table"])
+    assert connector.connect(db) == ["orders"]
+    lookup = db.index_of("SELECT database_name FROM duckdb_databases()")
+    assert db.params[lookup] == {"prefix": f"{connector.identity}_", "current": connector.alias}
+    drop_stale = db.statements.index('DROP VIEW IF EXISTS temp.main."dropped table"')
+    detach_old = db.statements.index(f"DETACH DATABASE IF EXISTS {old_alias}")
+    drop_secret = db.statements.index(f"DROP TEMPORARY SECRET IF EXISTS {old_alias}_secret")
+    listing = db.index_of("SELECT table_name FROM")
+    create = db.index_of("CREATE OR REPLACE TEMP VIEW")
+    assert listing < drop_stale < detach_old < drop_secret < create
+    assert f"DETACH DATABASE IF EXISTS {connector.alias}" not in db.statements
+
+
+def test_reconnect_to_empty_schema_still_releases_previous_alias() -> None:
+    connector = PostgresConnector(DSN)
+    old_alias = f"{connector.identity}_0ld0ld"
+    db = FakeDuckDB(tables=[], previous=[old_alias], stale_views=["orders"])
+    assert connector.connect(db) == []
+    assert 'DROP VIEW IF EXISTS temp.main."orders"' in db.statements
+    assert f"DETACH DATABASE IF EXISTS {old_alias}" in db.statements
+    assert f"DETACH DATABASE IF EXISTS {connector.alias}" in db.statements
+
+
+def test_failure_while_listing_tables_is_readable_and_releases_attachment() -> None:
+    error = duckdb.CatalogException("permission denied for schema private")
+    db = FakeDuckDB(failing=[("SELECT table_name FROM", error)])
+    connector = PostgresConnector(DSN, schema="private")
+    with pytest.raises(PostgresConnectionError, match="Недостаточно прав"):
+        connector.connect(db)
+    assert f"DETACH DATABASE IF EXISTS {connector.alias}" in db.statements
+    assert f"DROP TEMPORARY SECRET IF EXISTS {connector.alias}_secret" in db.statements
+    assert not any(
+        statement.startswith("CREATE OR REPLACE TEMP VIEW") for statement in db.statements
+    )
+
+
+def test_failed_cleanup_does_not_mask_connection_error(caplog: pytest.LogCaptureFixture) -> None:
+    db = FakeDuckDB(
+        failing=[
+            ("ATTACH", duckdb.IOException("Connection refused")),
+            ("DETACH", duckdb.IOException("cleanup broke")),
+        ]
+    )
+    with (
+        caplog.at_level(logging.WARNING),
+        pytest.raises(PostgresConnectionError, match="недоступен"),
+    ):
+        PostgresConnector(DSN).connect(db)
+    assert "не удалось освободить" in caplog.text
+
+
+def test_case_insensitive_duplicates_get_numbered_names() -> None:
+    connector = PostgresConnector(DSN)
+    db = FakeDuckDB(tables=["Users", "users"], existing=["users", "shop_users"])
+    views = connector.connect(db)
+    assert views == [f"{connector.alias}_Users", f"{connector.alias}_users_2"]
+    assert len({view.lower() for view in views}) == len(views)
+    assert (
+        f'CREATE OR REPLACE TEMP VIEW "{connector.alias}_users_2" AS SELECT * FROM '
+        f'{connector.alias}."public"."users"'
+    ) in db.statements
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        ('FATAL:  password authentication failed for user "bob"', "учётные данные"),
+        ("fe_sendauth: no password supplied", "учётные данные"),
+        ('could not translate host name "nope" to address', "Не удалось найти хост"),
+        ("Name or service not known", "Не удалось найти хост"),
+        ("Connection refused", "недоступен"),
+        ("timeout expired", "недоступен"),
+        ("Network is unreachable", "недоступен"),
+        ("server closed the connection unexpectedly", "недоступен"),
+        ('FATAL:  database "shop" does not exist', "не существует"),
+        ("permission denied for schema private", "Недостаточно прав"),
+        ("something completely different", "Не удалось подключиться к PostgreSQL."),
+    ],
+)
+def test_describe_failure(text: str, expected: str) -> None:
+    assert expected in describe_failure(text)
+
+
+def test_factory_builds_known_kinds_and_rejects_unknown() -> None:
+    assert isinstance(build_connector("postgres", DSN, "sales"), PostgresConnector)
+    assert build_connector("postgres", DSN, "sales").schema == "sales"
+    assert isinstance(build_connector("clickhouse", "clickhouse://localhost"), ClickHouseConnector)
+    with pytest.raises(ValueError, match="mysql"):
+        build_connector("mysql", DSN)

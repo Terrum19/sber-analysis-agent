@@ -1,8 +1,14 @@
+import threading
+import time
+from concurrent.futures import ThreadPoolExecutor
+
 import duckdb
 import pytest
 from fastapi.testclient import TestClient
 
 from app.api.deps import get_db
+from app.api.routes import datasources
+from app.api.schemas.datasource import DatasourceCreate
 from app.config import settings
 from app.core.data.duckdb_manager import DuckDBManager
 from app.main import app
@@ -25,6 +31,54 @@ def test_lifespan_opens_shared_db(tmp_path, monkeypatch: pytest.MonkeyPatch) -> 
         assert isinstance(app.state.db, DuckDBManager)
         assert app.state.db.query("SELECT 1 AS one") == [{"one": 1}]
     assert path.exists()
+
+
+class RecordingConnector:
+    identity = "pg_recorded"
+
+    def __init__(self) -> None:
+        self.guard = threading.Lock()
+        self.active = 0
+        self.peak = 0
+        self.databases: list = []
+
+    def connect(self, db) -> list[str]:
+        with self.guard:
+            self.active += 1
+            self.peak = max(self.peak, self.active)
+            self.databases.append(db)
+        time.sleep(0.05)
+        with self.guard:
+            self.active -= 1
+        return ["orders"]
+
+
+def test_endpoint_uses_shared_db_from_lifespan(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(settings, "duckdb_path", str(tmp_path / "main.duckdb"))
+    connector = RecordingConnector()
+    monkeypatch.setattr(datasources, "build_connector", lambda kind, dsn, schema: connector)
+    with TestClient(app) as client:
+        response = client.post(
+            "/api/datasources/db", json={"kind": "postgres", "dsn": "host=x", "schema": "s"}
+        )
+        assert connector.databases == [app.state.db]
+    assert response.status_code == 200
+    assert response.json()["datasource_id"] == "pg_recorded"
+    assert response.json()["tables"] == ["orders"]
+
+
+def test_concurrent_attach_requests_are_serialised(monkeypatch: pytest.MonkeyPatch) -> None:
+    connector = RecordingConnector()
+    monkeypatch.setattr(datasources, "build_connector", lambda kind, dsn, schema: connector)
+    db = DuckDBManager(":memory:")
+    payload = DatasourceCreate(kind="postgres", dsn="host=x")
+    try:
+        with ThreadPoolExecutor(max_workers=4) as pool:
+            results = list(pool.map(lambda _: datasources.attach_db(payload, db), range(4)))
+    finally:
+        db.close()
+    assert [result.tables for result in results] == [["orders"]] * 4
+    assert connector.peak == 1
 
 
 def test_invalid_dsn_is_400(client: TestClient) -> None:

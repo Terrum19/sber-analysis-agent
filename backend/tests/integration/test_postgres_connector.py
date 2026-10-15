@@ -41,19 +41,28 @@ def admin_connection() -> duckdb.DuckDBPyConnection:
     return con
 
 
+def run_admin(con: duckdb.DuckDBPyConnection, sql: str) -> None:
+    con.execute("CALL postgres_execute('admin', $sql)", {"sql": sql})
+
+
 @pytest.fixture(scope="module")
-def schema():
+def admin():
     try:
         con = admin_connection()
     except duckdb.Error as error:
         pytest.skip(f"PostgreSQL недоступен ({DSN.split('@')[-1]}): {type(error).__name__}")
+    yield con
+    con.close()
+
+
+@pytest.fixture(scope="module")
+def schema(admin: duckdb.DuckDBPyConnection):
     name = f"it_{secrets.token_hex(4)}"
     statements = [f"CREATE SCHEMA {name}"] + [sql.format(schema=name) for sql in SEED]
     for sql in statements:
-        con.execute("CALL postgres_execute('admin', $sql)", {"sql": sql})
+        run_admin(admin, sql)
     yield name
-    con.execute("CALL postgres_execute('admin', $sql)", {"sql": f"DROP SCHEMA {name} CASCADE"})
-    con.close()
+    run_admin(admin, f"DROP SCHEMA {name} CASCADE")
 
 
 @pytest.fixture
@@ -120,6 +129,28 @@ def test_failed_reconnect_keeps_working_source(schema: str, db: DuckDBManager) -
         PostgresConnector(wrong, schema=schema).connect(db)
     assert "definitely-wrong" not in str(raised.value)
     assert db.query("SELECT COUNT(*) AS total FROM orders") == [{"total": 3}]
+
+
+def test_successful_reconnect_drops_views_of_removed_tables(
+    admin: duckdb.DuckDBPyConnection, db: DuckDBManager
+) -> None:
+    name = f"it_{secrets.token_hex(4)}"
+    try:
+        run_admin(admin, f"CREATE SCHEMA {name}")
+        run_admin(admin, f"CREATE TABLE {name}.kept (id int)")
+        run_admin(admin, f"CREATE TABLE {name}.doomed (id int)")
+        first = PostgresConnector(DSN, schema=name)
+        assert first.connect(db) == ["doomed", "kept"]
+        run_admin(admin, f"DROP TABLE {name}.doomed")
+        second = PostgresConnector(DSN, schema=name)
+        assert second.connect(db) == ["kept"]
+        views = db.query("SELECT view_name FROM duckdb_views() WHERE temporary AND NOT internal")
+        assert [row["view_name"] for row in views] == ["kept"]
+        attached = db.query("SELECT database_name FROM duckdb_databases() WHERE type = 'postgres'")
+        assert attached == [{"database_name": second.alias}]
+        assert db.query("SELECT COUNT(*) AS total FROM kept") == [{"total": 0}]
+    finally:
+        run_admin(admin, f"DROP SCHEMA IF EXISTS {name} CASCADE")
 
 
 def test_no_dangling_views_after_restart(schema: str, tmp_path) -> None:
