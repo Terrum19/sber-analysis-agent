@@ -1,0 +1,25 @@
+# Запуск из релизного архива без сборки и без доступа в интернет.
+# Образы загружаются из архивов релиза:
+#   docker load -i sber-backend-<версия>.tar.gz
+#   docker load -i sber-frontend-<версия>.tar.gz
+#   cp .env.example .env
+#   SBER_VERSION=<версия> docker compose -f docker-compose.release.yml up -d
+# LLM (Qwen) — отдельно на хосте (Ollama/vLLM), как и в docker-compose.yml.
+services:
+  backend:
+    image: sber-backend:${SBER_VERSION:?укажите SBER_VERSION, например v0.1.0}
+    env_file: .env
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./storage:/app/storage
+      - ./data:/app/data:ro
+
+  frontend:
+    image: sber-frontend:${SBER_VERSION:?укажите SBER_VERSION, например v0.1.0}
+    ports:
+      - "3000:3000"
+    environment:
+      - NEXT_PUBLIC_API_URL=http://backend:8000
+    depends_on:
+      - backend
