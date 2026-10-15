@@ -3,16 +3,29 @@
 services:
   backend:
     build: ./backend
+    image: sber-backend:local
     env_file: .env
+    # Пути данных внутри контейнера — на смонтированном томе /app/storage
+    # (относительные пути из .env рассчитаны на запуск из корня репозитория).
+    environment:
+      STORAGE_DIR: /app/storage
+      DUCKDB_PATH: /app/storage/duckdb/main.duckdb
+      SQLITE_PATH: /app/storage/sessions/sessions.sqlite
     ports:
       - "8000:8000"
     volumes:
       - ./backend/storage:/app/storage
+    # В python:3.11-slim нет curl — проверяем /health самим Python.
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
-      interval: 30s
+      test:
+        - CMD
+        - python
+        - -c
+        - import urllib.request; urllib.request.urlopen('http://localhost:8000/health', timeout=3)
+      interval: 10s
       timeout: 5s
-      retries: 3
+      retries: 6
+      start_period: 10s
 
   # Демо/тестовый PostgreSQL для коннектора postgres_scanner (tests/integration).
   # Платформа читает его только в режиме READ_ONLY; бекенд от него не зависит.
@@ -23,7 +36,7 @@ services:
       POSTGRES_PASSWORD: sber
       POSTGRES_DB: sber_demo
     ports:
-      - "5432:5432"
+      - "${POSTGRES_PORT:-5432}:5432"
     volumes:
       - postgres-data:/var/lib/postgresql/data
     healthcheck:
@@ -51,12 +64,20 @@ services:
 
   frontend:
     build: ./frontend
+    image: sber-frontend:local
     ports:
       - "3000:3000"
     environment:
       - NEXT_PUBLIC_API_URL=http://backend:8000
     depends_on:
-      - backend
+      backend:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q --spider http://localhost:3000/ || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 10s
 
 volumes:
   postgres-data:
