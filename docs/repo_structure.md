@@ -132,8 +132,9 @@ backend/
 │   └── exports/           — .xlsx / .pdf для скачивания
 │
 └── tests/
-    ├── unit/          — парсер шагов, chart_morph, семантический отбор
-    ├── integration/   — коннекторы -> DuckDB -> агент end-to-end
+    ├── unit/          — парсер шагов, chart_morph, семантический отбор, профилирование
+    ├── integration/   — коннекторы -> DuckDB -> агент end-to-end, паспорт demo_events
+    ├── benchmark/     — производительность профилирования (pytest -m benchmark)
     └── e2e/           — сценарии: «что передо мной» -> ответ -> график -> дашборд
 ```
 
