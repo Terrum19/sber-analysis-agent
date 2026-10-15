@@ -9,6 +9,11 @@ backend/storage/
 *.gguf
 *.safetensors
 
+# --- датасеты хакатона (≈1,5 ГБ, файлы больше лимита GitHub в 100 МБ) ---
+# В git только README с инструкцией, где их взять.
+/data/hk_datasets/*
+!/data/hk_datasets/README.md
+
 # --- Python ---
 __pycache__/
 *.py[cod]
