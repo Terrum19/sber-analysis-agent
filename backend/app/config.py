@@ -22,6 +22,7 @@ class Settings(BaseSettings):
     storage_dir: str = "backend/storage"
     duckdb_path: str = "backend/storage/duckdb/main.duckdb"
     sqlite_path: str = "backend/storage/sessions/sessions.sqlite"
+    csv_max_upload_mb: int = 1024
 
     # Лимиты песочницы / агента
     wasm_timeout_s: int = 30
