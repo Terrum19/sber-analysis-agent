@@ -11,6 +11,7 @@ from pathlib import Path
 import duckdb
 
 from app.config import settings
+from app.core.data.connectors.csv import load_csv
 
 
 class DuckDBManager:
@@ -53,7 +54,7 @@ class DuckDBManager:
 
     def attach_csv(self, name: str, path: str) -> None:
         """Подключить сырой CSV как представление (без предобработки)."""
-        self.execute(f"CREATE OR REPLACE VIEW {name} AS SELECT * FROM read_csv_auto('{path}')")
+        load_csv(self, name, path)
 
     def close(self) -> None:
         """Закрыть соединение."""
