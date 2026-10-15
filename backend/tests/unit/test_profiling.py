@@ -15,6 +15,7 @@ from app.core.data.profiling import (
     quote_table,
     schema_overview,
 )
+from app.core.llm.prompts.schema_describe import SCHEMA_DESCRIBE
 
 
 class CountingDB:
@@ -311,3 +312,10 @@ def test_reports_without_notes() -> None:
     profile = TableProfile(table="t", row_count=2, column_count=0, columns=[], profiled_at="")
     assert format_quality(profile) == "- замечаний нет"
     assert schema_overview(profile) == ""
+
+
+def test_schema_describe_prompt_has_quality_block(db) -> None:
+    make_table(db, "gaps", "value DOUBLE", [(1.0,), (None,)])
+    profile = profile_table(db, "gaps")
+    prompt = SCHEMA_DESCRIBE.format(profile=profile.to_dict(), quality=format_quality(profile))
+    assert "Качество данных:\n- «value»: пропусков 50%" in prompt
