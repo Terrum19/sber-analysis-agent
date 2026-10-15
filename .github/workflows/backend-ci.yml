@@ -96,8 +96,22 @@ jobs:
           --health-interval 5s
           --health-timeout 5s
           --health-retries 10
+      clickhouse:
+        image: clickhouse/clickhouse-server:24.8
+        env:
+          CLICKHOUSE_USER: sber
+          CLICKHOUSE_PASSWORD: sber
+          CLICKHOUSE_DB: sber_demo
+        ports:
+          - 8123:8123
+        options: >-
+          --health-cmd "wget --no-verbose --tries=1 --spider http://localhost:8123/ping"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
     env:
       TEST_POSTGRES_DSN: postgresql://sber:sber@localhost:5432/sber_demo
+      TEST_CLICKHOUSE_DSN: clickhouse://sber:sber@localhost:8123/sber_demo
     steps:
       - uses: actions/checkout@v4
 
