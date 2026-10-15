@@ -1,0 +1,73 @@
+# Сборка Docker-образов и проверка, что бэкенд стартует и отвечает на /health.
+# Бюджет минут: тяжёлый workflow — только push в dev/main при изменениях,
+# влияющих на образы, плюс ручной запуск; слои кэшируются в GitHub Actions cache.
+name: Docker
+
+on:
+  push:
+    branches: [dev, main]
+    paths:
+      - "backend/**"
+      - "frontend/**"
+      - "docker-compose.yml"
+      - ".env.example"
+      - ".github/workflows/docker.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: docker-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  images:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Validate docker-compose.yml
+        run: |
+          cp .env.example .env
+          docker compose config --quiet
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Build backend image
+        uses: docker/build-push-action@v6
+        with:
+          context: backend
+          load: true
+          tags: sber-backend:ci
+          cache-from: type=gha,scope=backend
+          cache-to: type=gha,scope=backend,mode=max
+
+      # Используется .env.example: так же, как при первом запуске по README.
+      - name: Start backend and wait for /health
+        run: |
+          docker run -d --name backend --env-file .env -p 8000:8000 sber-backend:ci
+          for _ in $(seq 1 30); do
+            if curl -fsS http://localhost:8000/health; then
+              echo
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "Бэкенд не ответил на /health за 60 секунд" >&2
+          docker logs backend
+          exit 1
+
+      - name: Backend logs
+        if: always()
+        run: docker logs backend || true
+
+      - name: Build frontend image
+        uses: docker/build-push-action@v6
+        with:
+          context: frontend
+          load: true
+          tags: sber-frontend:ci
+          cache-from: type=gha,scope=frontend
+          cache-to: type=gha,scope=frontend,mode=max
