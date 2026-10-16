@@ -5,6 +5,24 @@
 """
 
 from abc import ABC, abstractmethod
+import re
+
+
+_IDENTIFIER = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+
+
+def identifier(value: str) -> str:
+    """Validate a SQL identifier supplied by a research plan."""
+    if not isinstance(value, str) or not _IDENTIFIER.fullmatch(value):
+        raise ValueError(f"Invalid SQL identifier: {value!r}")
+    return value
+
+
+def expression(value: str) -> str:
+    """Validate a simple SQL expression supplied by a research plan."""
+    if not isinstance(value, str) or not value.strip() or ";" in value or "--" in value:
+        raise ValueError("Invalid SQL expression")
+    return value.strip()
 
 
 class BaseTool(ABC):
