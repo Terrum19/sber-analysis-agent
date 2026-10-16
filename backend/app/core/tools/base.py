@@ -4,9 +4,8 @@
 подставляются имена колонок. Возвращает имя новой temp-таблицы.
 """
 
-from abc import ABC, abstractmethod
 import re
-
+from abc import ABC, abstractmethod
 
 _IDENTIFIER = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 

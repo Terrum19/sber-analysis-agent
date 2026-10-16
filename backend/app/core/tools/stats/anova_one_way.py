@@ -24,8 +24,7 @@ class AnovaOneWayTool(BaseTool):
         all_values = [item for group in groups.values() for item in group]
         grand_mean = statistics.fmean(all_values) if all_values else 0
         between = sum(
-            len(group) * (statistics.fmean(group) - grand_mean) ** 2
-            for group in groups.values()
+            len(group) * (statistics.fmean(group) - grand_mean) ** 2 for group in groups.values()
         )
         within = sum(
             sum((value - statistics.fmean(group)) ** 2 for value in group)

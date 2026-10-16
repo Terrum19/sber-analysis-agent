@@ -2,7 +2,6 @@
 
 from app.core.tools.registry import tool_registry
 
-
 EXPECTED_TOOLS = {
     "select_columns",
     "filter_rows",

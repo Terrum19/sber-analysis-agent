@@ -15,7 +15,7 @@ class MannWhitneyUTool(BaseTool):
         if not first or not second:
             statistic = None
         else:
-            statistic = sum(
-                1 for left in first for right in second if left > right
-            ) + 0.5 * sum(1 for left in first for right in second if left == right)
+            statistic = sum(1 for left in first for right in second if left > right) + 0.5 * sum(
+                1 for left in first for right in second if left == right
+            )
         return result(db, input_table, "statistic", (statistic,))

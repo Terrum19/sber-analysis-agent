@@ -25,9 +25,7 @@ class SpearmanCorrelationTool(BaseTool):
         ranked_first, ranked_second = ranks(first), ranks(second)
         correlation = (
             statistics.correlation(ranked_first, ranked_second)
-            if len(ranked_first) > 1
-            and len(set(ranked_first)) > 1
-            and len(set(ranked_second)) > 1
+            if len(ranked_first) > 1 and len(set(ranked_first)) > 1 and len(set(ranked_second)) > 1
             else None
         )
         return result(db, input_table, "correlation", (correlation,))

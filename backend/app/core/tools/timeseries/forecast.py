@@ -4,9 +4,9 @@
 текущих условиях?», «Как изменится Y, если изменить цену X?».
 """
 
-from app.core.tools.base import BaseTool
-from app.core.tools.base import identifier
 import statistics
+
+from app.core.tools.base import BaseTool, identifier
 
 
 class ForecastTool(BaseTool):
@@ -33,7 +33,10 @@ class ForecastTool(BaseTool):
         slope = sum((x - x_mean) * (y - y_mean) for x, y in enumerate(values)) / sum(
             (x - x_mean) ** 2 for x in range(len(values))
         )
-        predictions = [(len(values) + index + 1, y_mean + slope * (len(values) + index)) for index in range(periods)]
+        predictions = [
+            (len(values) + index + 1, y_mean + slope * (len(values) + index))
+            for index in range(periods)
+        ]
         values_sql = ", ".join(f"({period}, {prediction})" for period, prediction in predictions)
         return db.save_step_result(
             input_table,

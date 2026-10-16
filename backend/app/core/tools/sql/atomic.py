@@ -96,8 +96,14 @@ class GroupByTool(BaseTool):
 
     def run(self, db, input_table: str, columns: list[str]) -> str:
         if len(columns) != 3:
-            raise ValueError("group_by requires [group_column, aggregate_column, aggregate_function]")
-        group_col, agg_col, agg_func = identifier(columns[0]), identifier(columns[1]), columns[2].upper()
+            raise ValueError(
+                "group_by requires [group_column, aggregate_column, aggregate_function]"
+            )
+        group_col, agg_col, agg_func = (
+            identifier(columns[0]),
+            identifier(columns[1]),
+            columns[2].upper(),
+        )
         if agg_func not in {"COUNT", "SUM", "AVG", "MIN", "MAX"}:
             raise ValueError(f"Unsupported aggregate function: {agg_func}")
         return db.save_step_result(

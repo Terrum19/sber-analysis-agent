@@ -98,9 +98,7 @@ def test_statistical_tools_return_results(
 ) -> None:
     table, records = run_tool(db, name, columns)
     assert records
-    assert expected_columns == {
-        row["column_name"] for row in db.query(f"DESCRIBE {table}")
-    }
+    assert expected_columns == {row["column_name"] for row in db.query(f"DESCRIBE {table}")}
 
 
 def test_time_series_and_seasonality_are_aggregations(db: DuckDBManager) -> None:
@@ -132,9 +130,7 @@ def test_forecast_returns_requested_number_of_periods(db: DuckDBManager) -> None
         ("search_categorical_values", ["category"]),
     ],
 )
-def test_tools_reject_invalid_arguments(
-    db: DuckDBManager, name: str, columns: list[str]
-) -> None:
+def test_tools_reject_invalid_arguments(db: DuckDBManager, name: str, columns: list[str]) -> None:
     with pytest.raises(ValueError):
         tool_registry.get(name).run(db, "raw", columns)
 

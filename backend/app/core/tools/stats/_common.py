@@ -15,8 +15,10 @@ def result(db, source: str, columns: str, values_: tuple[object, ...]) -> str:
     expressions = []
     for name, value in zip(names, values_):
         literal = (
-            f"'{value.replace(chr(39), chr(39) * 2)}'" if isinstance(value, str)
-            else "NULL" if value is None
+            f"'{value.replace(chr(39), chr(39) * 2)}'"
+            if isinstance(value, str)
+            else "NULL"
+            if value is None
             else str(value)
         )
         expressions.append(f"{literal} AS {identifier(name)}")

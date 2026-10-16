@@ -21,8 +21,6 @@ class PearsonCorrelationTool(BaseTool):
         else:
             xs, ys = zip(*pairs)
             correlation = (
-                statistics.correlation(xs, ys)
-                if len(set(xs)) > 1 and len(set(ys)) > 1
-                else None
+                statistics.correlation(xs, ys) if len(set(xs)) > 1 and len(set(ys)) > 1 else None
             )
         return result(db, input_table, "correlation", (correlation,))

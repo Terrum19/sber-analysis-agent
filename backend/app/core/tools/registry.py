@@ -19,9 +19,9 @@ from app.core.tools.sql.atomic import (
     WindowTool,
 )
 from app.core.tools.sql.time_series import TimeSeriesTool
-from app.core.tools.stats.correlation import CorrelationTool
 from app.core.tools.stats.anova_one_way import AnovaOneWayTool
 from app.core.tools.stats.bootstrap_ci import BootstrapCITool
+from app.core.tools.stats.correlation import CorrelationTool
 from app.core.tools.stats.describe_stats import DescribeStatsTool
 from app.core.tools.stats.linear_regression import LinearRegressionTool
 from app.core.tools.stats.mann_whitney_u import MannWhitneyUTool

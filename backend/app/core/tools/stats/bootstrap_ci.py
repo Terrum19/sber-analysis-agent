@@ -18,10 +18,7 @@ class BootstrapCITool(BaseTool):
         if not values:
             raise ValueError("bootstrap_ci requires at least one observation")
         rng = random.Random(0)
-        samples = sorted(
-            statistics.fmean(rng.choices(values, k=len(values)))
-            for _ in range(1000)
-        )
+        samples = sorted(statistics.fmean(rng.choices(values, k=len(values))) for _ in range(1000))
         return db.save_step_result(
             input_table,
             f"SELECT {statistics.fmean(values)} AS mean, "
