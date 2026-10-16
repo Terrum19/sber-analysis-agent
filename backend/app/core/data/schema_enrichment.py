@@ -243,7 +243,9 @@ class SchemaEnricher:
 
         После таймаута или ошибки соединения LLM до конца запуска больше не
         вызывается, иначе каждая пачка ждала бы LLM_TIMEOUT_S с ретраями.
-        Невалидный ответ (JSON, схема) или ошибка API — отказ только этой пачки.
+        Невалидный ответ (JSON, схема), ошибка API или другое исключение клиента
+        (например, ответ без choices) — отказ только этой пачки; неожиданное
+        исключение пишется в лог с traceback. Отмена (CancelledError) не глотается.
         """
         if not self.llm_available:
             logger.warning("LLM недоступна: колонки %s сохранены без энричинга", names)
@@ -255,4 +257,6 @@ class SchemaEnricher:
             logger.warning("LLM недоступна (%s): колонки %s сохранены без энричинга", error, names)
         except (ValueError, openai.OpenAIError) as error:
             logger.warning("Невалидный ответ LLM для колонок %s: %s", names, error)
+        except Exception:
+            logger.exception("Неожиданная ошибка LLM для колонок %s", names)
         return None

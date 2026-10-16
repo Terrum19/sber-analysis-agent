@@ -1,3 +1,4 @@
+import asyncio
 import json
 import logging
 
@@ -272,6 +273,32 @@ async def test_invalid_batch_does_not_stop_other_batches(db, monkeypatch, caplog
     assert "Невалидный ответ LLM" in caplog.text
 
 
+async def test_unexpected_llm_error_fails_only_its_batch(db, monkeypatch, caplog) -> None:
+    monkeypatch.setattr(settings, "enrich_batch_size", 2)
+    replies = iter([IndexError("list index out of range"), None])
+
+    def answer(kind, columns):
+        return next(replies) or auto_answer(kind, columns)
+
+    llm = FakeLLM(answer)
+    with caplog.at_level(logging.WARNING):
+        rows = by_column(await SchemaEnricher(db, llm).enrich("orders"))
+    assert llm.columns("aliases") == [["amount", "status"], ["region", "day"]]
+    assert rows["amount"].description_source == "none"
+    assert rows["amount"].fingerprint is None
+    assert rows["region"].description_source == "generated"
+    [record] = [r for r in caplog.records if "Неожиданная ошибка LLM" in r.message]
+    assert record.exc_info[0] is IndexError
+
+
+async def test_cancellation_is_not_swallowed(db) -> None:
+    def cancel(kind, columns):
+        raise asyncio.CancelledError
+
+    with pytest.raises(asyncio.CancelledError):
+        await SchemaEnricher(db, FakeLLM(cancel)).enrich("orders")
+
+
 async def test_schema_mismatch_is_a_failure(db) -> None:
     def answer(kind, columns):
         return {"columns": [{"column": "amount", "aliases": "не список"}]}
@@ -368,6 +395,46 @@ async def test_only_changed_columns_are_reprocessed(db) -> None:
     assert [row.column for row in rows] == ["amount", "status", "day"]
     stored = db.query("SELECT column_name FROM _meta.column_passport ORDER BY position")
     assert [row["column_name"] for row in stored] == ["amount", "status", "day"]
+
+
+async def test_new_column_is_processed_alone(db) -> None:
+    first = by_column(await SchemaEnricher(db, FakeLLM()).enrich("orders"))
+    db.execute("ALTER TABLE orders ADD COLUMN channel VARCHAR DEFAULT 'web'")
+    llm = FakeLLM()
+    rows = by_column(await SchemaEnricher(db, llm).enrich("orders"))
+    assert llm.columns("aliases") == [["channel"]]
+    assert rows["channel"].description == "Описание channel"
+    assert rows["channel"].description_source == "generated"
+    assert {name: rows[name] for name in first} == first
+
+
+async def test_restart_after_crash_reprocesses_unfinished_columns(db) -> None:
+    first = by_column(await SchemaEnricher(db, FakeLLM()).enrich("orders", {"amount": SHORT}))
+    db.execute("ALTER TABLE orders ALTER status TYPE BIGINT")
+    db.execute("ALTER TABLE orders ADD COLUMN channel VARCHAR DEFAULT 'web'")
+
+    class Crash(BaseException):
+        """Падение процесса посреди ответа LLM: save_enrichment не выполнится."""
+
+    def crash(kind, columns):
+        raise Crash
+
+    with pytest.raises(Crash):
+        await SchemaEnricher(db, FakeLLM(crash)).enrich("orders", {"amount": SHORT})
+
+    memory = ProfileMemory(db)
+    assert memory.load_profile("orders").column("status").dtype == "BIGINT"
+    saved = by_column(memory.load_enrichment("orders"))
+    assert saved["status"] == first["status"]
+    assert saved["channel"].fingerprint is None
+    assert saved["channel"].description_source is None
+
+    llm = FakeLLM()
+    rows = by_column(await SchemaEnricher(db, llm).enrich("orders", {"amount": SHORT}))
+    assert llm.columns("aliases") == [["status", "channel"]]
+    assert rows["amount"] == first["amount"]
+    assert rows["channel"].description_source == "generated"
+    assert rows["status"].fingerprint != first["status"].fingerprint
 
 
 async def test_glossary_change_reprocesses_and_reaches_prompt(db) -> None:
