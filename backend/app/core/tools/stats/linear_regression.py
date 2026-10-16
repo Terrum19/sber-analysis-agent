@@ -4,7 +4,7 @@ import numpy as np
 from scipy import stats
 
 from app.core.tools.base import BaseTool
-from app.core.tools.stats._common import result, values
+from app.core.tools.stats._common import paired_values, result
 
 
 class LinearRegressionTool(BaseTool):
@@ -14,7 +14,7 @@ class LinearRegressionTool(BaseTool):
     def run(self, db, input_table: str, columns: list[str]) -> str:
         if len(columns) != 2:
             raise ValueError("linear_regression requires [y_column, x_column]")
-        ys, xs = values(db, input_table, columns[0]), values(db, input_table, columns[1])
+        ys, xs = paired_values(db, input_table, columns[0], columns[1])
         if len(xs) < 2 or np.ptp(np.asarray(xs)) == 0:
             slope = intercept = r_squared = None
         else:

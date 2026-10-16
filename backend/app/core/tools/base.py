@@ -32,7 +32,7 @@ class BaseTool(ABC):
     sql_template: str = ""  # с плейсхолдерами {table} и {col}
 
     @abstractmethod
-    def run(self, db, input_table: str, columns: list[str]) -> str:
+    def run(self, db, input_table: str, columns: list[str], **kwargs: object) -> str:
         """Применить тул к input_table, вернуть имя результирующей таблицы."""
         raise NotImplementedError
 

@@ -22,4 +22,4 @@ class StepExecutor:
 
             return await run_generated_code(step, input_table, self.db)
         tool = tool_registry.get(step.tool)
-        return tool.run(self.db, input_table, step.columns)
+        return tool.run(self.db, input_table, step.columns, **step.parameters)

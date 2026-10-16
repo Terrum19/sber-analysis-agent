@@ -71,6 +71,17 @@ def test_anova_returns_known_f_statistic(math_db: DuckDBManager) -> None:
 def test_independent_t_test_returns_known_statistic(math_db: DuckDBManager) -> None:
     row = execute_tool(math_db, "t_test_ind", ["x", "y"])
     assert number(row["statistic"]) == pytest.approx(-1.7320508075688772)
+    assert 0 <= number(row["p_value"]) <= 1
+
+
+def test_independent_t_test_accepts_value_and_group_columns(math_db: DuckDBManager) -> None:
+    math_db.execute(
+        "CREATE TABLE grouped AS SELECT * FROM (VALUES "
+        "(1.0, 'a'), (2.0, 'a'), (5.0, 'b'), (6.0, 'b')) AS rows(value, group_name)"
+    )
+    row = execute_tool(math_db, "t_test_ind", ["value", "group_name"], "grouped")
+    assert number(row["statistic"]) < 0
+    assert 0 <= number(row["p_value"]) <= 1
 
 
 def test_paired_t_test_returns_known_statistic(math_db: DuckDBManager) -> None:
@@ -101,3 +112,15 @@ def test_bootstrap_ci_is_deterministic_and_uses_percentiles(math_db: DuckDBManag
     assert number(row["mean"]) == pytest.approx(2.5)
     assert number(row["ci_low"]) == pytest.approx(1.5)
     assert number(row["ci_high"]) == pytest.approx(3.5)
+
+
+def test_chi_square_and_ks_test_return_reference_fields(math_db: DuckDBManager) -> None:
+    math_db.execute(
+        "CREATE TABLE categorical AS SELECT * FROM (VALUES "
+        "('a', 'x'), ('a', 'x'), ('b', 'y'), ('b', 'y')) AS rows(first_value, second_value)"
+    )
+    chi = execute_tool(math_db, "chi_square", ["first_value", "second_value"], "categorical")
+    assert number(chi["statistic"]) == pytest.approx(1.0)
+    assert number(chi["p_value"]) == pytest.approx(0.31731050786291115)
+    ks = execute_tool(math_db, "ks_test", ["x"])
+    assert 0 <= number(ks["p_value"]) <= 1

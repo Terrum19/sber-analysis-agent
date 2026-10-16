@@ -1,3 +1,86 @@
+2026-10-17  dmitriy-ya  <dmitriyyakushonok@yandex.ru>
+
+	Дополнительные инструменты исследования.
+	* backend/app/core/tools/stats/search_categorical_values.py:
+	Добавлен fuzzy-поиск реальных категориальных значений с рейтингом
+	совпадения и ограничением числа результатов.
+	* backend/app/core/tools/inspect_temp_table.py: Добавлен паспорт
+	промежуточной таблицы со схемой, типами, количеством строк,
+	образцами и описательной статистикой числовых колонок.
+	* backend/app/core/tools/run_wasm_python.py: Добавлен тонкий мост
+	между ResearchStep и существующим WASMSandbox без реализации
+	самого sandbox runtime; ответы песочницы сохраняются как temp_result_vN.
+	* backend/tests/unit/test_additional_tools.py: Добавлены тесты
+	fuzzy-поиска, паспорта таблицы и контракта WASM-моста с mock sandbox.
+	Полный набор backend-тестов: 321 passed, 13 skipped.
+
+2026-10-17  dmitriy-ya  <dmitriyyakushonok@yandex.ru>
+
+	Уточнение статистических контрактов и SQL-семантики.
+	* backend/app/core/tools/stats: Парные статистики теперь читают
+	наблюдения из одних строк; t_test_ind поддерживает сравнение
+	числовой метрики между двумя группами и возвращает statistic,
+	p_value и degrees_of_freedom. Добавлены chi_square и ks_test.
+	* backend/app/core/tools/sql/atomic.py,
+	backend/app/core/tools/sql/time_series.py: Исправлены алиасы
+	join_tables, добавлен упорядоченный lag/lead и настраиваемые
+	временные интервалы month/quarter/week/day.
+	* backend/app/core/tools/domain: Параметры сегментации выручки
+	вынесены в parameters; тренды и декомпозиция поддерживают
+	настраиваемый сезонный период и корректный multiplicative residual.
+	* backend/app/models/research_step.py,
+	backend/app/core/agent/step_executor.py: Добавлена передача
+	структурированных параметров research step в tools.
+	* backend/tests/unit: Добавлены эталонные проверки новых
+	статистических инструментов и группового t-теста. Полный набор:
+	317 passed, 13 skipped.
+
+2026-10-16  dmitriy-ya  <dmitriyyakushonok@yandex.ru>
+
+	Архитектура последовательного исследования и инструменты анализа.
+	* backend/app/core/tools/base.py: Добавлен общий контракт BaseTool,
+	проверка SQL-идентификаторов и выражений для аргументов research
+	steps.
+	* backend/app/core/tools/sql/atomic.py: Добавлены атомарные SQL-тулы
+	select_columns, filter_rows, create_column, rename_column,
+	join_tables, left_join_tables, group_by, pivot, time_bucket, lag
+	и lead. Каждый тул сохраняет результат в DuckDB как temp_result_vN.
+	* backend/app/core/tools/stats: Добавлены отдельные статистические
+	тулы для корреляций, линейной регрессии, ANOVA, t-тестов,
+	Mann–Whitney, описательной статистики, bootstrap CI и поиска
+	категориальных значений.
+	* backend/app/core/tools/timeseries: Реализованы и исправлены
+	агрегация временных рядов, сезонность и линейный прогноз.
+	* backend/app/core/tools/registry.py: Зарегистрированы 26 tools;
+	добавлена диспетчеризация по имени и выдача полного списка
+	описаний для StepPlanner. Добавление нового tool не требует
+	изменений оркестратора.
+	* backend/app/core/agent/step_executor.py,
+	backend/app/core/agent/orchestrator.py: ResearchStep выполняются
+	последовательно, результат предыдущего шага передаётся следующему,
+	а финальная таблица используется для инсайта и визуализации.
+	* backend/app/core/data/duckdb_manager.py,
+	backend/app/core/memory/state_cache.py: Промежуточные результаты
+	кешируются в DuckDB и доступны через db.query(), StateCache и
+	механизм смены типа графика без повторного расчёта.
+	* backend/app/core/agent/recovery.py: Добавлены повторные попытки
+	выполнения с экспоненциальной задержкой и явной передачей ошибки
+	в событие для клиента.
+
+	Статистические инструменты и математическая верификация.
+	* backend/app/core/tools/stats: Расчёты переведены на SciPy и
+	NumPy: pearsonr, spearmanr, linregress, f_oneway, ttest_ind,
+	ttest_rel, mannwhitneyu, описательная статистика и bootstrap CI.
+	Корреляция Спирмена корректно обрабатывает связанные ранги.
+	* backend/pyproject.toml, backend/requirements.txt: Добавлены
+	зависимости numpy и scipy.
+	* backend/tests/unit: Добавлены тесты всех базовых и статистических
+	tools, ToolRegistry, retry, StateCache, последовательного
+	оркестрирования и chart morph.
+	* backend/tests/unit/test_statistical_math.py: Добавлены
+	эталонные тесты математической корректности статистических
+	результатов на контрольных наборах данных.
+
 2026-10-15  mb6ockatf  <smokenmirror@tutamail.com>
 
 	Датасеты хакатона (#17).

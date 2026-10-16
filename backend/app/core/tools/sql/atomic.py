@@ -1,5 +1,7 @@
 """Composable SQL tools used as building blocks for research plans."""
 
+import re
+
 from app.core.tools.base import BaseTool, expression, identifier
 
 
@@ -62,12 +64,17 @@ class RenameColumnTool(BaseTool):
 
 class JoinTablesTool(BaseTool):
     name = "join_tables"
-    description = "Соединить текущую таблицу с другой по условию"
+    description = (
+        "Соединить текущую таблицу с другой по условию; используйте "
+        "t и t_right (также принимаются t1 и t2)"
+    )
 
     def run(self, db, input_table: str, columns: list[str]) -> str:
         if len(columns) != 2:
             raise ValueError("join_tables requires [right_table, join_condition]")
         right_table, condition = identifier(columns[0]), expression(columns[1])
+        condition = re.sub(r"\bt1\.", "t.", condition)
+        condition = re.sub(r"\bt2\.", "t_right.", condition)
         return db.save_step_result(
             input_table,
             f"SELECT * FROM {identifier(input_table)} AS t "
@@ -83,6 +90,8 @@ class LeftJoinTablesTool(JoinTablesTool):
         if len(columns) != 2:
             raise ValueError("left_join_tables requires [right_table, join_condition]")
         right_table, condition = identifier(columns[0]), expression(columns[1])
+        condition = re.sub(r"\bt1\.", "t.", condition)
+        condition = re.sub(r"\bt2\.", "t_right.", condition)
         return db.save_step_result(
             input_table,
             f"SELECT * FROM {identifier(input_table)} AS t "
@@ -147,16 +156,19 @@ class TimeBucketTool(BaseTool):
 
 class WindowTool(BaseTool):
     def __init__(self, name: str, function: str, description: str) -> None:
-        self.name, self.function, self.description = name, function, description
+        self.name, self.function = name, function
+        self.description = f"{description}; columns=[value_column, offset, order_column?]"
 
     def run(self, db, input_table: str, columns: list[str]) -> str:
-        if len(columns) != 2:
-            raise ValueError(f"{self.name} requires [column, offset]")
+        if len(columns) not in (2, 3):
+            raise ValueError(f"{self.name} requires [column, offset, order_column?]")
         column, offset = identifier(columns[0]), int(columns[1])
         if offset < 0:
             raise ValueError("Window offset must be non-negative")
+        order_column = identifier(columns[2]) if len(columns) == 3 else "rowid"
         return db.save_step_result(
             input_table,
-            f"SELECT *, {self.function}({column}, {offset}) OVER () AS {self.name}_{column} "
+            f"SELECT *, {self.function}({column}, {offset}) "
+            f"OVER (ORDER BY {order_column}) AS {self.name}_{column} "
             f"FROM {identifier(input_table)}",
         )

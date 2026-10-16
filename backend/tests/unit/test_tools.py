@@ -81,7 +81,11 @@ def test_atomic_tools_preserve_expected_values(db: DuckDBManager) -> None:
         ("spearman_corr", ["amount", "other_amount"], {"correlation"}),
         ("linear_regression", ["amount", "other_amount"], {"slope", "intercept", "r_squared"}),
         ("anova_one_way", ["amount", "category"], {"statistic"}),
-        ("t_test_ind", ["amount", "other_amount"], {"statistic"}),
+        (
+            "t_test_ind",
+            ["amount", "other_amount"],
+            {"statistic", "p_value", "degrees_of_freedom"},
+        ),
         ("t_test_dep", ["amount", "other_amount"], {"statistic"}),
         ("mann_whitney_u", ["amount", "other_amount"], {"statistic"}),
         (
@@ -90,7 +94,7 @@ def test_atomic_tools_preserve_expected_values(db: DuckDBManager) -> None:
             {"n", "mean", "std", "min", "max", "q1", "q3", "skew", "kurtosis"},
         ),
         ("bootstrap_ci", ["amount"], {"mean", "ci_low", "ci_high"}),
-        ("search_categorical_values", ["category", "a"], {"category"}),
+        ("search_categorical_values", ["category", "a"], {"stored_value", "match_score"}),
     ],
 )
 def test_statistical_tools_return_results(
