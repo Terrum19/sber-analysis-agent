@@ -35,6 +35,9 @@ class Settings(BaseSettings):
     profile_approx_quantile: bool = True
     profile_approx_min_rows: int = 100_000
 
+    enrich_description_max_chars: int = 200
+    enrich_batch_size: int = 25
+
 
 @lru_cache
 def get_settings() -> Settings:

@@ -6,6 +6,7 @@ from app.api.schemas.chat import ChatRequest
 from app.config import settings
 from app.core.agent.orchestrator import AgentOrchestrator
 from app.core.data.duckdb_manager import DuckDBManager
+from app.core.data.profiling import profile_table
 from app.core.memory.artifact_registry import ArtifactRegistry
 from app.core.memory.profile_memory import ProfileMemory
 from app.core.memory.session_memory import SessionMemory
@@ -99,7 +100,8 @@ def chart_of(events: list[dict]) -> dict:
 
 
 async def test_first_answer_builds_filled_spec(agent, db) -> None:
-    ProfileMemory().save("raw", {"glossary": {"revenue": "выручка", "region": "регион"}})
+    profile = profile_table(db, "raw")
+    ProfileMemory(db).save_profile(profile, {"revenue": "выручка", "region": "регион"})
     events = await collect(agent, "Сравни выручку по регионам")
     assert [event["type"] for event in events] == ["text", "chart", "done"]
     chart = chart_of(events)
@@ -132,7 +134,8 @@ async def test_view_change_is_served_from_cache(agent, db) -> None:
     assert agent.planner.calls == 1
     assert agent.executor.calls == 1
     assert agent.insight_gen.calls == 1
-    assert db.statements == ["SELECT * FROM temp_result_v1 LIMIT 500"]
+    data_reads = [sql for sql in db.statements if "_meta." not in sql]
+    assert data_reads == ["SELECT * FROM temp_result_v1 LIMIT 500"]
     assert STEP_SQL not in db.statements
 
     events = await collect(agent, "Сделай таблицей")

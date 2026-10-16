@@ -56,7 +56,8 @@ backend/
 │   │   │   └── prompts/             — ВСЕ промпты системы, по файлу на задачу
 │   │   │       ├── system_analyst.py   — системный промпт: «ты аналитик + тулы»
 │   │   │       ├── schema_describe.py  — «что передо мной за данные» (сценарий №1)
-│   │   │       ├── alias_gen.py        — 4 человекочитаемых алиаса на колонку
+│   │   │       ├── alias_gen.py        — до 4 алиасов (+ недостающие описания) пачкой, ответ JSON
+│   │   │       ├── description_compress.py — сжатие длинных описаний колонок из источника
 │   │   │       ├── step_planner.py     — вопрос -> список ResearchStep
 │   │   │       ├── insight_summary.py  — результат -> вывод на бизнес-языке
 │   │   │       └── chart_selector.py   — выбор типа визуализации
@@ -79,7 +80,7 @@ backend/
 │   │   │   │   ├── postgres.py        — PostgreSQL -> DuckDB через postgres_scanner (готов)
 │   │   │   │   └── clickhouse.py      — ClickHouse -> DuckDB (TODO)
 │   │   │   ├── profiling.py       — метрики: NaN%, min/max, медиана, квартили, std
-│   │   │   ├── schema_enrichment.py — алиасы + описания колонок (+ бизнес-словарь)
+│   │   │   ├── schema_enrichment.py — описания + алиасы колонок (+ бизнес-словарь) -> паспорт
 │   │   │   └── semantic_select.py — топ-5 колонок под запрос (семант. сходство)
 │   │   │
 │   │   ├── tools/          — РЕЕСТР ТУЛОВ (расширяемый; оркестратор не меняется)
@@ -101,7 +102,7 @@ backend/
 │   │   ├── memory/         — 4 уровня памяти (см. docs/memory.md)
 │   │   │   ├── session_memory.py    — (1) диалог + шаги, sliding window, SQLite
 │   │   │   ├── state_cache.py       — (2) результаты в temp-таблицах DuckDB
-│   │   │   ├── profile_memory.py    — (3) «паспорт данных»: схема/алиасы (JSON)
+│   │   │   ├── profile_memory.py    — (3) «паспорт данных»: профиль/описания/алиасы (DuckDB _meta)
 │   │   │   └── artifact_registry.py — (4) реестр дашбордов + Vega-конфиги
 │   │   │
 │   │   ├── viz/            — визуализация
@@ -120,14 +121,14 @@ backend/
 │   ├── models/            — доменные Pydantic-модели (контракты конвейера)
 │   │   ├── research_step.py   — ResearchStep: тул, колонки, флаг LLM-кодген
 │   │   ├── insight.py         — Insight: headline, details, limits
+│   │   ├── enrichment.py      — ColumnEnrichment/EnrichmentBatch: описания и алиасы колонок
 │   │   └── datasource.py      — Datasource: тип, путь/DSN, таблицы
 │   │
 │   └── workers/           — опц.: фоновые задачи (тяжёлые отчёты, экспорт)
 │
 ├── storage/               — РАНТАЙМ-состояние (gitignored)
 │   ├── sessions/          — SQLite/JSON истории диалогов
-│   ├── duckdb/            — *.duckdb: сырые данные + temp-таблицы шагов
-│   ├── profiles/          — «паспорта» данных (JSON)
+│   ├── duckdb/            — *.duckdb: сырые данные, temp-таблицы шагов, паспорт данных (_meta)
 │   ├── dashboards/        — сгенерированные дашборды + их Vega/SQL
 │   └── exports/           — .xlsx / .pdf для скачивания
 │
@@ -205,7 +206,7 @@ scripts/
 - **`parser.py` отдельным модулем** — robust-парсинг вывода LLM вынесен из
   планировщика, чтобы стратегии парсинга менялись/тестировались изолированно.
 - **`memory/` = 4 модуля** — ровно 4 уровня памяти, каждый со своей зоной
-  ответственности и хранилищем (SQLite / DuckDB temp / JSON / файловый реестр).
+  ответственности и хранилищем (SQLite / DuckDB temp / DuckDB _meta / файловый реестр).
 - **`viz/chart_morph.py`** — «перерисуй в другом виде» решается без нового вызова
   LLM, из сохранённого состояния (state cache).
 - **`dashboards/` + `artifact_registry.py`** — дашборд хранит и SQL, и Vega-спеки,

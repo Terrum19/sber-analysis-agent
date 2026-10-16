@@ -1,3 +1,32 @@
+2026-10-15  Saitbatalov Bulat  <saitbatalovbulat200@gmail.com>
+
+	Энричинг таблицы, паспорт данных в DuckDB.
+	* backend/app/core/memory/profile_memory.py (ProfileMemory): Паспорт
+	данных (профиль, описания и алиасы колонок, бизнес-словарь) хранится
+	в таблицах _meta.table_passport и _meta.column_passport файла DuckDB
+	и переживает перезапуск.  JSON-файлы storage/profiles/ больше не
+	пишутся; старые не переносятся, паспорт построится заново.
+	* backend/app/core/agent/orchestrator.py (AgentOrchestrator.run):
+	Подписи осей графиков берутся из паспорта в DuckDB (бизнес-словарь
+	и алиасы колонок).
+	* backend/app/core/data/schema_enrichment.py (SchemaEnricher.enrich):
+	Описание колонки из источника не длиннее 200 символов остаётся как
+	есть, более длинное LLM сжимает до одного предложения, отсутствующее
+	LLM генерирует по профилю колонки.  На колонку до 4 алиасов.
+	Колонки без изменений повторно в LLM не отправляются, статистика при
+	этом обновляется.  Ошибка LLM не прерывает энричинг.
+	* backend/app/core/data/connectors/postgres.py,
+	backend/app/core/data/connectors/csv.py (column_comments): Описания
+	колонок берутся из источника: COMMENT ON COLUMN в PostgreSQL,
+	комментарии колонок DuckDB для CSV.
+	* backend/app/core/llm/prompts/alias_gen.py,
+	backend/app/core/llm/prompts/description_compress.py: LLM отвечает
+	JSON по пачке колонок; отдельный промпт сжатия описаний.
+	* .env.example, backend/app/config.py: ENRICH_DESCRIPTION_MAX_CHARS
+	(200) и ENRICH_BATCH_SIZE (25).
+	* backend/requirements.txt: Добавлен pytz: без него DuckDB не отдаёт
+	в Python даты с часовым поясом, а pandas 3 его больше не ставит.
+
 2026-10-15  mb6ockatf  <smokenmirror@tutamail.com>
 
 	Датасеты хакатона (#17).
