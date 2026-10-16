@@ -1,6 +1,7 @@
 """Linear regression tool."""
 
-import statistics
+import numpy as np
+from scipy import stats
 
 from app.core.tools.base import BaseTool
 from app.core.tools.stats._common import result, values
@@ -14,17 +15,9 @@ class LinearRegressionTool(BaseTool):
         if len(columns) != 2:
             raise ValueError("linear_regression requires [y_column, x_column]")
         ys, xs = values(db, input_table, columns[0]), values(db, input_table, columns[1])
-        pairs = list(zip(xs, ys))
-        if len(pairs) < 2:
+        if len(xs) < 2 or np.ptp(np.asarray(xs)) == 0:
             slope = intercept = r_squared = None
         else:
-            x_mean, y_mean = statistics.fmean(xs), statistics.fmean(ys)
-            denominator = sum((x - x_mean) ** 2 for x in xs)
-            slope = (
-                sum((x - x_mean) * (y - y_mean) for x, y in pairs) / denominator
-                if denominator
-                else None
-            )
-            intercept = y_mean - slope * x_mean if slope is not None else None
-            r_squared = statistics.correlation(xs, ys) ** 2 if slope is not None else None
+            fit = stats.linregress(np.asarray(xs), np.asarray(ys))
+            slope, intercept, r_squared = fit.slope, fit.intercept, fit.rvalue**2
         return result(db, input_table, "slope, intercept, r_squared", (slope, intercept, r_squared))

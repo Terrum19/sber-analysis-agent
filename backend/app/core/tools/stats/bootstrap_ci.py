@@ -1,7 +1,6 @@
 """Bootstrap confidence interval tool."""
 
-import random
-import statistics
+import numpy as np
 
 from app.core.tools.base import BaseTool, identifier
 
@@ -17,10 +16,13 @@ class BootstrapCITool(BaseTool):
         values = [float(row["value"]) for row in rows if row["value"] is not None]
         if not values:
             raise ValueError("bootstrap_ci requires at least one observation")
-        rng = random.Random(0)
-        samples = sorted(statistics.fmean(rng.choices(values, k=len(values))) for _ in range(1000))
+        rng = np.random.default_rng(0)
+        samples = np.mean(
+            rng.choice(np.asarray(values), size=(1000, len(values)), replace=True),
+            axis=1,
+        )
+        ci_low, ci_high = np.quantile(samples, [0.025, 0.975])
         return db.save_step_result(
             input_table,
-            f"SELECT {statistics.fmean(values)} AS mean, "
-            f"{samples[25]} AS ci_low, {samples[974]} AS ci_high",
+            f"SELECT {np.mean(values)} AS mean, {ci_low} AS ci_low, {ci_high} AS ci_high",
         )

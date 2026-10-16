@@ -1,7 +1,7 @@
 """Independent two-sample t-test tool."""
 
-import math
-import statistics
+import numpy as np
+from scipy import stats
 
 from app.core.tools.base import BaseTool
 from app.core.tools.stats._common import result, values
@@ -18,9 +18,7 @@ class IndependentTTestTool(BaseTool):
         if not first or not second:
             statistic = None
         else:
-            mean_a, mean_b = statistics.fmean(first), statistics.fmean(second)
-            var_a = statistics.variance(first) if len(first) > 1 else 0
-            var_b = statistics.variance(second) if len(second) > 1 else 0
-            denominator = math.sqrt(var_a / len(first) + var_b / len(second))
-            statistic = (mean_a - mean_b) / denominator if denominator else None
+            statistic = stats.ttest_ind(
+                np.asarray(first), np.asarray(second), equal_var=False
+            ).statistic
         return result(db, input_table, "statistic", (statistic,))

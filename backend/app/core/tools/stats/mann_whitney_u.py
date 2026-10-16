@@ -1,5 +1,8 @@
 """Mann-Whitney U test tool."""
 
+import numpy as np
+from scipy import stats
+
 from app.core.tools.base import BaseTool
 from app.core.tools.stats._common import result, values
 
@@ -15,7 +18,7 @@ class MannWhitneyUTool(BaseTool):
         if not first or not second:
             statistic = None
         else:
-            statistic = sum(1 for left in first for right in second if left > right) + 0.5 * sum(
-                1 for left in first for right in second if left == right
-            )
+            statistic = stats.mannwhitneyu(
+                np.asarray(first), np.asarray(second), method="auto"
+            ).statistic
         return result(db, input_table, "statistic", (statistic,))

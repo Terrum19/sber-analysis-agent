@@ -1,6 +1,7 @@
 """Spearman correlation tool."""
 
-import statistics
+import numpy as np
+from scipy import stats
 
 from app.core.tools.base import BaseTool
 from app.core.tools.stats._common import result, values
@@ -15,17 +16,8 @@ class SpearmanCorrelationTool(BaseTool):
             raise ValueError("spearman_corr requires [column_a, column_b]")
         first, second = values(db, input_table, columns[0]), values(db, input_table, columns[1])
 
-        def ranks(items: list[float]) -> list[float]:
-            order = sorted(range(len(items)), key=items.__getitem__)
-            ranked = [0.0] * len(items)
-            for rank, index in enumerate(order, 1):
-                ranked[index] = float(rank)
-            return ranked
-
-        ranked_first, ranked_second = ranks(first), ranks(second)
-        correlation = (
-            statistics.correlation(ranked_first, ranked_second)
-            if len(ranked_first) > 1 and len(set(ranked_first)) > 1 and len(set(ranked_second)) > 1
-            else None
-        )
+        if len(first) < 2 or np.ptp(np.asarray(first)) == 0 or np.ptp(np.asarray(second)) == 0:
+            correlation = None
+        else:
+            correlation = stats.spearmanr(np.asarray(first), np.asarray(second)).statistic
         return result(db, input_table, "correlation", (correlation,))
