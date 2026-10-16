@@ -9,6 +9,7 @@ import json
 from pathlib import Path
 
 from app.config import settings
+from app.core.memory.profile_memory import ProfileMemory
 
 
 class SessionMemory:
@@ -45,6 +46,9 @@ class SessionMemory:
         # Формируем краткое описание колонок для LLM
         columns_summary = ", ".join(columns) if columns else "неизвестно"
         
+        # Профиль данных (паспорт таблицы) для долгосрочного контекста
+        profile = ProfileMemory().load(datasource or "raw")
+
         return {
             "messages": window,
             "summary": summary,
@@ -52,6 +56,7 @@ class SessionMemory:
             "columns": columns,
             "columns_summary": columns_summary,
             "datasource": datasource or "raw",
+            "profile": profile,
         }
 
     def record_step(self, step, result_table: str) -> None:

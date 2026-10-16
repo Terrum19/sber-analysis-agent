@@ -99,3 +99,19 @@
    ↓
 8. Tests (Phase 8)
 ```
+
+---
+
+## Дополнительные исправления (после Phase 8) ✅ DONE
+
+### Tasks
+- [x] `orchestrator.py`: `__init__` принимает `planner`, `executor`, `insight_gen`, `db` — тесты передают их явно
+- [x] `chat.py`: добавлен `Cache-Control: no-cache, no-transform` заголовок в StreamingResponse
+- [x] `session_memory.py`: `build_context()` загружает профиль через `ProfileMemory().load()` — долгосрочный контекст (поле `profile`)
+- [x] `tests/unit/test_fake_llm_env.py`: интеграционный тест на `USE_FAKE_LLM=true` без `monkeypatch`
+
+### Why
+- Orchestrator должен принимать зависимости для тестирования с FakeLLM и in-memory DuckDB
+- SSE должен правильно информировать прокси о буферизации (cache-control, x-accel-buffering)
+- ProfileMemory даёт долгосрочный контекст агента (паспорт данных) без повторного сканирования
+- Тест на env var без monkeypatch проверяет реальный механизм `__new__` в CI

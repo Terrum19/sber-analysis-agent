@@ -26,5 +26,5 @@ class WASMSandbox:
         передать payload, ограничить CPU/RAM/таймаут, вернуть результат.
         """
         logger.warning("WASM sandbox — STUB: код не исполняется, возвращается исходные данные")
-        # Stub: возвращаем payload без изменений
+        
         return {"result": payload.get("data", []) if payload else [], "status": "stub"}

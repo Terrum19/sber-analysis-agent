@@ -35,7 +35,7 @@ class LLMClient:
     def __init__(self) -> None:
         self._client = AsyncOpenAI(
             base_url=settings.llm_base_url,
-            api_key="not-needed",  # локальный сервер ключа не требует
+            api_key="not-needed",
             timeout=settings.llm_timeout_s,
         )
         self.model = settings.llm_model
@@ -60,16 +60,12 @@ class LLMClient:
         Использует instructor.from_openai для гарантированно валидного
         вывода по заданной Pydantic-схеме.
         """
-        try:
-            return await self._instructor.chat.completions.create(
-                model=self.model,
-                messages=[
-                    {"role": "system", "content": system},
-                    {"role": "user", "content": user},
-                ],
-                response_model=schema,
-                temperature=settings.llm_temperature,
-            )
-        except Exception as exc:
-            logger.error("Instructor structured output failed: %s", exc)
-            raise
+        return await self._instructor.chat.completions.create(
+            model=self.model,
+            messages=[
+                {"role": "system", "content": system},
+                {"role": "user", "content": user},
+            ],
+            response_model=schema,
+            temperature=settings.llm_temperature,
+        )

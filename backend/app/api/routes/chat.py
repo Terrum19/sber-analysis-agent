@@ -33,4 +33,9 @@ async def chat(payload: ChatRequest) -> StreamingResponse:
             chat_event = ChatEvent(**event)
             yield f"data: {chat_event.model_dump_json()}\n\n"
 
-    return StreamingResponse(event_stream(), media_type="text/event-stream")
+    STREAM_HEADERS = {
+        "Cache-Control": "no-cache, no-transform",
+        "X-Accel-Buffering": "no",
+    }
+    response = StreamingResponse(event_stream(), media_type="text/event-stream", headers=STREAM_HEADERS)
+    return response

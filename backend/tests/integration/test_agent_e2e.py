@@ -55,6 +55,7 @@ def test_orchestrator(test_db: DuckDBManager, monkeypatch: pytest.MonkeyPatch) -
         planner=StepPlanner(llm=FakeLLM()),
         executor=StepExecutor(db=test_db),
         insight_gen=InsightGenerator(llm=FakeLLM()),
+        db=test_db,
     )
 
 

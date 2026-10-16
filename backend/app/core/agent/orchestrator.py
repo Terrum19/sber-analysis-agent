@@ -15,6 +15,7 @@ from app.core.agent.insight import InsightGenerator
 from app.core.agent.planner import StepPlanner
 from app.core.agent.recovery import with_retry
 from app.core.agent.step_executor import StepExecutor
+from app.core.data.duckdb_manager import DuckDBManager
 from app.core.memory.session_memory import SessionMemory
 from app.core.viz.chart_selector import select_chart
 from app.core.viz.vega_spec_builder import build_vega_spec
@@ -23,10 +24,19 @@ from app.core.viz.vega_spec_builder import build_vega_spec
 class AgentOrchestrator:
     """Оркестратор одного хода диалога."""
 
-    def __init__(self) -> None:
-        self.planner = StepPlanner()
-        self.executor = StepExecutor()
-        self.insight_gen = InsightGenerator()
+    def __init__(
+        self,
+        planner: StepPlanner | None = None,
+        executor: StepExecutor | None = None,
+        insight_gen: InsightGenerator | None = None,
+        db: DuckDBManager | None = None,
+    ) -> None:
+        import app.core.data.duckdb_manager as _duckdb_module
+        DuckDBManager = _duckdb_module.DuckDBManager
+        self.db = db or DuckDBManager()
+        self.planner = planner or StepPlanner()
+        self.executor = executor or StepExecutor()
+        self.insight_gen = insight_gen or InsightGenerator(db=self.db)
 
     async def run(self, request: ChatRequest) -> AsyncIterator[dict]:
         """Выполнить исследование и вернуть поток событий для фронта."""
@@ -47,7 +57,8 @@ class AgentOrchestrator:
         yield {"type": "text", "data": {"headline": insight.headline, "details": insight.details}}
 
         chart_type = select_chart(request.question, result_table, plan.final_viz)
-        spec = build_vega_spec(chart_type, result_table)
+        data = self.db.to_records(result_table)
+        spec = build_vega_spec(chart_type, result_table=result_table, data=data)
         yield {"type": "chart", "data": {"spec": spec, "caption": insight.headline}}
 
         if plan.dashboard_requested:
