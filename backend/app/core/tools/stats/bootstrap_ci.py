@@ -58,8 +58,7 @@ class BootstrapCITool(BaseTool):
             "max": np.max,
         }
         estimate = float(operations[statistic](data))
-        # Process in bounded batches so the product of sample size and
-        # bootstrap count cannot allocate an unexpectedly huge matrix.
+
         bootstrap_values = np.concatenate(
             [
                 operations[statistic](
