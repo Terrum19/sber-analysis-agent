@@ -96,5 +96,11 @@ def test_run_error_in_step(orchestrator):
             events.append(event)
     asyncio.run(_collect())
     types = [e["type"] for e in events]
-    assert "error" in types
+    assert "clarification_needed" in types
     assert "done" not in types
+    # Проверяем содержимое события уточнения
+    clar_events = [e for e in events if e["type"] == "clarification_needed"]
+    assert len(clar_events) == 1
+    assert clar_events[0]["data"]["step_id"] == 0
+    assert "Таблица не найдена" in clar_events[0]["data"]["error"]
+    assert "suggestions" in clar_events[0]["data"]

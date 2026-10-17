@@ -15,14 +15,14 @@ def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item
 
 @pytest.fixture(autouse=True)
 def _cleanup_session_files():
-    """Удаляет мусорные JSON-файлы сессий после каждого теста.
+    """Удаляет мусорные файлы сессий после каждого теста.
 
-    SessionMemory пишет состояние в файлы sessions.<session_id>.json
-    рядом с sqlite_path. Без очистки они остаются в репозитории после прогона.
+    SessionMemory пишет состояние в SQLite по адресу settings.sqlite_path.
+    Без очистки файлы остаются в репозитории после прогона.
     """
     yield
     session_dir = os.path.dirname(settings.sqlite_path)
-    for pattern in ("sessions.*.json", "sessions.sqlite*"):
+    for pattern in ("sessions.sqlite*",):
         for path in glob.glob(os.path.join(session_dir, pattern)):
             try:
                 os.remove(path)

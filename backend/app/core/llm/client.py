@@ -59,13 +59,44 @@ class LLMClient:
 
         Использует instructor.from_openai для гарантированно валидного
         вывода по заданной Pydantic-схеме.
+
+        Ollama через Instructor в режиме tools иногда возвращает
+        несколько tool_calls (AssertionError "multiple tool calls").
+        В этом случае делаем fallback: запрашиваем список схем и берём
+        первый элемент; если и это не помогло — используем JSON-режим.
         """
-        return await self._instructor.chat.completions.create(
-            model=self.model,
-            messages=[
-                {"role": "system", "content": system},
-                {"role": "user", "content": user},
-            ],
-            response_model=schema,
-            temperature=settings.llm_temperature,
+        messages = [
+            {"role": "system", "content": system},
+            {"role": "user", "content": user},
+        ]
+        # Первичная попытка: один объект схемы через tools
+        try:
+            return await self._instructor.chat.completions.create(
+                model=self.model,
+                messages=messages,
+                response_model=schema,
+                temperature=settings.llm_temperature,
+            )
+        except Exception as exc:  # noqa: BLE001
+            if "multiple tool calls" not in str(exc):
+                raise
+
+        # Fallback 1: запрашиваем список объектов, берём первый
+        try:
+            results = await self._instructor.chat.completions.create(
+                model=self.model,
+                messages=messages,
+                response_model=list[schema],  # type: ignore[valid-type]
+                temperature=settings.llm_temperature,
+            )
+            if results:
+                return results[0]
+        except Exception:  # noqa: BLE001
+            pass
+
+        # Fallback 2: JSON-режим без tools, парсим вручную
+        raw = await self.complete(
+            system=system,
+            user=user + "\n\nОтветь только валидным JSON, соответствующим схеме модели.",
         )
+        return schema.model_validate_json(raw)

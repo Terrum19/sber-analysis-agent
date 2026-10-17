@@ -6,8 +6,16 @@
 
 Каждый результат шага сохраняется в DuckDB как temp_result_vN и
 передаётся на следующий шаг (см. core/memory/state_cache.py).
+
+При сбое шага после 2-х попыток orquestратор выдаёт
+SSE-событие ``clarification_needed`` и сохраняет в SessionMemory
+состояние ожидания уточнения (``pending_recovery``). При следующем
+запросе от того же ``session_id`` с полем ``recovery_response``
+оркестратор загружает сохранённый контекст, применяет ответ
+пользователя и повторяет только неудачный шаг (или перепланирует).
 """
 
+import json
 from collections.abc import AsyncIterator
 
 from app.api.schemas.chat import ChatRequest
@@ -19,6 +27,26 @@ from app.core.data.duckdb_manager import DuckDBManager
 from app.core.memory.session_memory import SessionMemory
 from app.core.viz.chart_selector import select_chart
 from app.core.viz.vega_spec_builder import build_vega_spec
+
+# Количество попыток вызова инструмента перед уточнением у пользователя.
+STEP_RETRY_ATTEMPTS = 2
+
+# Готовые варианты ответа, которые фронт отображает кнопками.
+CLARIFICATION_SUGGESTIONS = [
+    "Переформулировать вопрос",
+    "Уточнить колонки",
+    "Пропустить этот шаг и продолжить",
+]
+
+
+class ClarificationNeeded(Exception):
+    """Исключение: шаг не прошёл после N попыток, нужен уточняющий ответ пользователя."""
+
+    def __init__(self, step_id: int, error: str, suggestions: list[str]) -> None:
+        self.step_id = step_id
+        self.error = error
+        self.suggestions = suggestions
+        super().__init__(error)
 
 
 class AgentOrchestrator:
@@ -41,27 +69,49 @@ class AgentOrchestrator:
     async def run(self, request: ChatRequest) -> AsyncIterator[dict]:
         """Выполнить исследование и вернуть поток событий для фронта."""
         memory = SessionMemory(request.session_id)
-        context = memory.build_context(request.question)
 
-        plan = await self.planner.plan(request.question, context)
-        result_table = "raw"
-        for step in plan.steps:
-            try:
-                result_table = await with_retry(self.executor.execute, step, result_table)
-            except Exception as exc:  # noqa: BLE001
-                yield {"type": "error", "data": {"step": step.step_id, "message": str(exc)}}
-                return
-            memory.record_step(step, result_table)
+        # --- Возобновление после уточнения (pending_recovery) ---
+        pending = memory.get_pending_recovery()
+        try:
+            if pending is not None:
+                if not request.recovery_response:
+                    yield {
+                        "type": "error",
+                        "data": {
+                            "message": "Требуется уточнение. Отправьте ответ на предыдущий вопрос агента.",
+                        },
+                    }
+                    return
+                result_table = await self._apply_recovery(memory, pending, request)
+                memory.clear_pending_recovery()
+            else:
+                # Обычный путь: новый вопрос -> план -> выполнение шагов.
+                context = memory.build_context(request.question)
+                plan = await self.planner.plan(request.question, context)
+                result_table = await self._execute_plan(memory, plan, "raw", request.question)
+        except ClarificationNeeded as exc:
+            yield {
+                "type": "clarification_needed",
+                "data": {
+                    "step_id": exc.step_id,
+                    "error": exc.error,
+                    "suggestions": exc.suggestions,
+                },
+            }
+            return
 
+        # --- Финальный блок: инсайт -> чарт -> дашборд -> done ---
         insight = await self.insight_gen.generate(request.question, result_table)
         yield {"type": "text", "data": {"headline": insight.headline, "details": insight.details}}
 
-        chart_type = select_chart(request.question, result_table, plan.final_viz)
+        final_viz = pending.get("final_viz", "auto") if pending else plan.final_viz  # type: ignore[possibly-undefined]
+        chart_type = select_chart(request.question, result_table, final_viz)
         data = self.db.to_records(result_table)
         spec = build_vega_spec(chart_type, result_table=result_table, data=data)
         yield {"type": "chart", "data": {"spec": spec, "caption": insight.headline}}
 
-        if plan.dashboard_requested:
+        dashboard_requested = pending.get("dashboard_requested", False) if pending else plan.dashboard_requested  # type: ignore[possibly-undefined]
+        if dashboard_requested:
             from app.core.dashboards.generator import DashboardGenerator
 
             dashboard_id = await DashboardGenerator().generate(request.session_id, [spec])
@@ -69,3 +119,127 @@ class AgentOrchestrator:
 
         memory.record_answer(insight.headline)
         yield {"type": "done", "data": {}}
+
+    # --- Вспомогательные методы ---
+
+    async def _execute_plan(
+        self,
+        memory: SessionMemory,
+        plan,
+        input_table: str,
+        question: str,
+    ) -> str:
+        """Последовательно выполнить все шаги плана.
+
+        При сбое шага после STEP_RETRY_ATTEMPTS попыток сохраняет
+        pending_recovery в SessionMemory и выбрасывает ClarificationNeeded,
+        чтобы вызывающий код мог выдать clarification_needed и прервать генератор.
+        """
+        result_table = input_table
+        for step in plan.steps:
+            try:
+                result_table = await with_retry(
+                    self.executor.execute,
+                    step,
+                    result_table,
+                    attempts=STEP_RETRY_ATTEMPTS,
+                )
+            except Exception as exc:  # noqa: BLE001
+                # Сохраняем контекст неудачи для последующего уточнения.
+                memory.set_pending_recovery(
+                    {
+                        "question": question,
+                        "failed_step_id": step.step_id,
+                        "plan_steps": [s.model_dump() for s in plan.steps],
+                        "input_table": input_table,
+                        "error": str(exc),
+                        "attempts_made": STEP_RETRY_ATTEMPTS,
+                        "suggestions": CLARIFICATION_SUGGESTIONS,
+                        "final_viz": plan.final_viz,
+                        "dashboard_requested": plan.dashboard_requested,
+                    }
+                )
+                raise ClarificationNeeded(
+                    step_id=step.step_id,
+                    error=str(exc),
+                    suggestions=CLARIFICATION_SUGGESTIONS,
+                )
+            memory.record_step(step, result_table)
+        return result_table
+
+    async def _apply_recovery(
+        self,
+        memory: SessionMemory,
+        pending: dict,
+        request: ChatRequest,
+    ) -> str:
+        """Применить ответ пользователя на уточнение и продолжить выполнение.
+
+        Поддерживаемые варианты recovery_response:
+          - JSON с полем ``action``: ``"skip_step"`` — пропустить неудачный шаг.
+          - Свободный текст (любая другая строка) — перепланирование с учётом
+            текста уточнения и контекста предыдущих шагов.
+        """
+        recovery_text = request.recovery_response or ""
+        action = None
+        free_text = recovery_text
+
+        # Пытаемся распарсить JSON с действием (кнопки фронта).
+        try:
+            parsed = json.loads(recovery_text)
+            if isinstance(parsed, dict) and "action" in parsed:
+                action = parsed["action"]
+                free_text = parsed.get("text", "")
+        except (json.JSONDecodeError, TypeError):
+            action = None
+            free_text = recovery_text
+
+        failed_step_id = pending["failed_step_id"]
+        plan_steps = pending["plan_steps"]
+        input_table = pending["input_table"]
+
+        if action == "skip_step":
+            # Пропускаем неудачный шаг, выполняем остальные из сохранённого плана.
+            remaining_steps = [
+                s for s in plan_steps if s.get("step_id", -1) > failed_step_id
+            ]
+            # Превращаем словари обратно в ResearchStep.
+            from app.models.research_step import ResearchPlan, ResearchStep
+
+            steps = [ResearchStep.model_validate(s) for s in remaining_steps]
+            plan = ResearchPlan(
+                steps=steps,
+                final_viz=pending.get("final_viz", "auto"),
+                dashboard_requested=pending.get("dashboard_requested", False),
+            )
+            return await self._execute_plan(memory, plan, input_table, request.question)
+
+        # Перепланирование: формируем уточнённый вопрос с учётом ответа
+        # пользователя и контекста предыдущих шагов.
+        from app.models.research_step import ResearchPlan, ResearchStep
+
+        clarification_note = ""
+        if free_text:
+            clarification_note = f"\nУточнение пользователя: {free_text}"
+
+        modified_question = (
+            f"{request.question}{clarification_note}"
+            if request.question
+            else free_text
+        )
+
+        # Контекст включает историю шагов, выполненных до сбоя, чтобы LLM могла
+        # спланировать обход или исправление неудачного шага.
+        prior_steps = [s for s in plan_steps if s.get("step_id", -1) < failed_step_id]
+        steps_summary = "; ".join(
+            f"шаг {s.get('step_id')}: {s.get('purpose', '')}" for s in prior_steps
+        )
+        error_note = f"\nОшибка на шаге {failed_step_id}: {pending['error']}"
+
+        context = memory.build_context(modified_question)
+        context["summary"] = (
+            f"{context.get('summary', '')} | {steps_summary}{error_note}".strip(" |")
+        )
+
+        plan = await self.planner.plan(modified_question, context)
+        return await self._execute_plan(memory, plan, input_table, modified_question)
