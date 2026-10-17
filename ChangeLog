@@ -1,0 +1,101 @@
+2026-10-17  dmitriy-ya <dmitriyyakushonok@yandex.ru>
+
+	Итоговая реализация и ревью research tools.
+	* backend/app/core/tools/sql: Добавлен набор атомарных DuckDB-тулов
+	select/filter/create/rename, join и left join, group_by, pivot,
+	time_bucket, lag/lead и time_series с валидацией аргументов,
+	упорядоченными оконными функциями и поддержкой month/quarter/week/day.
+	* backend/app/core/tools/stats: Реализованы корреляции Pearson и
+	Spearman, линейная регрессия, ANOVA, Welch t-test, paired t-test,
+	Mann–Whitney, chi-square, KS-test, описательная статистика,
+	bootstrap CI и bootstrap correlation. Расчёты выполняются через
+	NumPy/SciPy; парные методы используют согласованные строки,
+	результаты включают доступные p_value и degrees_of_freedom.
+	* backend/app/core/tools/funnel: Реализованы funnel_steps,
+	funnel_drop_off, cohort_analysis и retention_matrix с расчётом
+	конверсий, drop-off и retention.
+	* backend/app/core/tools/domain: Реализованы revenue_analysis,
+	product_performance, conversion_funnel, avg_order_value,
+	trend_analysis и seasonal_decompose с сегментацией, настраиваемым
+	seasonality_period и additive/multiplicative моделями.
+	* backend/app/core/tools/stats/search_categorical_values.py:
+	Добавлен fuzzy-поиск фактических категориальных значений с рейтингом
+	совпадения и лимитом результатов.
+	* backend/app/core/tools/inspect_temp_table.py: Добавлен паспорт
+	промежуточных таблиц со схемой, типами, количеством строк,
+	образцами и описательной статистикой числовых колонок.
+	* backend/app/core/tools/run_wasm_python.py: Добавлен контрактный
+	мост к существующему WASMSandbox.
+	* backend/app/core/tools/registry.py: Все реализованные инструменты
+	зарегистрированы и доступны через describe() для StepPlanner.
+	* backend/app/models/research_step.py,
+	backend/app/core/agent/step_executor.py: Добавлены структурированные
+	parameters для конфигурации tools при сохранении обратной
+	совместимости с columns.
+	* backend/app/core/data/duckdb_manager.py и StateCache: результаты
+	каждого шага сохраняются как temp_result_vN и используются повторно
+	при chart morph без повторного вычисления.
+	* backend/tests/unit: Добавлены контрактные, математические,
+	интеграционные для DuckDB и регрессионные тесты всех реализованных
+	групп инструментов. Финальная проверка: 321 passed, 13 skipped;
+	Ruff и git diff --check проходят.
+
+2026-10-15  mb6ockatf  <smokenmirror@tutamail.com>
+
+	Датасеты хакатона (#17).
+	* backend/app/core/data/profiling.py (classify, identifier_evidence):
+	Числовые коды считаются категориями (kind "identifier"), а не
+	показателями: среднее, квантили и выбросы по ним не считаются.
+	Код узнаётся по имени колонки (ID_, код, идентификатор) или по
+	значениям (уникальные ключи; коды одной длины из плотного
+	диапазона), поэтому правило работает и на незнакомых датасетах.
+	* backend/app/core/llm/prompts/schema_describe.py,
+	backend/app/core/llm/prompts/alias_gen.py: LLM получает указание не
+	суммировать и не усреднять коды.
+	* .gitignore, data/hk_datasets/README.md: Датасеты хакатона лежат в
+	data/hk_datasets/ и не попадают в git (файлы больше лимита GitHub).
+
+	Загрузка CSV (#15, #21).
+	* backend/app/core/data/connectors/csv.py (load_csv): Сырые CSV
+	загружаются без предобработки: кодировка (UTF-8, UTF-16, cp1251),
+	разделитель, русские числа (1 234,56) и даты определяются сами.
+	«Рваные» строки и ошибки формата не роняют загрузку.
+	(materialize): Файл один раз копируется в таблицу DuckDB, запросы и
+	профиль по ней в 15-30 раз быстрее, чем по самому файлу.  Все 9
+	датасетов хакатона загружаются примерно за 50 секунд.
+	* backend/app/api/routes/datasources.py (attach_csv):
+	POST /api/datasources/csv принимает несколько файлов (поле files),
+	не больше CSV_MAX_UPLOAD_MB (1 ГБ).  Если хотя бы один файл не
+	загрузился, не подключается ни один.
+
+	Паспорт данных (#11).
+	* backend/app/core/data/profiling.py (profile_table): Профиль таблицы
+	стал полным паспортом данных: пропуски, уникальные и частые
+	значения, квантили, выбросы, замечания о качестве.  Бенчмарк
+	требует уложиться в 10 секунд на таблице 1 млн строк x 50 колонок.
+	* backend/app/core/llm/prompts/schema_describe.py: Описание данных
+	для LLM включает блок «Качество данных».
+	* backend/app/core/data/semantic_select.py: При выборе колонок под
+	вопрос учитывается их тип.
+
+	Подключение PostgreSQL, CI/CD (#10).
+	* backend/app/core/data/connectors/postgres.py,
+	backend/app/api/routes/datasources.py (attach_db): POST
+	/api/datasources/db подключает схему PostgreSQL к DuckDB только для
+	чтения, данные не копируются.  Пароль в логах и ответах скрыт.
+	* docker-compose.yml: Сервисы PostgreSQL и ClickHouse для
+	интеграционных тестов.  Сам коннектор ClickHouse ещё не написан.
+	* .github/workflows: Проверки бэкенда (ruff, юнит- и интеграционные
+	тесты, 100% покрытия ключевых модулей) и фронтенда (lint, типы,
+	сборка); проверка подъёма docker compose; релиз с офлайн-пакетом
+	Docker-образов; правила коммитов; поиск секретов (gitleaks); аудит
+	зависимостей (Dependabot, pip-audit); ручной дымовой тест агента на
+	локальной LLM (Ollama).
+	* frontend: Фронтенд снова собирается: исправлены ошибки типов,
+	зафиксирован package-lock.json.
+
+2026-10-14  Alexander Yurits  <terruwork@gmail.com>
+
+	* Исходная структура репозитория: бэкенд на FastAPI с DuckDB,
+	фронтенд на Next.js, документация по архитектуре, памяти и
+	промптам, список задач.

@@ -12,6 +12,7 @@ from fastapi.responses import StreamingResponse
 from app.api.schemas.chat import ChatRequest, ChatEvent
 
 router = APIRouter()
+STREAM_HEADERS = {"Cache-Control": "no-cache, no-transform", "X-Accel-Buffering": "no"}
 
 
 @router.post("")

@@ -18,6 +18,6 @@ class StateCache:
         """Сохранить результат под уникальным идентификатором."""
         return self.db.save_step_result(source_table, sql)
 
-    def get(self, table: str) -> list[dict]:
+    def get(self, table: str, limit: int = 100) -> list[dict]:
         """Достать кешированный срез по ссылке."""
-        return self.db.to_records(table)
+        return self.db.to_records(table, limit=limit)

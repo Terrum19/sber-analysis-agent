@@ -108,6 +108,18 @@ class SessionMemory:
             {"step_id": step.step_id, "purpose": step.purpose, "result": result_table}
         )
 
+    def record_chart(self, chart_type: str, result_table: str, caption: str = "") -> None:
+        """Запомнить последний показанный график (для смены вида без LLM)."""
+        self._state["last_chart"] = {
+            "chart_type": chart_type,
+            "result_table": result_table,
+            "caption": caption,
+        }
+
+    def last_chart(self) -> dict | None:
+        """Последний показанный график сессии или None."""
+        return self._state.get("last_chart")
+
     def record_answer(self, answer: str) -> None:
         """Запомнить ответ агента."""
         self._state["messages"].append({"role": "agent", "content": answer})

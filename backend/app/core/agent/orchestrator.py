@@ -7,6 +7,10 @@
 Каждый результат шага сохраняется в DuckDB как temp_result_vN и
 передаётся на следующий шаг (см. core/memory/state_cache.py).
 
+Просьба сменить вид прошлого графика («покажи в другом виде», «сделай
+таблицей») обслуживается без планировщика и без повторного SQL: спека
+перестраивается chart_morph из кешированной temp_result_vN.
+
 При сбое шага после 2-х попыток orquestратор выдаёт
 SSE-событие ``clarification_needed`` и сохраняет в SessionMemory
 состояние ожидания уточнения (``pending_recovery``). При следующем
@@ -21,15 +25,22 @@ from collections.abc import AsyncIterator
 
 logger = logging.getLogger(__name__)
 
+import duckdb
+
 from app.api.schemas.chat import ChatRequest
 from app.core.agent.insight import InsightGenerator
 from app.core.agent.planner import StepPlanner
 from app.core.agent.recovery import with_retry
 from app.core.agent.step_executor import StepExecutor
 from app.core.data.duckdb_manager import DuckDBManager
+from app.core.memory.profile_memory import ProfileMemory
 from app.core.memory.session_memory import SessionMemory
+from app.core.memory.state_cache import StateCache
+from app.core.viz.chart_morph import detect_morph, morph
 from app.core.viz.chart_selector import select_chart
-from app.core.viz.vega_spec_builder import build_vega_spec
+from app.core.viz.vega_spec_builder import SPEC_ROW_LIMIT, build_vega_spec, column_aliases
+
+SOURCE_TABLE = "raw"
 
 # Количество попыток вызова инструмента перед уточнением у пользователя.
 STEP_RETRY_ATTEMPTS = 2

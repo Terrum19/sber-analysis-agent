@@ -8,6 +8,7 @@ class ResearchStep(BaseModel):
     step_id: int = 0
     tool: str | None = None
     columns: list[str] = Field(default_factory=list)
+    parameters: dict[str, object] = Field(default_factory=dict)
     needs_llm_codegen: bool = False
     purpose: str = ""
 

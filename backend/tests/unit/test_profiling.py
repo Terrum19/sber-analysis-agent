@@ -10,6 +10,7 @@ from app.core.data.profiling import (
     classify,
     format_quality,
     outlier_summary,
+    plain,
     profile_table,
     quality_notes,
     quote_table,
@@ -91,6 +92,11 @@ def test_nan_and_null_percentages(db) -> None:
     assert reading.outlier_count == 0
     assert label.null_pct == 25.0
     assert label.nan_pct is None
+
+
+def test_non_finite_values_are_normalized_to_none() -> None:
+    assert plain(float("inf")) is None
+    assert plain(float("-inf")) is None
 
 
 def test_text_dates_and_flags(db) -> None:
