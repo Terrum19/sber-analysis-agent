@@ -4,7 +4,10 @@
 Результат валидируется по ResearchPlan (см. models/research_step.py).
 """
 
+import logging
 from app.core.llm.client import LLMClient
+
+logger = logging.getLogger(__name__)
 from app.core.llm.prompts.step_planner import STEP_PLANNER
 from app.core.tools.registry import tool_registry
 from app.models.research_step import ResearchPlan
@@ -27,4 +30,11 @@ class StepPlanner:
             context=context.get("summary", ""),
             question=question,
         )
-        return await self.llm.complete_structured(SYSTEM_ANALYST, prompt, ResearchPlan)
+        logger.info(">>> StepPlanner.plan() вопрос=%r", question)
+        logger.debug("    промпт=%r", prompt)
+        plan = await self.llm.complete_structured(SYSTEM_ANALYST, prompt, ResearchPlan)
+        logger.info("<<< StepPlanner.plan() шагов=%d", len(plan.steps))
+        # LLM может не включать step_id в шаги — присваиваем последовательные ID.
+        for i, step in enumerate(plan.steps):
+            step.step_id = i
+        return plan

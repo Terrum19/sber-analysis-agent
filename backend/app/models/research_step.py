@@ -5,7 +5,7 @@ from pydantic import BaseModel, Field
 
 class ResearchStep(BaseModel):
     """Один шаг плана исследования."""
-    step_id: int
+    step_id: int = 0
     tool: str | None = None
     columns: list[str] = Field(default_factory=list)
     needs_llm_codegen: bool = False

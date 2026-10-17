@@ -28,8 +28,8 @@ class StepExecutor:
         """
         # Проверяем, что входная таблица существует
         existing = self.db.query(
-            "SELECT table_name FROM information_schema.tables WHERE table_name = $1",
-            {"1": input_table},
+            "SELECT table_name FROM information_schema.tables WHERE table_name = $tbl",
+            {"tbl": input_table},
         )
         if not existing:
             msg = f"Таблица '{input_table}' не найдена в базе данных"
@@ -41,6 +41,8 @@ class StepExecutor:
 
             return await run_generated_code(step, input_table, self.db)
 
+        logger.info(">>> StepExecutor.execute() шаг purpose=%r tool=%s columns=%s input_table=%s",
+                    step.purpose, step.tool, step.columns, input_table)
         try:
             tool = tool_registry.get(step.tool)
         except KeyError:
@@ -48,4 +50,6 @@ class StepExecutor:
             logger.error(msg)
             raise ValueError(msg)
 
-        return tool.run(self.db, input_table, step.columns)
+        result = tool.run(self.db, input_table, step.columns)
+        logger.info("<<< StepExecutor.execute() УСПЕШНО result_table=%s", result)
+        return result

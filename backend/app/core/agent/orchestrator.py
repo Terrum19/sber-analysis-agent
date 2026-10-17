@@ -16,7 +16,10 @@ SSE-событие ``clarification_needed`` и сохраняет в SessionMemo
 """
 
 import json
+import logging
 from collections.abc import AsyncIterator
+
+logger = logging.getLogger(__name__)
 
 from app.api.schemas.chat import ChatRequest
 from app.core.agent.insight import InsightGenerator
@@ -68,6 +71,7 @@ class AgentOrchestrator:
 
     async def run(self, request: ChatRequest) -> AsyncIterator[dict]:
         """Выполнить исследование и вернуть поток событий для фронта."""
+        logger.info(">>> run() session_id=%s question=%r", request.session_id, request.question)
         memory = SessionMemory(request.session_id)
 
         # --- Возобновление после уточнения (pending_recovery) ---
@@ -87,8 +91,15 @@ class AgentOrchestrator:
             else:
                 # Обычный путь: новый вопрос -> план -> выполнение шагов.
                 context = memory.build_context(request.question)
+                logger.info(">>> run() планируем шаги (planner.plan)")
                 plan = await self.planner.plan(request.question, context)
-                result_table = await self._execute_plan(memory, plan, "raw", request.question)
+                logger.info("<<< run() план получен: шагов=%d final_viz=%s dashboard=%s",
+                            len(plan.steps), plan.final_viz, plan.dashboard_requested)
+                for i, s in enumerate(plan.steps):
+                    logger.info("    шаг %d: tool=%s columns=%s needs_codegen=%s purpose=%r",
+                                s.step_id, s.tool, s.columns, s.needs_llm_codegen, s.purpose)
+                datasource = memory._state.get("datasource", "raw")
+                result_table = await self._execute_plan(memory, plan, datasource, request.question)
         except ClarificationNeeded as exc:
             yield {
                 "type": "clarification_needed",
@@ -101,13 +112,18 @@ class AgentOrchestrator:
             return
 
         # --- Финальный блок: инсайт -> чарт -> дашборд -> done ---
+        logger.info(">>> run() генерация инсайта")
         insight = await self.insight_gen.generate(request.question, result_table)
+        logger.info("<<< run() инсайт: headline=%r details=%r", insight.headline, insight.details)
         yield {"type": "text", "data": {"headline": insight.headline, "details": insight.details}}
 
         final_viz = pending.get("final_viz", "auto") if pending else plan.final_viz  # type: ignore[possibly-undefined]
         chart_type = select_chart(request.question, result_table, final_viz)
+        logger.info(">>> run() построение графика chart_type=%s", chart_type)
         data = self.db.to_records(result_table)
         spec = build_vega_spec(chart_type, result_table=result_table, data=data)
+        logger.info("<<< run() график построен: mark=%s строк=%d",
+                    spec.get("mark", "?"), len(spec.get("data", {}).get("values", [])))
         yield {"type": "chart", "data": {"spec": spec, "caption": insight.headline}}
 
         dashboard_requested = pending.get("dashboard_requested", False) if pending else plan.dashboard_requested  # type: ignore[possibly-undefined]
@@ -137,6 +153,8 @@ class AgentOrchestrator:
         """
         result_table = input_table
         for step in plan.steps:
+            logger.info(">>> _execute_plan шаг %d: tool=%s columns=%s needs_codegen=%s purpose=%r input_table=%s",
+                        step.step_id, step.tool, step.columns, step.needs_llm_codegen, step.purpose, result_table)
             try:
                 result_table = await with_retry(
                     self.executor.execute,
@@ -151,7 +169,7 @@ class AgentOrchestrator:
                         "question": question,
                         "failed_step_id": step.step_id,
                         "plan_steps": [s.model_dump() for s in plan.steps],
-                        "input_table": input_table,
+                        "input_table": result_table,
                         "error": str(exc),
                         "attempts_made": STEP_RETRY_ATTEMPTS,
                         "suggestions": CLARIFICATION_SUGGESTIONS,
@@ -159,12 +177,16 @@ class AgentOrchestrator:
                         "dashboard_requested": plan.dashboard_requested,
                     }
                 )
+                logger.error("<<< _execute_plan шаг %d ПАЛ: %r", step.step_id, exc)
                 raise ClarificationNeeded(
                     step_id=step.step_id,
                     error=str(exc),
                     suggestions=CLARIFICATION_SUGGESTIONS,
                 )
+            logger.info("<<< _execute_plan шаг %d УСПЕШЕН result_table=%s",
+                        step.step_id, result_table)
             memory.record_step(step, result_table)
+        logger.info("<<< _execute_plan все шаги завершены final_table=%s", result_table)
         return result_table
 
     async def _apply_recovery(

@@ -14,7 +14,7 @@ class Settings(BaseSettings):
 
     # LLM (локально, без облака)
     llm_base_url: str = "http://localhost:11434/v1"  # Ollama / vLLM (OpenAI-совместимый)
-    llm_model: str = "qwen2.5vl:7b"
+    llm_model: str = "qwen2.5:3b"
     llm_timeout_s: int = 120
     llm_temperature: float = 0.0
 
@@ -40,6 +40,12 @@ class Settings(BaseSettings):
 def get_settings() -> Settings:
     """Кешированный доступ к настройкам."""
     return Settings()
+
+
+def reload_settings() -> Settings:
+    """Сбросить кэш настроек и перечитать .env (нужно после изменения переменных)."""
+    get_settings.cache_clear()
+    return get_settings()
 
 
 settings = get_settings()
