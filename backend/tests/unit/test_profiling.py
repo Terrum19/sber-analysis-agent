@@ -6,6 +6,7 @@ import pytest
 from app.config import settings
 from app.core.data.duckdb_manager import DuckDBManager
 from app.core.data.profiling import (
+    ColumnStats,
     TableProfile,
     classify,
     format_quality,
@@ -466,3 +467,32 @@ def test_schema_describe_prompt_has_quality_block(db) -> None:
     profile = profile_table(db, "gaps")
     prompt = SCHEMA_DESCRIBE.format(profile=profile.to_dict(), quality=format_quality(profile))
     assert "Качество данных:\n- «value»: пропусков 50%" in prompt
+
+
+def test_rows_rename_reserved_fields_and_restore_order(db) -> None:
+    make_table(
+        db,
+        "rows_demo",
+        "amount DOUBLE, day DATE",
+        [(1.0, "2024-01-01"), (2.0, "2024-01-02"), (3.0, "2024-01-03"), (100.0, "2024-01-04")],
+    )
+    profile = profile_table(db, "rows_demo", approx=False)
+    amount = profile.column("amount").to_row()
+    assert amount["column_name"] == "amount"
+    assert amount["min_value"] == "1.0"
+    assert amount["distinct_count"] == 4
+    assert (amount["lower_fence"], amount["upper_fence"]) == profile.column("amount").fences()
+    assert "min" not in amount and "distinct" not in amount
+    rows = [
+        column.to_row() | {"position": position} for position, column in enumerate(profile.columns)
+    ]
+    table_row = {
+        "table_name": profile.table,
+        "row_count": profile.row_count,
+        "column_count": profile.column_count,
+        "profiled_at": profile.profiled_at,
+    }
+    assert TableProfile.from_rows(table_row, rows[::-1]) == profile
+    day = ColumnStats.from_row(rows[1])
+    assert day.min_date == date(2024, 1, 1)
+    assert day.mode is None

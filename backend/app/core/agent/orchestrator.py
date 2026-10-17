@@ -79,6 +79,7 @@ class AgentOrchestrator:
         self.planner = planner or StepPlanner()
         self.executor = executor or StepExecutor()
         self.insight_gen = insight_gen or InsightGenerator(db=self.db)
+        self.profiles = ProfileMemory(self.executor.db)
 
     async def run(self, request: ChatRequest) -> AsyncIterator[dict]:
         """Выполнить исследование и вернуть поток событий для фронта."""
@@ -120,6 +121,19 @@ class AgentOrchestrator:
                     "suggestions": exc.suggestions,
                 },
             }
+        titles = column_aliases(
+            {
+                "glossary": self.profiles.load_glossary(SOURCE_TABLE),
+                "aliases": {
+                    row.column: row.aliases for row in self.profiles.load_enrichment(SOURCE_TABLE)
+                },
+            }
+        )
+
+        morphed = self._morph(memory, request.question, titles)
+        if morphed is not None:
+            yield {"type": "chart", "data": morphed}
+            yield {"type": "done", "data": {}}
             return
 
         # --- Финальный блок: инсайт -> чарт -> дашборд -> done ---

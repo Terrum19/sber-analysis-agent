@@ -19,6 +19,26 @@ def test_manager_creates_storage_directory(tmp_path) -> None:
     assert path.is_file()
 
 
+def test_transaction_commits_or_rolls_back(tmp_path) -> None:
+    manager = DuckDBManager(str(tmp_path / "main.duckdb"))
+    try:
+        manager.execute("CREATE TABLE items (id INTEGER)")
+        with manager.transaction():
+            manager.execute("INSERT INTO items VALUES (1)")
+        with pytest.raises(KeyboardInterrupt), manager.transaction():
+            manager.execute("INSERT INTO items VALUES (2)")
+            raise KeyboardInterrupt
+        with pytest.raises(duckdb.CatalogException), manager.transaction():
+            manager.execute("INSERT INTO items VALUES (3)")
+            manager.execute("INSERT INTO missing VALUES (4)")
+        assert manager.query("SELECT id FROM items") == [{"id": 1}]
+        with manager.transaction():
+            manager.execute("INSERT INTO items VALUES (5)")
+        assert manager.query("SELECT id FROM items ORDER BY id") == [{"id": 1}, {"id": 5}]
+    finally:
+        manager.close()
+
+
 def test_postgres_scanner_is_installed_and_loads() -> None:
     con = duckdb.connect()
     con.execute("INSTALL postgres_scanner")
