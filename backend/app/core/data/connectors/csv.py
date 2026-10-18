@@ -269,6 +269,15 @@ class CSVConnector(BaseConnector):
                 raise
         return [report.table for report in self.reports]
 
+    def column_comments(self, db, table: str) -> dict[str, str]:
+        rows = db.query(
+            "SELECT column_name, comment FROM duckdb_columns() "
+            "WHERE database_name = current_database() AND schema_name = 'main' "
+            "AND table_name = $table AND comment IS NOT NULL",
+            {"table": table},
+        )
+        return {row["column_name"]: row["comment"] for row in rows}
+
     def rollback(self, db) -> None:
         for report in self.reports:
             db.execute(f"DROP TABLE IF EXISTS {quote_identifier(report.table)}")

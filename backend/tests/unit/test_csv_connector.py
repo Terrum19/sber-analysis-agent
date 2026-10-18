@@ -250,3 +250,15 @@ def test_failed_reload_keeps_previous_table(tmp_path, db, monkeypatch) -> None:
         load_csv(db, "items", write(tmp_path, "other.csv", b"x\n2\n"))
     assert db.query("SELECT x FROM items") == [{"x": 1}]
     assert db.query("SELECT comment FROM duckdb_tables()") == [{"comment": "csv:items.csv"}]
+
+
+def test_column_comments_come_from_duckdb_catalog(tmp_path, db) -> None:
+    connector = CSVConnector({"items": str(write(tmp_path, "items.csv", b"x,y\n1,2\n"))})
+    connector.connect(db)
+    assert connector.column_comments(db, "items") == {}
+    db.execute("COMMENT ON COLUMN items.x IS 'Количество, шт.'")
+    db.execute("CREATE SCHEMA other")
+    db.execute("CREATE TABLE other.items (y INTEGER)")
+    db.execute("COMMENT ON COLUMN other.items.y IS 'чужая таблица'")
+    assert connector.column_comments(db, "items") == {"x": "Количество, шт."}
+    assert connector.column_comments(db, "missing") == {}

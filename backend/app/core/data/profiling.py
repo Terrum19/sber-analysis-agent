@@ -1,7 +1,8 @@
+import json
 import math
 import re
 import uuid
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, fields
 from datetime import UTC, date, datetime, time
 from decimal import Decimal
 
@@ -100,6 +101,14 @@ IDENTIFIER_MEASURES = (
     "kurtosis",
     "outlier_count",
 )
+ROW_NAMES = {
+    "name": "column_name",
+    "distinct": "distinct_count",
+    "min": "min_value",
+    "max": "max_value",
+    "mode": "mode_value",
+}
+JSON_FIELDS = {"min", "max", "mode", "min_date", "max_date"}
 
 
 @dataclass
@@ -142,6 +151,39 @@ class ColumnStats:
         spread = OUTLIER_FENCE * (self.q3 - self.q1)
         return self.q1 - spread, self.q3 + spread
 
+    def to_row(self) -> dict:
+        """Строка _meta.column_passport (без table_name и position).
+
+        Поля с зарезервированными в SQL именами переименовываются (ROW_NAMES),
+        значения без фиксированного типа и top_values сериализуются в JSON.
+        """
+        row = {}
+        for name, value in asdict(self).items():
+            if name in JSON_FIELDS:
+                value = dump_json(value)
+            elif name == "top_values":
+                value = json.dumps(to_json(value), ensure_ascii=False)
+            row[ROW_NAMES.get(name, name)] = value
+        row["lower_fence"], row["upper_fence"] = self.fences() or (None, None)
+        return row
+
+    @classmethod
+    def from_row(cls, row: dict) -> "ColumnStats":
+        """Обратное к to_row: типы значений восстанавливаются по dtype."""
+        dtype = row["dtype"]
+        values = {}
+        for item in fields(cls):
+            value = row[ROW_NAMES.get(item.name, item.name)]
+            if item.name in JSON_FIELDS:
+                value = restore(load_json(value), dtype)
+            elif item.name == "top_values":
+                value = [
+                    {"value": restore(entry["value"], dtype), "count": entry["count"]}
+                    for entry in json.loads(value)
+                ]
+            values[item.name] = value
+        return cls(**values)
+
 
 @dataclass
 class TableProfile:
@@ -162,6 +204,18 @@ class TableProfile:
             "columns": [to_json(asdict(column)) for column in self.columns],
             "profiled_at": self.profiled_at,
         }
+
+    @classmethod
+    def from_rows(cls, table_row: dict, column_rows: list[dict]) -> "TableProfile":
+        """Собрать профиль из строк _meta.table_passport и _meta.column_passport."""
+        ordered = sorted(column_rows, key=lambda row: row["position"])
+        return cls(
+            table=table_row["table_name"],
+            row_count=table_row["row_count"],
+            column_count=table_row["column_count"],
+            columns=[ColumnStats.from_row(row) for row in ordered],
+            profiled_at=table_row["profiled_at"],
+        )
 
 
 def name_tokens(name: str) -> list[str]:
@@ -230,6 +284,32 @@ def to_json(value: object) -> object:
     if isinstance(value, uuid.UUID):
         return str(value)
     return value
+
+
+def dump_json(value: object) -> str | None:
+    """Значение -> текст для JSON-колонки (None остаётся SQL NULL)."""
+    return None if value is None else json.dumps(to_json(value), ensure_ascii=False)
+
+
+def load_json(text: str | None) -> object:
+    return None if text is None else json.loads(text)
+
+
+def restore(value: object, dtype: str) -> object:
+    """Обратное к to_json: вернуть значению из JSON тип колонки dtype."""
+    if not isinstance(value, str):
+        return value
+    normalized = dtype.upper()
+    if normalized == "DATE":
+        return date.fromisoformat(value)
+    if normalized in TEMPORAL_TYPES:
+        return datetime.fromisoformat(value)
+    if normalized == "UUID":
+        return uuid.UUID(value)
+    return value
+
+
+ROW_FIELDS = tuple(ColumnStats(name="", dtype="", kind="").to_row())
 
 
 def plain(value: object) -> object:

@@ -45,11 +45,19 @@ class AgentOrchestrator:
         self.executor = executor or StepExecutor()
         self.insight_gen = insight_gen or InsightGenerator()
         self.cache = cache or StateCache(self.executor.db)
+        self.profiles = ProfileMemory(self.executor.db)
 
     async def run(self, request: ChatRequest) -> AsyncIterator[dict]:
         """Выполнить исследование и вернуть поток событий для фронта."""
         memory = SessionMemory(request.session_id)
-        titles = column_aliases(ProfileMemory().load(SOURCE_TABLE))
+        titles = column_aliases(
+            {
+                "glossary": self.profiles.load_glossary(SOURCE_TABLE),
+                "aliases": {
+                    row.column: row.aliases for row in self.profiles.load_enrichment(SOURCE_TABLE)
+                },
+            }
+        )
 
         morphed = self._morph(memory, request.question, titles)
         if morphed is not None:

@@ -6,6 +6,8 @@
 """
 
 import threading
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 
 import duckdb
@@ -36,6 +38,18 @@ class DuckDBManager:
         """Выполнить DDL/DML без возврата строк."""
         with self.lock:
             self._con.execute(sql, params or {})
+
+    @contextmanager
+    def transaction(self) -> Iterator[None]:
+        """Выполнить блок в одной транзакции под lock; при любой ошибке — откат."""
+        with self.lock:
+            self._con.execute("BEGIN TRANSACTION")
+            try:
+                yield
+            except BaseException:
+                self._con.execute("ROLLBACK")
+                raise
+            self._con.execute("COMMIT")
 
     def save_step_result(self, source_table: str, sql: str) -> str:
         """Сохранить результат шага как temp_result_vN и вернуть его имя.

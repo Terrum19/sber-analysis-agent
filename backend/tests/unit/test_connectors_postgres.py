@@ -93,8 +93,11 @@ def test_password_is_masked_in_repr_and_str() -> None:
 
 
 class FakeDuckDB:
-    def __init__(self, tables=(), existing=(), failing=(), previous=(), stale_views=()) -> None:
+    def __init__(
+        self, tables=(), existing=(), failing=(), previous=(), stale_views=(), comments=()
+    ) -> None:
         self.tables = list(tables)
+        self.comments = list(comments)
         self.existing = list(existing)
         self.failing = failing
         self.previous = list(previous)
@@ -115,6 +118,8 @@ class FakeDuckDB:
         for prefix, error in self.failing:
             if sql.startswith(prefix):
                 raise error
+        if "postgres_query(" in sql:
+            return [{"column_name": name, "comment": text} for name, text in self.comments]
         if "information_schema.tables" in sql:
             return [{"table_name": table} for table in self.tables]
         if "duckdb_tables()" in sql:
@@ -375,6 +380,62 @@ def test_case_insensitive_duplicates_get_numbered_names() -> None:
 )
 def test_describe_failure(text: str, expected: str) -> None:
     assert expected in describe_failure(text)
+
+
+def test_column_comments_are_read_from_source_table() -> None:
+    db = FakeDuckDB(
+        tables=["events", "it's"],
+        existing=["events"],
+        comments=[("amount", "Сумма, руб."), ("note", "Комментарий")],
+    )
+    connector = PostgresConnector(DSN, schema="O'Hara")
+    assert connector.connect(db) == ["shop_events", "it's"]
+    assert connector.column_comments(db, "shop_events") == {
+        "amount": "Сумма, руб.",
+        "note": "Комментарий",
+    }
+    sql = db.statements[-1]
+    assert sql.startswith(f"SELECT column_name, comment FROM postgres_query('{connector.alias}', ")
+    assert "n.nspname = ''O''''Hara'' AND c.relname = ''events''" in sql
+    assert sql.endswith("WHERE comment IS NOT NULL")
+    connector.column_comments(db, "it's")
+    assert "c.relname = ''it''''s''" in db.statements[-1]
+
+
+def test_column_comments_for_unknown_view_skip_the_source() -> None:
+    db = FakeDuckDB(tables=["orders"])
+    connector = PostgresConnector(DSN)
+    assert connector.column_comments(db, "orders") == {}
+    connector.connect(db)
+    issued = len(db.statements)
+    assert connector.column_comments(db, "not_from_postgres") == {}
+    assert len(db.statements) == issued
+
+
+def test_reconnect_forgets_previous_views() -> None:
+    connector = PostgresConnector(DSN)
+    connector.connect(FakeDuckDB(tables=["orders", "users"]))
+    connector.connect(FakeDuckDB(tables=["orders"]))
+    assert connector.sources == {"orders": "orders"}
+
+
+def test_column_comments_failure_is_logged_without_secrets(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    error = duckdb.IOException("connection lost for TopSecret")
+    db = FakeDuckDB(tables=["orders"], failing=[("SELECT column_name, comment", error)])
+    connector = PostgresConnector(DSN)
+    connector.connect(db)
+    with caplog.at_level(logging.WARNING):
+        assert connector.column_comments(db, "orders") == {}
+    assert "комментарии колонок «orders»" in caplog.text
+    assert "TopSecret" not in caplog.text
+
+
+def test_connectors_without_comments_return_empty_dict() -> None:
+    db = FakeDuckDB()
+    assert ClickHouseConnector("clickhouse://localhost").column_comments(db, "events") == {}
+    assert db.statements == []
 
 
 def test_factory_builds_known_kinds_and_rejects_unknown() -> None:
