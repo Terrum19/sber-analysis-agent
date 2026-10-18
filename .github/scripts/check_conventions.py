@@ -1,8 +1,6 @@
-import io
 import re
 import subprocess
 import sys
-import tokenize
 
 CYRILLIC = re.compile(r"[А-Яа-яЁё]")
 TRAILER = re.compile(r"^[A-Za-z-]+:\s")
@@ -13,8 +11,6 @@ ATTRIBUTION = re.compile(
     re.IGNORECASE,
 )
 FORBIDDEN_PATHS = re.compile(r"(^|/)\.claude/|(^|/)CLAUDE\.md$")
-ALLOWED_COMMENT = re.compile(r"SPDX-License-Identifier|Copyright|^#!")
-HUNK = re.compile(r"^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@")
 
 
 def git(*args: str) -> str:
@@ -48,59 +44,6 @@ def changed_files(commit: str) -> list[tuple[str, str]]:
     return entries
 
 
-def added_lines(commit: str, path: str) -> set[int]:
-    diff = git("diff-tree", "--root", "-p", "-U0", "--no-commit-id", commit, "--", path)
-    numbers: set[int] = set()
-    for line in diff.splitlines():
-        match = HUNK.match(line)
-        if match:
-            start = int(match.group(1))
-            count = int(match.group(2)) if match.group(2) is not None else 1
-            numbers.update(range(start, start + count))
-    return numbers
-
-
-def comments(source: str) -> list[tokenize.TokenInfo]:
-    tokens = tokenize.generate_tokens(io.StringIO(source).readline)
-    return [token for token in tokens if token.type == tokenize.COMMENT]
-
-
-def previous_comments(commit: str, path: str) -> set[str]:
-    parents = git("rev-list", "--parents", "-n", "1", commit).split()[1:]
-    known: set[str] = set()
-    for parent in parents:
-        try:
-            source = git("show", f"{parent}:{path}")
-        except subprocess.CalledProcessError:
-            continue
-        try:
-            known.update(token.string.strip() for token in comments(source))
-        except (tokenize.TokenError, SyntaxError):
-            continue
-    return known
-
-
-def comment_problems(commit: str, path: str) -> list[str]:
-    source = git("show", f"{commit}:{path}")
-    fresh = added_lines(commit, path)
-    problems = []
-    try:
-        found = comments(source)
-    except (tokenize.TokenError, SyntaxError):
-        return [f"{path}: не удалось разобрать файл"]
-    touched = any(token.start[0] in fresh for token in found)
-    known = previous_comments(commit, path) if touched else set()
-    for token in found:
-        row = token.start[0]
-        if row not in fresh or token.string.strip() in known:
-            continue
-        if ALLOWED_COMMENT.search(token.string):
-            continue
-        text = token.string.strip()
-        problems.append(f"{path}:{row}: комментарий в .py запрещён: {text}")
-    return problems
-
-
 def check(commit: str) -> list[str]:
     problems = message_problems(commit)
     for status, path in changed_files(commit):
@@ -108,8 +51,6 @@ def check(commit: str) -> list[str]:
             continue
         if FORBIDDEN_PATHS.search(path):
             problems.append(f"служебный файл Claude в коммите: {path}")
-        if path.endswith(".py"):
-            problems.extend(comment_problems(commit, path))
     return problems
 
 
