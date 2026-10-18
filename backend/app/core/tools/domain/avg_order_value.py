@@ -8,7 +8,7 @@ class AverageOrderValueTool(BaseTool):
     name = "avg_order_value"
     description = "Средний чек с опциональной сегментацией"
 
-    def run(self, db, input_table: str, columns: list[str]) -> str:
+    def run(self, db, input_table: str, columns: list[str], **kwargs: object) -> str:
         required(columns, 1, 2, self.name)
         order_col = columns[0]
         group_col = columns[1] if len(columns) == 2 else None

@@ -13,7 +13,7 @@ class AggregateTool(BaseTool):
     name = "aggregate"
     description = "Сгруппировать по колонке и посчитать количество/среднее/сумму"
 
-    def run(self, db, input_table: str, columns: list[str]) -> str:
+    def run(self, db, input_table: str, columns: list[str], **kwargs: object) -> str:
         if not columns:
             raise ValueError("aggregate requires [column]")
         col = identifier(columns[0])

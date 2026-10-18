@@ -49,8 +49,8 @@ def run_tool(db: DuckDBManager, name: str, columns: list[str]) -> tuple[str, lis
         ("group_by", ["category", "amount", "SUM"]),
         ("pivot", ["amount", "category", "id"]),
         ("time_bucket", ["event_date", "month"]),
-        ("lag", ["amount", "1"]),
-        ("lead", ["amount", "1"]),
+        ("lag", ["amount", "1", "event_date"]),
+        ("lead", ["amount", "1", "event_date"]),
         ("aggregate", ["category"]),
         ("time_series", ["event_date", "amount"]),
         ("correlation", ["amount", "other_amount"]),
@@ -77,23 +77,37 @@ def test_atomic_tools_preserve_expected_values(db: DuckDBManager) -> None:
 @pytest.mark.parametrize(
     ("name", "columns", "expected_columns"),
     [
-        ("pearson_corr", ["amount", "other_amount"], {"correlation"}),
-        ("spearman_corr", ["amount", "other_amount"], {"correlation"}),
-        ("linear_regression", ["amount", "other_amount"], {"slope", "intercept", "r_squared"}),
-        ("anova_one_way", ["amount", "category"], {"statistic"}),
+        ("pearson_corr", ["amount", "other_amount"], {"correlation", "p_value"}),
+        ("spearman_corr", ["amount", "other_amount"], {"correlation", "p_value"}),
+        (
+            "linear_regression",
+            ["amount", "other_amount"],
+            {"slope", "intercept", "r_squared", "p_value", "stderr"},
+        ),
+        (
+            "anova_one_way",
+            ["amount", "category"],
+            {"statistic", "p_value", "df_between", "df_within"},
+        ),
         (
             "t_test_ind",
             ["amount", "other_amount"],
             {"statistic", "p_value", "degrees_of_freedom"},
         ),
-        ("t_test_dep", ["amount", "other_amount"], {"statistic"}),
-        ("mann_whitney_u", ["amount", "other_amount"], {"statistic"}),
+        (
+            "t_test_dep",
+            ["amount", "other_amount"],
+            {"statistic", "p_value", "degrees_of_freedom"},
+        ),
+        ("mann_whitney_u", ["amount", "other_amount"], {"statistic", "p_value"}),
+        ("ks_test", ["amount"], {"statistic", "p_value"}),
+        ("shapiro_wilk", ["amount"], {"statistic", "p_value"}),
         (
             "describe_stats",
             ["amount"],
             {"n", "mean", "std", "min", "max", "q1", "q3", "skew", "kurtosis"},
         ),
-        ("bootstrap_ci", ["amount"], {"mean", "ci_low", "ci_high"}),
+        ("bootstrap_ci", ["amount"], {"statistic", "estimate", "ci_low", "ci_high"}),
         ("search_categorical_values", ["category", "a"], {"stored_value", "match_score"}),
     ],
 )
@@ -120,6 +134,35 @@ def test_forecast_returns_requested_number_of_periods(db: DuckDBManager) -> None
     assert set(db.query(f"DESCRIBE {table}")[0]) >= {"column_name"}
 
 
+def test_forecast_extends_the_fitted_line(db: DuckDBManager) -> None:
+    _, records = run_tool(db, "forecast", ["event_date", "amount", "2"])
+    assert [(row["period_index"], row["forecast"]) for row in records] == [
+        (5, pytest.approx(50.0)),
+        (6, pytest.approx(60.0)),
+    ]
+
+
+def test_rename_column_keeps_column_position(db: DuckDBManager) -> None:
+    table, _ = run_tool(db, "rename_column", ["category", "segment"])
+    names = [row["column_name"] for row in db.query(f"DESCRIBE {table}")]
+    assert names == ["id", "event_date", "segment", "amount", "other_amount"]
+
+
+def test_window_tools_take_the_order_column_from_parameters(db: DuckDBManager) -> None:
+    db.execute("CREATE VIEW raw_view AS SELECT * FROM raw")
+    table = tool_registry.get("lag").run(db, "raw_view", ["amount", "1"], order_column="event_date")
+    assert [row["lag_amount"] for row in db.to_records(table)] == [None, 10.0, 20.0, 30.0]
+
+
+def test_expressions_may_use_scalar_functions_and_join_aliases(db: DuckDBManager) -> None:
+    _, records = run_tool(
+        db, "create_column", ["label", "CASE WHEN amount > 15 THEN upper(category) ELSE 'low' END"]
+    )
+    assert [row["label"] for row in records] == ["low", "B", "A", "B"]
+    _, records = run_tool(db, "join_tables", ["right_table", "t1.id = t2.id AND t2.label <> ''"])
+    assert [row["label"] for row in records] == ["first", "third"]
+
+
 @pytest.mark.parametrize(
     ("name", "columns"),
     [
@@ -128,7 +171,14 @@ def test_forecast_returns_requested_number_of_periods(db: DuckDBManager) -> None
         ("create_column", ["new"]),
         ("group_by", ["category", "amount", "MEDIAN"]),
         ("time_bucket", ["event_date", "year"]),
-        ("lag", ["amount", "-1"]),
+        ("lag", ["amount", "-1", "event_date"]),
+        ("lag", ["amount", "1"]),
+        ("create_column", ["leak", "(SELECT content FROM read_text('/etc/hostname'))"]),
+        ("create_column", ["leak", "EXISTS (SELECT 1)"]),
+        ("create_column", ["leak", "amount) AS a, (amount"]),
+        ("create_column", ["leak", "1) AS a FROM read_text('/etc/hostname') /*"]),
+        ("create_column", ["leak", "current_setting('home_directory')"]),
+        ("join_tables", ["right_table", "t.id = t_right.id AND (SELECT 1) = 1"]),
         ("pearson_corr", ["amount"]),
         ("bootstrap_ci", ["amount;"]),
         ("search_categorical_values", ["category"]),

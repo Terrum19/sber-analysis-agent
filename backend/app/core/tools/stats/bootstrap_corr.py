@@ -10,6 +10,7 @@ from app.core.tools.stats._common import paired_values, result
 class BootstrapCorrelationTool(BaseTool):
     name = "bootstrap_corr"
     description = "Bootstrap 95% ДИ для корреляции Пирсона"
+    transforms_data = False
 
     max_observations = 100_000
     max_bootstraps = 10_000

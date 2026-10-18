@@ -16,7 +16,6 @@ from app.core.tools.funnel.funnel_drop_off import FunnelDropOffTool
 from app.core.tools.funnel.funnel_steps import FunnelStepsTool
 from app.core.tools.funnel.retention_matrix import RetentionMatrixTool
 from app.core.tools.inspect_temp_table import InspectTempTableTool
-from app.core.tools.run_wasm_python import RunWasmPythonTool
 from app.core.tools.sql.aggregate import AggregateTool
 from app.core.tools.sql.atomic import (
     CreateColumnTool,
@@ -42,6 +41,7 @@ from app.core.tools.stats.linear_regression import LinearRegressionTool
 from app.core.tools.stats.mann_whitney_u import MannWhitneyUTool
 from app.core.tools.stats.pearson_corr import PearsonCorrelationTool
 from app.core.tools.stats.search_categorical_values import SearchCategoricalValuesTool
+from app.core.tools.stats.shapiro_wilk import ShapiroWilkTool
 from app.core.tools.stats.spearman_corr import SpearmanCorrelationTool
 from app.core.tools.stats.t_test_dep import PairedTTestTool
 from app.core.tools.stats.t_test_ind import IndependentTTestTool
@@ -69,7 +69,8 @@ class ToolRegistry:
 
     def describe(self) -> str:
         """Описания всех тулов для LLM."""
-        return "\n".join(t.describe() for t in self._tools.values())
+        unique = {id(tool): tool for tool in self._tools.values()}
+        return "\n".join(tool.describe() for tool in unique.values())
 
 
 tool_registry = ToolRegistry()
@@ -102,8 +103,8 @@ for _tool in (
     ChiSquareTool(),
     SearchCategoricalValuesTool(),
     InspectTempTableTool(),
-    RunWasmPythonTool(),
     KSTestTool(),
+    ShapiroWilkTool(),
     ForecastTool(),
     SeasonalityTool(),
     FunnelStepsTool(),

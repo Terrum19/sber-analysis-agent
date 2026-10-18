@@ -8,7 +8,7 @@ class ProductPerformanceTool(BaseTool):
     name = "product_performance"
     description = "Сравнение товаров/проектов по сумме, среднему и распределению метрики"
 
-    def run(self, db, input_table: str, columns: list[str]) -> str:
+    def run(self, db, input_table: str, columns: list[str], **kwargs: object) -> str:
         required(columns, 2, 2, self.name)
         metric_col, group_col = columns
         return db.save_step_result(

@@ -9,8 +9,9 @@ from app.core.tools.stats._common import result
 class ChiSquareTool(BaseTool):
     name = "chi_square"
     description = "Хи-квадрат тест независимости двух категориальных колонок"
+    transforms_data = False
 
-    def run(self, db, input_table: str, columns: list[str]) -> str:
+    def run(self, db, input_table: str, columns: list[str], **kwargs: object) -> str:
         if len(columns) != 2:
             raise ValueError("chi_square requires [categorical_column_a, categorical_column_b]")
         first, second = (identifier(column) for column in columns)

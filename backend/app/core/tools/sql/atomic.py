@@ -9,7 +9,7 @@ class SelectColumnsTool(BaseTool):
     name = "select_columns"
     description = "Выбрать указанные колонки"
 
-    def run(self, db, input_table: str, columns: list[str]) -> str:
+    def run(self, db, input_table: str, columns: list[str], **kwargs: object) -> str:
         if not columns:
             raise ValueError("select_columns requires at least one column")
         selected = ", ".join(identifier(column) for column in columns)
@@ -20,7 +20,7 @@ class FilterRowsTool(BaseTool):
     name = "filter_rows"
     description = "Отфильтровать строки по колонке, значению и оператору"
 
-    def run(self, db, input_table: str, columns: list[str]) -> str:
+    def run(self, db, input_table: str, columns: list[str], **kwargs: object) -> str:
         if len(columns) != 3:
             raise ValueError("filter_rows requires [column, value, operator]")
         column, value, operator = identifier(columns[0]), columns[1], columns[2].upper()
@@ -35,9 +35,12 @@ class FilterRowsTool(BaseTool):
 
 class CreateColumnTool(BaseTool):
     name = "create_column"
-    description = "Создать вычисляемую колонку по SQL-выражению"
+    description = (
+        "Создать вычисляемую колонку по скалярному SQL-выражению над колонками "
+        "таблицы (без подзапросов)"
+    )
 
-    def run(self, db, input_table: str, columns: list[str]) -> str:
+    def run(self, db, input_table: str, columns: list[str], **kwargs: object) -> str:
         if len(columns) != 2:
             raise ValueError("create_column requires [new_column, expression]")
         new_column, sql_expression = identifier(columns[0]), expression(columns[1])
@@ -51,14 +54,13 @@ class RenameColumnTool(BaseTool):
     name = "rename_column"
     description = "Переименовать колонку"
 
-    def run(self, db, input_table: str, columns: list[str]) -> str:
+    def run(self, db, input_table: str, columns: list[str], **kwargs: object) -> str:
         if len(columns) != 2:
             raise ValueError("rename_column requires [old_name, new_name]")
         old_name, new_name = identifier(columns[0]), identifier(columns[1])
         return db.save_step_result(
             input_table,
-            f"SELECT * EXCLUDE ({old_name}), {old_name} AS {new_name} "
-            f"FROM {identifier(input_table)}",
+            f"SELECT * RENAME ({old_name} AS {new_name}) FROM {identifier(input_table)}",
         )
 
 
@@ -68,42 +70,32 @@ class JoinTablesTool(BaseTool):
         "Соединить текущую таблицу с другой по условию; используйте "
         "t и t_right (также принимаются t1 и t2)"
     )
+    join = "JOIN"
 
-    def run(self, db, input_table: str, columns: list[str]) -> str:
+    def run(self, db, input_table: str, columns: list[str], **kwargs: object) -> str:
         if len(columns) != 2:
-            raise ValueError("join_tables requires [right_table, join_condition]")
-        right_table, condition = identifier(columns[0]), expression(columns[1])
-        condition = re.sub(r"\bt1\.", "t.", condition)
-        condition = re.sub(r"\bt2\.", "t_right.", condition)
+            raise ValueError(f"{self.name} requires [right_table, join_condition]")
+        right_table = identifier(columns[0])
+        condition = re.sub(r"\bt2\.", "t_right.", re.sub(r"\bt1\.", "t.", str(columns[1])))
+        condition = expression(condition)
         return db.save_step_result(
             input_table,
             f"SELECT * FROM {identifier(input_table)} AS t "
-            f"JOIN {right_table} AS t_right ON {condition}",
+            f"{self.join} {right_table} AS t_right ON ({condition})",
         )
 
 
 class LeftJoinTablesTool(JoinTablesTool):
     name = "left_join_tables"
     description = "Левое соединение с другой таблицей без потери строк"
-
-    def run(self, db, input_table: str, columns: list[str]) -> str:
-        if len(columns) != 2:
-            raise ValueError("left_join_tables requires [right_table, join_condition]")
-        right_table, condition = identifier(columns[0]), expression(columns[1])
-        condition = re.sub(r"\bt1\.", "t.", condition)
-        condition = re.sub(r"\bt2\.", "t_right.", condition)
-        return db.save_step_result(
-            input_table,
-            f"SELECT * FROM {identifier(input_table)} AS t "
-            f"LEFT JOIN {right_table} AS t_right ON {condition}",
-        )
+    join = "LEFT JOIN"
 
 
 class GroupByTool(BaseTool):
     name = "group_by"
     description = "Сгруппировать и применить COUNT, SUM, AVG, MIN или MAX"
 
-    def run(self, db, input_table: str, columns: list[str]) -> str:
+    def run(self, db, input_table: str, columns: list[str], **kwargs: object) -> str:
         if len(columns) != 3:
             raise ValueError(
                 "group_by requires [group_column, aggregate_column, aggregate_function]"
@@ -126,7 +118,7 @@ class PivotTool(BaseTool):
     name = "pivot"
     description = "Сделать pivot по уникальным значениям категориальной колонки"
 
-    def run(self, db, input_table: str, columns: list[str]) -> str:
+    def run(self, db, input_table: str, columns: list[str], **kwargs: object) -> str:
         if len(columns) != 3:
             raise ValueError("pivot requires [value_column, row_column, column_column]")
         value_col, row_col, col_col = (identifier(column) for column in columns)
@@ -141,7 +133,7 @@ class TimeBucketTool(BaseTool):
     name = "time_bucket"
     description = "Агрегировать данные по month, week, day или quarter"
 
-    def run(self, db, input_table: str, columns: list[str]) -> str:
+    def run(self, db, input_table: str, columns: list[str], **kwargs: object) -> str:
         if len(columns) != 2:
             raise ValueError("time_bucket requires [date_column, interval]")
         date_col, interval = identifier(columns[0]), columns[1].lower()
@@ -157,18 +149,23 @@ class TimeBucketTool(BaseTool):
 class WindowTool(BaseTool):
     def __init__(self, name: str, function: str, description: str) -> None:
         self.name, self.function = name, function
-        self.description = f"{description}; columns=[value_column, offset, order_column?]"
+        self.description = (
+            f"{description}; columns=[value_column, offset, order_column] "
+            "(order_column можно передать в parameters)"
+        )
 
-    def run(self, db, input_table: str, columns: list[str]) -> str:
+    def run(self, db, input_table: str, columns: list[str], **kwargs: object) -> str:
         if len(columns) not in (2, 3):
-            raise ValueError(f"{self.name} requires [column, offset, order_column?]")
+            raise ValueError(f"{self.name} requires [column, offset, order_column]")
         column, offset = identifier(columns[0]), int(columns[1])
         if offset < 0:
             raise ValueError("Window offset must be non-negative")
-        order_column = identifier(columns[2]) if len(columns) == 3 else "rowid"
+        order_column = kwargs.get("order_column", columns[2] if len(columns) == 3 else None)
+        if order_column is None:
+            raise ValueError(f"{self.name} requires an order_column to define row order")
         return db.save_step_result(
             input_table,
             f"SELECT *, {self.function}({column}, {offset}) "
-            f"OVER (ORDER BY {order_column}) AS {self.name}_{column} "
+            f"OVER (ORDER BY {identifier(str(order_column))}) AS {self.name}_{column} "
             f"FROM {identifier(input_table)}",
         )

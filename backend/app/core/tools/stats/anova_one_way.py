@@ -9,9 +9,13 @@ from app.core.tools.stats._common import result
 
 class AnovaOneWayTool(BaseTool):
     name = "anova_one_way"
-    description = "Одноварный ANOVA для сравнения средних по группам"
+    description = (
+        "Одноварный ANOVA для сравнения средних двух и более групп: "
+        "columns=[value_column, group_column]"
+    )
+    transforms_data = False
 
-    def run(self, db, input_table: str, columns: list[str]) -> str:
+    def run(self, db, input_table: str, columns: list[str], **kwargs: object) -> str:
         if len(columns) != 2:
             raise ValueError("anova_one_way requires [value_column, group_column]")
         value_column, group_column = identifier(columns[0]), identifier(columns[1])
@@ -22,9 +26,9 @@ class AnovaOneWayTool(BaseTool):
         groups: dict[object, list[float]] = {}
         for row in rows:
             groups.setdefault(row["group_name"], []).append(float(row["value"]))
-        statistic = (
-            stats.f_oneway(*(np.asarray(group) for group in groups.values())).statistic
-            if len(groups) > 1
-            else None
-        )
-        return result(db, input_table, "statistic", (statistic,))
+        observations = sum(len(group) for group in groups.values())
+        outcome: tuple[object, ...] = (None, None, None, None)
+        if len(groups) > 1 and observations > len(groups):
+            test = stats.f_oneway(*(np.asarray(group) for group in groups.values()))
+            outcome = (test.statistic, test.pvalue, len(groups) - 1, observations - len(groups))
+        return result(db, input_table, "statistic, p_value, df_between, df_within", outcome)

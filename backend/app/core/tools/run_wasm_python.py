@@ -13,7 +13,7 @@ class RunWasmPythonTool(BaseTool):
         "columns=[python_code, target_table, output_col?]"
     )
 
-    def run(self, db, input_table: str, columns: list[str]) -> str:
+    def run(self, db, input_table: str, columns: list[str], **kwargs: object) -> str:
         if len(columns) not in (2, 3):
             raise ValueError("run_wasm_python requires [python_code, target_table, output_col?]")
         code, target_table = columns[0], identifier(columns[1])

@@ -9,11 +9,12 @@ from app.core.tools.stats._common import result
 class InspectTempTableTool(BaseTool):
     name = "inspect_temp_table"
     description = "Показать схему, типы, размер, sample rows и numeric descriptive stats"
+    transforms_data = False
 
-    def run(self, db, input_table: str, columns: list[str]) -> str:
-        if len(columns) != 1:
-            raise ValueError("inspect_temp_table requires [table_name]")
-        table = identifier(columns[0])
+    def run(self, db, input_table: str, columns: list[str], **kwargs: object) -> str:
+        if len(columns) > 1:
+            raise ValueError("inspect_temp_table requires [table_name?]")
+        table = identifier(columns[0] if columns else input_table)
         schema_rows = db.query(f"DESCRIBE {table}")
         if not schema_rows:
             raise ValueError(f"Table has no columns: {table}")

@@ -12,8 +12,9 @@ class CorrelationTool(BaseTool):
 
     name = "correlation"
     description = "Посчитать корреляцию между двумя числовыми колонками"
+    transforms_data = False
 
-    def run(self, db, input_table: str, columns: list[str]) -> str:
+    def run(self, db, input_table: str, columns: list[str], **kwargs: object) -> str:
         if len(columns) != 2:
             raise ValueError("correlation requires [column_a, column_b]")
         col_a, col_b = identifier(columns[0]), identifier(columns[1])

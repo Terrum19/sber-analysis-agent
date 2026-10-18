@@ -11,15 +11,16 @@ class SearchCategoricalValuesTool(BaseTool):
     description = (
         "Fuzzy-поиск реальных значений категории; columns=[target_column, query_term, limit?]"
     )
+    transforms_data = False
 
-    def run(self, db, input_table: str, columns: list[str]) -> str:
+    def run(self, db, input_table: str, columns: list[str], **kwargs: object) -> str:
         if len(columns) not in (2, 3):
             raise ValueError("search_categorical_values requires [column, search_text, limit?]")
         column = identifier(columns[0])
         query = columns[1].strip()
         if not query:
             raise ValueError("search_categorical_values requires a non-empty query")
-        limit = int(columns[2]) if len(columns) == 3 else 10
+        limit = int(kwargs.get("limit", columns[2] if len(columns) == 3 else 10))
         if limit < 1:
             raise ValueError("search_categorical_values limit must be positive")
         rows = db.query(

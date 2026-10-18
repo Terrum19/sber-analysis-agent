@@ -6,6 +6,7 @@ import pytest
 
 from app.core.data.duckdb_manager import DuckDBManager
 from app.core.tools.registry import tool_registry
+from app.core.tools.run_wasm_python import RunWasmPythonTool
 
 
 @pytest.fixture
@@ -32,6 +33,18 @@ def test_search_categorical_values_returns_ranked_matches(db: DuckDBManager) -> 
     row = db.to_records(table)[0]
     assert row["stored_value"] == "Apple iPhone 14 Pro"
     assert float(row["match_score"]) > 0.3
+
+
+def test_search_categorical_values_takes_limit_from_parameters(db: DuckDBManager) -> None:
+    table = tool_registry.get("search_categorical_values").run(
+        db, "raw", ["product", "iphone"], limit=1
+    )
+    assert len(db.to_records(table)) == 1
+
+
+def test_inspect_temp_table_defaults_to_the_input_table(db: DuckDBManager) -> None:
+    table = tool_registry.get("inspect_temp_table").run(db, "raw", [])
+    assert db.to_records(table)[0]["row_count"] == 3
 
 
 def test_inspect_temp_table_returns_json_passport(db: DuckDBManager) -> None:
@@ -61,7 +74,7 @@ def test_run_wasm_python_is_only_a_bridge(
             }
 
     monkeypatch.setattr("app.core.tools.run_wasm_python.WASMSandbox", FakeSandbox)
-    table = tool_registry.get("run_wasm_python").run(db, "raw", ["return data", "raw"])
+    table = RunWasmPythonTool().run(db, "raw", ["return data", "raw"])
     assert db.to_records(table) == [{"product": "Apple iPhone 14 Pro", "amount": 250.0}]
 
 
@@ -77,4 +90,4 @@ def test_run_wasm_python_requires_sandbox_result(
 
     monkeypatch.setattr("app.core.tools.run_wasm_python.WASMSandbox", FakeSandbox)
     with pytest.raises(ValueError, match="result"):
-        tool_registry.get("run_wasm_python").run(db, "raw", ["code", "raw"])
+        RunWasmPythonTool().run(db, "raw", ["code", "raw"])

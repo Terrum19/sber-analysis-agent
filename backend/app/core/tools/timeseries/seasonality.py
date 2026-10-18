@@ -12,7 +12,7 @@ class SeasonalityTool(BaseTool):
     name = "seasonality"
     description = "Найти сезонные пики: среднее значение по месяцам/дням года"
 
-    def run(self, db, input_table: str, columns: list[str]) -> str:
+    def run(self, db, input_table: str, columns: list[str], **kwargs: object) -> str:
         if len(columns) < 2:
             raise ValueError("seasonality requires [date_column, metric_column]")
         time_col, metric = identifier(columns[0]), identifier(columns[1])

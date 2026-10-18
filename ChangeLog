@@ -1,3 +1,66 @@
+2026-10-18  mb6ockatf  <smokenmirror@tutamail.com>
+
+	Исправления research tools по ревью.
+	* backend/app/core/tools/base.py (expression): Выражения create_column
+	и условия join разбираются парсером DuckDB: допускается одно скалярное
+	выражение без FROM, подзапросов и функций чтения настроек и окружения.
+	Раньше через (SELECT ... FROM read_text(...)) читались файлы сервера.
+	(BaseTool.transforms_data): Тулы-отчёты помечены флагом.
+	* backend/app/core/agent/orchestrator.py (AgentOrchestrator.run),
+	backend/app/core/agent/step_executor.py (transforms_data): Результат
+	тула-отчёта (стат-тесты, bootstrap, search_categorical_values,
+	inspect_temp_table) не становится входом следующего шага: тот получает
+	таблицу с данными.  Пример плана из задачи (t_test_ind, затем
+	bootstrap_ci по revenue) теперь выполняется.
+	* backend/app/core/tools: Все тулы принимают ResearchStep.parameters
+	(**kwargs); раньше 35 из 41 падали с TypeError.
+	* backend/app/core/tools/stats/_common.py (literal): Числа результатов
+	пишутся как DOUBLE, включая NaN и бесконечности (раньше -inf ломал
+	SQL, а значения возвращались как DECIMAL); даты остаются DATE и
+	TIMESTAMP.
+	* backend/app/core/tools/stats/ks_test.py: kstest получает
+	замороженное нормальное распределение: с SciPy 1.18 вызов с args
+	падал с TypeError.
+	* backend/app/core/tools/stats/shapiro_wilk.py: Новый тул из задачи,
+	от 3 до 5000 наблюдений.
+	* backend/app/core/tools/stats/t_test_ind.py: Режим samples или groups
+	задаётся параметром mode; без него группами считается текстовая
+	колонка или числовая ровно с двумя значениями.  Раньше колонка групп
+	0/1 сравнивалась со значениями как вторая выборка.  Степени свободы
+	возвращаются в обоих режимах.
+	* backend/app/core/tools/stats: anova_one_way, t_test_dep,
+	mann_whitney_u, pearson_corr, spearman_corr и linear_regression
+	возвращают p_value (и степени свободы или stderr); t-тесты и
+	Манн-Уитни принимают parameters alternative.  bootstrap_ci всегда
+	возвращает statistic, estimate, ci_low, ci_high.
+	* backend/app/core/tools/funnel/_common.py (step_counts, ordered_steps):
+	С колонкой пользователя шаг засчитывается, только если пользователь
+	прошёл предыдущие шаги по порядку.  Порядок шагов берётся из
+	parameters steps или выводится по тому, какой шаг пользователи чаще
+	проходят раньше, поэтому одно раннее событие не переставляет воронку.
+	funnel_drop_off принимает колонку пользователя.
+	* backend/app/core/tools/timeseries/forecast.py: Прогноз продолжает
+	подобранную прямую; раньше он был сдвинут на slope * x_mean.
+	* backend/app/core/tools/domain/seasonal_decompose.py: Классическое
+	разложение: тренд — центрированное скользящее среднее за сезон,
+	сезонные индексы нормированы; нужно не меньше двух полных сезонов.
+	Раньше линейный тренд уходил ниже нуля и мультипликативный residual
+	менял знак.
+	* backend/app/core/tools/domain/_common.py (time_axis, period_index):
+	Тренд строится по времени (для дат — по дням), а не по номеру строки.
+	Сезон даты берётся из календаря: месяц для 12, квартал для 4, день
+	недели для 7.
+	* backend/app/core/tools/sql/atomic.py (WindowTool): lag и lead
+	требуют колонку сортировки (rowid нет у представлений).
+	(RenameColumnTool): Переименованная колонка остаётся на своём месте.
+	* backend/app/core/tools/registry.py: run_wasm_python не
+	регистрируется, пока нет песочницы; describe() перечисляет тул с
+	алиасом один раз.
+	* backend/app/core/agent/recovery.py (with_retry): После последней
+	неудачной попытки пауза не делается.
+	* backend/tests/unit: Тесты на всё перечисленное, эталоны p_value из
+	SciPy, test_step_chaining.py для цепочки шагов.
+
 2026-10-17  dmitriy-ya <dmitriyyakushonok@yandex.ru>
 
 	Итоговая реализация и ревью research tools.

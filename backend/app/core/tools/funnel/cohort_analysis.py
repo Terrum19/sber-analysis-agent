@@ -8,7 +8,7 @@ class CohortAnalysisTool(BaseTool):
     name = "cohort_analysis"
     description = "Агрегация метрики по когортам и временным периодам"
 
-    def run(self, db, input_table: str, columns_: list[str]) -> str:
+    def run(self, db, input_table: str, columns_: list[str], **kwargs: object) -> str:
         columns(columns_, 3, 3, self.name)
         cohort_col, period_col, metric_col = columns_
         return db.save_step_result(

@@ -7,19 +7,23 @@
 import statistics
 
 from app.core.tools.base import BaseTool, identifier
+from app.core.tools.stats._common import rows_result
 
 
 class ForecastTool(BaseTool):
     """Прогноз на N периодов вперёд по линейному тренду."""
 
     name = "forecast"
-    description = "Экстраполировать метрику на ближайшие периоды (тренд + сценарии)"
+    description = (
+        "Экстраполировать метрику на ближайшие периоды линейным трендом; "
+        "columns=[date_column, metric_column, periods?]"
+    )
 
-    def run(self, db, input_table: str, columns: list[str]) -> str:
+    def run(self, db, input_table: str, columns: list[str], **kwargs: object) -> str:
         if len(columns) < 2:
             raise ValueError("forecast requires [date_column, metric_column, periods?]")
         date_col, metric_col = identifier(columns[0]), identifier(columns[1])
-        periods = int(columns[2]) if len(columns) > 2 else 3
+        periods = int(kwargs.get("periods", columns[2] if len(columns) > 2 else 3))
         if periods < 1 or periods > 100:
             raise ValueError("forecast periods must be between 1 and 100")
         rows = db.query(
@@ -29,16 +33,16 @@ class ForecastTool(BaseTool):
         values = [float(row["value"]) for row in rows if row["value"] is not None]
         if len(values) < 2:
             raise ValueError("forecast requires at least two observations")
-        x_mean, y_mean = statistics.fmean(range(len(values))), statistics.fmean(values)
-        slope = sum((x - x_mean) * (y - y_mean) for x, y in enumerate(values)) / sum(
-            (x - x_mean) ** 2 for x in range(len(values))
-        )
+        position_mean, value_mean = statistics.fmean(range(len(values))), statistics.fmean(values)
+        slope = sum(
+            (position - position_mean) * (value - value_mean)
+            for position, value in enumerate(values)
+        ) / sum((position - position_mean) ** 2 for position in range(len(values)))
         predictions = [
-            (len(values) + index + 1, y_mean + slope * (len(values) + index))
+            (
+                len(values) + index + 1,
+                value_mean + slope * (len(values) + index - position_mean),
+            )
             for index in range(periods)
         ]
-        values_sql = ", ".join(f"({period}, {prediction})" for period, prediction in predictions)
-        return db.save_step_result(
-            input_table,
-            f"SELECT * FROM (VALUES {values_sql}) AS forecast(period_index, forecast)",
-        )
+        return rows_result(db, input_table, ["period_index", "forecast"], predictions)

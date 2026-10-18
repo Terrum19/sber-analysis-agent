@@ -10,8 +10,9 @@ from app.core.tools.stats._common import result, values
 class DescribeStatsTool(BaseTool):
     name = "describe_stats"
     description = "Описательная статистика: n, mean, std, min, max, q1, q3, skew, kurtosis"
+    transforms_data = False
 
-    def run(self, db, input_table: str, columns: list[str]) -> str:
+    def run(self, db, input_table: str, columns: list[str], **kwargs: object) -> str:
         if len(columns) != 1:
             raise ValueError("describe_stats requires [column]")
         items = values(db, input_table, columns[0])

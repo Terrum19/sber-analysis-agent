@@ -3,7 +3,7 @@
 import numpy as np
 
 from app.core.tools.base import BaseTool, identifier
-from app.core.tools.stats._common import values
+from app.core.tools.stats._common import result, values
 
 
 class BootstrapCITool(BaseTool):
@@ -12,6 +12,7 @@ class BootstrapCITool(BaseTool):
         "Непараметрический bootstrap 95% ДИ для mean/median/sum/min/max; "
         "parameters: n_bootstraps, seed"
     )
+    transforms_data = False
 
     max_observations = 100_000
     max_bootstraps = 10_000
@@ -73,14 +74,9 @@ class BootstrapCITool(BaseTool):
             ]
         )
         ci_low, ci_high = np.quantile(bootstrap_values, [0.025, 0.975])
-        if statistic == "mean" and len(columns) == 1:
-            return db.save_step_result(
-                input_table,
-                f"SELECT {estimate} AS mean, {ci_low} AS ci_low, {ci_high} AS ci_high",
-            )
-        return db.save_step_result(
+        return result(
+            db,
             input_table,
-            "SELECT "
-            f"'{statistic}' AS statistic, {estimate} AS estimate, "
-            f"{ci_low} AS ci_low, {ci_high} AS ci_high",
+            "statistic, estimate, ci_low, ci_high",
+            (statistic, estimate, float(ci_low), float(ci_high)),
         )

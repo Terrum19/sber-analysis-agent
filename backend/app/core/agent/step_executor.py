@@ -23,3 +23,19 @@ class StepExecutor:
             return await run_generated_code(step, input_table, self.db)
         tool = tool_registry.get(step.tool)
         return tool.run(self.db, input_table, step.columns, **step.parameters)
+
+
+def transforms_data(step: ResearchStep) -> bool:
+    """Whether the step's result replaces the working table for the next step.
+
+    Report tools (statistical tests, value search, table inspection) return a
+    small summary; the next step keeps working on the table they analysed.
+    Generated code and unknown tools are treated as transformations.
+    """
+    if step.needs_llm_codegen or not step.tool:
+        return True
+    try:
+        tool = tool_registry.get(step.tool)
+    except KeyError:
+        return True
+    return getattr(tool, "transforms_data", True)

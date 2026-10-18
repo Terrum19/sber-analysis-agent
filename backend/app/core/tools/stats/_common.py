@@ -1,6 +1,11 @@
 """Shared helpers for statistical tools."""
 
+import math
+import numbers
 from datetime import date, datetime
+from decimal import Decimal
+
+import numpy as np
 
 from app.core.tools.base import identifier
 
@@ -27,21 +32,46 @@ def paired_values(
     )
 
 
-def result(db, source: str, columns: str, values_: tuple[object, ...]) -> str:
-    names = [name.strip() for name in columns.split(",")]
-    if len(names) != len(values_):
-        raise ValueError("Result column/value count mismatch")
-    expressions = []
-    for name, value in zip(names, values_):
-        literal = (
-            f"'{value.replace(chr(39), chr(39) * 2)}'"
-            if isinstance(value, str)
-            else "NULL"
-            if value is None
-            else str(value)
-        )
-        expressions.append(f"{literal} AS {identifier(name)}")
-    return db.save_step_result(source, f"SELECT {', '.join(expressions)}")
+def alternative(kwargs: dict) -> str:
+    """Alternative hypothesis of a two-sample test from the step parameters."""
+    value = str(kwargs.get("alternative", "two-sided")).lower()
+    if value not in {"two-sided", "less", "greater"}:
+        raise ValueError("alternative must be two-sided, less or greater")
+    return value
+
+
+def text_literal(value: str) -> str:
+    escaped = value.replace("'", "''")
+    return f"'{escaped}'"
+
+
+def literal(value: object) -> str:
+    """Render a Python value as a typed DuckDB literal.
+
+    Floats become DOUBLE, including NaN and infinities, so results of
+    statistical tests are stored as DOUBLE rather than DECIMAL.
+    """
+    if value is None:
+        return "NULL"
+    if isinstance(value, (bool, np.bool_)):
+        return "TRUE" if value else "FALSE"
+    if isinstance(value, numbers.Integral):
+        return str(int(value))
+    if isinstance(value, Decimal) and value.is_finite():
+        return str(value)
+    if isinstance(value, (numbers.Real, Decimal)):
+        number = float(value)
+        if math.isnan(number):
+            return "CAST('NaN' AS DOUBLE)"
+        if math.isinf(number):
+            return "CAST('Infinity' AS DOUBLE)" if number > 0 else "CAST('-Infinity' AS DOUBLE)"
+        return f"CAST({number!r} AS DOUBLE)"
+    if isinstance(value, datetime):
+        kind = "TIMESTAMPTZ" if value.tzinfo is not None else "TIMESTAMP"
+        return f"CAST({text_literal(value.isoformat(sep=' '))} AS {kind})"
+    if isinstance(value, date):
+        return f"CAST({text_literal(value.isoformat())} AS DATE)"
+    return text_literal(str(value))
 
 
 def rows_result(db, source: str, columns: list[str], rows: list[tuple[object, ...]]) -> str:
@@ -50,19 +80,14 @@ def rows_result(db, source: str, columns: list[str], rows: list[tuple[object, ..
         raise ValueError("Tool produced no rows")
     if any(len(row) != len(columns) for row in rows):
         raise ValueError("Result row/column count mismatch")
-
-    def literal(value: object) -> str:
-        if value is None:
-            return "NULL"
-        if isinstance(value, bool):
-            return "TRUE" if value else "FALSE"
-        if isinstance(value, (date, datetime)):
-            escaped = str(value).replace("'", "''")
-            return f"'{escaped}'"
-        if isinstance(value, str):
-            return f"'{value.replace(chr(39), chr(39) * 2)}'"
-        return str(value)
-
     values_sql = ", ".join(f"({', '.join(literal(value) for value in row)})" for row in rows)
     names = ", ".join(identifier(name) for name in columns)
     return db.save_step_result(source, f"SELECT * FROM (VALUES {values_sql}) AS t({names})")
+
+
+def result(db, source: str, columns: str, values_: tuple[object, ...]) -> str:
+    """Materialize a single result row; columns is a comma-separated list of names."""
+    names = [name.strip() for name in columns.split(",")]
+    if len(names) != len(values_):
+        raise ValueError("Result column/value count mismatch")
+    return rows_result(db, source, names, [values_])

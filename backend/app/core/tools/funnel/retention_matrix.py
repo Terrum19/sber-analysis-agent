@@ -8,7 +8,7 @@ class RetentionMatrixTool(BaseTool):
     name = "retention_matrix"
     description = "Матрица удержания пользователей по когортам и периодам"
 
-    def run(self, db, input_table: str, columns_: list[str]) -> str:
+    def run(self, db, input_table: str, columns_: list[str], **kwargs: object) -> str:
         columns(columns_, 2, 2, self.name)
         user_col, period_col = columns_
         table = identifier(input_table)
