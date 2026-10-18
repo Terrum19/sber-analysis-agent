@@ -180,7 +180,7 @@ def test_expressions_may_use_scalar_functions_and_join_aliases(db: DuckDBManager
         ("create_column", ["leak", "current_setting('home_directory')"]),
         ("join_tables", ["right_table", "t.id = t_right.id AND (SELECT 1) = 1"]),
         ("pearson_corr", ["amount"]),
-        ("bootstrap_ci", ["amount;"]),
+        ("bootstrap_ci", ["amount", "mode"]),
         ("search_categorical_values", ["category"]),
     ],
 )

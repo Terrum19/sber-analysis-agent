@@ -109,7 +109,8 @@ class GroupByTool(BaseTool):
             raise ValueError(f"Unsupported aggregate function: {agg_func}")
         return db.save_step_result(
             input_table,
-            f"SELECT {group_col}, {agg_func}({agg_col}) AS {agg_func.lower()}_{agg_col} "
+            f"SELECT {group_col}, {agg_func}({agg_col}) "
+            f"AS {identifier(f'{agg_func.lower()}_{columns[1]}')} "
             f"FROM {identifier(input_table)} GROUP BY {group_col}",
         )
 
@@ -166,6 +167,7 @@ class WindowTool(BaseTool):
         return db.save_step_result(
             input_table,
             f"SELECT *, {self.function}({column}, {offset}) "
-            f"OVER (ORDER BY {identifier(str(order_column))}) AS {self.name}_{column} "
+            f"OVER (ORDER BY {identifier(str(order_column))}) "
+            f"AS {identifier(f'{self.name}_{columns[0]}')} "
             f"FROM {identifier(input_table)}",
         )

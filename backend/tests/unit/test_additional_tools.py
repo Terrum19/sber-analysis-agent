@@ -4,6 +4,7 @@ import json
 
 import pytest
 
+from app.config import settings
 from app.core.data.duckdb_manager import DuckDBManager
 from app.core.tools.registry import tool_registry
 from app.core.tools.run_wasm_python import RunWasmPythonTool
@@ -62,7 +63,7 @@ def test_run_wasm_python_is_only_a_bridge(
 ) -> None:
     class FakeSandbox:
         def __init__(self, timeout_s: int) -> None:
-            assert timeout_s == 30
+            assert timeout_s == settings.wasm_timeout_s
 
         def run(self, *, code: str, payload: dict) -> dict:
             assert code == "return data"

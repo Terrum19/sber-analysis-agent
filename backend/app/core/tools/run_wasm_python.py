@@ -16,9 +16,11 @@ class RunWasmPythonTool(BaseTool):
     def run(self, db, input_table: str, columns: list[str], **kwargs: object) -> str:
         if len(columns) not in (2, 3):
             raise ValueError("run_wasm_python requires [python_code, target_table, output_col?]")
-        code, target_table = columns[0], identifier(columns[1])
-        output_col = identifier(columns[2]) if len(columns) == 3 else None
-        data = db.to_records(target_table, limit=100_000)
+        code, target_table = columns[0], columns[1]
+        output_col = columns[2] if len(columns) == 3 else None
+        if output_col is not None:
+            identifier(output_col)
+        data = db.to_records(identifier(target_table), limit=100_000)
         result = WASMSandbox(settings.wasm_timeout_s).run(
             code=code,
             payload={

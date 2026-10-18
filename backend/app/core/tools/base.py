@@ -9,23 +9,26 @@
 """
 
 import json
-import re
 import threading
 from abc import ABC, abstractmethod
 from functools import cache
 
 import duckdb
 
-_IDENTIFIER = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 _FORBIDDEN_FUNCTIONS = frozenset({"current_setting", "getenv", "getvariable"})
 _PARSER_LOCK = threading.Lock()
 
 
 def identifier(value: str) -> str:
-    """Validate a SQL identifier supplied by a research plan."""
-    if not isinstance(value, str) or not _IDENTIFIER.fullmatch(value):
+    """Quote a table or column name supplied by a research plan.
+
+    Names stay as the source has them (Cyrillic, spaces, mixed case, see
+    docs/data_connectors.md), so the name is double-quoted with embedded
+    quotes doubled rather than matched against a pattern.
+    """
+    if not isinstance(value, str) or not value or "\x00" in value:
         raise ValueError(f"Invalid SQL identifier: {value!r}")
-    return value
+    return '"' + value.replace('"', '""') + '"'
 
 
 @cache

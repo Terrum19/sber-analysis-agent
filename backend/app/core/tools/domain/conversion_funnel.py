@@ -14,7 +14,9 @@ class ConversionFunnelTool(BaseTool):
     def run(self, db, input_table: str, columns: list[str], **kwargs: object) -> str:
         if len(columns) != 3:
             raise ValueError("conversion_funnel requires [event_col, user_id_col, timestamp_col]")
-        event_col, user_col, timestamp_col = (identifier(column) for column in columns)
+        for column in columns:
+            identifier(column)
+        event_col, user_col, timestamp_col = columns
         return FunnelStepsTool().run(
             db, input_table, [event_col, timestamp_col, user_col], **kwargs
         )

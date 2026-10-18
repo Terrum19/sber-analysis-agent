@@ -58,8 +58,20 @@
 	алиасом один раз.
 	* backend/app/core/agent/recovery.py (with_retry): После последней
 	неудачной попытки пауза не делается.
+	* backend/app/core/tools/base.py (identifier): Имена таблиц и колонок
+	берутся в двойные кавычки (кавычки внутри удваиваются) вместо проверки
+	по шаблону ASCII: имена колонок источника не меняются, и тулы падали на
+	кириллице и пробелах (ID_Аптеки, «Код аптеки»), с которыми на dev
+	работали aggregate, time_series и correlation.  Производные имена
+	(sum_<колонка>, lag_<колонка>) кавычатся целиком.
+	* backend/app/core/llm/prompts/step_planner.py (STEP_PLANNER):
+	Планировщик знает про parameters и про то, что тулы-отчёты не меняют
+	таблицу.
+	* docs/roadmap.md, docs/data_connectors.md: Тулы отмечены в roadmap;
+	уточнено, что numpy/scipy не нужны только профилированию.
 	* backend/tests/unit: Тесты на всё перечисленное, эталоны p_value из
-	SciPy, test_step_chaining.py для цепочки шагов.
+	SciPy, test_step_chaining.py для цепочки шагов, test_source_names.py
+	для имён источника.
 
 2026-10-17  dmitriy-ya <dmitriyyakushonok@yandex.ru>
 
