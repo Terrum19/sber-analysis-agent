@@ -1,11 +1,12 @@
 """Tests for categorical search, intermediate inspection and the WASM bridge."""
 
 import json
+from pathlib import Path
 
 import pytest
 
-from app.config import settings
 from app.core.data.duckdb_manager import DuckDBManager
+from app.core.sandbox.wasm_runtime import SandboxError, WASMSandbox
 from app.core.tools.registry import tool_registry
 from app.core.tools.run_wasm_python import RunWasmPythonTool
 
@@ -61,34 +62,40 @@ def test_inspect_temp_table_returns_json_passport(db: DuckDBManager) -> None:
 def test_run_wasm_python_is_only_a_bridge(
     db: DuckDBManager, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    class FakeSandbox:
-        def __init__(self, timeout_s: int) -> None:
-            assert timeout_s == settings.wasm_timeout_s
-
-        def run(self, *, code: str, payload: dict) -> dict:
-            assert code == "return data"
-            assert payload["table"] == "raw"
-            return {
-                "result": [
-                    {"product": "Apple iPhone 14 Pro", "amount": 250.0},
-                ]
-            }
+    class FakeSandbox(WASMSandbox):
+        def run(self, code: str, workdir: Path) -> dict:
+            assert code == "result = df"
+            assert (workdir / "input.csv").read_text().splitlines()[0] == "id,product,amount"
+            (workdir / "result.csv").write_text("product,amount\nApple iPhone 14 Pro,250.0\n")
+            return {"ok": True, "stdout": ""}
 
     monkeypatch.setattr("app.core.tools.run_wasm_python.WASMSandbox", FakeSandbox)
-    table = RunWasmPythonTool().run(db, "raw", ["return data", "raw"])
+    table = RunWasmPythonTool().run(db, "raw", ["result = df", "raw"])
     assert db.to_records(table) == [{"product": "Apple iPhone 14 Pro", "amount": 250.0}]
 
 
-def test_run_wasm_python_requires_sandbox_result(
+def test_run_wasm_python_wraps_scalars_into_output_col(
     db: DuckDBManager, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    class FakeSandbox:
-        def __init__(self, timeout_s: int) -> None:
-            pass
-
-        def run(self, *, code: str, payload: dict) -> dict:
-            return {}
+    class FakeSandbox(WASMSandbox):
+        def run(self, code: str, workdir: Path) -> dict:
+            assert code.startswith("result = 3")
+            assert "'total'" in code
+            (workdir / "result.csv").write_text("total\n3\n")
+            return {"ok": True, "stdout": ""}
 
     monkeypatch.setattr("app.core.tools.run_wasm_python.WASMSandbox", FakeSandbox)
-    with pytest.raises(ValueError, match="result"):
+    table = RunWasmPythonTool().run(db, "raw", ["result = 3", "raw", "total"])
+    assert db.to_records(table) == [{"total": 3}]
+
+
+def test_run_wasm_python_reports_sandbox_errors(
+    db: DuckDBManager, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    class FakeSandbox(WASMSandbox):
+        def run(self, code: str, workdir: Path) -> dict:
+            raise SandboxError("code must assign the output to a variable named result")
+
+    monkeypatch.setattr("app.core.tools.run_wasm_python.WASMSandbox", FakeSandbox)
+    with pytest.raises(SandboxError, match="result"):
         RunWasmPythonTool().run(db, "raw", ["code", "raw"])

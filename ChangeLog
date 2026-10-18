@@ -1,5 +1,25 @@
 2026-10-18  mb6ockatf  <smokenmirror@tutamail.com>
 
+	WASM-песочница (#26).
+	* backend/app/core/sandbox/wasm_runtime.py (WASMSandbox): Код,
+	сгенерированный LLM, исполняется в Pyodide под Node.js с моделью
+	разрешений: виден только каталог запуска, нет сети, подпроцессов и
+	моста в JavaScript.  RSS не больше WASM_MEM_MB и свободной RAM,
+	таймаут WASM_TIMEOUT_S, не больше WASM_MAX_PARALLEL запусков сразу.
+	* backend/app/core/sandbox/codegen_runner.py (run_generated_code):
+	LLM пишет код по цели шага, схеме и первым строкам таблицы; при
+	ошибке получает её текст и исправляет код.  Результат сохраняется
+	как temp_result_vN.
+	* backend/app/core/agent/step_executor.py (StepExecutor.execute):
+	Шаг с неизвестным тулом тоже уходит в кодогенерацию.
+	* backend/app/core/tools/run_wasm_python.py (RunWasmPythonTool.run):
+	Код исполняется в новой песочнице; таблица приходит как df.
+	* backend/sandbox/: Рантайм Pyodide 0.29.5 и загрузка колёс numpy,
+	pandas, scipy, scikit-learn, statsmodels.
+	* backend/Dockerfile, .github/workflows/backend-ci.yml: Node.js 20 и
+	рантайм песочницы ставятся на сборке.
+	* docs/sandbox.md: Описание песочницы.
+
 	Исправления research tools по ревью.
 	* backend/app/core/tools/base.py (expression): Выражения create_column
 	и условия join разбираются парсером DuckDB: допускается одно скалярное

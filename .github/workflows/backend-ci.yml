@@ -44,6 +44,26 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
 
+      # WASM-песочница (issue #26): Pyodide под Node.js 20 и колёса пакетов анализа
+      # данных; без них тесты песочницы пропускаются, поэтому ставим их всегда.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: backend/sandbox/package-lock.json
+
+      - name: Install Pyodide runtime
+        working-directory: backend/sandbox
+        run: npm ci --no-audit --no-fund
+
+      - uses: actions/cache@v4
+        with:
+          path: backend/sandbox/node_modules/pyodide/*.whl
+          key: pyodide-wheels-${{ hashFiles('backend/sandbox/package-lock.json', 'backend/sandbox/fetch_packages.py') }}
+
+      - name: Fetch Pyodide packages
+        run: python sandbox/fetch_packages.py
+
       - name: Ruff
         run: |
           ruff check app tests
