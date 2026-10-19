@@ -2,22 +2,27 @@
 
 from app.config import settings
 from app.core.sandbox.wasm_runtime import WASMSandbox
-from app.core.tools.base import BaseTool, identifier
+from app.core.tools.base import BaseTool, Ident, TableRef, ToolArgs, identifier
 from app.core.tools.stats._common import rows_result
+
+
+class RunWasmPythonArgs(ToolArgs):
+    python_code: str
+    target_table: TableRef
+    output_col: Ident | None = None
 
 
 class RunWasmPythonTool(BaseTool):
     name = "run_wasm_python"
-    description = (
-        "Выполнить ограниченный Python-код над target_table; "
-        "columns=[python_code, target_table, output_col?]"
-    )
+    description = "Выполнить ограниченный Python-код над target_table"
+    Args = RunWasmPythonArgs
 
-    def run(self, db, input_table: str, columns: list[str]) -> str:
-        if len(columns) not in (2, 3):
-            raise ValueError("run_wasm_python requires [python_code, target_table, output_col?]")
-        code, target_table = columns[0], identifier(columns[1])
-        output_col = identifier(columns[2]) if len(columns) == 3 else None
+    def execute(self, db, input_table: str, args: RunWasmPythonArgs) -> str:
+        code, target_table, output_col = (
+            args.python_code,
+            identifier(args.target_table),
+            args.output_col,
+        )
         data = db.to_records(target_table, limit=100_000)
         result = WASMSandbox(settings.wasm_timeout_s).run(
             code=code,

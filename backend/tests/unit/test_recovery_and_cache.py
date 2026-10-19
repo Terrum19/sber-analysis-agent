@@ -41,6 +41,26 @@ async def test_with_retry_raises_last_error(monkeypatch) -> None:
         await with_retry(broken, attempts=2)
 
 
+@pytest.mark.asyncio
+async def test_with_retry_does_not_retry_not_implemented(monkeypatch) -> None:
+    calls = 0
+    delays: list[float] = []
+
+    async def sleep(delay: float) -> None:
+        delays.append(delay)
+
+    async def unsupported() -> None:
+        nonlocal calls
+        calls += 1
+        raise NotImplementedError("unsupported")
+
+    monkeypatch.setattr("app.core.agent.recovery.asyncio.sleep", sleep)
+    with pytest.raises(NotImplementedError, match="unsupported"):
+        await with_retry(unsupported, attempts=3)
+    assert calls == 1
+    assert delays == []
+
+
 def test_state_cache_persists_step_result() -> None:
     db = DuckDBManager(":memory:")
     db.execute("CREATE TABLE raw AS SELECT * FROM (VALUES (1), (2)) AS rows(value)")

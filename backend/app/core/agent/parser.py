@@ -27,7 +27,9 @@ def parse_steps(raw: str) -> list[ResearchStep]:
         except (ValueError, TypeError):
             steps = []
         if steps:
-            logger.info("<<< parse_steps() стратегия %s вернула %d шагов", extractor.__name__, len(steps))
+            logger.info(
+                "<<< parse_steps() стратегия %s вернула %d шагов", extractor.__name__, len(steps)
+            )
             return steps
     logger.warning("parse_steps() все стратегии не сработали, fallback шаг")
     return [_fallback_step()]

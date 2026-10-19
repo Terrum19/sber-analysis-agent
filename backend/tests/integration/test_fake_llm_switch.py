@@ -1,6 +1,7 @@
 """Тест переключения LLMClient через env var без monkeypatch."""
 
 import os
+
 import pytest
 
 from app.core.llm.client import LLMClient
@@ -23,6 +24,7 @@ def test_llm_client_returns_fakellm_via_env():
 
 def test_llm_client_fake_has_complete_methods():
     import asyncio
+
     client = LLMClient()
     result = asyncio.run(client.complete("sys", "user"))
     assert isinstance(result, str)

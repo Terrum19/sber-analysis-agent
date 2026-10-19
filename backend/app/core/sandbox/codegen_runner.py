@@ -5,7 +5,6 @@
 """
 
 from app.core.data.duckdb_manager import DuckDBManager
-from app.core.sandbox.wasm_runtime import WASMSandbox
 from app.models.research_step import ResearchStep
 
 
@@ -15,8 +14,11 @@ async def run_generated_code(step: ResearchStep, input_table: str, db: DuckDBMan
     TODO(round-2): запросить код у LLM по описанию step.purpose,
     передать данные input_table в payload, исполнить в WASMSandbox,
     сохранить результат как temp_result_vN.
+
+    Пока не реализовано — падаем явно, а не возвращаем копию входной
+    таблицы: иначе инсайт строится по данным, которые никто не считал.
     """
-    sandbox = WASMSandbox()
-    payload = {"table": input_table, "data": db.to_records(input_table)}
-    result = sandbox.run(code="TODO", payload=payload)  # noqa: F841
-    return db.save_step_result(input_table, f"SELECT * FROM {input_table}")
+    raise NotImplementedError(
+        f"Шаг {step.step_id} требует генерации кода ({step.purpose or 'без описания'}), "
+        "но кодогенерация пока не поддерживается. Подходящего инструмента нет."
+    )

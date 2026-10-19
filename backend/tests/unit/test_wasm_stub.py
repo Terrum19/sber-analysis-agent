@@ -1,7 +1,5 @@
 """Unit-тесты WASM песочницы (stub)."""
 
-import pytest
-
 from app.core.sandbox.wasm_runtime import WASMSandbox
 
 

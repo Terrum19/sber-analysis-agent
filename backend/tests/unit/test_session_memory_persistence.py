@@ -1,11 +1,7 @@
 """Тесты персистентности SessionMemory."""
 
-import os
-import tempfile
-import pytest
-
-from app.core.memory.session_memory import SessionMemory
 from app.config import settings
+from app.core.memory.session_memory import SessionMemory
 
 
 def test_memory_file_created_and_loaded(tmp_path):

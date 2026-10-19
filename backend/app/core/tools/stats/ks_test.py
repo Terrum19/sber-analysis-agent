@@ -4,17 +4,18 @@ import numpy as np
 from scipy import stats
 
 from app.core.tools.base import BaseTool
+from app.core.tools.stats._args import OneColumnArgs
 from app.core.tools.stats._common import result, values
 
 
 class KSTestTool(BaseTool):
     name = "ks_test"
-    description = "Одновыборочный тест Колмогорова-Смирнова на нормальность"
+    description = "Тест Колмогорова-Смирнова на нормальность колонки: statistic, p_value"
+    kind = "analysis"
+    Args = OneColumnArgs
 
-    def run(self, db, input_table: str, columns: list[str]) -> str:
-        if len(columns) != 1:
-            raise ValueError("ks_test requires [column]")
-        items = values(db, input_table, columns[0])
+    def execute(self, db, input_table: str, args: OneColumnArgs) -> str:
+        items = values(db, input_table, args.column)
         if len(items) < 2:
             test_statistic = p_value = None
         else:
@@ -23,6 +24,6 @@ class KSTestTool(BaseTool):
             if std == 0:
                 test_statistic = p_value = None
             else:
-                test = stats.kstest(array, "norm", args=(np.mean(array), std))
+                test = stats.kstest(array, stats.norm(loc=np.mean(array), scale=std).cdf)
                 test_statistic, p_value = test.statistic, test.pvalue
         return result(db, input_table, "statistic, p_value", (test_statistic, p_value))

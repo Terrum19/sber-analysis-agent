@@ -1,17 +1,23 @@
 """Conversion funnel by ordered event steps."""
 
-from app.core.tools.base import BaseTool, identifier
-from app.core.tools.funnel._common import columns, rows_result
+from app.core.tools.base import BaseTool, Ident, identifier
+from app.core.tools.funnel._common import StepOrderArgs, rows_result
+
+
+class FunnelStepsArgs(StepOrderArgs):
+    user_column: Ident | None = None
 
 
 class FunnelStepsTool(BaseTool):
     name = "funnel_steps"
-    description = "Воронка конверсии по шагам с конверсиями между шагами"
+    description = (
+        "Воронка: число событий (или уникальных user_column) на шаг, conversion_rate "
+        "от первого шага и step_conversion_rate от предыдущего"
+    )
+    Args = FunnelStepsArgs
 
-    def run(self, db, input_table: str, columns_: list[str]) -> str:
-        columns(columns_, 2, 3, self.name)
-        step_col, order_col = columns_[:2]
-        user_col = columns_[2] if len(columns_) == 3 else None
+    def execute(self, db, input_table: str, args: FunnelStepsArgs) -> str:
+        step_col, order_col, user_col = args.step_column, args.order_column, args.user_column
         count_expr = f"COUNT(DISTINCT {identifier(user_col)})" if user_col else "COUNT(*)"
         rows = db.query(
             f"SELECT {identifier(step_col)} AS step, {count_expr} AS count, "

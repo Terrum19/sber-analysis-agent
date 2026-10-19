@@ -1,9 +1,6 @@
 """Тесты конфигурации и env-переменных."""
 
-import os
-import pytest
-
-from app.config import settings
+from app.config import Settings, settings
 
 
 def test_wasm_settings_defaults():
@@ -13,8 +10,10 @@ def test_wasm_settings_defaults():
 
 
 def test_llm_settings_defaults():
-    assert settings.llm_base_url == "http://localhost:11434/v1"
-    assert settings.llm_model == "qwen2.5-coder:14b"
+    # Дефолты кода, а не локального .env разработчика.
+    defaults = Settings(_env_file=None)
+    assert defaults.llm_base_url == "http://localhost:11434/v1"
+    assert defaults.llm_model == "qwen2.5-coder:14b"
 
 
 def test_storage_dir_defaults():

@@ -40,7 +40,7 @@ class FakeLLM:
         - Любая другая схема: пустой экземпляр через model_validate({})
         """
         if schema.__name__ == "ResearchPlan":
-            from app.models.research_step import ResearchPlan, ResearchStep
+            from app.models.research_step import ResearchStep
 
             return schema(
                 steps=[

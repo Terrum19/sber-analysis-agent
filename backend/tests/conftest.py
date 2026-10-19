@@ -1,7 +1,5 @@
-import glob
-import os
-
 import pytest
+
 from app.config import settings
 
 
@@ -14,17 +12,16 @@ def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item
 
 
 @pytest.fixture(autouse=True)
-def _cleanup_session_files():
-    """Удаляет мусорные файлы сессий после каждого теста.
+def _isolated_storage(request: pytest.FixtureRequest, tmp_path_factory, monkeypatch):
+    """Хранилище каждого теста — во временной папке.
 
-    SessionMemory пишет состояние в SQLite по адресу settings.sqlite_path.
-    Без очистки файлы остаются в репозитории после прогона.
+    Пути по умолчанию относительные (backend/storage/...) и считаются от cwd:
+    из backend/ тесты писали дашборды, DuckDB и сессии в backend/backend/storage.
+    Тесты дефолтов конфигурации проверяют сами значения — их не трогаем.
     """
-    yield
-    session_dir = os.path.dirname(settings.sqlite_path)
-    for pattern in ("sessions.sqlite*",):
-        for path in glob.glob(os.path.join(session_dir, pattern)):
-            try:
-                os.remove(path)
-            except OSError:
-                pass
+    if request.module.__name__.endswith("test_config_env"):
+        return
+    root = tmp_path_factory.mktemp("storage")
+    monkeypatch.setattr(settings, "storage_dir", str(root))
+    monkeypatch.setattr(settings, "duckdb_path", str(root / "duckdb" / "main.duckdb"))
+    monkeypatch.setattr(settings, "sqlite_path", str(root / "sessions" / "sessions.sqlite"))

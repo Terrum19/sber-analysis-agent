@@ -9,6 +9,7 @@ import uuid
 from fastapi import APIRouter
 
 from app.api.schemas.chat import SessionCreate, SessionOut
+from app.core.memory.session_memory import SessionMemory
 
 router = APIRouter()
 
@@ -22,7 +23,8 @@ async def create_session(payload: SessionCreate) -> SessionOut:
     session_id = uuid.uuid4().hex
     session = SessionOut(session_id=session_id, datasource_id=payload.datasource_id)
     _SESSIONS[session_id] = session
-    # TODO(round-2): инициализировать SessionMemory(session_id)
+    # Живая память сессии (SQLite): история диалога и шагов начинают сохраняться.
+    SessionMemory(session_id)
     return session
 
 

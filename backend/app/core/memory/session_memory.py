@@ -14,14 +14,17 @@ import time
 from pathlib import Path
 
 from app.config import settings
+from app.core.data.duckdb_manager import DuckDBManager
 from app.core.memory.profile_memory import ProfileMemory
+
 
 class SessionMemory:
     """Память одной сессии диалога (SQLite на диск)."""
 
-    def __init__(self, session_id: str) -> None:
+    def __init__(self, session_id: str, db: DuckDBManager | None = None) -> None:
         self.session_id = session_id
         self._db_path = Path(settings.sqlite_path)
+        self.db = db
         self._state = self._load()
 
     def _connect(self) -> sqlite3.Connection:
@@ -78,6 +81,7 @@ class SessionMemory:
         """Установить привязанный datasource и его колонки для контекста."""
         self._state["datasource"] = datasource_name
         self._state["columns"] = list(columns)
+        self._persist()
 
     def build_context(self, question: str) -> dict:
         """Собрать контекст: скользящее окно сообщений + выжимка шагов + колонки + словарь."""
@@ -86,11 +90,20 @@ class SessionMemory:
         columns = self._state.get("columns", [])
         datasource = self._state.get("datasource")
 
+        # Профиль данных (паспорт таблицы) для долгосрочного контекста;
+        # без DuckDB (память открыта только ради истории) профиля нет.
+        profile = None
+        enrichment = []
+        if self.db is not None:
+            passport = ProfileMemory(self.db)
+            profile = passport.load_profile(datasource or "raw")
+            enrichment = passport.load_enrichment(datasource or "raw")
+        # Колонки не задавались явно — берём их из паспорта таблицы.
+        if not columns and profile is not None:
+            columns = [column.name for column in profile.columns]
+
         # Формируем краткое описание колонок для LLM
         columns_summary = ", ".join(columns) if columns else "неизвестно"
-
-        # Профиль данных (паспорт таблицы) для долгосрочного контекста
-        profile = ProfileMemory().load(datasource or "raw")
 
         return {
             "messages": window,
@@ -100,6 +113,9 @@ class SessionMemory:
             "columns_summary": columns_summary,
             "datasource": datasource or "raw",
             "profile": profile,
+            # Обогащение паспорта: алиасы для отбора колонок, описания для промпта.
+            "aliases": {row.column: row.aliases for row in enrichment if row.aliases},
+            "descriptions": {row.column: row.description for row in enrichment if row.description},
         }
 
     def record_step(self, step, result_table: str) -> None:

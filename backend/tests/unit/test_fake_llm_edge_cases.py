@@ -1,10 +1,11 @@
 """Граничные случаи FakeLLM."""
 
 import asyncio
+
 import pytest
+from pydantic import BaseModel
 
 from app.core.llm.fake_client import FakeLLM
-from pydantic import BaseModel
 
 
 class UnknownSchema(BaseModel):

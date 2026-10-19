@@ -2,18 +2,25 @@
 
 import json
 
-from app.core.tools.base import BaseTool, identifier
+from app.core.tools.base import BaseTool, TableRef, ToolArgs, identifier
 from app.core.tools.stats._common import result
+
+
+class InspectTableArgs(ToolArgs):
+    table: TableRef | None = None
 
 
 class InspectTempTableTool(BaseTool):
     name = "inspect_temp_table"
-    description = "Показать схему, типы, размер, sample rows и numeric descriptive stats"
+    description = (
+        "Показать схему, типы, размер, примеры строк и числовые сводки таблицы "
+        "(по умолчанию — входной; можно указать $step_N). После шага план будет достроен"
+    )
+    kind = "lookup"
+    Args = InspectTableArgs
 
-    def run(self, db, input_table: str, columns: list[str]) -> str:
-        if len(columns) != 1:
-            raise ValueError("inspect_temp_table requires [table_name]")
-        table = identifier(columns[0])
+    def execute(self, db, input_table: str, args: InspectTableArgs) -> str:
+        table = identifier(args.table or input_table)
         schema_rows = db.query(f"DESCRIBE {table}")
         if not schema_rows:
             raise ValueError(f"Table has no columns: {table}")
@@ -36,10 +43,10 @@ class InspectTempTableTool(BaseTool):
             input_table,
             "schema, dtypes, row_count, sample_rows, descriptive_stats",
             (
-                json.dumps([row["column_name"] for row in schema_rows]),
+                json.dumps([row["column_name"] for row in schema_rows], ensure_ascii=False),
                 json.dumps([row["column_type"] for row in schema_rows]),
                 row_count,
-                json.dumps(sample_rows, default=str),
+                json.dumps(sample_rows, default=str, ensure_ascii=False),
                 json.dumps(descriptive_stats, default=str),
             ),
         )

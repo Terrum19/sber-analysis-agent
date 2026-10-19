@@ -77,17 +77,21 @@ def test_atomic_tools_preserve_expected_values(db: DuckDBManager) -> None:
 @pytest.mark.parametrize(
     ("name", "columns", "expected_columns"),
     [
-        ("pearson_corr", ["amount", "other_amount"], {"correlation"}),
-        ("spearman_corr", ["amount", "other_amount"], {"correlation"}),
-        ("linear_regression", ["amount", "other_amount"], {"slope", "intercept", "r_squared"}),
-        ("anova_one_way", ["amount", "category"], {"statistic"}),
+        ("pearson_corr", ["amount", "other_amount"], {"correlation", "p_value", "n"}),
+        ("spearman_corr", ["amount", "other_amount"], {"correlation", "p_value", "n"}),
+        (
+            "linear_regression",
+            ["amount", "other_amount"],
+            {"slope", "intercept", "r_squared", "p_value", "n"},
+        ),
+        ("anova_one_way", ["amount", "category"], {"statistic", "p_value", "groups"}),
         (
             "t_test_ind",
             ["amount", "other_amount"],
             {"statistic", "p_value", "degrees_of_freedom"},
         ),
-        ("t_test_dep", ["amount", "other_amount"], {"statistic"}),
-        ("mann_whitney_u", ["amount", "other_amount"], {"statistic"}),
+        ("t_test_dep", ["amount", "other_amount"], {"statistic", "p_value", "n"}),
+        ("mann_whitney_u", ["amount", "other_amount"], {"statistic", "p_value"}),
         (
             "describe_stats",
             ["amount"],
@@ -126,8 +130,8 @@ def test_forecast_returns_requested_number_of_periods(db: DuckDBManager) -> None
         ("select_columns", []),
         ("filter_rows", ["amount"]),
         ("create_column", ["new"]),
-        ("group_by", ["category", "amount", "MEDIAN"]),
-        ("time_bucket", ["event_date", "year"]),
+        ("group_by", ["category", "amount", "MODE"]),
+        ("time_bucket", ["event_date", "decade"]),
         ("lag", ["amount", "-1"]),
         ("pearson_corr", ["amount"]),
         ("bootstrap_ci", ["amount;"]),

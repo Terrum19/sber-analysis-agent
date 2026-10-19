@@ -1,29 +1,29 @@
 """Linear trend with monthly seasonal indices."""
 
 from app.core.tools.base import BaseTool
-from app.core.tools.domain._common import observations, period_index, required, rows_result, trend
+from app.core.tools.domain._common import (
+    Field,
+    SeriesArgs,
+    observations,
+    period_index,
+    rows_result,
+    trend,
+)
+
+
+class TrendArgs(SeriesArgs):
+    seasonality_period: int = Field(default=12, ge=1, le=366)
 
 
 class TrendAnalysisTool(BaseTool):
     name = "trend_analysis"
-    description = (
-        "Линейный тренд и сезонные индексы временного ряда; parameters: seasonality_period"
-    )
+    description = "Линейный тренд (slope, r_squared) и сезонные индексы временного ряда"
+    kind = "analysis"
+    Args = TrendArgs
 
-    def run(
-        self,
-        db,
-        input_table: str,
-        columns: list[str],
-        **kwargs: object,
-    ) -> str:
-        required(columns[:2], 2, 2, self.name)
-        seasonality_period = int(
-            kwargs.get("seasonality_period", columns[2] if len(columns) == 3 else 12)
-        )
-        if seasonality_period < 1:
-            raise ValueError("seasonality_period must be positive")
-        observations_ = observations(db, input_table, columns[0], columns[1])
+    def execute(self, db, input_table: str, args: TrendArgs) -> str:
+        seasonality_period = args.seasonality_period
+        observations_ = observations(db, input_table, args.date_column, args.value_column)
         if not observations_:
             raise ValueError("trend_analysis requires observations")
         values = [value for _, value in observations_]

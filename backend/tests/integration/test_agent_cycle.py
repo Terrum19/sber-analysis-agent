@@ -5,15 +5,16 @@
 """
 
 import asyncio
+
 import pytest
 
+from app.api.schemas.chat import ChatRequest
+from app.core.agent.insight import InsightGenerator
 from app.core.agent.orchestrator import AgentOrchestrator
 from app.core.agent.planner import StepPlanner
-from app.core.agent.insight import InsightGenerator
 from app.core.agent.step_executor import StepExecutor
 from app.core.data.duckdb_manager import DuckDBManager
 from app.core.llm.fake_client import FakeLLM
-from app.api.schemas.chat import ChatRequest
 
 
 @pytest.fixture
@@ -45,11 +46,13 @@ def test_full_agent_cycle(db):
     )
 
     events = []
+
     async def _collect():
         async for event in orch.run(
             ChatRequest(session_id="cycle-test", question="Сколько категорий?")
         ):
             events.append(event)
+
     asyncio.run(_collect())
 
     types = [e["type"] for e in events]
@@ -61,7 +64,6 @@ def test_full_agent_cycle(db):
 def test_agent_cycle_with_dashboard_request(db):
     """Цикл с запросом дашборда."""
     from app.models.research_step import ResearchPlan, ResearchStep
-    from app.core.agent.planner import StepPlanner
 
     class DashboardPlanner:
         async def plan(self, question, context):
@@ -87,11 +89,11 @@ def test_agent_cycle_with_dashboard_request(db):
     )
 
     events = []
+
     async def _collect():
-        async for event in orch.run(
-            ChatRequest(session_id="dashboard-test", question="Дашборд")
-        ):
+        async for event in orch.run(ChatRequest(session_id="dashboard-test", question="Дашборд")):
             events.append(event)
+
     asyncio.run(_collect())
 
     types = [e["type"] for e in events]

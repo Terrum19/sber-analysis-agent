@@ -14,6 +14,7 @@ def planner():
 
 def test_plan_returns_research_plan(planner):
     import asyncio
+
     context = {
         "columns": ["category", "revenue", "date"],
         "columns_summary": "category, revenue, date",
@@ -31,6 +32,7 @@ def test_plan_returns_research_plan(planner):
 
 def test_plan_empty_question(planner):
     import asyncio
+
     context = {
         "columns": [],
         "columns_summary": "неизвестно",
@@ -46,6 +48,7 @@ def test_plan_empty_question(planner):
 
 def test_plan_includes_columns_in_context(planner):
     import asyncio
+
     context = {
         "columns": ["x", "y", "z"],
         "columns_summary": "x, y, z",

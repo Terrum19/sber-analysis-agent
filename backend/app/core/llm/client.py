@@ -14,14 +14,48 @@ import time
 from typing import Any, TypeVar
 
 import instructor
+import openai
 from openai import AsyncOpenAI
 from pydantic import BaseModel
+from tenacity import AsyncRetrying, retry_if_exception_type, stop_after_attempt
+
+try:  # instructor >= 1.4
+    from instructor.exceptions import InstructorRetryException
+except ImportError:  # instructor 1.3.x
+    from instructor.retry import InstructorRetryException
 
 from app.config import settings
 
 logger = logging.getLogger(__name__)
 
 T = TypeVar("T", bound=BaseModel)
+
+# Сколько раз instructor переспрашивает модель, если ответ не прошёл валидацию схемы.
+STRUCTURED_ATTEMPTS = 3
+
+
+def _validation_retries() -> AsyncRetrying:
+    """Повторять только невалидный ответ модели.
+
+    По умолчанию instructor повторяет любое исключение — и 401/404, и обрыв
+    связи, которые клиент openai к тому же уже сам повторил (429, 5xx, сеть).
+    """
+    return AsyncRetrying(
+        stop=stop_after_attempt(STRUCTURED_ATTEMPTS),
+        retry=retry_if_exception_type(InstructorRetryException),
+        reraise=True,
+    )
+
+
+def _is_fatal(exc: Exception) -> bool:
+    """Ошибка, которую не исправит ни повтор, ни другой формат запроса.
+
+    400/422 не считаем фатальными: модель или сервер могут не поддерживать
+    tool_choice, и JSON-режим без tools тогда помогает.
+    """
+    if isinstance(exc, openai.APIConnectionError):  # включая таймаут
+        return True
+    return isinstance(exc, openai.APIStatusError) and exc.status_code not in (400, 422)
 
 
 def _strip_code_fences(text: str) -> str:
@@ -39,7 +73,7 @@ def _strip_code_fences(text: str) -> str:
 class LLMClient:
     """Обёртка над AsyncOpenAI для локального инференса Qwen."""
 
-    def __new__(cls) -> "LLMClient":
+    def __new__(cls) -> "LLMClient":  # noqa: PYI034 — в режиме USE_FAKE_LLM отдаёт FakeLLM
         if os.getenv("USE_FAKE_LLM", "false").lower() == "true":
             from app.core.llm.fake_client import FakeLLM
 
@@ -49,7 +83,7 @@ class LLMClient:
     def __init__(self) -> None:
         self._client = AsyncOpenAI(
             base_url=settings.llm_base_url,
-            api_key="not-needed",
+            api_key=settings.llm_api_key.get_secret_value() or "not-needed",
             timeout=settings.llm_timeout_s,
         )
         self.model = settings.llm_model
@@ -57,7 +91,7 @@ class LLMClient:
         logger.info(
             "LLMClient инициализирован: base_url=%s, model=%s, timeout=%ss, temp=%s",
             settings.llm_base_url,
-            settings.llm_model,
+            self.model,
             settings.llm_timeout_s,
             settings.llm_temperature,
         )
@@ -81,14 +115,12 @@ class LLMClient:
                 temperature=settings.llm_temperature,
                 **kwargs,
             )
-        except Exception as e:
-            logger.exception("LLM complete() ОШИБКА сетевого вызова: %s", e)
+        except Exception:
+            logger.exception("LLM complete() ОШИБКА сетевого вызова")
             raise
         content = resp.choices[0].message.content or ""
         elapsed = time.time() - t0
-        logger.debug(
-            "<<< complete() ответ за %.2fs: %r", elapsed, content
-        )
+        logger.debug("<<< complete() ответ за %.2fs: %r", elapsed, content)
         logger.info(
             "LLM complete(): модель=%s длина=%d время=%.2fs ответ=%r",
             self.model,
@@ -101,34 +133,21 @@ class LLMClient:
     async def complete_structured(self, system: str, user: str, schema: type[T]) -> T:
         """Structured output через Instructor (валидация по Pydantic-схеме).
 
-        Использует instructor.from_openai для гарантированно валидного
-        вывода по заданной Pydantic-схеме.
-
-        Ollama через Instructor в режиме tools иногда возвращает
-        несколько tool_calls (AssertionError "multiple tool calls").
-        В этом случае делаем fallback: запрашиваем список схем и берём
-        первый элемент; если и это не помогло — используем JSON-режим.
+        Использует instructor с tool_choice. При ошибке валидации делает
+        fallback: список объектов, затем JSON-режим без tools.
         """
-        messages = [
-            {"role": "system", "content": system},
-            {"role": "user", "content": user},
-        ]
         schema_name = getattr(schema, "__name__", str(schema))
-        logger.info(
-            ">>> complete_structured() схема=%s user_prompt=%r",
-            schema_name,
-            user[:500],
-        )
         t0 = time.time()
-
-        # Первичная попытка: один объект схемы через tools
         try:
             result = await self._instructor.chat.completions.create(
                 model=self.model,
-                messages=messages,
-                response_model=schema,
+                messages=[
+                    {"role": "system", "content": system},
+                    {"role": "user", "content": user},
+                ],
                 temperature=settings.llm_temperature,
-                max_retries=0,
+                response_model=schema,
+                max_retries=_validation_retries(),
             )
             elapsed = time.time() - t0
             logger.info(
@@ -138,21 +157,26 @@ class LLMClient:
                 result,
             )
             return result
-        except Exception as exc:  # noqa: BLE001
+        except Exception as e:
+            if _is_fatal(e):
+                raise
             logger.warning(
-                "complete_structured() первичная попытка tools ОШИБКА: %r, идём в fallback", exc
+                "complete_structured() первичная попытка tools ОШИБКА: %s, идём в fallback",
+                e,
             )
-            # Все ошибки instructor (не только "multiple tool calls") уходят в fallback-цепочку,
-            # чтобы агент не падал на этапе планирования без видимой причины.
 
-        # Fallback 1: запрашиваем список объектов, берём первый
+        # Fallback 1: список объектов схемы (иногда LLM присылает массив)
         logger.info("complete_structured() Fallback 1: list[%s]", schema_name)
         try:
             results = await self._instructor.chat.completions.create(
                 model=self.model,
-                messages=messages,
-                response_model=list[schema],  # type: ignore[valid-type]
+                messages=[
+                    {"role": "system", "content": system},
+                    {"role": "user", "content": user},
+                ],
                 temperature=settings.llm_temperature,
+                response_model=list[schema],
+                max_retries=_validation_retries(),
             )
             if results:
                 elapsed = time.time() - t0
@@ -162,9 +186,10 @@ class LLMClient:
                     results[0],
                 )
                 return results[0]
-        except Exception:  # noqa: BLE001
+        except Exception as e:
+            if _is_fatal(e):
+                raise
             logger.warning("complete_structured() fallback1 list() ОШИБКА", exc_info=True)
-            pass
 
         # Fallback 2: JSON-режим без tools, парсим вручную
         logger.info("complete_structured() Fallback 2: JSON-режим без tools")
@@ -172,9 +197,7 @@ class LLMClient:
             system=system,
             user=user + "\n\nОтветь только валидным JSON, соответствующим схеме модели.",
         )
-        logger.debug(
-            "complete_structured() raw LLM ответ=%r", raw
-        )
+        logger.debug("complete_structured() raw LLM ответ=%r", raw)
 
         # Пробуем несколько стратегий извлечения JSON
         candidates = []
@@ -188,21 +211,19 @@ class LLMClient:
 
         result = None
         for name, cand in candidates:
-            logger.debug(
-                "complete_structured() пробуем стратегию %s: %r", name, cand[:200]
-            )
+            logger.debug("complete_structured() пробуем стратегию %s: %r", name, cand[:200])
             try:
                 result = schema.model_validate_json(cand)
                 elapsed = time.time() - t0
                 logger.info(
                     "<<< complete_structured() fallback2 JSON OK через %s за %.2fs результат=%r",
-                    name, elapsed, result,
+                    name,
+                    elapsed,
+                    result,
                 )
                 break
-            except Exception as e:
-                logger.debug(
-                    "complete_structured() стратегия %s не сработала: %s", name, e
-                )
+            except Exception as e:  # noqa: BLE001 — пробуем следующую стратегию
+                logger.debug("complete_structured() стратегия %s не сработала: %s", name, e)
                 continue
 
         if result is None:
@@ -212,11 +233,11 @@ class LLMClient:
             logger.error("Сырой ответ модели: %r", raw)
             logger.error("Очищенный ответ: %r", cleaned)
             raise ValueError(
-                f"LLM не вернул валидный JSON для схемы {schema_name}. "
-                f"Сырой ответ: {raw[:500]}..."
+                f"LLM не вернул валидный JSON для схемы {schema_name}. Сырой ответ: {raw[:500]}..."
             )
 
         return result
+
 
 def _extract_json_block(text: str) -> str | None:
     """Найти первый валидный JSON-объект в произвольном тексте.

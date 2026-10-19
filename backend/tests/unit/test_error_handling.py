@@ -1,6 +1,7 @@
 """Тесты обработки ошибок в компонентах агента."""
 
 import asyncio
+
 import pytest
 
 from app.core.agent.step_executor import StepExecutor

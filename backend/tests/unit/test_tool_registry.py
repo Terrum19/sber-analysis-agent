@@ -2,6 +2,8 @@
 
 from app.core.tools.registry import tool_registry
 
+HIDDEN_TOOLS = {"time_series", "correlation", "product_performance", "conversion_funnel"}
+
 EXPECTED_TOOLS = {
     "select_columns",
     "filter_rows",
@@ -44,14 +46,25 @@ EXPECTED_TOOLS = {
     "avg_order_value",
     "trend_analysis",
     "seasonal_decompose",
+    "sort_limit",
+    "sample",
+    "window_metric",
 }
 
 
 def test_registry_exposes_every_tool_to_llm() -> None:
     assert EXPECTED_TOOLS <= set(tool_registry._tools)
     description = tool_registry.describe()
-    for name in EXPECTED_TOOLS:
-        assert f"{name}:" in description
+    for name in EXPECTED_TOOLS - HIDDEN_TOOLS:
+        assert f"- {name} [" in description
+    for name in HIDDEN_TOOLS:
+        assert f"- {name} [" not in description
+
+
+def test_every_planner_tool_describes_its_arguments() -> None:
+    for tool in tool_registry.planner_tools():
+        assert "arguments={" in tool.describe()
+        assert tool.kind in {"transform", "analysis", "lookup"}
 
 
 def test_registry_get_unknown_tool_is_explicit() -> None:

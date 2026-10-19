@@ -1,16 +1,19 @@
 """Drop-off between consecutive funnel steps."""
 
 from app.core.tools.base import BaseTool, identifier
-from app.core.tools.funnel._common import columns, rows_result
+from app.core.tools.funnel._common import StepOrderArgs, rows_result
 
 
 class FunnelDropOffTool(BaseTool):
     name = "funnel_drop_off"
-    description = "Анализ потерь пользователей между шагами воронки"
+    description = (
+        "Потери между шагами воронки (drop_off, drop_off_rate); шаги упорядочены "
+        "по первому появлению order_column"
+    )
+    Args = StepOrderArgs
 
-    def run(self, db, input_table: str, columns_: list[str]) -> str:
-        columns(columns_, 2, 2, self.name)
-        step_col, order_col = columns_
+    def execute(self, db, input_table: str, args: StepOrderArgs) -> str:
+        step_col, order_col = args.step_column, args.order_column
         rows = db.query(
             f"SELECT {identifier(step_col)} AS step, COUNT(*) AS count, "
             f"MIN({identifier(order_col)}) AS first_order "

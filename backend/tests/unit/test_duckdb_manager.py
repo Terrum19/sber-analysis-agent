@@ -35,3 +35,19 @@ def test_to_records_limit(db):
     db.execute("CREATE TABLE big AS SELECT i AS v FROM range(100) t(i)")
     rows = db.to_records("big", limit=5)
     assert len(rows) == 5
+
+
+def test_save_step_result_continues_numbering_of_existing_file(tmp_path):
+    """Новый менеджер (новый запрос) не перезаписывает temp_result_v1 прошлого хода."""
+    path = str(tmp_path / "main.duckdb")
+    first = DuckDBManager(path)
+    first.execute("CREATE TABLE raw AS SELECT 1 AS x")
+    assert first.save_step_result("raw", "SELECT 1 AS x") == "temp_result_v1"
+    first.close()
+
+    second = DuckDBManager(path)
+    try:
+        assert second.save_step_result("raw", "SELECT 2 AS x") == "temp_result_v2"
+        assert second.to_records("temp_result_v1") == [{"x": 1}]
+    finally:
+        second.close()

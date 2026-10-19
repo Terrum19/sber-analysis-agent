@@ -3,17 +3,16 @@
 from datetime import date, datetime
 
 import numpy as np
+from pydantic import Field
 from scipy import stats
 
-from app.core.tools.base import identifier
+from app.core.tools.base import Ident, ToolArgs, identifier
 from app.core.tools.stats._common import rows_result
 
 
-def required(columns: list[str], minimum: int, maximum: int, name: str) -> None:
-    if not minimum <= len(columns) <= maximum:
-        raise ValueError(f"{name} requires between {minimum} and {maximum} columns")
-    for column in columns:
-        identifier(column)
+class SeriesArgs(ToolArgs):
+    date_column: Ident
+    value_column: Ident
 
 
 def observations(db, table: str, date_col: str, value_col: str) -> list[tuple[object, float]]:
@@ -45,4 +44,12 @@ def period_index(value: object, position: int = 0, seasonality_period: int = 12)
     return position % seasonality_period + 1
 
 
-__all__ = ["identifier", "observations", "period_index", "required", "rows_result", "trend"]
+__all__ = [
+    "Field",
+    "SeriesArgs",
+    "identifier",
+    "observations",
+    "period_index",
+    "rows_result",
+    "trend",
+]

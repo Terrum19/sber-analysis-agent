@@ -48,7 +48,7 @@ class FakeExecutor:
         self.calls = 0
         self.fail = fail
 
-    async def execute(self, step: ResearchStep, input_table: str) -> str:
+    async def execute(self, step: ResearchStep, input_table: str, **_: object) -> str:
         self.calls += 1
         if self.fail:
             raise RuntimeError("broken step")
@@ -59,7 +59,7 @@ class FakeInsight:
     def __init__(self) -> None:
         self.calls = 0
 
-    async def generate(self, question: str, result_table: str) -> Insight:
+    async def generate(self, question: str, result_table: str, **_: object) -> Insight:
         self.calls += 1
         return Insight(headline="Москва лидирует", details=["msk > spb"])
 
@@ -171,7 +171,10 @@ async def test_failed_step_reports_error(db, monkeypatch) -> None:
         cache=StateCache(db),
     )
     events = await collect(agent, "Сравни выручку по регионам")
-    assert events == [{"type": "error", "data": {"step": 1, "message": "broken step"}}]
+    assert [event["type"] for event in events] == ["clarification_needed"]
+    assert events[0]["data"]["step_id"] == 1
+    assert events[0]["data"]["error"] == "broken step"
+    assert SessionMemory("s1").get_pending_recovery()["failed_step_id"] == 1
 
 
 async def test_dashboard_request_saves_spec(db) -> None:
@@ -198,3 +201,43 @@ def test_state_cache_put_and_get(db) -> None:
     cache = StateCache(db)
     table = cache.put("raw", "SELECT region FROM raw")
     assert cache.get(table, limit=1) == [{"region": "msk"}]
+
+
+async def test_new_question_drops_pending_clarification(db, monkeypatch) -> None:
+    async def no_sleep(seconds: float) -> None:
+        return None
+
+    monkeypatch.setattr("app.core.agent.recovery.asyncio.sleep", no_sleep)
+    executor = FakeExecutor(db, fail=True)
+    agent = AgentOrchestrator(planner=FakePlanner(), executor=executor, insight_gen=FakeInsight())
+    await collect(agent, "Сравни выручку по регионам")
+    assert SessionMemory("s1").get_pending_recovery() is not None
+
+    executor.fail = False
+    events = await collect(agent, "Покажи выручку по регионам")
+    assert [event["type"] for event in events] == ["text", "chart", "done"]
+    assert SessionMemory("s1").get_pending_recovery() is None
+
+
+async def test_recovery_answers_the_original_question(db, monkeypatch) -> None:
+    async def no_sleep(seconds: float) -> None:
+        return None
+
+    class QuestionSpy(FakeInsight):
+        async def generate(self, question: str, result_table: str, **_: object) -> Insight:
+            self.question = question
+            return await super().generate(question, result_table)
+
+    monkeypatch.setattr("app.core.agent.recovery.asyncio.sleep", no_sleep)
+    executor = FakeExecutor(db, fail=True)
+    insight = QuestionSpy()
+    agent = AgentOrchestrator(planner=FakePlanner(), executor=executor, insight_gen=insight)
+    await collect(agent, "Сравни выручку по регионам")
+
+    executor.fail = False
+    request = ChatRequest(
+        session_id="s1", question="по сумме amount", recovery_response="по сумме amount"
+    )
+    events = [event async for event in agent.run(request)]
+    assert [event["type"] for event in events] == ["text", "chart", "done"]
+    assert insight.question == "Сравни выручку по регионам"

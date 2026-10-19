@@ -1,6 +1,7 @@
 """Unit-тесты StepExecutor: выполнение шагов, обработка ошибок."""
 
 import asyncio
+
 import pytest
 
 from app.core.agent.step_executor import StepExecutor
@@ -67,7 +68,7 @@ def test_execute_unknown_tool_raises_valueerror(db):
         asyncio.run(executor.execute(step, "raw"))
 
 
-def test_execute_needs_llm_codegen_delegates(db):
+def test_execute_needs_llm_codegen_raises_until_implemented(db):
     executor = StepExecutor(db=db)
     step = ResearchStep(
         step_id=0,
@@ -76,5 +77,5 @@ def test_execute_needs_llm_codegen_delegates(db):
         needs_llm_codegen=True,
         purpose="Генерируем код",
     )
-    result = asyncio.run(executor.execute(step, "raw"))
-    assert result is not None
+    with pytest.raises(NotImplementedError, match="кодогенерация"):
+        asyncio.run(executor.execute(step, "raw"))

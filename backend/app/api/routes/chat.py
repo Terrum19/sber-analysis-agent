@@ -4,12 +4,10 @@
 готовности, ссылки на дашборды. Оркестрация — в core/agent/orchestrator.py.
 """
 
-import json
-
 from fastapi import APIRouter
 from fastapi.responses import StreamingResponse
 
-from app.api.schemas.chat import ChatRequest, ChatEvent
+from app.api.schemas.chat import ChatEvent, ChatRequest
 
 router = APIRouter()
 STREAM_HEADERS = {"Cache-Control": "no-cache, no-transform", "X-Accel-Buffering": "no"}
@@ -38,5 +36,7 @@ async def chat(payload: ChatRequest) -> StreamingResponse:
         "Cache-Control": "no-cache, no-transform",
         "X-Accel-Buffering": "no",
     }
-    response = StreamingResponse(event_stream(), media_type="text/event-stream", headers=STREAM_HEADERS)
+    response = StreamingResponse(
+        event_stream(), media_type="text/event-stream", headers=STREAM_HEADERS
+    )
     return response

@@ -3,7 +3,7 @@
 import pytest
 from pydantic import ValidationError
 
-from app.models.research_step import ResearchStep, ResearchPlan
+from app.models.research_step import ResearchPlan, ResearchStep
 
 
 def test_research_step_minimal() -> None:

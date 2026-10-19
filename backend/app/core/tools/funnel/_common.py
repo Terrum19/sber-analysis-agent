@@ -1,14 +1,12 @@
-"""Shared validation and row helpers for funnel tools."""
+"""Shared argument models and row helpers for funnel tools."""
 
-from app.core.tools.base import identifier
+from app.core.tools.base import Ident, ToolArgs, identifier
 from app.core.tools.stats._common import rows_result
 
 
-def columns(columns: list[str], minimum: int, maximum: int, name: str) -> None:
-    if not minimum <= len(columns) <= maximum:
-        raise ValueError(f"{name} requires between {minimum} and {maximum} columns")
-    for column in columns:
-        identifier(column)
+class StepOrderArgs(ToolArgs):
+    step_column: Ident
+    order_column: Ident
 
 
 def ordered_steps(db, table: str, step_col: str, order_col: str) -> list[dict]:
@@ -19,4 +17,4 @@ def ordered_steps(db, table: str, step_col: str, order_col: str) -> list[dict]:
     )
 
 
-__all__ = ["columns", "identifier", "ordered_steps", "rows_result"]
+__all__ = ["StepOrderArgs", "identifier", "ordered_steps", "rows_result"]

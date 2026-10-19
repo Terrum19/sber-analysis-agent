@@ -8,8 +8,9 @@ from app.main import app
 
 @pytest.fixture
 def fake_llm(monkeypatch: pytest.MonkeyPatch):
-    from app.core.llm.fake_client import FakeLLM
     from app.core.data.duckdb_manager import DuckDBManager
+    from app.core.llm.fake_client import FakeLLM
+
     monkeypatch.setattr("app.core.llm.client.LLMClient", FakeLLM)
     monkeypatch.setattr("app.core.agent.planner.LLMClient", FakeLLM)
     monkeypatch.setattr("app.core.agent.insight.LLMClient", FakeLLM)
@@ -56,6 +57,9 @@ def test_large_question(fake_llm):
     client = TestClient(app)
     response = client.post(
         "/api/chat",
-        json={"session_id": "ext-3", "question": "Анализируй все категории, посчитай сумму, среднее, максимум и минимум по каждой, сделай сравнительный отчёт"},
+        json={
+            "session_id": "ext-3",
+            "question": "Анализируй все категории, посчитай сумму, среднее, максимум и минимум по каждой, сделай сравнительный отчёт",
+        },
     )
     assert response.status_code == 200

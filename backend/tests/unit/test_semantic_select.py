@@ -49,3 +49,31 @@ def test_identifier_columns_not_boosted_for_aggregations() -> None:
     names = [column.name for column in profile.columns]
     picked = select_columns("Какое среднее количество?", names, 1, profile)
     assert picked == ["Сколько_Купили"]
+
+
+def test_russian_question_finds_latin_columns_by_alias_and_value() -> None:
+    profile = make_profile({"client": "numeric", "revenue": "numeric", "category": "text"})
+    profile.columns[2].top_values = [{"value": "Электроника", "count": 3}]
+    names = [column.name for column in profile.columns]
+    picked = select_columns(
+        "Средняя выручка продаж электроники", names, 2, profile, aliases={"revenue": ["выручка"]}
+    )
+    assert picked == ["revenue", "category"]
+
+
+def test_describe_columns_shows_ranges_and_spelling_variants() -> None:
+    from app.core.data.semantic_select import describe_columns
+
+    profile = make_profile({"revenue": "numeric", "category": "text", "date": "temporal"})
+    revenue, category, date = profile.columns
+    revenue.min, revenue.max, revenue.median = 5, 100, 28.5
+    category.distinct = 2
+    category.top_values = [
+        {"value": "Электроника", "count": 3},
+        {"value": "електроника", "count": 1},
+    ]
+    date.min_date, date.max_date = "2024-01-01", "2024-03-01"
+    text = describe_columns(["revenue", "category", "date"], profile, {"revenue": "Сумма, руб."})
+    assert "- revenue [numeric, ] — Сумма, руб.; от 5 до 100, медиана 28.5" in text
+    assert '"Электроника", "електроника"' in text
+    assert "с 2024-01-01 по 2024-03-01" in text

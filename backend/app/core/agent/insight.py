@@ -21,11 +21,23 @@ class InsightGenerator:
         self.llm = llm or LLMClient()
         self.db = db
 
-    async def generate(self, question: str, result_table: str) -> Insight:
-        """Сформировать Insight по финальной таблице."""
+    async def generate(
+        self,
+        question: str,
+        result_table: str,
+        supporting: list[tuple[str, str]] | None = None,
+    ) -> Insight:
+        """Сформировать Insight по финальной таблице.
+
+        supporting — (purpose, таблица) результатов стат-тестов и других
+        analysis-шагов, которые дополняют основную таблицу.
+        """
         from app.core.data.duckdb_manager import DuckDBManager
 
         db = self.db or DuckDBManager()
         result = db.to_records(result_table, limit=50)
-        prompt = INSIGHT_SUMMARY.format(question=question, result=result)
+        extra = "\n".join(
+            f"- {purpose}: {db.to_records(table, limit=10)}" for purpose, table in supporting or []
+        )
+        prompt = INSIGHT_SUMMARY.format(question=question, result=result, supporting=extra or "нет")
         return await self.llm.complete_structured("Ты — аналитик.", prompt, Insight)

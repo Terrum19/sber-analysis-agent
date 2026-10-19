@@ -1,5 +1,6 @@
 """Pydantic модели для агентного цикла."""
-from app.models.research_step import ResearchStep, ResearchPlan
-from app.models.insight import Insight
 
-__all__ = ["ResearchStep", "ResearchPlan", "Insight"]
+from app.models.insight import Insight
+from app.models.research_step import ResearchPlan, ResearchStep
+
+__all__ = ["Insight", "ResearchPlan", "ResearchStep"]

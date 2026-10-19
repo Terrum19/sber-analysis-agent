@@ -8,8 +8,9 @@ from app.main import app
 
 @pytest.fixture
 def fake_llm(monkeypatch: pytest.MonkeyPatch):
-    from app.core.llm.fake_client import FakeLLM
     from app.core.data.duckdb_manager import DuckDBManager
+    from app.core.llm.fake_client import FakeLLM
+
     monkeypatch.setattr("app.core.llm.client.LLMClient", FakeLLM)
     monkeypatch.setattr("app.core.agent.planner.LLMClient", FakeLLM)
     monkeypatch.setattr("app.core.agent.insight.LLMClient", FakeLLM)
@@ -39,7 +40,7 @@ def test_sse_compact_json_no_spaces(fake_llm):
         json={"session_id": "s1", "question": "Тест SSE"},
     )
     text = response.text
-    assert 'data: ' in text
+    assert "data: " in text
     assert '"type":"text"' in text
     assert '"type":"chart"' in text
     assert '"type":"done"' in text

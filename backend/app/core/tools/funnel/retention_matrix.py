@@ -1,16 +1,23 @@
 """User retention matrix by cohort and period."""
 
-from app.core.tools.base import BaseTool, identifier
-from app.core.tools.funnel._common import columns
+from app.core.tools.base import BaseTool, Ident, ToolArgs, identifier
+
+
+class RetentionArgs(ToolArgs):
+    user_column: Ident
+    period_column: Ident
 
 
 class RetentionMatrixTool(BaseTool):
     name = "retention_matrix"
-    description = "Матрица удержания пользователей по когортам и периодам"
+    description = (
+        "Матрица удержания: когорта = первый period_column пользователя; "
+        "active_users и retention_rate по периодам"
+    )
+    Args = RetentionArgs
 
-    def run(self, db, input_table: str, columns_: list[str]) -> str:
-        columns(columns_, 2, 2, self.name)
-        user_col, period_col = columns_
+    def execute(self, db, input_table: str, args: RetentionArgs) -> str:
+        user_col, period_col = args.user_column, args.period_column
         table = identifier(input_table)
         user = identifier(user_col)
         period = identifier(period_col)

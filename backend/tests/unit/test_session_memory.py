@@ -1,11 +1,9 @@
 """Unit-тесты SessionMemory: контекст, шаги, ответы, профиль."""
 
-import json
-import os
 import pytest
 
-from app.core.memory.session_memory import SessionMemory
 from app.config import settings
+from app.core.memory.session_memory import SessionMemory
 
 
 @pytest.fixture
@@ -27,11 +25,32 @@ def test_build_context_includes_profile(memory):
     assert "columns_summary" in ctx
     assert "datasource" in ctx
     assert "profile" in ctx
-    assert isinstance(ctx["profile"], dict)
+    # Без DuckDB паспорта таблицы нет — планировщик работает без него.
+    assert ctx["profile"] is None
+
+
+def test_build_context_reads_profile_and_columns_from_passport(tmp_path):
+    from app.core.data.duckdb_manager import DuckDBManager
+    from app.core.data.profiling import profile_table
+    from app.core.memory.profile_memory import ProfileMemory
+
+    old_path = settings.sqlite_path
+    settings.sqlite_path = str(tmp_path / "sessions3.sqlite")
+    db = DuckDBManager(":memory:")
+    try:
+        db.execute("CREATE TABLE raw AS SELECT 'msk' AS region, 10.0 AS amount")
+        ProfileMemory(db).save_profile(profile_table(db, "raw"))
+        ctx = SessionMemory("profile-session", db=db).build_context("Выручка по регионам")
+        assert ctx["profile"].table == "raw"
+        assert ctx["columns"] == ["region", "amount"]
+    finally:
+        db.close()
+        settings.sqlite_path = old_path
 
 
 def test_record_step_and_answer(memory):
     from app.models.research_step import ResearchStep
+
     step = ResearchStep(
         step_id=0,
         tool="aggregate",

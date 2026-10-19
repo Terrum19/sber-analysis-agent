@@ -1,17 +1,16 @@
 """Бенчмарк: производительность агентного цикла."""
 
 import asyncio
-import time
 
 import pytest
 
+from app.api.schemas.chat import ChatRequest
+from app.core.agent.insight import InsightGenerator
 from app.core.agent.orchestrator import AgentOrchestrator
 from app.core.agent.planner import StepPlanner
-from app.core.agent.insight import InsightGenerator
 from app.core.agent.step_executor import StepExecutor
 from app.core.data.duckdb_manager import DuckDBManager
 from app.core.llm.fake_client import FakeLLM
-from app.api.schemas.chat import ChatRequest
 
 
 @pytest.fixture
@@ -42,11 +41,11 @@ def test_orchestrator_cycle_time(db):
     )
 
     events = []
+
     async def _collect():
-        async for event in orch.run(
-            ChatRequest(session_id="bench", question="Сколько записей?")
-        ):
+        async for event in orch.run(ChatRequest(session_id="bench", question="Сколько записей?")):
             events.append(event)
+
     asyncio.run(_collect())
     assert len(events) > 0
     types = [e["type"] for e in events]

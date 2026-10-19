@@ -2,25 +2,24 @@
 
 import pytest
 
-from app.core.agent.orchestrator import AgentOrchestrator
-from app.core.agent.planner import StepPlanner
-from app.core.agent.insight import InsightGenerator
-from app.core.agent.step_executor import StepExecutor
-from app.core.data.duckdb_manager import DuckDBManager
-from app.core.llm.fake_client import FakeLLM
 from app.api.schemas.chat import ChatRequest
+from app.core.agent.orchestrator import AgentOrchestrator
+from app.core.data.duckdb_manager import DuckDBManager
 
 
 class FakeExecutor:
     """МOCK исполнителя: возвращает фиксированную таблицу."""
-    async def execute(self, step, input_table):
+
+    async def execute(self, step, input_table, **_):
         return "temp_result_v1"
 
 
 class FakeInsightGen:
     """МOCK генератора инсайта."""
-    async def generate(self, question, result_table):
+
+    async def generate(self, question, result_table, **_):
         from app.models.insight import Insight
+
         return Insight(
             headline="Мок инсайт",
             details=["Деталь 1"],
@@ -30,8 +29,10 @@ class FakeInsightGen:
 
 class FakePlanner:
     """МOCK планировщика."""
+
     async def plan(self, question, context):
         from app.models.research_step import ResearchPlan, ResearchStep
+
         return ResearchPlan(
             steps=[
                 ResearchStep(
@@ -62,12 +63,13 @@ def orchestrator():
 
 def test_run_returns_events(orchestrator):
     import asyncio
+
     events = []
+
     async def _collect():
-        async for event in orchestrator.run(
-            ChatRequest(session_id="s1", question="Тест")
-        ):
+        async for event in orchestrator.run(ChatRequest(session_id="s1", question="Тест")):
             events.append(event)
+
     asyncio.run(_collect())
     types = [e["type"] for e in events]
     assert "text" in types
@@ -79,7 +81,7 @@ def test_run_error_in_step(orchestrator):
     import asyncio
 
     class FailingExecutor:
-        async def execute(self, step, input_table):
+        async def execute(self, step, input_table, **_):
             raise ValueError("Таблица не найдена")
 
     orch = AgentOrchestrator(
@@ -89,11 +91,11 @@ def test_run_error_in_step(orchestrator):
         db=orchestrator.db,
     )
     events = []
+
     async def _collect():
-        async for event in orch.run(
-            ChatRequest(session_id="s2", question="Тест ошибки")
-        ):
+        async for event in orch.run(ChatRequest(session_id="s2", question="Тест ошибки")):
             events.append(event)
+
     asyncio.run(_collect())
     types = [e["type"] for e in events]
     assert "clarification_needed" in types

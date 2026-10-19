@@ -13,8 +13,8 @@ import pytest
 
 from app.core.llm.client import LLMClient
 from app.core.llm.fake_client import FakeLLM
-from app.models.research_step import ResearchPlan
 from app.models.insight import Insight
+from app.models.research_step import ResearchPlan
 
 
 @pytest.fixture(autouse=True)

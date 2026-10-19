@@ -12,10 +12,6 @@
 import pytest
 from fastapi.testclient import TestClient
 
-from app.core.agent.orchestrator import AgentOrchestrator
-from app.core.agent.planner import StepPlanner
-from app.core.agent.insight import InsightGenerator
-from app.core.agent.step_executor import StepExecutor
 from app.core.data.duckdb_manager import DuckDBManager
 from app.core.llm.fake_client import FakeLLM
 from app.main import app

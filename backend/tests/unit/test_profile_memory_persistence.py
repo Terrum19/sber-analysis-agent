@@ -1,31 +1,31 @@
-"""Тесты персистентности ProfileMemory."""
+"""Тесты персистентности ProfileMemory: паспорт переживает переоткрытие DuckDB."""
 
-import tempfile
-import pytest
-
+from app.core.data.duckdb_manager import DuckDBManager
+from app.core.data.profiling import profile_table
 from app.core.memory.profile_memory import ProfileMemory
-from app.config import settings
 
 
 def test_profile_save_and_load(tmp_path):
-    old_dir = settings.storage_dir
-    settings.storage_dir = str(tmp_path)
+    path = str(tmp_path / "main.duckdb")
+    db = DuckDBManager(path)
+    db.execute("CREATE TABLE raw AS SELECT * FROM (VALUES (1, 'a'), (2, 'b')) AS t(a, b)")
+    ProfileMemory(db).save_profile(profile_table(db, "raw"), {"a": "номер"})
+    db.close()
+
+    reopened = DuckDBManager(path)
     try:
-        pm = ProfileMemory()
-        pm.save("raw", {"columns": ["a", "b"], "rows": 100})
-        loaded = pm.load("raw")
-        assert loaded["columns"] == ["a", "b"]
-        assert loaded["rows"] == 100
+        memory = ProfileMemory(reopened)
+        loaded = memory.load_profile("raw")
+        assert [column.name for column in loaded.columns] == ["a", "b"]
+        assert loaded.row_count == 2
+        assert memory.load_glossary("raw") == {"a": "номер"}
     finally:
-        settings.storage_dir = old_dir
+        reopened.close()
 
 
-def test_profile_missing_table_returns_empty(tmp_path):
-    old_dir = settings.storage_dir
-    settings.storage_dir = str(tmp_path)
+def test_profile_missing_table_returns_none(tmp_path):
+    db = DuckDBManager(str(tmp_path / "main.duckdb"))
     try:
-        pm = ProfileMemory()
-        loaded = pm.load("nonexistent_table")
-        assert loaded == {}
+        assert ProfileMemory(db).load_profile("nonexistent_table") is None
     finally:
-        settings.storage_dir = old_dir
+        db.close()
