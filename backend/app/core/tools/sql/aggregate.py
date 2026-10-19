@@ -4,7 +4,7 @@
 «Средний X по категории Y».
 """
 
-from app.core.tools.base import BaseTool
+from app.core.tools.base import BaseTool, identifier
 
 
 class AggregateTool(BaseTool):
@@ -13,7 +13,9 @@ class AggregateTool(BaseTool):
     name = "aggregate"
     description = "Сгруппировать по колонке и посчитать количество/среднее/сумму"
 
-    def run(self, db, input_table: str, columns: list[str]) -> str:
-        col = columns[0]
-        sql = f"SELECT {col}, COUNT(*) AS cnt, AVG(1) AS dummy FROM {input_table} GROUP BY {col} ORDER BY cnt DESC"
+    def run(self, db, input_table: str, columns: list[str], **kwargs: object) -> str:
+        if not columns:
+            raise ValueError("aggregate requires [column]")
+        col = identifier(columns[0])
+        sql = f"SELECT {col}, COUNT(*) AS cnt FROM {identifier(input_table)} GROUP BY {col} ORDER BY cnt DESC"
         return db.save_step_result(input_table, sql)

@@ -1,3 +1,120 @@
+2026-10-18  mb6ockatf  <smokenmirror@tutamail.com>
+
+	Исправления research tools по ревью.
+	* backend/app/core/tools/base.py (expression): Выражения create_column
+	и условия join разбираются парсером DuckDB: допускается одно скалярное
+	выражение без FROM, подзапросов и функций чтения настроек и окружения.
+	Раньше через (SELECT ... FROM read_text(...)) читались файлы сервера.
+	(BaseTool.transforms_data): Тулы-отчёты помечены флагом.
+	* backend/app/core/agent/orchestrator.py (AgentOrchestrator.run),
+	backend/app/core/agent/step_executor.py (transforms_data): Результат
+	тула-отчёта (стат-тесты, bootstrap, search_categorical_values,
+	inspect_temp_table) не становится входом следующего шага: тот получает
+	таблицу с данными.  Пример плана из задачи (t_test_ind, затем
+	bootstrap_ci по revenue) теперь выполняется.
+	* backend/app/core/tools: Все тулы принимают ResearchStep.parameters
+	(**kwargs); раньше 35 из 41 падали с TypeError.
+	* backend/app/core/tools/stats/_common.py (literal): Числа результатов
+	пишутся как DOUBLE, включая NaN и бесконечности (раньше -inf ломал
+	SQL, а значения возвращались как DECIMAL); даты остаются DATE и
+	TIMESTAMP.
+	* backend/app/core/tools/stats/ks_test.py: kstest получает
+	замороженное нормальное распределение: с SciPy 1.18 вызов с args
+	падал с TypeError.
+	* backend/app/core/tools/stats/shapiro_wilk.py: Новый тул из задачи,
+	от 3 до 5000 наблюдений.
+	* backend/app/core/tools/stats/t_test_ind.py: Режим samples или groups
+	задаётся параметром mode; без него группами считается текстовая
+	колонка или числовая ровно с двумя значениями.  Раньше колонка групп
+	0/1 сравнивалась со значениями как вторая выборка.  Степени свободы
+	возвращаются в обоих режимах.
+	* backend/app/core/tools/stats: anova_one_way, t_test_dep,
+	mann_whitney_u, pearson_corr, spearman_corr и linear_regression
+	возвращают p_value (и степени свободы или stderr); t-тесты и
+	Манн-Уитни принимают parameters alternative.  bootstrap_ci всегда
+	возвращает statistic, estimate, ci_low, ci_high.
+	* backend/app/core/tools/funnel/_common.py (step_counts, ordered_steps):
+	С колонкой пользователя шаг засчитывается, только если пользователь
+	прошёл предыдущие шаги по порядку.  Порядок шагов берётся из
+	parameters steps или выводится по тому, какой шаг пользователи чаще
+	проходят раньше, поэтому одно раннее событие не переставляет воронку.
+	funnel_drop_off принимает колонку пользователя.
+	* backend/app/core/tools/timeseries/forecast.py: Прогноз продолжает
+	подобранную прямую; раньше он был сдвинут на slope * x_mean.
+	* backend/app/core/tools/domain/seasonal_decompose.py: Классическое
+	разложение: тренд — центрированное скользящее среднее за сезон,
+	сезонные индексы нормированы; нужно не меньше двух полных сезонов.
+	Раньше линейный тренд уходил ниже нуля и мультипликативный residual
+	менял знак.
+	* backend/app/core/tools/domain/_common.py (time_axis, period_index):
+	Тренд строится по времени (для дат — по дням), а не по номеру строки.
+	Сезон даты берётся из календаря: месяц для 12, квартал для 4, день
+	недели для 7.
+	* backend/app/core/tools/sql/atomic.py (WindowTool): lag и lead
+	требуют колонку сортировки (rowid нет у представлений).
+	(RenameColumnTool): Переименованная колонка остаётся на своём месте.
+	* backend/app/core/tools/registry.py: run_wasm_python не
+	регистрируется, пока нет песочницы; describe() перечисляет тул с
+	алиасом один раз.
+	* backend/app/core/agent/recovery.py (with_retry): После последней
+	неудачной попытки пауза не делается.
+	* backend/app/core/tools/base.py (identifier): Имена таблиц и колонок
+	берутся в двойные кавычки (кавычки внутри удваиваются) вместо проверки
+	по шаблону ASCII: имена колонок источника не меняются, и тулы падали на
+	кириллице и пробелах (ID_Аптеки, «Код аптеки»), с которыми на dev
+	работали aggregate, time_series и correlation.  Производные имена
+	(sum_<колонка>, lag_<колонка>) кавычатся целиком.
+	* backend/app/core/llm/prompts/step_planner.py (STEP_PLANNER):
+	Планировщик знает про parameters и про то, что тулы-отчёты не меняют
+	таблицу.
+	* docs/roadmap.md, docs/data_connectors.md: Тулы отмечены в roadmap;
+	уточнено, что numpy/scipy не нужны только профилированию.
+	* backend/tests/unit: Тесты на всё перечисленное, эталоны p_value из
+	SciPy, test_step_chaining.py для цепочки шагов, test_source_names.py
+	для имён источника.
+
+2026-10-17  dmitriy-ya <dmitriyyakushonok@yandex.ru>
+
+	Итоговая реализация и ревью research tools.
+	* backend/app/core/tools/sql: Добавлен набор атомарных DuckDB-тулов
+	select/filter/create/rename, join и left join, group_by, pivot,
+	time_bucket, lag/lead и time_series с валидацией аргументов,
+	упорядоченными оконными функциями и поддержкой month/quarter/week/day.
+	* backend/app/core/tools/stats: Реализованы корреляции Pearson и
+	Spearman, линейная регрессия, ANOVA, Welch t-test, paired t-test,
+	Mann–Whitney, chi-square, KS-test, описательная статистика,
+	bootstrap CI и bootstrap correlation. Расчёты выполняются через
+	NumPy/SciPy; парные методы используют согласованные строки,
+	результаты включают доступные p_value и degrees_of_freedom.
+	* backend/app/core/tools/funnel: Реализованы funnel_steps,
+	funnel_drop_off, cohort_analysis и retention_matrix с расчётом
+	конверсий, drop-off и retention.
+	* backend/app/core/tools/domain: Реализованы revenue_analysis,
+	product_performance, conversion_funnel, avg_order_value,
+	trend_analysis и seasonal_decompose с сегментацией, настраиваемым
+	seasonality_period и additive/multiplicative моделями.
+	* backend/app/core/tools/stats/search_categorical_values.py:
+	Добавлен fuzzy-поиск фактических категориальных значений с рейтингом
+	совпадения и лимитом результатов.
+	* backend/app/core/tools/inspect_temp_table.py: Добавлен паспорт
+	промежуточных таблиц со схемой, типами, количеством строк,
+	образцами и описательной статистикой числовых колонок.
+	* backend/app/core/tools/run_wasm_python.py: Добавлен контрактный
+	мост к существующему WASMSandbox.
+	* backend/app/core/tools/registry.py: Все реализованные инструменты
+	зарегистрированы и доступны через describe() для StepPlanner.
+	* backend/app/models/research_step.py,
+	backend/app/core/agent/step_executor.py: Добавлены структурированные
+	parameters для конфигурации tools при сохранении обратной
+	совместимости с columns.
+	* backend/app/core/data/duckdb_manager.py и StateCache: результаты
+	каждого шага сохраняются как temp_result_vN и используются повторно
+	при chart morph без повторного вычисления.
+	* backend/tests/unit: Добавлены контрактные, математические,
+	интеграционные для DuckDB и регрессионные тесты всех реализованных
+	групп инструментов. Финальная проверка: 321 passed, 13 skipped;
+	Ruff и git diff --check проходят.
+
 2026-10-15  Saitbatalov Bulat  <saitbatalovbulat200@gmail.com>
 
 	Энричинг таблицы, паспорт данных в DuckDB.

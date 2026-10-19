@@ -3,7 +3,7 @@
 Пример сценария: «Какой паттерн повторяется каждые 12 месяцев?»
 """
 
-from app.core.tools.base import BaseTool
+from app.core.tools.base import BaseTool, identifier
 
 
 class SeasonalityTool(BaseTool):
@@ -12,10 +12,12 @@ class SeasonalityTool(BaseTool):
     name = "seasonality"
     description = "Найти сезонные пики: среднее значение по месяцам/дням года"
 
-    def run(self, db, input_table: str, columns: list[str]) -> str:
-        time_col = columns[0]
+    def run(self, db, input_table: str, columns: list[str], **kwargs: object) -> str:
+        if len(columns) < 2:
+            raise ValueError("seasonality requires [date_column, metric_column]")
+        time_col, metric = identifier(columns[0]), identifier(columns[1])
         sql = (
-            f"SELECT month({time_col}) AS month, AVG(*) AS avg_level, COUNT(*) AS n "
-            f"FROM {input_table} GROUP BY month ORDER BY month"
+            f"SELECT month({time_col}) AS month, AVG({metric}) AS avg_level, COUNT(*) AS n "
+            f"FROM {identifier(input_table)} GROUP BY month ORDER BY month"
         )
         return db.save_step_result(input_table, sql)

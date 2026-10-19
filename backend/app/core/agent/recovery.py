@@ -18,7 +18,8 @@ async def with_retry(fn: Callable[..., Any], *args: Any, attempts: int = 3, **kw
             return await fn(*args, **kwargs)
         except Exception as exc:  # noqa: BLE001
             last_exc = exc
-            await asyncio.sleep(2**attempt)
+            if attempt < attempts - 1:
+                await asyncio.sleep(2**attempt)
     raise last_exc  # type: ignore[misc]
 
 

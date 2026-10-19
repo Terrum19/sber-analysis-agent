@@ -4,7 +4,7 @@
 (вместе с timeseries/lag.py — поиск лагов и причинных связей).
 """
 
-from app.core.tools.base import BaseTool
+from app.core.tools.base import BaseTool, identifier
 
 
 class CorrelationTool(BaseTool):
@@ -12,8 +12,11 @@ class CorrelationTool(BaseTool):
 
     name = "correlation"
     description = "Посчитать корреляцию между двумя числовыми колонками"
+    transforms_data = False
 
-    def run(self, db, input_table: str, columns: list[str]) -> str:
-        col_a, col_b = columns[0], columns[1]
-        sql = f"SELECT corr({col_a}, {col_b}) AS correlation FROM {input_table}"
+    def run(self, db, input_table: str, columns: list[str], **kwargs: object) -> str:
+        if len(columns) != 2:
+            raise ValueError("correlation requires [column_a, column_b]")
+        col_a, col_b = identifier(columns[0]), identifier(columns[1])
+        sql = f"SELECT corr({col_a}, {col_b}) AS correlation FROM {identifier(input_table)}"
         return db.save_step_result(input_table, sql)

@@ -396,7 +396,7 @@ def apply_stats(index: int, column: ColumnStats, row: dict, row_count: int) -> N
         column.max = plain(row[f"{prefix}_max"])
         column.mean = number(row[f"{prefix}_mean"])
         column.std = number(row[f"{prefix}_std"])
-        column.skewness = number(row[f"{prefix}_skewness"])
+        column.skewness = None if column.std == 0 else number(row[f"{prefix}_skewness"])
         column.kurtosis = number(row[f"{prefix}_kurtosis"])
         levels = row[f"{prefix}_quantiles"] or [None] * len(QUANTILES)
         column.p05, column.q1, column.median, column.q3, column.p95 = (

@@ -5,7 +5,9 @@
   -> insight (вывод) -> viz (график) / dashboards (панель) -> экспорт.
 
 Каждый результат шага сохраняется в DuckDB как temp_result_vN и
-передаётся на следующий шаг (см. core/memory/state_cache.py).
+передаётся на следующий шаг (см. core/memory/state_cache.py). Результат
+тула-отчёта (стат-тест, поиск значений, паспорт таблицы) на следующий шаг
+не передаётся: тот получает таблицу, которую отчёт анализировал.
 
 Просьба сменить вид прошлого графика («покажи в другом виде», «сделай
 таблицей») обслуживается без планировщика и без повторного SQL: спека
@@ -20,7 +22,7 @@ from app.api.schemas.chat import ChatRequest
 from app.core.agent.insight import InsightGenerator
 from app.core.agent.planner import StepPlanner
 from app.core.agent.recovery import with_retry
-from app.core.agent.step_executor import StepExecutor
+from app.core.agent.step_executor import StepExecutor, transforms_data
 from app.core.memory.profile_memory import ProfileMemory
 from app.core.memory.session_memory import SessionMemory
 from app.core.memory.state_cache import StateCache
@@ -67,13 +69,15 @@ class AgentOrchestrator:
 
         context = memory.build_context(request.question)
         plan = await self.planner.plan(request.question, context)
-        result_table = SOURCE_TABLE
+        data_table = result_table = SOURCE_TABLE
         for step in plan.steps:
             try:
-                result_table = await with_retry(self.executor.execute, step, result_table)
+                result_table = await with_retry(self.executor.execute, step, data_table)
             except Exception as exc:  # noqa: BLE001
                 yield {"type": "error", "data": {"step": step.step_id, "message": str(exc)}}
                 return
+            if transforms_data(step):
+                data_table = result_table
             memory.record_step(step, result_table)
 
         insight = await self.insight_gen.generate(request.question, result_table)
