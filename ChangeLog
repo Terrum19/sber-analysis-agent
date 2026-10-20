@@ -53,6 +53,25 @@
 	* docs/architecture.md: События стрима чата и контракт progress.
 	* docs/sandbox.md, docs/repo_structure.md: Новая обработка ошибок шага.
 
+2026-10-20  Saitbatalov Bulat  <saitbatalovbulat200@gmail.com>
+
+	Загрузка датасетов хакатона одной командой.
+	* scripts/load_hk_datasets.py: Каждый CSV из data/hk_datasets
+	проходит рабочий пайплайн: CSVConnector, профиль и паспорт таблицы,
+	без --no-llm ещё описания колонок от LLM.  Печатается таблица со
+	строками, колонками, временем загрузки и профиля и ошибками, включая
+	признаки нестрогого разбора CSV и число колонок без описания LLM.
+	Ошибка одного файла не прерывает прогон, но даёт код выхода 1.  Все
+	таблицы обрабатываются в одном event loop.
+	* Makefile (hk-data): Если в data/hk_datasets не ровно 9 CSV,
+	клонируется HK_Datasets и докопируются недостающие файлы, затем
+	запускается загрузка с --no-llm.
+	* data/hk_datasets/README.md: Скачивание через make hk-data, раздел
+	«Результаты загрузки».
+	* docs/data_connectors.md: Время загрузки всех датасетов по новому
+	замеру.
+	* docs/repo_structure.md: Цель hk-data и скрипты в scripts/.
+
 2026-10-20  mb6ockatf  <smokenmirror@tutamail.com>
 
 	Дашборды хранятся в SQLite (#45).
