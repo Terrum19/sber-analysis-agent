@@ -77,3 +77,15 @@ def test_describe_columns_shows_ranges_and_spelling_variants() -> None:
     assert "- revenue [numeric, ] — Сумма, руб.; от 5 до 100, медиана 28.5" in text
     assert '"Электроника", "електроника"' in text
     assert "с 2024-01-01 по 2024-03-01" in text
+
+
+def test_describe_columns_omits_facts_the_profile_does_not_have() -> None:
+    from app.core.data.semantic_select import describe_columns
+
+    profile = make_profile({"revenue": "numeric", "date": "temporal", "flag": "boolean"})
+    text = describe_columns(["revenue", "date", "flag"], profile, {})
+    assert text.splitlines() == [
+        "- revenue [numeric, ]",
+        "- date [temporal, ]",
+        "- flag [boolean, ]",
+    ]

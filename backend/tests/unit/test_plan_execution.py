@@ -413,3 +413,30 @@ def test_result_step_ahead_of_trailing_lookup_is_dropped_without_retry() -> None
     )
     assert validate_plan(plan) == []
     assert plan.result_step is None
+
+
+def test_finish_falls_back_to_the_input_table_without_executed_steps(db: DuckDBManager) -> None:
+    execution = orchestrator(db)._finish(ResearchPlan(steps=[]), [], {}, fallback="raw")
+    assert execution.result_table == "raw"
+
+
+@pytest.mark.parametrize("response", ["[1, 2]", ""])
+def test_recovery_without_action_replans_and_rejects_an_empty_plan(
+    db: DuckDBManager, response: str
+) -> None:
+    planner = ScriptedPlanner(ResearchPlan(steps=[]))
+    pending = {
+        "question": "исходный вопрос",
+        "failed_step_id": 0,
+        "plan_steps": [ResearchStep(step_id=0, tool="aggregate").model_dump()],
+        "input_table": "raw",
+        "error": "ошибка",
+    }
+
+    class Request:
+        question = "уточнение"
+        recovery_response = response
+
+    with pytest.raises(ClarificationNeeded):
+        asyncio.run(orchestrator(db, planner)._apply_recovery(FakeMemory(), pending, Request()))
+    assert len(planner.contexts) == 1
