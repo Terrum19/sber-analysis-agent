@@ -203,9 +203,18 @@ class AgentOrchestrator:
 
         if execution.dashboard_requested:
             from app.core.dashboards.generator import DashboardGenerator
+            from app.core.dashboards.models import DashboardTile
 
-            dashboard_id = await DashboardGenerator().generate(request.session_id, [spec])
-            yield {"type": "dashboard", "data": {"dashboard_id": dashboard_id}}
+            tile = DashboardTile(
+                title=spec.get("title") or insight.headline,
+                spec=spec,
+                result_table=result_table,
+                insight=insight.headline,
+            )
+            dashboard = await DashboardGenerator(db=self.db).generate(
+                request.session_id, "Дашборд", [tile]
+            )
+            yield {"type": "dashboard", "data": {"dashboard_id": dashboard.id}}
 
         memory.record_answer(insight.headline)
         yield {"type": "done", "data": {}}

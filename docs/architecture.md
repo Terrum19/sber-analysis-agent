@@ -21,7 +21,7 @@
 [4] Визуализация: chart_selector -> vega_spec_builder (Vega-Lite JSON)
   |        смена вида: chart_morph (БЕЗ нового вызова LLM, из state cache)
   v
-[5] (опц.) DashboardGenerator -> ArtifactRegistry (id, SQL, Vega-конфиги)
+[5] (опц.) DashboardGenerator -> DashboardStore (SQLite: плитки, Vega, снимки данных)
   v
 [6] (опц.) Экспорт: ExcelExporter (.xlsx) / PDFExporter (.pdf)
 ```
