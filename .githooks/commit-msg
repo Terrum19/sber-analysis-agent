@@ -1,0 +1,4 @@
+#!/bin/sh
+# Проверка сообщения коммита по тем же правилам, что и в CI (Conventions).
+# Подключается командой make hooks.
+exec python3 "$(git rev-parse --show-toplevel)/.github/scripts/check_conventions.py" --message-file "$1"
