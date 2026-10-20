@@ -280,10 +280,16 @@ class ScriptedPlanner:
         self.contexts.append(context)
         return self.plans.pop(0)
 
+    async def fix_step(self, step: ResearchStep, error: str, *_: object) -> ResearchStep:
+        raise ValueError(f"шаг {step.step_id} не исправлен")
+
 
 def orchestrator(db: DuckDBManager, planner=None) -> AgentOrchestrator:
     return AgentOrchestrator(
-        planner=planner, executor=StepExecutor(db=db), insight_gen=object(), db=db
+        planner=planner or ScriptedPlanner(),
+        executor=StepExecutor(db=db),
+        insight_gen=object(),
+        db=db,
     )
 
 
