@@ -137,6 +137,7 @@ backend/
 │   │   ├── dashboards/     — генерация и хранение дашбордов (4-й уровень памяти)
 │   │   │   ├── models.py        — Dashboard, DashboardTile, DashboardSummary
 │   │   │   ├── store.py         — DashboardStore: дашборды и плитки в SQLite сессий
+│   │   │   ├── templates.py     — шаблоны дашбордов по ролям колонок, match(columns)
 │   │   │   └── generator.py     — собрать дашборд из плиток, снять данные, сохранить
 │   │   │
 │   │   └── export/         — выгрузка инсайта в делимый файл
