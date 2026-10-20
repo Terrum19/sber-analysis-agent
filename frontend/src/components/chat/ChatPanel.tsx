@@ -1,70 +1,86 @@
 "use client";
 
 /**
- * План-минимум: чат, в который LLM стримит текст, а картинки/дашборды
- * прилетают в момент готовности (SSE). План-максимум: элементы уходят
- * на канвас справа.
+ * Панель диалога (Chat):
+ * - Стриминг ответов агента (текст, инсайты)
+ * - Графики и дашборды в ленту не выводятся: они уходят на правую панель,
+ *   а в сообщении остаётся ссылка «Показать на панели» / «Открыть во вкладке»
  */
 import { useEffect, useRef, useState } from "react";
-import { RECOVERY_SKIP_STEP, streamChat } from "@/api/client";
-import { useSessionStore } from "@/store/sessionStore";
-import DatasourcePanel from "@/components/chat/DatasourcePanel";
+import { useRouter } from "next/navigation";
+import { streamChat } from "@/api/client";
+import { useSessionStore, useSessionDatabase } from "@/store/sessionStore";
+import { useCanvasStore } from "@/store/canvasStore";
+import { useUiStore } from "@/store/uiStore";
+import { useOpenArtifact } from "@/hooks/useOpenArtifact";
+import Icon from "@/components/ui/Icon";
+import { useT } from "@/i18n/useT";
+import type { DashboardTile as DashboardTileType } from "@/types/dashboard";
 
-// Подсказки clarification_needed (orchestrator.CLARIFICATION_SUGGESTIONS).
-const SKIP_STEP = "Пропустить этот шаг и продолжить";
-const REPHRASE = "Переформулировать вопрос";
-
-/** Агент ждёт ответа на уточнение после сбоя шага. */
-interface Clarification {
-  suggestions: string[];
-  // Следующее сообщение пользователя уходит как recovery_response.
-  awaitingText: boolean;
+/** Плитка панели из события «chart»; id хранится в самом событии. */
+function chartTile(chartData: any, fallbackTitle: string): DashboardTileType {
+  return {
+    id: chartData.tile_id,
+    title: chartData.caption || fallbackTitle,
+    spec: chartData.spec,
+    result_table: chartData.result_table,
+    insight: chartData.insight,
+    // Новый график встаёт под существующими: сетка сама поднимет его вверх
+    layout: { x: 0, y: 1000, w: 12, h: 5 },
+  };
 }
 
-export default function ChatPanel({ sessionId }: { sessionId: string }) {
+interface Props {
+  sessionId: string;
+}
+
+export default function ChatPanel({ sessionId }: Props) {
+  const router = useRouter();
+  const t = useT();
+  const setCanvasOpen = useUiStore((s) => s.setCanvasOpen);
+  const openArtifact = useOpenArtifact();
   const [input, setInput] = useState("");
   const [streaming, setStreaming] = useState(false);
-  const [clarification, setClarification] = useState<Clarification | null>(null);
-  const inputRef = useRef<HTMLInputElement>(null);
+  const [lastFailedQuestion, setLastFailedQuestion] = useState<string | null>(null);
+  const lastQuestionRef = useRef<string>("");
+  const messagesEndRef = useRef<HTMLDivElement | null>(null);
+
   const messages = useSessionStore((s) => s.messages);
   const addMessage = useSessionStore((s) => s.addMessage);
   const appendToLastMessage = useSessionStore((s) => s.appendToLastMessage);
+  const updateLastMessage = useSessionStore((s) => s.updateLastMessage);
   const addTile = useSessionStore((s) => s.addTile);
-  // Отмена текущего стрима: только по кнопке «Стоп» или при размонтировании.
+  const registerSession = useSessionStore((s) => s.registerSession);
+  const database = useSessionDatabase(sessionId);
+  const sessionTitle = database?.sessions.find((x) => x.id === sessionId)?.title;
+
+  const setCanvasDashboard = useCanvasStore((s) => s.setDashboard);
+
+  // Отмена стрима
   const stopRef = useRef<(() => void) | null>(null);
 
-  useEffect(() => () => stopRef.current?.(), []);
+  useEffect(() => {
+    return () => stopRef.current?.();
+  }, []);
 
-  function send() {
-    if (!input.trim() || streaming) return;
-    const question = input;
-    setInput("");
-    // Текст после «Уточнить колонки» — уточнение к упавшему шагу, иначе новый вопрос
-    // (бэкенд тогда сам забудет несостоявшееся уточнение).
-    ask(question, clarification?.awaitingText ? question : undefined);
-  }
+  useEffect(() => {
+    messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
+  }, [messages, streaming]);
 
-  function chooseSuggestion(suggestion: string) {
-    if (streaming) return;
-    if (suggestion === SKIP_STEP) {
-      ask(suggestion, RECOVERY_SKIP_STEP);
-    } else if (suggestion === REPHRASE) {
-      setClarification(null);
-      inputRef.current?.focus();
-    } else {
-      setClarification({ suggestions: [], awaitingText: true });
-      inputRef.current?.focus();
-    }
-  }
+  function sendQuestion(textToSend?: string) {
+    const q = textToSend || input;
+    if (!q.trim() || streaming) return;
 
-  // При recoveryResponse бэкенд отвечает на исходный вопрос из сохранённого контекста.
-  function ask(question: string, recoveryResponse?: string) {
-    addMessage({ role: "user", content: question });
-    setClarification(null);
+    lastQuestionRef.current = q;
+    setLastFailedQuestion(null);
+    addMessage({ role: "user", content: q });
+    // Первая реплика: сессия появляется в папке своей базы данных
+    registerSession(sessionId, q.length > 48 ? `${q.slice(0, 47)}…` : q);
+    if (!textToSend) setInput("");
     setStreaming(true);
 
-    // Текстовые чанки одного ответа копятся в одном сообщении агента.
     let answerStarted = false;
+    let streamHadError = false;
     const appendText = (text: string) => {
       if (answerStarted) {
         appendToLastMessage(text);
@@ -76,88 +92,242 @@ export default function ChatPanel({ sessionId }: { sessionId: string }) {
 
     stopRef.current = streamChat(
       sessionId,
-      question,
+      q,
       (event) => {
-        if (event.type === "chart") {
-          addTile({ title: event.data.caption, spec: event.data.spec, layout: { x: 0, y: 0, w: 6, h: 4 } });
-          answerStarted = false;
-        } else if (event.type === "text") {
-          const content = event.data?.headline ?? event.data?.chunk ?? "";
+        if (event.type === "text") {
+          const raw = event as any;
+          const content = event.data?.headline || event.data?.chunk || raw.headline || raw.chunk || "";
           if (content) appendText(content);
-        } else if (event.type === "clarification_needed") {
+          const details = event.data?.details || raw.details;
+          if (details && Array.isArray(details)) {
+            appendText("\n\n" + details.map((d: string) => `• ${d}`).join("\n"));
+          }
+        } else if (event.type === "chart") {
+          answerStarted = false;
+          const chartData = { ...((event.data || (event as any)) as any), tile_id: `chart-${Date.now().toString(36)}` };
+          // График — на правую панель, в ленте только ссылка на него
+          addTile(chartTile(chartData, t("chat.chartDefault")));
+          setCanvasOpen(true);
           addMessage({
             role: "agent",
-            content: `Не получилось выполнить шаг: ${event.data.error}\nКак продолжить?`,
+            content: chartData.caption ? t("chat.chartDoneNamed", { name: chartData.caption }) : t("chat.chartDone"),
+            chart: chartData,
           });
-          setClarification({ suggestions: event.data.suggestions ?? [], awaitingText: false });
+        } else if (event.type === "dashboard") {
           answerStarted = false;
+          const dashData = (event.data || (event as any)) as any;
+          addMessage({
+            role: "agent",
+            content: t("chat.dashboardDone", { name: dashData.title || t("chat.dashboardDefault") }),
+            dashboard: dashData,
+          });
+          // Дашборд открывается на правой панели
+          if (dashData.tiles && dashData.tiles.length > 0) {
+            setCanvasDashboard(dashData.dashboard_id, dashData.title || t("chat.dashboardDefault"), dashData.tiles);
+            setCanvasOpen(true);
+          }
         } else if (event.type === "error") {
-          const detail = event.data?.message ?? event.data?.detail;
-          addMessage({ role: "agent", content: `Ошибка: ${typeof detail === "string" ? detail : "агент не смог ответить"}` });
           answerStarted = false;
+          streamHadError = true;
+          setLastFailedQuestion(q);
+          const raw = event as any;
+          const msg =
+            event.data?.message ||
+            raw.message ||
+            (typeof event.data?.detail === "string"
+              ? event.data.detail
+              : typeof raw.detail === "string"
+              ? raw.detail
+              : t("chat.genericError"));
+          addMessage({ role: "agent", content: t("chat.error", { msg }), failed: true });
         }
       },
       (error) => {
-        if (error) addMessage({ role: "agent", content: `Соединение прервано: ${error}` });
+        if (error) {
+          streamHadError = true;
+          setLastFailedQuestion(q);
+          addMessage({ role: "agent", content: t("chat.connectionLost", { msg: error }), failed: true });
+        } else if (!streamHadError) {
+          setLastFailedQuestion(null);
+        }
         stopRef.current = null;
         setStreaming(false);
       },
-      recoveryResponse,
     );
   }
 
-  function stop() {
-    stopRef.current?.();
+  function handleOpenDashboard(dashboardId: string) {
+    router.push(`/dashboard/${dashboardId}`);
+  }
+
+  function handleLoadToCanvas(dashboardData: any) {
+    setCanvasDashboard(
+      dashboardData.dashboard_id,
+      dashboardData.title || t("chat.dashboardDefault"),
+      dashboardData.tiles || [],
+    );
+    setCanvasOpen(true);
   }
 
   return (
-    <div className="flex h-full flex-col p-4">
-      <DatasourcePanel />
-      <div className="flex-1 space-y-3 overflow-y-auto">
-        {messages.map((m, i) => (
-          <div key={i} className={m.role === "user" ? "text-right" : "text-left"}>
-            <span className={m.role === "user" ? "inline-block rounded-lg bg-blue-100 px-3 py-2" : "inline-block whitespace-pre-wrap rounded-lg bg-slate-100 px-3 py-2"}>
-              {m.content}
-            </span>
+    <div className="flex h-full flex-col bg-graphite-900 text-graphite-100">
+      {/* Лента сообщений */}
+      <div className="flex-1 space-y-5 overflow-y-auto px-4 py-6 md:px-8">
+        {messages.length === 0 ? (
+          <div className="mx-auto flex h-full max-w-xl flex-col justify-center">
+            <div className="flex items-center gap-2 text-[13px] text-graphite-400">
+              <Icon name="folder" />
+              <span className="truncate">{database?.title ?? t("header.database")}</span>
+            </div>
+            <h2 className="mt-2 text-2xl font-light text-graphite-50">{sessionTitle ?? t("chat.newSession")}</h2>
+            {database && database.tables.length > 0 && (
+              <p className="mt-2 text-[13px] text-graphite-400">
+                {t("chat.tables")}{" "}
+                <span className="font-mono text-[12px] text-graphite-300">{database.tables.join(", ")}</span>
+              </p>
+            )}
+            <div className="mt-6 flex flex-col items-start gap-1">
+              {[t("chat.suggest1"), t("chat.suggest2")].map((q) => (
+                <button
+                  key={q}
+                  onClick={() => sendQuestion(q)}
+                  className="rounded-lg px-2 py-1 -mx-2 text-[13px] text-graphite-300 hover:bg-graphite-800 hover:text-graphite-50 transition"
+                >
+                  {t("chat.quoted", { q })}
+                </button>
+              ))}
+            </div>
           </div>
-        ))}
-        {clarification && clarification.suggestions.length > 0 && (
-          <div className="flex flex-wrap gap-2">
-            {clarification.suggestions.map((suggestion) => (
-              <button
-                key={suggestion}
-                onClick={() => chooseSuggestion(suggestion)}
-                disabled={streaming}
-                className="rounded-lg border border-blue-300 px-3 py-1 text-sm text-blue-700 hover:bg-blue-50 disabled:opacity-50"
-              >
-                {suggestion}
-              </button>
-            ))}
-          </div>
-        )}
-      </div>
-      <div className="mt-4 flex gap-2">
-        <input
-          ref={inputRef}
-          value={input}
-          onChange={(e) => setInput(e.target.value)}
-          onKeyDown={(e) => e.key === "Enter" && send()}
-          placeholder={
-            clarification?.awaitingText
-              ? "Уточните, какие колонки использовать..."
-              : "Спросите что-угодно о данных..."
-          }
-          className="flex-1 rounded-lg border border-slate-300 px-3 py-2"
-        />
-        {streaming ? (
-          <button onClick={stop} className="rounded-lg bg-slate-600 px-4 py-2 text-white">
-            Стоп
-          </button>
         ) : (
-          <button onClick={send} className="rounded-lg bg-blue-600 px-4 py-2 text-white">
-            Отправить
-          </button>
+          messages.map((m, i) => (
+            <div
+              key={m.id || i}
+              className={`mx-auto flex w-full max-w-3xl flex-col ${m.role === "user" ? "items-end" : "items-start"}`}
+            >
+              <div
+                className={`text-sm leading-relaxed ${
+                  m.role === "user"
+                    ? "max-w-[85%] rounded-2xl bg-graphite-800 px-4 py-2.5 text-graphite-50"
+                    : "w-full text-graphite-200"
+                }`}
+              >
+                {/* Текст сообщения */}
+                <div className="whitespace-pre-wrap">{m.content}</div>
+
+                {/* Кнопка повтора при ошибке или обрыве */}
+                {m.failed && !streaming && (
+                  <div className="mt-3 pt-2 border-t border-bad/30 flex items-center justify-between gap-2">
+                    <span className="text-[11px] text-bad">{t("chat.failed")}</span>
+                    <button
+                      onClick={() => sendQuestion(lastFailedQuestion || lastQuestionRef.current)}
+                      className="inline-flex items-center gap-1.5 rounded-lg bg-danger hover:bg-danger/90 px-3 py-1.5 text-xs font-semibold text-white shadow-sm transition"
+                    >
+                      <Icon name="refresh" size={14} />
+                      <span>{t("chat.retry")}</span>
+                    </button>
+                  </div>
+                )}
+
+                {/* Артефакт (график или дашборд) — только ссылка: сам он на правой панели */}
+                {(m.chart || m.dashboard) && (
+                  <div className="mt-2 flex max-w-md items-center gap-2.5 rounded-lg border border-graphite-800 bg-graphite-850 py-1.5 pl-3 pr-1.5">
+                    <Icon name={m.chart ? "chart" : "layout"} className="shrink-0 text-graphite-400" />
+                    <span className="min-w-0 flex-1">
+                      <span className="block truncate text-[12.5px] text-graphite-100">
+                        {m.chart
+                          ? m.chart.caption || t("chat.chartDefault")
+                          : m.dashboard!.title || t("chat.dashboardDefault")}
+                      </span>
+                      <span className="block text-[11px] text-graphite-500">
+                        {m.chart ? t("chat.chartOnPanel") : t("chat.dashboardOnPanel")}
+                      </span>
+                    </span>
+                    <button
+                      onClick={() => (m.dashboard ? handleLoadToCanvas(m.dashboard) : setCanvasOpen(true))}
+                      className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-graphite-400 hover:bg-graphite-800 hover:text-graphite-100"
+                      title={t("chat.showOnPanel")}
+                    >
+                      <Icon name="panelRight" size={15} />
+                    </button>
+                    <button
+                      onClick={() =>
+                        m.dashboard
+                          ? handleOpenDashboard(m.dashboard.dashboard_id)
+                          : openArtifact(chartTile(m.chart, t("chat.chartDefault")), sessionId)
+                      }
+                      className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-graphite-400 hover:bg-graphite-800 hover:text-graphite-100"
+                      title={t("chat.openInTab")}
+                    >
+                      <Icon name="maximize" size={14} />
+                    </button>
+                  </div>
+                )}
+              </div>
+              <span className="mt-1 text-[10px] text-graphite-500 px-1">
+                {m.timestamp || ""}
+              </span>
+            </div>
+          ))
         )}
+        <div ref={messagesEndRef} />
+      </div>
+
+      {/* Поле ввода (как композер Claude Code) */}
+      <div className="mx-auto w-full max-w-3xl px-4 pb-4 md:px-8">
+        {lastFailedQuestion && !streaming && (
+          <div className="mb-3 flex items-center justify-between gap-3 rounded-xl border border-bad/30 bg-bad/10 px-3.5 py-2 text-xs text-bad">
+            <div className="flex items-center gap-2 overflow-hidden">
+              <span className="truncate">{t("chat.failedBanner", { q: lastFailedQuestion })}</span>
+            </div>
+            <button
+              onClick={() => sendQuestion(lastFailedQuestion)}
+              className="inline-flex items-center gap-1.5 rounded-lg bg-danger hover:bg-danger/90 px-3 py-1.5 text-xs font-semibold text-white shadow transition whitespace-nowrap"
+            >
+              <Icon name="refresh" size={14} />
+              <span>{t("chat.retry")}</span>
+            </button>
+          </div>
+        )}
+        <div className="flex items-end gap-2 rounded-2xl border border-graphite-700 bg-graphite-850 p-2 pl-4 shadow-sm transition focus-within:border-graphite-500">
+          <textarea
+            value={input}
+            onChange={(e) => {
+              setInput(e.target.value);
+              // Поле растёт по содержимому до max-h-40
+              e.target.style.height = "auto";
+              e.target.style.height = `${e.target.scrollHeight}px`;
+              e.target.style.overflowY = e.target.scrollHeight > 160 ? "auto" : "hidden";
+            }}
+            onKeyDown={(e) => {
+              if (e.key === "Enter" && !e.shiftKey) {
+                e.preventDefault();
+                sendQuestion();
+              }
+            }}
+            rows={1}
+            placeholder={t("chat.placeholder")}
+            className="max-h-40 min-h-[36px] flex-1 resize-none overflow-y-hidden bg-transparent py-2 text-sm leading-5 text-graphite-100 placeholder-graphite-500 outline-none"
+            disabled={streaming}
+          />
+          {streaming ? (
+            <button
+              onClick={() => stopRef.current?.()}
+              className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-graphite-700 text-graphite-100 hover:bg-graphite-600 transition"
+              title={t("chat.stop")}
+            >
+              <Icon name="stop" size={14} />
+            </button>
+          ) : (
+            <button
+              onClick={() => sendQuestion()}
+              disabled={!input.trim()}
+              className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-graphite-100 text-graphite-950 hover:bg-graphite-50 disabled:bg-graphite-700 disabled:text-graphite-500 disabled:cursor-not-allowed transition"
+              title={t("chat.send")}
+            >
+              <Icon name="arrowUp" />
+            </button>
+          )}
+        </div>
       </div>
     </div>
   );

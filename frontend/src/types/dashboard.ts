@@ -1,11 +1,28 @@
 /**
- * Типы дашборда (дубль backend/app/core/dashboards/models.py).
+ * Типы дашборда (синхронизировано с backend/app/api/schemas/dashboard.py).
+ * Строго snake_case, как в моделях Pydantic.
  */
+
+export interface DashboardTileLayout {
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+}
+
 export interface DashboardTile {
+  id?: string;
   title: string;
   spec: Record<string, unknown>;
   sql?: string | null;
-  layout: { x: number; y: number; w: number; h: number };
+  layout: DashboardTileLayout;
+  source_step_id?: number;
+  result_table?: string;
+  insight?: string;
+  is_kpi?: boolean;
+  snapshot_data?: any;
+  snapshot_at?: number;
+  updated_at?: number | string;
 }
 
 export interface DashboardConfig {
@@ -13,5 +30,27 @@ export interface DashboardConfig {
   session_id: string;
   title: string;
   tiles: DashboardTile[];
-  created_at?: number;
+  created_at?: number | string;
+  updated_at?: number | string;
+  is_snapshot?: boolean;
+}
+
+export interface DashboardListItem {
+  id: string;
+  session_id: string;
+  title: string;
+  created_at?: number | string;
+  updated_at?: number | string;
+  tiles_count?: number;
+}
+
+export interface DashboardCreatePayload {
+  session_id: string;
+  title?: string;
+  tiles?: DashboardTile[];
+}
+
+export interface DashboardUpdatePayload {
+  title?: string;
+  tiles?: DashboardTile[];
 }
