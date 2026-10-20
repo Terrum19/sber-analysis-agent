@@ -4,9 +4,11 @@ from app.config import Settings, settings
 
 
 def test_wasm_settings_defaults():
-    assert settings.wasm_timeout_s == 30
-    assert settings.wasm_mem_mb == 512
-    assert settings.agent_max_steps == 12
+    # Дефолты кода, а не локального .env разработчика.
+    defaults = Settings(_env_file=None)
+    assert defaults.wasm_timeout_s == 60
+    assert defaults.wasm_mem_mb == 2048
+    assert defaults.agent_max_steps == 12
 
 
 def test_llm_settings_defaults():
