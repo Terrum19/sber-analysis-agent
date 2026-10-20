@@ -1,3 +1,14 @@
+2026-10-20  mb6ockatf  <smokenmirror@tutamail.com>
+
+	Проверка конвенций не проверяет повторно коммиты из dev и main (#35).
+	* .github/workflows/conventions.yml (Collect commits): При push
+	диапазон before..after берётся без коммитов, уже лежащих в origin/dev
+	и origin/main; при push в саму dev или main она из исключений
+	убирается.  Раньше ветка, в которую влили dev, падала на старых
+	коммитах из dev.
+	* backend/tests/unit/test_conventions_script.py: Проверки сообщений и
+	файлов коммита и сбора коммитов при push на временных репозиториях.
+
 2026-10-20  Alexander Yurits  <terruwork@gmail.com>
 
 	Слияние dev (WASM-песочница, исправления ревью) в планировщик (#37).
