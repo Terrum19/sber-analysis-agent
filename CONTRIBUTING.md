@@ -18,6 +18,13 @@ make hooks
 (`.github/scripts/check_conventions.py`, workflow Conventions). Файлы
 коммита проверяет только CI.
 
+Хук `pre-commit` (`.githooks/pre-commit`, подключается тем же
+`make hooks`) запускает `ruff check` и `ruff format --check` на
+индексированных `.py`-файлах `backend/` с конфигом
+`backend/pyproject.toml`, как Backend CI. Версия ruff закреплена в
+`backend/requirements.txt`. Если ruff не установлен (ни в `PATH`, ни
+как `python3 -m ruff`), хук предупреждает и пропускает коммит.
+
 ## Конвенции
 
 - **Тулы** добавляются в `backend/app/core/tools/{sql,stats,timeseries}/`
