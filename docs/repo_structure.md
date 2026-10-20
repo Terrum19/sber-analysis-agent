@@ -11,7 +11,7 @@
 sberAnalyticalAgent/
 ├── README.md              — что это, как поднять локально (одна команда)
 ├── CONTRIBUTING.md        — конвенции: как добавить тул, коннектор, промпт
-├── Makefile               — make install / seed / dev / up / test / lint
+├── Makefile               — make install / seed / hk-data / dev / up / test / lint
 ├── .env.example           — пример конфигурации (LLM endpoint, пути, лимиты)
 ├── .gitignore             — рантайм (storage/), веса (models/), data/hk_datasets/, node_modules
 ├── docker-compose.yml     — backend + frontend (LLM — отдельно на хосте)
@@ -219,6 +219,8 @@ data/
 scripts/
 ├── download_model.sh  — подсказки по скачиванию весов Qwen (в models/, вне git)
 ├── seed_demo_data.py  — генерация демо-CSV (100 пользователей + 500 событий)
+├── load_hk_datasets.py — загрузка и профиль датасетов хакатона (make hk-data)
+├── run_profile_benchmark.py — бенчмарк profile_table
 └── migrate.py         — опц.: миграции storage (SQLite/реестр)
 ```
 
