@@ -8,6 +8,7 @@ import pytest
 REPO_ROOT = Path(__file__).resolve().parents[3]
 SCRIPT = REPO_ROOT / ".github" / "scripts" / "check_conventions.py"
 WORKFLOW = REPO_ROOT / ".github" / "workflows" / "conventions.yml"
+HOOK = REPO_ROOT / ".githooks" / "commit-msg"
 TRAILER = "Co-Authored-By: Claude Opus <noreply@anthropic.com>"
 
 
@@ -170,3 +171,86 @@ def test_push_to_dev_checks_its_own_commits(work: Path) -> None:
     new = commit(work, "Add a feature to dev")
     git(work, "push", "-q", "origin", "dev")
     assert collect(work, "dev", before, new) == [new]
+
+
+def test_text_problems_reject_cyrillic_subject() -> None:
+    assert load_script().text_problems("Добавил фичу") == [
+        "заголовок коммита должен быть на английском: «Добавил фичу»"
+    ]
+
+
+def test_text_problems_reject_english_body() -> None:
+    assert load_script().text_problems("Add a feature\n\nAdds the feature.") == [
+        "описание коммита должно быть на русском"
+    ]
+
+
+def test_text_problems_reject_claude_trailer() -> None:
+    problems = load_script().text_problems(f"Add a feature\n\nОписание.\n\n{TRAILER}")
+    assert problems == [f"упоминание Claude в сообщении коммита: «{TRAILER}»"]
+
+
+def test_text_problems_accept_conventional_message() -> None:
+    assert load_script().text_problems("Add a feature\n\nОписание фичи.\n") == []
+
+
+def test_editor_comments_and_diff_are_ignored() -> None:
+    message = (
+        "Add a feature\n\nОписание фичи.\n"
+        "# Please enter the commit message for your changes.\n"
+        "# ------------------------ >8 ------------------------\n"
+        "diff --git a/README.md b/README.md\n+Some English text\n"
+    )
+    script = load_script()
+    assert script.text_problems(script.editor_message(message)) == []
+
+
+@pytest.mark.parametrize(
+    ("message", "code"),
+    [("Add a feature\n\nОписание фичи.\n", 0), ("Добавил фичу\n", 1)],
+)
+def test_message_file_mode(tmp_path: Path, message: str, code: int) -> None:
+    message_file = tmp_path / "COMMIT_EDITMSG"
+    message_file.write_text(message, encoding="utf-8")
+    result = subprocess.run(
+        ["python3", str(SCRIPT), "--message-file", str(message_file)],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == code
+
+
+@pytest.fixture
+def hooked(work: Path) -> Path:
+    scripts = work / ".github" / "scripts"
+    scripts.mkdir(parents=True)
+    (scripts / "check_conventions.py").write_text(
+        SCRIPT.read_text(encoding="utf-8"), encoding="utf-8"
+    )
+    hooks = work / ".githooks"
+    hooks.mkdir()
+    (hooks / "commit-msg").write_text(HOOK.read_text(encoding="utf-8"), encoding="utf-8")
+    (hooks / "commit-msg").chmod(0o755)
+    git(work, "config", "core.hooksPath", ".githooks")
+    return work
+
+
+@pytest.mark.parametrize("message", ["Добавил фичу", f"Add a feature\n\nОписание.\n\n{TRAILER}"])
+def test_hook_rejects_commit(hooked: Path, message: str) -> None:
+    before = git(hooked, "rev-parse", "HEAD")
+    result = subprocess.run(
+        ["git", "-C", str(hooked), "commit", "--allow-empty", "-m", message],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode != 0
+    assert "проверку конвенций" in result.stderr
+    assert git(hooked, "rev-parse", "HEAD") == before
+
+
+def test_hook_accepts_conventional_commit(hooked: Path) -> None:
+    before = git(hooked, "rev-parse", "HEAD")
+    commit(hooked, "Add a feature\n\nОписание фичи.")
+    assert git(hooked, "rev-parse", "HEAD") != before

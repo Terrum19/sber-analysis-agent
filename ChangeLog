@@ -26,6 +26,21 @@
 	* docs/memory.md, docs/repo_structure.md, docs/architecture.md:
 	Описание хранилища дашбордов.
 
+	Локальный хук commit-msg с проверками CI (#36).
+	* .github/scripts/check_conventions.py (text_problems): Проверка
+	текста сообщения вынесена из message_problems, которая теперь
+	вызывает её на сообщении коммита.  (check_message_file): Новый режим
+	--message-file: проверяет файл сообщения без строк-комментариев git и
+	диффа после линии ножниц (git commit -v) и выходит с кодом 1 при
+	нарушениях.
+	* .githooks/commit-msg: Новый хук, вызывает проверку в режиме
+	--message-file.
+	* Makefile (hooks): Новая цель: git config core.hooksPath .githooks.
+	* CONTRIBUTING.md: Раздел «Конвенции коммитов»; make hooks — первый
+	шаг после клонирования.
+	* backend/tests/unit/test_conventions_script.py: Тесты text_problems,
+	режима --message-file и хука на временном репозитории.
+
 	Проверка конвенций не проверяет повторно коммиты из dev и main (#35).
 	* .github/workflows/conventions.yml (Collect commits): При push
 	диапазон before..after берётся без коммитов, уже лежащих в origin/dev
