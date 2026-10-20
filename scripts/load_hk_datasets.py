@@ -8,24 +8,27 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "backend"))
 
 
-def profile(db, table: str, no_llm: bool):
+def profile(db, table: str, runner: asyncio.Runner | None):
     from app.config import settings
     from app.core.data.profiling import profile_table
     from app.core.data.schema_enrichment import SchemaEnricher
     from app.core.memory.profile_memory import ProfileMemory
 
-    if no_llm:
+    if runner is None:
         with db.lock:
             result = profile_table(db, table, approx=settings.profile_approx_quantile)
             ProfileMemory(db).save_profile(result)
         return result, []
     enricher = SchemaEnricher(db)
-    asyncio.run(enricher.enrich(table))
-    notes = [] if enricher.llm_available else ["LLM недоступна, описаний нет"]
+    rows = runner.run(enricher.enrich(table))
+    described = sum(1 for row in rows if row.description)
+    notes = [] if enricher.llm_available else ["LLM недоступна"]
+    if described < len(rows):
+        notes.append(f"описаний {described}/{len(rows)}")
     return ProfileMemory(db).load_profile(table), notes
 
 
-def load(db, path: Path, no_llm: bool) -> dict:
+def load(db, path: Path, runner: asyncio.Runner | None) -> dict:
     from app.core.data.connectors.csv import CSVConnector, table_name
 
     result = {"file": path.name, "table": table_name(path.name), "notes": []}
@@ -40,7 +43,7 @@ def load(db, path: Path, no_llm: bool) -> dict:
         if report.tolerant:
             result["notes"].append("часть строк пропущена/дополнена")
         started = time.perf_counter()
-        table_profile, notes = profile(db, result["table"], no_llm)
+        table_profile, notes = profile(db, result["table"], runner)
         result["profile_s"] = round(time.perf_counter() - started, 1)
         result["rows"] = table_profile.row_count
         result["columns"] = table_profile.column_count
@@ -84,12 +87,15 @@ def main() -> int:
     except duckdb.IOException as error:
         print(f"Не открыть {arguments.db} (backend запущен?): {error}", file=sys.stderr)
         return 1
+    runner = None if arguments.no_llm else asyncio.Runner()
     try:
         results = []
         for path in files:
-            results.append(load(db, path, arguments.no_llm))
+            results.append(load(db, path, runner))
             print(f"{path.name}: готово", file=sys.stderr)
     finally:
+        if runner is not None:
+            runner.close()
         db.close()
 
     print(render(results))
