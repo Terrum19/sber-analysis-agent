@@ -15,28 +15,31 @@
 таблицей») обслуживается без планировщика и без повторного SQL: спека
 перестраивается chart_morph из кешированной temp_result_vN.
 
-При сбое шага после 2-х попыток оркестратор выдаёт
-SSE-событие ``clarification_needed`` и сохраняет в SessionMemory
-состояние ожидания уточнения (``pending_recovery``). При следующем
+Упавший шаг планировщик исправляет по тексту ошибки (до
+``STEP_FIX_ATTEMPTS`` раз, см. agent/recovery.py), о каждой попытке
+фронт получает событие ``progress`` со статусом ``fixing``. Не помогло —
+оркестратор выдаёт SSE-событие ``clarification_needed`` и сохраняет в
+SessionMemory состояние ожидания уточнения (``pending_recovery``). При следующем
 запросе от того же ``session_id`` с полем ``recovery_response``
 оркестратор загружает сохранённый контекст, применяет ответ
 пользователя и повторяет только неудачный шаг (или перепланирует).
 """
 
+import asyncio
 import json
 import logging
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
 from dataclasses import dataclass, field
 
 logger = logging.getLogger(__name__)
 
 import duckdb
 
-from app.api.schemas.chat import ChatRequest
+from app.api.schemas.chat import ChatRequest, ProgressPayload
 from app.core.agent.insight import InsightGenerator
 from app.core.agent.planner import StepPlanner
-from app.core.agent.recovery import with_retry
-from app.core.agent.step_executor import StepExecutor, tool_kind
+from app.core.agent.recovery import STEP_FIX_ATTEMPTS, fixable
+from app.core.agent.step_executor import StepExecutor, resolve_input, tool_kind
 from app.core.data.duckdb_manager import DuckDBManager
 from app.core.memory.profile_memory import ProfileMemory
 from app.core.memory.session_memory import SessionMemory
@@ -48,8 +51,8 @@ from app.models.research_step import ResearchPlan, ResearchStep
 
 SOURCE_TABLE = "raw"
 
-# Количество попыток вызова инструмента перед уточнением у пользователя.
-STEP_RETRY_ATTEMPTS = 2
+# Отправка события фронту из глубины плана (progress), пока run() стримит.
+Emit = Callable[[dict], None]
 
 # Готовые варианты ответа, которые фронт отображает кнопками.
 CLARIFICATION_SUGGESTIONS = [
@@ -88,6 +91,33 @@ class ClarificationNeeded(Exception):
         self.error = error
         self.suggestions = suggestions
         super().__init__(error)
+
+
+class _StepFailed(Exception):
+    """Шаг не выполнился и не исправился: последняя версия шага и ошибка."""
+
+    def __init__(self, step: ResearchStep, error: Exception, attempts: int) -> None:
+        self.step = step
+        self.error = error
+        self.attempts = attempts
+        super().__init__(str(error))
+
+
+def _ignore(event: dict) -> None:
+    """emit по умолчанию: события некому отдавать."""
+
+
+def _fixing_event(step: ResearchStep, attempt: int, error: Exception) -> dict:
+    payload = ProgressPayload(
+        stage="step",
+        status="fixing",
+        step_id=step.step_id,
+        tool=step.tool,
+        purpose=step.purpose,
+        attempt=attempt,
+        error=str(error),
+    )
+    return {"type": "progress", "data": payload.model_dump(exclude_none=True)}
 
 
 class AgentOrchestrator:
@@ -139,37 +169,15 @@ class AgentOrchestrator:
                 yield {"type": "done", "data": {}}
                 return
 
-        # --- Возобновление после уточнения (pending_recovery) ---
+        # План и шаги идут задачей: события прогресса, которые она шлёт
+        # через emit, отдаются фронту сразу, не дожидаясь конца плана.
+        events: asyncio.Queue[dict | None] = asyncio.Queue()
+        task = asyncio.create_task(self._research(memory, pending, request, events.put_nowait))
+        task.add_done_callback(lambda _: events.put_nowait(None))
         try:
-            if pending is not None:
-                question = pending.get("question") or request.question
-                execution = await self._apply_recovery(memory, pending, request)
-                memory.clear_pending_recovery()
-            else:
-                # Обычный путь: новый вопрос -> план -> выполнение шагов.
-                question = request.question
-                context = memory.build_context(request.question)
-                logger.info(">>> run() планируем шаги (planner.plan)")
-                plan = await self.planner.plan(request.question, context)
-                logger.info(
-                    "<<< run() план получен: шагов=%d final_viz=%s dashboard=%s",
-                    len(plan.steps),
-                    plan.final_viz,
-                    plan.dashboard_requested,
-                )
-                for i, s in enumerate(plan.steps):
-                    logger.info(
-                        "    шаг %d: tool=%s input=%s args=%s columns=%s purpose=%r",
-                        s.step_id,
-                        s.tool,
-                        s.input,
-                        s.arguments,
-                        s.columns,
-                        s.purpose,
-                    )
-                _require_steps(plan)
-                datasource = memory._state.get("datasource") or "raw"
-                execution = await self._execute_plan(memory, plan, datasource, request.question)
+            while (event := await events.get()) is not None:
+                yield event
+            question, execution = await task
         except ClarificationNeeded as exc:
             yield {
                 "type": "clarification_needed",
@@ -180,6 +188,9 @@ class AgentOrchestrator:
                 },
             }
             return
+        finally:
+            # Клиент отключился посреди плана — задача больше не нужна.
+            task.cancel()
         result_table = execution.result_table
 
         # --- Финальный блок: инсайт -> чарт -> дашборд -> done ---
@@ -221,6 +232,46 @@ class AgentOrchestrator:
 
     # --- Вспомогательные методы ---
 
+    async def _research(
+        self,
+        memory: SessionMemory,
+        pending: dict | None,
+        request: ChatRequest,
+        emit: Emit,
+    ) -> tuple[str, Execution]:
+        """План и шаги хода: вопрос, на который отвечаем, и итог выполнения."""
+        if pending is not None:
+            # Возобновление после уточнения (pending_recovery).
+            question = pending.get("question") or request.question
+            execution = await self._apply_recovery(memory, pending, request, emit)
+            memory.clear_pending_recovery()
+            return question, execution
+
+        # Обычный путь: новый вопрос -> план -> выполнение шагов.
+        context = memory.build_context(request.question)
+        logger.info(">>> run() планируем шаги (planner.plan)")
+        plan = await self.planner.plan(request.question, context)
+        logger.info(
+            "<<< run() план получен: шагов=%d final_viz=%s dashboard=%s",
+            len(plan.steps),
+            plan.final_viz,
+            plan.dashboard_requested,
+        )
+        for s in plan.steps:
+            logger.info(
+                "    шаг %d: tool=%s input=%s args=%s columns=%s purpose=%r",
+                s.step_id,
+                s.tool,
+                s.input,
+                s.arguments,
+                s.columns,
+                s.purpose,
+            )
+        _require_steps(plan)
+        datasource = memory._state.get("datasource") or "raw"
+        execution = await self._execute_plan(memory, plan, datasource, request.question, emit=emit)
+        return request.question, execution
+
     async def _execute_plan(
         self,
         memory: SessionMemory,
@@ -230,6 +281,7 @@ class AgentOrchestrator:
         *,
         step_tables: dict[int, str] | None = None,
         source_table: str | None = None,
+        emit: Emit = _ignore,
     ) -> Execution:
         """Последовательно выполнить шаги плана.
 
@@ -237,9 +289,11 @@ class AgentOrchestrator:
         $prev и попадают в инсайт как сопутствующие результаты; после
         lookup-шага план достраивается с учётом увиденного (до MAX_REPLANS).
 
-        При сбое шага после STEP_RETRY_ATTEMPTS попыток сохраняет
-        pending_recovery в SessionMemory и выбрасывает ClarificationNeeded,
-        чтобы вызывающий код мог выдать clarification_needed и прервать генератор.
+        Упавший шаг исправляется планировщиком по тексту ошибки (до
+        STEP_FIX_ATTEMPTS раз, о каждой попытке — событие progress через
+        emit). Не помогло — сохраняет pending_recovery в SessionMemory и
+        выбрасывает ClarificationNeeded, чтобы вызывающий код мог выдать
+        clarification_needed и прервать генератор.
         """
         source = source_table or input_table
         tables = dict(step_tables or {})
@@ -249,11 +303,10 @@ class AgentOrchestrator:
         index = 0
         while index < len(steps):
             step = steps[index]
-            kind = tool_kind(step)
             logger.info(
                 ">>> _execute_plan шаг %d [%s]: tool=%s input=%s args=%s columns=%s $prev=%s",
                 step.step_id,
-                kind,
+                tool_kind(step),
                 step.tool,
                 step.input,
                 step.arguments,
@@ -261,15 +314,10 @@ class AgentOrchestrator:
                 current,
             )
             try:
-                table = await with_retry(
-                    self.executor.execute,
-                    step,
-                    current,
-                    step_tables=tables,
-                    source_table=source,
-                    attempts=STEP_RETRY_ATTEMPTS,
-                )
-            except Exception as exc:  # noqa: BLE001
+                step, table = await self._run_step(step, current, tables, source, emit)
+            except _StepFailed as failed:
+                steps[index] = failed.step
+                exc = failed.error
                 suggestions = (
                     UNSUPPORTED_SUGGESTIONS
                     if isinstance(exc, NotImplementedError)
@@ -279,23 +327,25 @@ class AgentOrchestrator:
                 memory.set_pending_recovery(
                     {
                         "question": question,
-                        "failed_step_id": step.step_id,
+                        "failed_step_id": failed.step.step_id,
                         "plan_steps": [s.model_dump() for s in steps],
                         "input_table": current,
                         "source_table": source,
                         "step_tables": {str(key): value for key, value in tables.items()},
                         "error": str(exc),
-                        "attempts_made": STEP_RETRY_ATTEMPTS,
+                        "attempts_made": failed.attempts,
                         "suggestions": suggestions,
                         "final_viz": plan.final_viz,
                         "dashboard_requested": plan.dashboard_requested,
                         "result_step": plan.result_step,
                     }
                 )
-                logger.error("<<< _execute_plan шаг %d ПАЛ: %r", step.step_id, exc)
+                logger.error("<<< _execute_plan шаг %d ПАЛ: %r", failed.step.step_id, exc)
                 raise ClarificationNeeded(
-                    step_id=step.step_id, error=str(exc), suggestions=suggestions
-                )
+                    step_id=failed.step.step_id, error=str(exc), suggestions=suggestions
+                ) from exc
+            steps[index] = step
+            kind = tool_kind(step)
             logger.info("<<< _execute_plan шаг %d УСПЕШЕН result_table=%s", step.step_id, table)
             tables[step.step_id] = table
             memory.record_step(step, table)
@@ -319,6 +369,80 @@ class AgentOrchestrator:
 
         logger.info("<<< _execute_plan все шаги завершены $prev=%s", current)
         return self._finish(plan, steps, tables, fallback=current)
+
+    async def _run_step(
+        self,
+        step: ResearchStep,
+        current: str,
+        tables: dict[int, str],
+        source: str,
+        emit: Emit,
+    ) -> tuple[ResearchStep, str]:
+        """Выполнить шаг, исправляя его по тексту ошибки; вернуть шаг и его таблицу.
+
+        Повтор с теми же аргументами не помог бы: неверная колонка или тип
+        упадут так же. Поэтому каждая попытка — шаг, исправленный
+        планировщиком по ошибке и колонкам входной таблицы.
+
+        Raises:
+            _StepFailed: исправить не удалось за STEP_FIX_ATTEMPTS попыток,
+                ошибка не лечится исправлением (recovery.fixable) или
+                планировщик недоступен.
+        """
+
+        async def execute(candidate: ResearchStep) -> str:
+            return await self.executor.execute(
+                candidate, current, step_tables=tables, source_table=source
+            )
+
+        try:
+            return step, await execute(step)
+        except Exception as exc:  # noqa: BLE001 — решает recovery.fixable
+            error = exc
+        attempts = 1
+        while attempts <= STEP_FIX_ATTEMPTS and fixable(step, error):
+            logger.warning(
+                "    шаг %d: исправление %d/%d после ошибки %r",
+                step.step_id,
+                attempts,
+                STEP_FIX_ATTEMPTS,
+                str(error),
+            )
+            emit(_fixing_event(step, attempts, error))
+            attempts += 1
+            columns = self._input_columns(step, current, tables, source)
+            try:
+                fixed = await self.planner.fix_step(step, str(error), columns, set(tables))
+            except ValueError as exc:
+                # Исправленный шаг не прошёл валидацию — её ошибки получит
+                # следующая попытка.
+                error = exc
+                continue
+            except Exception:  # LLM недоступна: исправлять нечем
+                logger.exception("    шаг %d: планировщик не исправил шаг", step.step_id)
+                break
+            step = fixed
+            try:
+                return step, await execute(step)
+            except Exception as exc:  # noqa: BLE001
+                error = exc
+        raise _StepFailed(step, error, attempts)
+
+    def _input_columns(
+        self, step: ResearchStep, current: str, tables: dict[int, str], source: str
+    ) -> dict[str, str]:
+        """Колонки входной таблицы шага (имя: тип) — для исправления шага."""
+        try:
+            table = resolve_input(step, current, tables, source)
+        except ValueError:
+            # Сломана сама ссылка входа — показываем $prev.
+            table = current
+        rows = self.db.query(
+            "SELECT column_name, data_type FROM information_schema.columns "
+            "WHERE table_name = $tbl ORDER BY ordinal_position",
+            {"tbl": table},
+        )
+        return {row["column_name"]: row["data_type"] for row in rows}
 
     def _finish(
         self,
@@ -369,6 +493,7 @@ class AgentOrchestrator:
         memory: SessionMemory,
         pending: dict,
         request: ChatRequest,
+        emit: Emit = _ignore,
     ) -> Execution:
         """Применить ответ пользователя на уточнение и продолжить выполнение.
 
@@ -416,6 +541,7 @@ class AgentOrchestrator:
                 question,
                 step_tables=tables,
                 source_table=source_table,
+                emit=emit,
             )
 
         # Перепланирование: формируем уточнённый вопрос с учётом ответа
@@ -447,6 +573,7 @@ class AgentOrchestrator:
             modified_question,
             step_tables=tables,
             source_table=source_table,
+            emit=emit,
         )
 
     def _morph(self, memory: SessionMemory, question: str, titles: dict[str, str]) -> dict | None:

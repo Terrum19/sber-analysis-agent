@@ -12,7 +12,7 @@ from app.core.llm.client import LLMClient
 logger = logging.getLogger(__name__)
 from app.core.agent.step_executor import tool_kind
 from app.core.data.semantic_select import describe_columns, select_columns
-from app.core.llm.prompts.step_planner import PLAN_ERRORS, STEP_PLANNER
+from app.core.llm.prompts.step_planner import PLAN_ERRORS, STEP_FIX, STEP_PLANNER
 from app.core.tools.registry import tool_registry
 from app.models.research_step import PREVIOUS, SOURCE, ResearchPlan, ResearchStep
 
@@ -58,6 +58,35 @@ class StepPlanner:
         logger.info("<<< StepPlanner.plan() шагов=%d", len(plan.steps))
         return plan
 
+    async def fix_step(
+        self, step: ResearchStep, error: str, columns: dict[str, str], seen: set[int]
+    ) -> ResearchStep:
+        """Исправить упавший шаг по тексту ошибки и колонкам его входной таблицы.
+
+        step_id и purpose сохраняются, инструмент может смениться. Шаг,
+        не прошедший валидацию, — ValueError с её ошибками (их получит
+        следующая попытка исправления).
+        """
+        from app.core.llm.prompts.system_analyst import SYSTEM_ANALYST
+
+        prompt = STEP_FIX.format(
+            tools=tool_registry.describe(),
+            step=_step_json(step),
+            error=error,
+            columns="\n".join(f"{name}: {kind}" for name, kind in columns.items()) or "нет",
+            executed=", ".join(f"$step_{ref}" for ref in sorted(seen)) or "нет",
+        )
+        logger.info(">>> StepPlanner.fix_step() шаг %d ошибка=%r", step.step_id, error)
+        fixed = await self.llm.complete_structured(SYSTEM_ANALYST, prompt, ResearchStep)
+        fixed = fixed.model_copy(
+            update={"step_id": step.step_id, "purpose": fixed.purpose or step.purpose}
+        )
+        errors = _validate_step(fixed, seen)
+        if errors:
+            raise ValueError("; ".join(errors))
+        logger.info("<<< StepPlanner.fix_step() tool=%s args=%s", fixed.tool, fixed.arguments)
+        return fixed
+
     async def _ask(self, prompt: str, start: int) -> ResearchPlan:
         from app.core.llm.prompts.system_analyst import SYSTEM_ANALYST
 
@@ -68,12 +97,22 @@ class StepPlanner:
         return plan
 
 
+def _step_dict(step: ResearchStep) -> dict:
+    return {
+        "tool": step.tool,
+        "input": step.input,
+        "arguments": step.arguments,
+        "purpose": step.purpose,
+    }
+
+
+def _step_json(step: ResearchStep) -> str:
+    return json.dumps(_step_dict(step), ensure_ascii=False, default=str)
+
+
 def _plan_json(plan: ResearchPlan) -> str:
     """План в том виде, в каком его просили у модели (для переспроса)."""
-    steps = [
-        {"tool": s.tool, "input": s.input, "arguments": s.arguments, "purpose": s.purpose}
-        for s in plan.steps
-    ]
+    steps = [_step_dict(s) for s in plan.steps]
     payload = {"steps": steps, "final_viz": plan.final_viz, "result_step": plan.result_step}
     return json.dumps(payload, ensure_ascii=False, default=str)
 

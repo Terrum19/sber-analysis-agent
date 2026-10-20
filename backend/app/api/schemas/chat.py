@@ -37,10 +37,28 @@ class DashboardPayload(BaseModel):
     tiles: list[dict[str, Any]] = Field(default_factory=list)
 
 
+class ProgressPayload(BaseModel):
+    """Прогресс хода: этап, его статус и шаг плана.
+
+    ``fixing`` — шаг упал, планировщик исправляет его по тексту ошибки
+    (``attempt`` — номер попытки исправления, ``error`` — текст ошибки).
+    """
+
+    stage: Literal["planning", "step", "insight", "chart", "dashboard"]
+    status: Literal["started", "finished", "failed", "fixing"]
+    step_id: int | None = None
+    tool: str | None = None
+    purpose: str | None = None
+    total_steps: int | None = None
+    elapsed_ms: int | None = None
+    attempt: int | None = None
+    error: str | None = None
+
+
 class ChatEvent(BaseModel):
     """Событие стрима для фронтенда."""
 
-    type: Literal["text", "chart", "dashboard", "error", "done", "clarification_needed"]
+    type: Literal["text", "chart", "dashboard", "error", "done", "clarification_needed", "progress"]
     data: dict[str, Any] = Field(default_factory=dict)
 
 

@@ -160,10 +160,6 @@ async def test_missing_cached_table_falls_back_to_planner(agent, db) -> None:
 
 
 async def test_failed_step_reports_error(db, monkeypatch) -> None:
-    async def no_sleep(seconds: float) -> None:
-        return None
-
-    monkeypatch.setattr("app.core.agent.recovery.asyncio.sleep", no_sleep)
     agent = AgentOrchestrator(
         planner=FakePlanner(),
         executor=FakeExecutor(db, fail=True),
@@ -206,10 +202,6 @@ def test_state_cache_put_and_get(db) -> None:
 
 
 async def test_new_question_drops_pending_clarification(db, monkeypatch) -> None:
-    async def no_sleep(seconds: float) -> None:
-        return None
-
-    monkeypatch.setattr("app.core.agent.recovery.asyncio.sleep", no_sleep)
     executor = FakeExecutor(db, fail=True)
     agent = AgentOrchestrator(planner=FakePlanner(), executor=executor, insight_gen=FakeInsight())
     await collect(agent, "Сравни выручку по регионам")
@@ -222,15 +214,11 @@ async def test_new_question_drops_pending_clarification(db, monkeypatch) -> None
 
 
 async def test_recovery_answers_the_original_question(db, monkeypatch) -> None:
-    async def no_sleep(seconds: float) -> None:
-        return None
-
     class QuestionSpy(FakeInsight):
         async def generate(self, question: str, result_table: str, **_: object) -> Insight:
             self.question = question
             return await super().generate(question, result_table)
 
-    monkeypatch.setattr("app.core.agent.recovery.asyncio.sleep", no_sleep)
     executor = FakeExecutor(db, fail=True)
     insight = QuestionSpy()
     agent = AgentOrchestrator(planner=FakePlanner(), executor=executor, insight_gen=insight)

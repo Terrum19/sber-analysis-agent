@@ -1,3 +1,36 @@
+2026-10-20  Alexander Yurits  <terruwork@gmail.com>
+
+	Упавший шаг исправляется планировщиком по тексту ошибки (#39, #33).
+	* backend/app/core/agent/orchestrator.py (AgentOrchestrator._run_step):
+	Новый метод: шаг с ошибкой в аргументах (ValueError, duckdb.Error)
+	отдаётся планировщику с текстом ошибки и колонками входной таблицы и
+	выполняется заново, до STEP_FIX_ATTEMPTS раз; затем, как раньше,
+	pending_recovery и clarification_needed (attempts_made — число
+	попыток, включая первую).  Повтора шага с теми же аргументами и паузой
+	больше нет.
+	(AgentOrchestrator.run, AgentOrchestrator._research): План и шаги идут
+	задачей; события, которые она шлёт через emit, run() отдаёт из очереди
+	сразу.  Отключение клиента отменяет задачу.
+	(_fixing_event): Событие progress со статусом fixing на каждую попытку
+	исправления.
+	* backend/app/core/agent/planner.py (StepPlanner.fix_step): Новый
+	метод: исправленный шаг сохраняет step_id и purpose и проходит
+	_validate_step; не прошёл — ValueError с ошибками валидации.
+	* backend/app/core/llm/prompts/step_planner.py (STEP_FIX): Новый промпт.
+	* backend/app/core/agent/recovery.py (with_retry, retryable): Удалены.
+	(STEP_FIX_ATTEMPTS, FIXABLE_ERRORS, fixable): Какие сбои исправляются:
+	шаг кодогенерации, NotImplementedError и SandboxError — нет.
+	* backend/app/core/agent/step_executor.py (resolve_input): Таблица,
+	из которой шаг берёт данные.
+	* backend/app/api/schemas/chat.py (ProgressPayload): Новая схема.
+	(ChatEvent): Тип progress.
+	* backend/tests/unit/test_recovery_and_cache.py: Тесты исправления шага
+	вместо тестов with_retry.
+	* backend/tests/unit/test_plan_execution.py,
+	backend/tests/unit/test_orchestrator_viz.py: Без живой LLM и паузы ретрая.
+	* docs/architecture.md: События стрима чата и контракт progress.
+	* docs/sandbox.md, docs/repo_structure.md: Новая обработка ошибок шага.
+
 2026-10-20  mb6ockatf  <smokenmirror@tutamail.com>
 
 	Дашборды хранятся в SQLite (#45).

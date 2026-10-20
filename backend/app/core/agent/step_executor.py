@@ -63,8 +63,7 @@ class StepExecutor:
             ValueError: если входная таблица не существует, ссылка указывает
                 на невыполненный шаг или инструмент не зарегистрирован.
         """
-        refs = {PREVIOUS: input_table, SOURCE: source_table or input_table}
-        resolve = _Resolver(refs, step_tables or {})
+        resolve = _resolver(input_table, step_tables, source_table)
         table = resolve.table(step.input)
 
         existing = self.db.query(
@@ -101,6 +100,23 @@ class StepExecutor:
         )
         logger.info("<<< StepExecutor.execute() УСПЕШНО result_table=%s", result)
         return result
+
+
+def resolve_input(
+    step: ResearchStep,
+    input_table: str,
+    step_tables: dict[int, str] | None = None,
+    source_table: str | None = None,
+) -> str:
+    """Имя таблицы, из которой шаг берёт данные (ValueError — шаг не выполнен)."""
+    return _resolver(input_table, step_tables, source_table).table(step.input)
+
+
+def _resolver(
+    input_table: str, step_tables: dict[int, str] | None, source_table: str | None
+) -> "_Resolver":
+    refs = {PREVIOUS: input_table, SOURCE: source_table or input_table}
+    return _Resolver(refs, step_tables or {})
 
 
 class _Resolver:
