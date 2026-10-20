@@ -77,17 +77,17 @@ def test_atomic_tools_preserve_expected_values(db: DuckDBManager) -> None:
 @pytest.mark.parametrize(
     ("name", "columns", "expected_columns"),
     [
-        ("pearson_corr", ["amount", "other_amount"], {"correlation", "p_value"}),
-        ("spearman_corr", ["amount", "other_amount"], {"correlation", "p_value"}),
+        ("pearson_corr", ["amount", "other_amount"], {"correlation", "p_value", "n"}),
+        ("spearman_corr", ["amount", "other_amount"], {"correlation", "p_value", "n"}),
         (
             "linear_regression",
             ["amount", "other_amount"],
-            {"slope", "intercept", "r_squared", "p_value", "stderr"},
+            {"slope", "intercept", "r_squared", "p_value", "stderr", "n"},
         ),
         (
             "anova_one_way",
             ["amount", "category"],
-            {"statistic", "p_value", "df_between", "df_within"},
+            {"statistic", "p_value", "df_between", "df_within", "groups"},
         ),
         (
             "t_test_ind",
@@ -97,7 +97,7 @@ def test_atomic_tools_preserve_expected_values(db: DuckDBManager) -> None:
         (
             "t_test_dep",
             ["amount", "other_amount"],
-            {"statistic", "p_value", "degrees_of_freedom"},
+            {"statistic", "p_value", "degrees_of_freedom", "n"},
         ),
         ("mann_whitney_u", ["amount", "other_amount"], {"statistic", "p_value"}),
         ("ks_test", ["amount"], {"statistic", "p_value"}),
@@ -136,9 +136,11 @@ def test_forecast_returns_requested_number_of_periods(db: DuckDBManager) -> None
 
 def test_forecast_extends_the_fitted_line(db: DuckDBManager) -> None:
     _, records = run_tool(db, "forecast", ["event_date", "amount", "2"])
-    assert [(row["period_index"], row["forecast"]) for row in records] == [
-        (5, pytest.approx(50.0)),
-        (6, pytest.approx(60.0)),
+    assert [
+        (row["period_index"], row["value"]) for row in records if row["kind"] == "forecast"
+    ] == [
+        (4, pytest.approx(50.0)),
+        (5, pytest.approx(60.0)),
     ]
 
 
@@ -169,8 +171,8 @@ def test_expressions_may_use_scalar_functions_and_join_aliases(db: DuckDBManager
         ("select_columns", []),
         ("filter_rows", ["amount"]),
         ("create_column", ["new"]),
-        ("group_by", ["category", "amount", "MEDIAN"]),
-        ("time_bucket", ["event_date", "year"]),
+        ("group_by", ["category", "amount", "MODE"]),
+        ("time_bucket", ["event_date", "decade"]),
         ("lag", ["amount", "-1", "event_date"]),
         ("lag", ["amount", "1"]),
         ("create_column", ["leak", "(SELECT content FROM read_text('/etc/hostname'))"]),

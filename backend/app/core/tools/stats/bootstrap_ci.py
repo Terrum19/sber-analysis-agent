@@ -1,56 +1,49 @@
 """Bootstrap confidence interval tool."""
 
-import numpy as np
+from typing import Literal
 
-from app.core.tools.base import BaseTool, identifier
+import numpy as np
+from pydantic import Field
+
+from app.core.tools.base import BaseTool, Ident, ToolArgs, identifier
 from app.core.tools.stats._common import result, values
+
+MAX_OBSERVATIONS = 100_000
+MAX_BOOTSTRAPS = 10_000
+
+
+class BootstrapCIArgs(ToolArgs):
+    column: Ident
+    statistic: Literal["mean", "median", "sum", "min", "max"] = "mean"
+    n_bootstraps: int = Field(default=1000, ge=1, le=MAX_BOOTSTRAPS)
+    seed: int | None = 0
+    max_observations: int = Field(default=MAX_OBSERVATIONS, ge=1, le=MAX_OBSERVATIONS)
 
 
 class BootstrapCITool(BaseTool):
     name = "bootstrap_ci"
     description = (
         "Непараметрический bootstrap 95% ДИ для mean/median/sum/min/max; "
-        "parameters: n_bootstraps, seed"
+        f"не более {MAX_OBSERVATIONS} наблюдений (иначе сначала sample)"
     )
-    transforms_data = False
+    kind = "analysis"
+    Args = BootstrapCIArgs
 
-    max_observations = 100_000
-    max_bootstraps = 10_000
-    default_seed = 0
-
-    def run(
-        self,
-        db,
-        input_table: str,
-        columns: list[str],
-        **kwargs: object,
-    ) -> str:
-        if len(columns) not in (1, 2, 3):
-            raise ValueError("bootstrap_ci requires [column, statistic?, n_bootstraps?]")
+    def execute(self, db, input_table: str, args: BootstrapCIArgs) -> str:
         data_count = db.query(
             f"SELECT COUNT(*) AS n FROM {identifier(input_table)} "
-            f"WHERE {identifier(columns[0])} IS NOT NULL"
+            f"WHERE {identifier(args.column)} IS NOT NULL"
         )[0]["n"]
-        max_observations = int(kwargs.get("max_observations", self.max_observations))
-        if data_count > max_observations:
+        if data_count > args.max_observations:
             raise ValueError(
-                f"bootstrap_ci supports at most {max_observations} observations; "
+                f"bootstrap_ci supports at most {args.max_observations} observations; "
                 "sample the data before bootstrapping"
             )
-        data = values(db, input_table, columns[0])
-        statistic = columns[1].lower() if len(columns) >= 2 else "mean"
-        if statistic not in {"mean", "median", "sum", "min", "max"}:
-            raise ValueError("Unsupported bootstrap statistic")
-        n_bootstraps = int(kwargs.get("n_bootstraps", columns[2] if len(columns) == 3 else 1000))
-        if n_bootstraps < 1:
-            raise ValueError("n_bootstraps must be positive")
-        max_bootstraps = int(kwargs.get("max_bootstraps", self.max_bootstraps))
-        if n_bootstraps > max_bootstraps:
-            raise ValueError(f"n_bootstraps cannot exceed {max_bootstraps}")
+        data = values(db, input_table, args.column)
         if not data:
             raise ValueError("bootstrap_ci requires at least one observation")
-        seed = kwargs.get("seed", self.default_seed)
-        rng = np.random.default_rng(None if seed is None else int(seed))
+        statistic = args.statistic
+        rng = np.random.default_rng(args.seed)
         operations = {
             "mean": np.mean,
             "median": np.median,
@@ -65,12 +58,12 @@ class BootstrapCITool(BaseTool):
                 operations[statistic](
                     rng.choice(
                         np.asarray(data),
-                        size=(min(256, n_bootstraps - start), len(data)),
+                        size=(min(256, args.n_bootstraps - start), len(data)),
                         replace=True,
                     ),
                     axis=1,
                 )
-                for start in range(0, n_bootstraps, 256)
+                for start in range(0, args.n_bootstraps, 256)
             ]
         )
         ci_low, ci_high = np.quantile(bootstrap_values, [0.025, 0.975])

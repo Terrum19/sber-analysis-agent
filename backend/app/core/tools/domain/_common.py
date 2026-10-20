@@ -7,17 +7,15 @@ from datetime import date, datetime
 import numpy as np
 from scipy import stats
 
-from app.core.tools.base import identifier
+from app.core.tools.base import Ident, ToolArgs, identifier
 from app.core.tools.stats._common import rows_result
 
 _YEAR_MONTH = re.compile(r"^\d{4}-\d{2}")
 
 
-def required(columns: list[str], minimum: int, maximum: int, name: str) -> None:
-    if not minimum <= len(columns) <= maximum:
-        raise ValueError(f"{name} requires between {minimum} and {maximum} columns")
-    for column in columns:
-        identifier(column)
+class SeriesArgs(ToolArgs):
+    date_column: Ident
+    value_column: Ident
 
 
 def observations(db, table: str, date_col: str, value_col: str) -> list[tuple[object, float]]:
@@ -95,11 +93,11 @@ def moving_average(values: list[float], window: int) -> list[float | None]:
 
 
 __all__ = [
+    "SeriesArgs",
     "identifier",
     "moving_average",
     "observations",
     "period_index",
-    "required",
     "rows_result",
     "time_axis",
     "trend",

@@ -1,45 +1,36 @@
 """Classical additive or multiplicative trend/seasonal/residual decomposition."""
 
+from typing import Literal
+
+from pydantic import Field
+
 from app.core.tools.base import BaseTool
 from app.core.tools.domain._common import (
+    SeriesArgs,
     moving_average,
     observations,
     period_index,
-    required,
     rows_result,
 )
+
+
+class DecomposeArgs(SeriesArgs):
+    mode: Literal["additive", "multiplicative"] = "additive"
+    seasonality_period: int = Field(default=12, ge=1, le=366)
 
 
 class SeasonalDecomposeTool(BaseTool):
     name = "seasonal_decompose"
     description = (
         "Классическое разложение ряда на trend (скользящее среднее за сезон), seasonal "
-        "и residual; columns=[date_col, value_col, mode?]; mode additive|multiplicative; "
-        "parameters: seasonality_period; нужно не меньше двух полных сезонов"
+        "и residual (additive/multiplicative); нужно не меньше двух полных сезонов"
     )
+    kind = "analysis"
+    Args = DecomposeArgs
 
-    def run(
-        self,
-        db,
-        input_table: str,
-        columns: list[str],
-        **kwargs: object,
-    ) -> str:
-        required(columns[:2], 2, 2, self.name)
-        mode = (
-            columns[2].lower() if len(columns) >= 3 else str(kwargs.get("mode", "additive")).lower()
-        )
-        seasonality_period = int(
-            kwargs.get(
-                "seasonality_period",
-                columns[3] if len(columns) == 4 else 12,
-            )
-        )
-        if seasonality_period < 1:
-            raise ValueError("seasonality_period must be positive")
-        if mode not in {"additive", "multiplicative"}:
-            raise ValueError("seasonal_decompose mode must be additive or multiplicative")
-        observations_ = observations(db, input_table, columns[0], columns[1])
+    def execute(self, db, input_table: str, args: DecomposeArgs) -> str:
+        mode, seasonality_period = args.mode, args.seasonality_period
+        observations_ = observations(db, input_table, args.date_column, args.value_column)
         if len(observations_) < 2 * seasonality_period:
             raise ValueError(
                 f"seasonal_decompose requires at least {2 * seasonality_period} observations "

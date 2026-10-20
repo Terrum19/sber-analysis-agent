@@ -1,14 +1,19 @@
-"""Shared validation and step counting for funnel tools."""
+"""Shared argument model and step counting for funnel tools."""
 
-from app.core.tools.base import identifier
+from pydantic import Field
+
+from app.core.tools.base import Ident, ToolArgs, identifier
 from app.core.tools.stats._common import literal, rows_result
 
 
-def columns(columns: list[str], minimum: int, maximum: int, name: str) -> None:
-    if not minimum <= len(columns) <= maximum:
-        raise ValueError(f"{name} requires between {minimum} and {maximum} columns")
-    for column in columns:
-        identifier(column)
+class FunnelArgs(ToolArgs):
+    """user_column — считать пользователей, прошедших шаги по порядку;
+    steps — порядок шагов (иначе выводится из данных)."""
+
+    step_column: Ident
+    order_column: Ident
+    user_column: Ident | None = None
+    steps: list[str | int | float] | None = Field(default=None, min_length=1)
 
 
 def ordered_steps(db, table: str, step_col: str, order_col: str, user_col: str | None) -> list:
@@ -98,4 +103,4 @@ def step_counts(
     return [(value, int(row["count"])) for value, row in zip(steps, rows)]
 
 
-__all__ = ["columns", "identifier", "ordered_steps", "rows_result", "step_counts"]
+__all__ = ["FunnelArgs", "identifier", "ordered_steps", "rows_result", "step_counts"]

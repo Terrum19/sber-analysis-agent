@@ -25,8 +25,11 @@ from app.core.tools.sql.atomic import (
     LeftJoinTablesTool,
     PivotTool,
     RenameColumnTool,
+    SampleTool,
     SelectColumnsTool,
+    SortLimitTool,
     TimeBucketTool,
+    WindowMetricTool,
     WindowTool,
 )
 from app.core.tools.sql.time_series import TimeSeriesTool
@@ -54,10 +57,19 @@ class ToolRegistry:
 
     def __init__(self) -> None:
         self._tools: dict[str, BaseTool] = {}
+        self._hidden: set[str] = set()
 
-    def register(self, tool: BaseTool) -> None:
-        """Зарегистрировать тул под его именем."""
+    def register(self, tool: BaseTool, *, visible: bool = True) -> None:
+        """Зарегистрировать тул под его именем.
+
+        visible=False — тул исполним, но не показывается планировщику
+        (дубли и совместимость со старыми планами).
+        """
         self._tools[tool.name] = tool
+        if visible:
+            self._hidden.discard(tool.name)
+        else:
+            self._hidden.add(tool.name)
 
     def get(self, name: str) -> BaseTool:
         """Получить тул по имени (KeyError -> recovery/rephrase)."""
@@ -66,11 +78,15 @@ class ToolRegistry:
     def register_alias(self, alias: str, tool_name: str) -> None:
         """Register an additional planner-facing name for an existing tool."""
         self._tools[alias] = self.get(tool_name)
+        self._hidden.add(alias)
+
+    def planner_tools(self) -> list[BaseTool]:
+        """Тулы, которые видит планировщик."""
+        return [tool for name, tool in self._tools.items() if name not in self._hidden]
 
     def describe(self) -> str:
-        """Описания всех тулов для LLM."""
-        unique = {id(tool): tool for tool in self._tools.values()}
-        return "\n".join(tool.describe() for tool in unique.values())
+        """Описания тулов для LLM (по одному на строку)."""
+        return "\n".join(f"- {tool.describe()}" for tool in self.planner_tools())
 
 
 tool_registry = ToolRegistry()
@@ -85,11 +101,12 @@ for _tool in (
     GroupByTool(),
     PivotTool(),
     TimeBucketTool(),
-    WindowTool("lag", "LAG", "Значение из предыдущей строки"),
-    WindowTool("lead", "LEAD", "Значение из следующей строки"),
+    SortLimitTool(),
+    SampleTool(),
+    WindowTool("lag", "LAG", "Значение из предыдущей строки (offset строк назад)"),
+    WindowTool("lead", "LEAD", "Значение из следующей строки (offset строк вперёд)"),
+    WindowMetricTool(),
     AggregateTool(),
-    TimeSeriesTool(),
-    CorrelationTool(),
     PearsonCorrelationTool(),
     SpearmanCorrelationTool(),
     LinearRegressionTool(),
@@ -112,13 +129,20 @@ for _tool in (
     CohortAnalysisTool(),
     RetentionMatrixTool(),
     RevenueAnalysisTool(),
-    ProductPerformanceTool(),
-    ConversionFunnelTool(),
     AverageOrderValueTool(),
     TrendAnalysisTool(),
     SeasonalDecomposeTool(),
 ):
     tool_registry.register(_tool)
+
+# Дубли: исполняются для старых планов, но планировщику не показываются.
+for _tool in (
+    TimeSeriesTool(),  # = time_bucket(metric_column, function)
+    CorrelationTool(),  # = pearson_corr без p-value
+    ProductPerformanceTool(),  # = group_by с metrics
+    ConversionFunnelTool(),  # = funnel_steps
+):
+    tool_registry.register(_tool, visible=False)
 
 # Accept the spelling used in external research plans while keeping the
 # Python-friendly canonical name available to callers.

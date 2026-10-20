@@ -1,6 +1,6 @@
 /**
  * Типы стрима чата (дубль контракта backend/app/api/schemas/chat.py).
- * Фронт получает события: text | chart | dashboard | error | done.
+ * Фронт получает события: text | chart | dashboard | clarification_needed | error | done.
  */
 export interface ChartEvent {
   type: "chart";
@@ -17,6 +17,12 @@ export interface TextEvent {
   data: { chunk?: string; headline?: string; details?: string[] };
 }
 
+/** Шаг не выполнился: агент ждёт ответа (кнопка-подсказка или текст уточнения). */
+export interface ClarificationNeededEvent {
+  type: "clarification_needed";
+  data: { step_id: number; error: string; suggestions: string[] };
+}
+
 export interface Tile {
   title: string;
   spec: Record<string, unknown>;
@@ -24,4 +30,9 @@ export interface Tile {
   layout?: { x: number; y: number; w: number; h: number };
 }
 
-export type ChatStreamEvent = ChartEvent | DashboardEvent | TextEvent | { type: "error" | "done"; data: Record<string, unknown> };
+export type ChatStreamEvent =
+  | ChartEvent
+  | DashboardEvent
+  | TextEvent
+  | ClarificationNeededEvent
+  | { type: "error" | "done"; data: Record<string, unknown> };

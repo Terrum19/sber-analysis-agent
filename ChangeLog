@@ -1,3 +1,28 @@
+2026-10-20  Alexander Yurits  <terruwork@gmail.com>
+
+	Слияние dev (WASM-песочница, исправления ревью) в планировщик (#37).
+	* backend/app/core/tools/base.py (identifier): Возвращает имя в
+	кавычках, как в dev.  (column_name): Новая проверка имён для Ident и
+	TableRef: в аргументах тула хранится имя как в источнике, кавычки
+	ставятся при сборке SQL.  (expression): Разбор парсером DuckDB из dev.
+	* backend/app/core/tools/**: Исправления ревью перенесены на
+	типизированные Args: кавычки для всех имён, включая производные
+	(sum_<col>, lag_<col>), RENAME в rename_column, p-value и степени
+	свободы в стат-тестах, alternative в t_test_ind, t_test_dep и
+	mann_whitney_u, режим samples/groups по типу колонки, результаты
+	как DOUBLE, подсчёт воронки по пользователям в порядке шагов,
+	тренд по оси времени и классическое разложение ряда.
+	* backend/app/core/tools/sql/atomic.py (_over): Оконные функции,
+	зависящие от порядка строк, требуют order_column вместо rowid.
+	* backend/app/core/tools/stats/shapiro_wilk.py: Переведён на Args.
+	* backend/app/core/tools/funnel/_common.py (FunnelArgs): user_column
+	и steps для funnel_steps, funnel_drop_off и conversion_funnel.
+	* backend/app/core/agent/step_executor.py (StepExecutor): Шаг
+	кодогенерации исполняется в песочнице через run_generated_code; LLM и
+	песочница передаются в конструктор.  Неизвестный тул — по-прежнему
+	ошибка шага.
+	* backend/tests/unit/test_wasm_stub.py: Удалён вместе с заглушкой.
+
 2026-10-18  mb6ockatf  <smokenmirror@tutamail.com>
 
 	WASM-песочница (#26).

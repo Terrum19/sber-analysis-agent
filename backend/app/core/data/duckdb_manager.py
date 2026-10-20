@@ -56,11 +56,34 @@ class DuckDBManager:
 
         Нужно, чтобы при смене визуализации или лёгкой модификации
         отчёта не пересчитывать тяжёлые запросы заново.
+
+        Номер продолжает уже лежащие в файле таблицы: менеджер создаётся
+        на каждый запрос, и счётчик с нуля перезаписал бы temp_result_v1,
+        на который ссылается прошлый график этой или другой сессии.
         """
-        self._step_counter += 1
-        target = f"temp_result_v{self._step_counter}"
-        self.execute(f"CREATE OR REPLACE TABLE {target} AS SELECT * FROM ({sql})")
-        return target
+        with self.lock:
+            self._step_counter = max(self._step_counter, self._last_step_number())
+            while True:
+                self._step_counter += 1
+                target = f"temp_result_v{self._step_counter}"
+                try:
+                    self._con.execute(f"CREATE TABLE {target} AS SELECT * FROM ({sql})")
+                except duckdb.CatalogException as exc:
+                    # Имя успел занять параллельный запрос с другим соединением.
+                    if "already exists" not in str(exc):
+                        raise
+                    continue
+                return target
+
+    def _last_step_number(self) -> int:
+        """Наибольший N среди temp_result_vN текущей базы (0, если их нет)."""
+        rows = self.query(
+            """SELECT max(TRY_CAST(substr(table_name, 14) AS BIGINT)) AS n
+            FROM information_schema.tables
+            WHERE table_catalog = current_database()
+              AND table_name LIKE 'temp\\_result\\_v%' ESCAPE '\\'"""
+        )
+        return rows[0]["n"] or 0
 
     def to_records(self, table: str, limit: int = 100) -> list[dict]:
         """Выгрузить temp-таблицу в список словарей (для LLM/инсайта)."""

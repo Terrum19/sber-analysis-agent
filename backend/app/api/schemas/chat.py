@@ -21,6 +21,7 @@ class ChatRequest(BaseModel):
 
     session_id: str
     question: str
+    recovery_response: str | None = None
 
 
 class ChartPayload(BaseModel):
@@ -39,7 +40,7 @@ class DashboardPayload(BaseModel):
 class ChatEvent(BaseModel):
     """Событие стрима для фронтенда."""
 
-    type: Literal["text", "chart", "dashboard", "error", "done"]
+    type: Literal["text", "chart", "dashboard", "error", "done", "clarification_needed"]
     data: dict[str, Any] = Field(default_factory=dict)
 
 

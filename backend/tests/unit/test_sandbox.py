@@ -86,7 +86,7 @@ def test_extract_code_strips_fences() -> None:
     assert extract_code("result = df.head()") == "result = df.head()"
 
 
-async def test_unknown_tool_goes_to_codegen(
+async def test_codegen_steps_go_to_codegen_and_unknown_tools_fail(
     db: DuckDBManager, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     calls = []
@@ -97,12 +97,10 @@ async def test_unknown_tool_goes_to_codegen(
 
     monkeypatch.setattr(codegen_runner, "run_generated_code", fake_runner)
     executor = StepExecutor(db)
-    assert (
+    with pytest.raises(ValueError, match="no_such_tool"):
         await executor.execute(ResearchStep(tool="no_such_tool", purpose="x"), "raw")
-        == "temp_result_v9"
-    )
     assert await executor.execute(ResearchStep(tool=None, needs_llm_codegen=True), "raw")
-    assert calls == [("no_such_tool", "raw"), (None, "raw")]
+    assert calls == [(None, "raw")]
 
 
 async def test_codegen_fixes_code_after_sandbox_error(db: DuckDBManager) -> None:

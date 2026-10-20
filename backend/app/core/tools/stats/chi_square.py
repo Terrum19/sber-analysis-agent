@@ -3,18 +3,18 @@
 from scipy import stats
 
 from app.core.tools.base import BaseTool, identifier
+from app.core.tools.stats._args import TwoColumnsArgs
 from app.core.tools.stats._common import result
 
 
 class ChiSquareTool(BaseTool):
     name = "chi_square"
-    description = "Хи-квадрат тест независимости двух категориальных колонок"
-    transforms_data = False
+    description = "Хи-квадрат: связаны ли две категориальные колонки (statistic, p_value)"
+    kind = "analysis"
+    Args = TwoColumnsArgs
 
-    def run(self, db, input_table: str, columns: list[str], **kwargs: object) -> str:
-        if len(columns) != 2:
-            raise ValueError("chi_square requires [categorical_column_a, categorical_column_b]")
-        first, second = (identifier(column) for column in columns)
+    def execute(self, db, input_table: str, args: TwoColumnsArgs) -> str:
+        first, second = identifier(args.column_a), identifier(args.column_b)
         rows = db.query(
             f"SELECT {first} AS first_value, {second} AS second_value "
             f"FROM {identifier(input_table)} "
