@@ -1,7 +1,7 @@
 .PHONY: help hooks install dev up down test lint model seed
 
 help:
-	@echo "make hooks    — git-хуки репозитория (проверка сообщений коммитов)"
+	@echo "make hooks    — git-хуки репозитория (сообщения коммитов, ruff)"
 	@echo "make install  — зависимости backend+frontend"
 	@echo "make seed     — демо-данные в DuckDB"
 	@echo "make model    — подсказки по запуску LLM"
