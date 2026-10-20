@@ -94,12 +94,17 @@ class ClarificationNeeded(Exception):
 
 
 class _StepFailed(Exception):
-    """Шаг не выполнился и не исправился: последняя версия шага и ошибка."""
+    """Шаг не выполнился и не исправился: последняя версия шага и ошибка.
 
-    def __init__(self, step: ResearchStep, error: Exception, attempts: int) -> None:
+    ``executions`` — сколько раз шаг выполнялся (исходный и исправленные
+    варианты); отклонённое валидацией исправление не выполняется и не
+    считается.
+    """
+
+    def __init__(self, step: ResearchStep, error: Exception, executions: int) -> None:
         self.step = step
         self.error = error
-        self.attempts = attempts
+        self.executions = executions
         super().__init__(str(error))
 
 
@@ -333,7 +338,7 @@ class AgentOrchestrator:
                         "source_table": source,
                         "step_tables": {str(key): value for key, value in tables.items()},
                         "error": str(exc),
-                        "attempts_made": failed.attempts,
+                        "attempts_made": failed.executions,
                         "suggestions": suggestions,
                         "final_viz": plan.final_viz,
                         "dashboard_requested": plan.dashboard_requested,
@@ -399,34 +404,39 @@ class AgentOrchestrator:
             return step, await execute(step)
         except Exception as exc:  # noqa: BLE001 — решает recovery.fixable
             error = exc
-        attempts = 1
-        while attempts <= STEP_FIX_ATTEMPTS and fixable(step, error):
+        # error — последняя ошибка выполнения: её видят фронт и пользователь.
+        # feedback — что получает планировщик: та же ошибка и, если его
+        # исправление отклонила валидация, этот шаг с причиной отказа.
+        feedback = str(error)
+        executions = 1
+        for attempt in range(1, STEP_FIX_ATTEMPTS + 1):
+            if not fixable(step, error):
+                break
             logger.warning(
                 "    шаг %d: исправление %d/%d после ошибки %r",
                 step.step_id,
-                attempts,
+                attempt,
                 STEP_FIX_ATTEMPTS,
-                str(error),
+                feedback,
             )
-            emit(_fixing_event(step, attempts, error))
-            attempts += 1
+            emit(_fixing_event(step, attempt, error))
             columns = self._input_columns(step, current, tables, source)
             try:
-                fixed = await self.planner.fix_step(step, str(error), columns, set(tables))
+                fixed = await self.planner.fix_step(step, feedback, columns, set(tables))
             except ValueError as exc:
-                # Исправленный шаг не прошёл валидацию — её ошибки получит
-                # следующая попытка.
-                error = exc
+                feedback = f"{error}\n{exc}"
                 continue
             except Exception:  # LLM недоступна: исправлять нечем
                 logger.exception("    шаг %d: планировщик не исправил шаг", step.step_id)
                 break
             step = fixed
+            executions += 1
             try:
                 return step, await execute(step)
             except Exception as exc:  # noqa: BLE001
                 error = exc
-        raise _StepFailed(step, error, attempts)
+                feedback = str(exc)
+        raise _StepFailed(step, error, executions)
 
     def _input_columns(
         self, step: ResearchStep, current: str, tables: dict[int, str], source: str
@@ -437,11 +447,16 @@ class AgentOrchestrator:
         except ValueError:
             # Сломана сама ссылка входа — показываем $prev.
             table = current
-        rows = self.db.query(
-            "SELECT column_name, data_type FROM information_schema.columns "
-            "WHERE table_name = $tbl ORDER BY ordinal_position",
-            {"tbl": table},
-        )
+        try:
+            rows = self.db.query(
+                "SELECT column_name, data_type FROM information_schema.columns "
+                "WHERE table_name = $tbl ORDER BY ordinal_position",
+                {"tbl": table},
+            )
+        except duckdb.Error:
+            # Без колонок исправление всё равно возможно — по тексту ошибки.
+            logger.exception("    шаг %d: колонки таблицы %s не прочитаны", step.step_id, table)
+            return {}
         return {row["column_name"]: row["data_type"] for row in rows}
 
     def _finish(

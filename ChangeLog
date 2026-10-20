@@ -1,5 +1,27 @@
 2026-10-20  Alexander Yurits  <terruwork@gmail.com>
 
+	Отклонённое исправление шага больше не подменяет ошибку шага (#39).
+	* backend/app/core/agent/orchestrator.py (AgentOrchestrator._run_step):
+	Фронт и пользователь видят последнюю ошибку выполнения шага; если
+	исправление не прошло валидацию, планировщик получает эту ошибку
+	вместе с отклонённым шагом и причиной отказа.  attempts_made — число
+	выполнений шага: отклонённое исправление и недоступная LLM его не
+	увеличивают.
+	(AgentOrchestrator._input_columns): Сбой чтения колонок не прерывает
+	исправление — планировщик получает «нет».
+	(_StepFailed): attempts переименован в executions.
+	* backend/app/core/agent/planner.py (StepPlanner.fix_step): В тексте
+	ValueError — отклонённый шаг.
+	* backend/tests/unit/test_recovery_and_cache.py: Тесты отклонённых
+	исправлений и недоступных колонок.
+	* backend/tests/unit/test_orchestrator_viz.py: Без лишнего monkeypatch.
+	* docs/architecture.md: Что лежит в error события fixing.
+	* docs/issue_agent_loop_planning.md,
+	docs/reports/architecture_compliance_report.md,
+	docs/team_plans/terrum/agent-planner.md: with_retry заменён fix_step.
+
+2026-10-20  Alexander Yurits  <terruwork@gmail.com>
+
 	Упавший шаг исправляется планировщиком по тексту ошибки (#39, #33).
 	* backend/app/core/agent/orchestrator.py (AgentOrchestrator._run_step):
 	Новый метод: шаг с ошибкой в аргументах (ValueError, duckdb.Error)

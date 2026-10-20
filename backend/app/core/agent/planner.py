@@ -64,8 +64,8 @@ class StepPlanner:
         """Исправить упавший шаг по тексту ошибки и колонкам его входной таблицы.
 
         step_id и purpose сохраняются, инструмент может смениться. Шаг,
-        не прошедший валидацию, — ValueError с её ошибками (их получит
-        следующая попытка исправления).
+        не прошедший валидацию, — ValueError с самим отклонённым шагом и
+        ошибками валидации (их получит следующая попытка исправления).
         """
         from app.core.llm.prompts.system_analyst import SYSTEM_ANALYST
 
@@ -83,7 +83,7 @@ class StepPlanner:
         )
         errors = _validate_step(fixed, seen)
         if errors:
-            raise ValueError("; ".join(errors))
+            raise ValueError(f"Исправление {_step_json(fixed)} отклонено: {'; '.join(errors)}")
         logger.info("<<< StepPlanner.fix_step() tool=%s args=%s", fixed.tool, fixed.arguments)
         return fixed
 

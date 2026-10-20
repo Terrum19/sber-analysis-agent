@@ -2,6 +2,7 @@
 
 import asyncio
 
+import duckdb
 import pytest
 
 from app.api.schemas.chat import ChatEvent, ChatRequest, ProgressPayload
@@ -126,8 +127,31 @@ async def test_invalid_fix_counts_as_attempt(db) -> None:
     events = await collect(make_agent(db, llm))
 
     assert kinds(events) == ["progress", "progress", "text", "chart", "done"]
-    # Вторая попытка получает ошибку валидации первой.
-    assert "неизвестный инструмент 'no_such_tool'" in llm.prompts["ResearchStep"][1]
+    # Фронт видит ошибку выполнения шага, а не валидации исправления.
+    assert all("revenu" in event["data"]["error"] for event in events[:2])
+    # Вторая попытка получает и ошибку выполнения, и отклонённый вариант
+    # с причиной отказа.
+    prompt = llm.prompts["ResearchStep"][1]
+    assert 'Referenced column "revenu" not found' in prompt
+    assert '"tool": "no_such_tool"' in prompt
+    assert "неизвестный инструмент 'no_such_tool'" in prompt
+
+
+async def test_rejected_fixes_ask_with_the_step_error(db) -> None:
+    plan = ResearchPlan(steps=[group_by("revenu")], final_viz="bar")
+    unknown = ResearchStep(tool="no_such_tool", purpose="Выручка по регионам")
+    llm = ScriptedLLM(plan, [unknown, unknown])
+    events = await collect(make_agent(db, llm))
+
+    assert kinds(events) == ["progress", "progress", "clarification_needed"]
+    # Пользователь видит, что не так с его данными, а не ошибку модели.
+    error = events[-1]["data"]["error"]
+    assert "revenu" in error
+    assert "no_such_tool" not in error
+    pending = SessionMemory("s1").get_pending_recovery()
+    # Отклонённые исправления не выполнялись — шаг выполнен один раз.
+    assert pending["attempts_made"] == 1
+    assert pending["plan_steps"][0]["arguments"]["column"] == "revenu"
 
 
 async def test_unavailable_planner_stops_fixing(db) -> None:
@@ -138,7 +162,25 @@ async def test_unavailable_planner_stops_fixing(db) -> None:
     assert kinds(events) == ["progress", "clarification_needed"]
     # Пользователь видит ошибку шага, а не сбой LLM.
     assert "revenu" in events[-1]["data"]["error"]
-    assert SessionMemory("s1").get_pending_recovery()["attempts_made"] == 2
+    assert SessionMemory("s1").get_pending_recovery()["attempts_made"] == 1
+
+
+async def test_unreadable_columns_do_not_stop_fixing(db, monkeypatch) -> None:
+    plan = ResearchPlan(steps=[group_by("revenu")], final_viz="bar")
+    llm = ScriptedLLM(plan, [group_by("revenue")])
+    agent = make_agent(db, llm)
+    query = db.query
+
+    def failing_query(sql: str, *args: object, **kwargs: object) -> list[dict]:
+        if "information_schema.columns" in sql:
+            raise duckdb.IOException("каталог недоступен")
+        return query(sql, *args, **kwargs)
+
+    monkeypatch.setattr(db, "query", failing_query)
+    events = await collect(agent)
+
+    assert kinds(events) == ["progress", "text", "chart", "done"]
+    assert "Колонки входной таблицы шага (имя: тип):\nнет" in llm.prompts["ResearchStep"][0]
 
 
 async def test_broken_input_reference_shows_previous_columns(db) -> None:
