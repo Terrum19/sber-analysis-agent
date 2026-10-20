@@ -2,9 +2,12 @@
 
 Модель модифицирует одну и ту же таблицу цепочкой запросов;
 финальная таблица — основание для инсайта/графика/дашборда.
+Шаг без подходящего тула уходит в кодогенерацию и WASM-песочницу.
 """
 
 from app.core.data.duckdb_manager import DuckDBManager
+from app.core.llm.client import LLMClient
+from app.core.sandbox.wasm_runtime import WASMSandbox
 from app.core.tools.registry import tool_registry
 from app.models.research_step import ResearchStep
 
@@ -12,16 +15,28 @@ from app.models.research_step import ResearchStep
 class StepExecutor:
     """Исполнение ResearchStep над таблицей в DuckDB."""
 
-    def __init__(self, db: DuckDBManager | None = None) -> None:
+    def __init__(
+        self,
+        db: DuckDBManager | None = None,
+        llm: LLMClient | None = None,
+        sandbox: WASMSandbox | None = None,
+    ) -> None:
         self.db = db or DuckDBManager()
+        self.llm = llm
+        self.sandbox = sandbox
 
     async def execute(self, step: ResearchStep, input_table: str) -> str:
         """Выполнить один шаг, вернуть имя результирующей temp-таблицы."""
-        if step.needs_llm_codegen or not step.tool:
+        tool = None
+        if step.tool and not step.needs_llm_codegen:
+            try:
+                tool = tool_registry.get(step.tool)
+            except KeyError:
+                tool = None
+        if tool is None:
             from app.core.sandbox.codegen_runner import run_generated_code
 
-            return await run_generated_code(step, input_table, self.db)
-        tool = tool_registry.get(step.tool)
+            return await run_generated_code(step, input_table, self.db, self.llm, self.sandbox)
         return tool.run(self.db, input_table, step.columns, **step.parameters)
 
 

@@ -25,8 +25,12 @@ class Settings(BaseSettings):
     csv_max_upload_mb: int = 1024
 
     # Лимиты песочницы / агента
-    wasm_timeout_s: int = 30
-    wasm_mem_mb: int = 512
+    wasm_timeout_s: int = 60
+    wasm_mem_mb: int = 2048
+    wasm_max_parallel: int = 1
+    wasm_node_bin: str = "node"
+    wasm_runtime_dir: str = ""
+    codegen_attempts: int = 2
     agent_max_steps: int = 12
     semantic_top_k: int = 5
 

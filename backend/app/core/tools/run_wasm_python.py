@@ -1,9 +1,15 @@
 """Bridge from a research step to the existing WASM sandbox."""
 
-from app.config import settings
-from app.core.sandbox.wasm_runtime import WASMSandbox
+from app.core.sandbox.codegen_runner import sql_literal
+from app.core.sandbox.wasm_runtime import INPUT_FILE, RESULT_FILE, WASMSandbox
 from app.core.tools.base import BaseTool, identifier
-from app.core.tools.stats._common import rows_result
+
+SCALAR_WRAP = """
+if not hasattr(result, "columns") and not (
+    isinstance(result, list) and result and all(isinstance(row, dict) for row in result)
+):
+    result = {{{output_col!r}: result if isinstance(result, list) else [result]}}
+"""
 
 
 class RunWasmPythonTool(BaseTool):
@@ -20,28 +26,15 @@ class RunWasmPythonTool(BaseTool):
         output_col = columns[2] if len(columns) == 3 else None
         if output_col is not None:
             identifier(output_col)
-        data = db.to_records(identifier(target_table), limit=100_000)
-        result = WASMSandbox(settings.wasm_timeout_s).run(
-            code=code,
-            payload={
-                "table": target_table,
-                "data": data,
-                "rows": data,
-                "output_col": output_col,
-            },
-        )
-        if not isinstance(result, dict) or "result" not in result:
-            raise ValueError("WASM sandbox must return a mapping with a 'result' field")
-        result = result["result"]
-        if isinstance(result, list) and all(isinstance(row, dict) for row in result):
-            if not result:
-                raise ValueError("Sandbox returned no rows")
-            names = list(result[0])
-            if any(set(row) != set(names) for row in result):
-                raise ValueError("Sandbox rows must have the same columns")
-            rows = [tuple(row[name] for name in names) for row in result]
-            return rows_result(db, target_table, names, rows)
-        if output_col is None:
-            raise ValueError("output_col is required when sandbox returns scalar values")
-        values = result if isinstance(result, list) else [result]
-        return rows_result(db, target_table, [output_col], [(value,) for value in values])
+            code += SCALAR_WRAP.format(output_col=output_col)
+        source = identifier(target_table)
+        sandbox = WASMSandbox()
+        with sandbox.workspace() as workdir:
+            with db.lock:
+                db.execute(
+                    f"COPY (SELECT * FROM {source}) TO "
+                    f"{sql_literal(str(workdir / INPUT_FILE))} (HEADER)"
+                )
+            sandbox.run(code, workdir)
+            result = sql_literal(str(workdir / RESULT_FILE))
+            return db.save_step_result(target_table, f"SELECT * FROM read_csv_auto({result})")

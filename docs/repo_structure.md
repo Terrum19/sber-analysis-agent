@@ -121,8 +121,8 @@ backend/
 │   │   │       └── forecast.py    — экстраполяция линейным трендом на N периодов
 │   │   │
 │   │   ├── sandbox/        — выполнение кода, сгенерированного LLM
-│   │   │   ├── wasm_runtime.py    — WASM-песочница: лимиты CPU/RAM + таймаут
-│   │   │   └── codegen_runner.py  — прогон кода шага (когда тула нет)
+│   │   │   ├── wasm_runtime.py    — WASM-песочница (Pyodide): лимиты RAM + таймаут
+│   │   │   └── codegen_runner.py  — кодогенерация и прогон кода шага (когда тула нет)
 │   │   │
 │   │   ├── memory/         — 4 уровня памяти (см. docs/memory.md)
 │   │   │   ├── session_memory.py    — (1) диалог + шаги, sliding window, SQLite
