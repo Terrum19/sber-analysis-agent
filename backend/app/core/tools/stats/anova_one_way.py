@@ -14,22 +14,30 @@ class AnovaArgs(ToolArgs):
 
 class AnovaOneWayTool(BaseTool):
     name = "anova_one_way"
-    description = "Однофакторный ANOVA: различаются ли средние по группам (statistic, p_value)"
+    description = (
+        "Однофакторный ANOVA: различаются ли средние двух и более групп "
+        "(statistic, p_value, df_between, df_within)"
+    )
     kind = "analysis"
     Args = AnovaArgs
 
     def execute(self, db, input_table: str, args: AnovaArgs) -> str:
+        value_column, group_column = identifier(args.value_column), identifier(args.group_column)
         rows = db.query(
-            f"SELECT {args.value_column} AS value, {args.group_column} AS group_name "
-            f"FROM {identifier(input_table)} WHERE {args.value_column} IS NOT NULL"
+            f"SELECT {value_column} AS value, {group_column} AS group_name "
+            f"FROM {identifier(input_table)} WHERE {value_column} IS NOT NULL"
         )
         groups: dict[object, list[float]] = {}
         for row in rows:
             groups.setdefault(row["group_name"], []).append(float(row["value"]))
-        statistic = p_value = None
-        if len(groups) > 1:
+        observations = sum(len(group) for group in groups.values())
+        outcome: tuple[object, ...] = (None, None, None, None)
+        if len(groups) > 1 and observations > len(groups):
             test = stats.f_oneway(*(np.asarray(group) for group in groups.values()))
-            statistic, p_value = float(test.statistic), float(test.pvalue)
+            outcome = (test.statistic, test.pvalue, len(groups) - 1, observations - len(groups))
         return result(
-            db, input_table, "statistic, p_value, groups", (statistic, p_value, len(groups))
+            db,
+            input_table,
+            "statistic, p_value, df_between, df_within, groups",
+            (*outcome, len(groups)),
         )

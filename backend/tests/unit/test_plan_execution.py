@@ -5,13 +5,15 @@ import asyncio
 import pytest
 
 from app.core.agent.orchestrator import (
-    UNSUPPORTED_SUGGESTIONS,
+    CLARIFICATION_SUGGESTIONS,
     AgentOrchestrator,
     ClarificationNeeded,
 )
 from app.core.agent.planner import StepPlanner, validate_plan
 from app.core.agent.step_executor import StepExecutor
 from app.core.data.duckdb_manager import DuckDBManager
+from app.core.sandbox import codegen_runner
+from app.core.sandbox.wasm_runtime import SandboxError
 from app.core.tools.registry import tool_registry
 from app.models.research_step import ResearchPlan, ResearchStep
 
@@ -359,13 +361,19 @@ def test_lookup_step_triggers_replanning_with_observation(db: DuckDBManager) -> 
     assert [row["id"] for row in db.to_records(execution.result_table)] == [3, 4]
 
 
-def test_unsupported_step_offers_only_useful_suggestions(db: DuckDBManager) -> None:
+def test_sandbox_error_is_an_ordinary_step_error(
+    db: DuckDBManager, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    async def failing_codegen(*args, **kwargs):
+        raise SandboxError("код упал в песочнице")
+
+    monkeypatch.setattr(codegen_runner, "run_generated_code", failing_codegen)
     plan = ResearchPlan(steps=[ResearchStep(step_id=0, tool=None, needs_llm_codegen=True)])
     memory = FakeMemory()
     with pytest.raises(ClarificationNeeded) as exc:
         run_plan(orchestrator(db), memory, plan)
-    assert exc.value.suggestions == UNSUPPORTED_SUGGESTIONS
-    assert memory.pending["suggestions"] == UNSUPPORTED_SUGGESTIONS
+    assert exc.value.suggestions == CLARIFICATION_SUGGESTIONS
+    assert "песочнице" in memory.pending["error"]
 
 
 def test_skip_step_resumes_with_saved_step_tables(db: DuckDBManager) -> None:

@@ -1,5 +1,7 @@
 """Unit tests for the tool registry contract."""
 
+import inspect
+
 from app.core.tools.registry import tool_registry
 
 HIDDEN_TOOLS = {"time_series", "correlation", "product_performance", "conversion_funnel"}
@@ -32,8 +34,8 @@ EXPECTED_TOOLS = {
     "chi_square",
     "search_categorical_values",
     "inspect_temp_table",
-    "run_wasm_python",
     "ks_test",
+    "shapiro_wilk",
     "forecast",
     "seasonality",
     "funnel_steps",
@@ -65,6 +67,24 @@ def test_every_planner_tool_describes_its_arguments() -> None:
     for tool in tool_registry.planner_tools():
         assert "arguments={" in tool.describe()
         assert tool.kind in {"transform", "analysis", "lookup"}
+
+
+def test_registry_describes_each_tool_once() -> None:
+    names = [line[2:].split(" ", 1)[0] for line in tool_registry.describe().splitlines()]
+    assert len(names) == len(set(names))
+    assert "funnel_drop_off" in names
+    assert tool_registry.get("funnel-drop-off") is tool_registry.get("funnel_drop_off")
+
+
+def test_every_tool_accepts_parameters() -> None:
+    for name, tool in tool_registry._tools.items():
+        parameters = inspect.signature(tool.run).parameters.values()
+        assert any(parameter.kind is parameter.VAR_KEYWORD for parameter in parameters), name
+
+
+def test_sandbox_bridge_is_not_offered_until_the_sandbox_exists() -> None:
+    assert "run_wasm_python" not in tool_registry._tools
+    assert "run_wasm_python" not in tool_registry.describe()
 
 
 def test_registry_get_unknown_tool_is_explicit() -> None:

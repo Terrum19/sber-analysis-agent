@@ -39,8 +39,9 @@ class TimeSeriesTool(BaseTool):
 
     def execute(self, db, input_table: str, args: TimeSeriesArgs) -> str:
         sql = (
-            f"SELECT date_trunc('{args.interval}', {args.date_column}) AS period, "
-            f"{args.function}({args.metric_column}) AS metric_{args.function.lower()}, "
+            f"SELECT date_trunc('{args.interval}', {identifier(args.date_column)}) AS period, "
+            f"{args.function}({identifier(args.metric_column)}) "
+            f"AS metric_{args.function.lower()}, "
             f"COUNT(*) AS n FROM {identifier(input_table)} GROUP BY period ORDER BY period"
         )
         return db.save_step_result(input_table, sql)

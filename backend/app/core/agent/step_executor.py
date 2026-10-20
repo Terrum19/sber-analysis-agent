@@ -11,6 +11,8 @@ import re
 from typing import Any
 
 from app.core.data.duckdb_manager import DuckDBManager
+from app.core.llm.client import LLMClient
+from app.core.sandbox.wasm_runtime import WASMSandbox
 from app.core.tools.base import ToolKind
 from app.core.tools.registry import tool_registry
 from app.models.research_step import PREVIOUS, SOURCE, ResearchStep
@@ -33,8 +35,15 @@ def tool_kind(step: ResearchStep) -> ToolKind:
 class StepExecutor:
     """Исполнение ResearchStep над таблицей в DuckDB."""
 
-    def __init__(self, db: DuckDBManager | None = None) -> None:
+    def __init__(
+        self,
+        db: DuckDBManager | None = None,
+        llm: LLMClient | None = None,
+        sandbox: WASMSandbox | None = None,
+    ) -> None:
         self.db = db or DuckDBManager()
+        self.llm = llm
+        self.sandbox = sandbox
 
     async def execute(
         self,
@@ -70,7 +79,7 @@ class StepExecutor:
         if step.needs_llm_codegen or not step.tool:
             from app.core.sandbox.codegen_runner import run_generated_code
 
-            return await run_generated_code(step, table, self.db)
+            return await run_generated_code(step, table, self.db, self.llm, self.sandbox)
 
         logger.info(
             ">>> StepExecutor.execute() шаг purpose=%r tool=%s args=%s columns=%s input_table=%s",

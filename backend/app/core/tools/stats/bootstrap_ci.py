@@ -6,7 +6,7 @@ import numpy as np
 from pydantic import Field
 
 from app.core.tools.base import BaseTool, Ident, ToolArgs, identifier
-from app.core.tools.stats._common import values
+from app.core.tools.stats._common import result, values
 
 MAX_OBSERVATIONS = 100_000
 MAX_BOOTSTRAPS = 10_000
@@ -14,7 +14,7 @@ MAX_BOOTSTRAPS = 10_000
 
 class BootstrapCIArgs(ToolArgs):
     column: Ident
-    statistic: Literal["mean", "median", "sum", "min", "max"] | None = None
+    statistic: Literal["mean", "median", "sum", "min", "max"] = "mean"
     n_bootstraps: int = Field(default=1000, ge=1, le=MAX_BOOTSTRAPS)
     seed: int | None = 0
     max_observations: int = Field(default=MAX_OBSERVATIONS, ge=1, le=MAX_OBSERVATIONS)
@@ -31,7 +31,8 @@ class BootstrapCITool(BaseTool):
 
     def execute(self, db, input_table: str, args: BootstrapCIArgs) -> str:
         data_count = db.query(
-            f"SELECT COUNT(*) AS n FROM {identifier(input_table)} WHERE {args.column} IS NOT NULL"
+            f"SELECT COUNT(*) AS n FROM {identifier(input_table)} "
+            f"WHERE {identifier(args.column)} IS NOT NULL"
         )[0]["n"]
         if data_count > args.max_observations:
             raise ValueError(
@@ -41,7 +42,7 @@ class BootstrapCITool(BaseTool):
         data = values(db, input_table, args.column)
         if not data:
             raise ValueError("bootstrap_ci requires at least one observation")
-        statistic = args.statistic or "mean"
+        statistic = args.statistic
         rng = np.random.default_rng(args.seed)
         operations = {
             "mean": np.mean,
@@ -66,14 +67,9 @@ class BootstrapCITool(BaseTool):
             ]
         )
         ci_low, ci_high = np.quantile(bootstrap_values, [0.025, 0.975])
-        if args.statistic is None:
-            return db.save_step_result(
-                input_table,
-                f"SELECT {estimate} AS mean, {ci_low} AS ci_low, {ci_high} AS ci_high",
-            )
-        return db.save_step_result(
+        return result(
+            db,
             input_table,
-            "SELECT "
-            f"'{statistic}' AS statistic, {estimate} AS estimate, "
-            f"{ci_low} AS ci_low, {ci_high} AS ci_high",
+            "statistic, estimate, ci_low, ci_high",
+            (statistic, estimate, float(ci_low), float(ci_high)),
         )

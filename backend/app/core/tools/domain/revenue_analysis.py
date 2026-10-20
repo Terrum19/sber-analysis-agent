@@ -29,13 +29,15 @@ class RevenueAnalysisTool(BaseTool):
     Args = RevenueAnalysisArgs
 
     def execute(self, db, input_table: str, args: RevenueAnalysisArgs) -> str:
-        revenue = args.revenue_column
+        revenue = identifier(args.revenue_column)
         dimensions, groups = [], []
         if args.date_column:
-            dimensions.append(f"DATE_TRUNC('{args.interval}', {args.date_column}) AS period")
+            dimensions.append(
+                f"DATE_TRUNC('{args.interval}', {identifier(args.date_column)}) AS period"
+            )
             groups.append("period")
         if args.group_column:
-            dimensions.append(f"{args.group_column} AS segment")
+            dimensions.append(f"{identifier(args.group_column)} AS segment")
             groups.append("segment")
         dimensions_sql = ", ".join(dimensions) + ", " if dimensions else ""
         group_sql = f" GROUP BY {', '.join(groups)} ORDER BY {', '.join(groups)}" if groups else ""

@@ -84,20 +84,45 @@ backend/
 │   │   │   └── semantic_select.py — топ-5 колонок под запрос (семант. сходство)
 │   │   │
 │   │   ├── tools/          — РЕЕСТР ТУЛОВ (расширяемый; оркестратор не меняется)
-│   │   │   ├── registry.py        — регистрация/диспетчеризация тулов по имени
-│   │   │   ├── base.py            — BaseTool: вход -> DuckDB-таблица
+│   │   │   ├── registry.py        — регистрация/диспетчеризация тулов по имени, алиасы, describe() для планировщика
+│   │   │   ├── base.py            — BaseTool: вход -> DuckDB-таблица; кавычки для имён, проверка SQL-выражений; transforms_data
+│   │   │   ├── inspect_temp_table.py — паспорт промежуточной таблицы: схема, типы, строки, образцы, статистика
+│   │   │   ├── run_wasm_python.py — мост шага в WASM-песочницу (не зарегистрирован, пока нет песочницы)
 │   │   │   ├── sql/               — предзаписанные SQL с подстановкой колонок
-│   │   │   │   ├── aggregate.py   — группировка + count/avg/sum
-│   │   │   │   └── time_series.py — агрегация по месяцу/кварталу
-│   │   │   ├── stats/             — статистические тесты
-│   │   │   │   └── correlation.py — корреляция двух колонок
+│   │   │   │   ├── atomic.py      — атомарные тулы: select/filter/create/rename, join/left join,
+│   │   │   │   │                    group_by, pivot, time_bucket, lag/lead
+│   │   │   │   ├── aggregate.py   — группировка + count
+│   │   │   │   └── time_series.py — агрегация по month/quarter/week/day
+│   │   │   ├── stats/             — статистические тесты (SciPy/NumPy); тулы-отчёты, данные не меняют
+│   │   │   │   ├── _common.py           — чтение выборок, типизированные литералы, сохранение результата
+│   │   │   │   ├── correlation.py       — корреляция двух колонок средствами DuckDB
+│   │   │   │   ├── pearson_corr.py / spearman_corr.py — корреляции с p_value
+│   │   │   │   ├── linear_regression.py — y ~ x: slope, intercept, r_squared, p_value, stderr
+│   │   │   │   ├── anova_one_way.py     — ANOVA по группам
+│   │   │   │   ├── t_test_ind.py / t_test_dep.py — Welch t-test (выборки или группы), парный t-test
+│   │   │   │   ├── mann_whitney_u.py    — тест Манна-Уитни
+│   │   │   │   ├── chi_square.py        — хи-квадрат тест независимости
+│   │   │   │   ├── ks_test.py / shapiro_wilk.py — проверка нормальности
+│   │   │   │   ├── describe_stats.py    — n, mean, std, min, max, квартили, skew, kurtosis
+│   │   │   │   ├── bootstrap_ci.py / bootstrap_corr.py — bootstrap-ДИ статистики и корреляции
+│   │   │   │   └── search_categorical_values.py — fuzzy-поиск реальных значений категории
+│   │   │   ├── funnel/            — воронки и когорты
+│   │   │   │   ├── _common.py           — порядок шагов и подсчёт пользователей по шагам
+│   │   │   │   ├── funnel_steps.py / funnel_drop_off.py — конверсия и потери между шагами
+│   │   │   │   └── cohort_analysis.py / retention_matrix.py — когорты и удержание
+│   │   │   ├── domain/            — готовые аналитические пакеты
+│   │   │   │   ├── _common.py           — ось времени, линейный тренд, сезоны, скользящее среднее
+│   │   │   │   ├── revenue_analysis.py  — выручка: сумма, среднее, медиана, динамика, сегменты
+│   │   │   │   ├── product_performance.py / avg_order_value.py — метрики товаров, средний чек
+│   │   │   │   ├── conversion_funnel.py — полная воронка по пользователям
+│   │   │   │   └── trend_analysis.py / seasonal_decompose.py — тренд, сезонные индексы, разложение
 │   │   │   └── timeseries/        — анализ временных рядов
 │   │   │       ├── seasonality.py — сезонные пики (каждый июль / 12 месяцев)
-│   │   │       └── forecast.py    — экстраполяция/прогноз (TODO)
+│   │   │       └── forecast.py    — экстраполяция линейным трендом на N периодов
 │   │   │
 │   │   ├── sandbox/        — выполнение кода, сгенерированного LLM
-│   │   │   ├── wasm_runtime.py    — WASM-песочница: лимиты CPU/RAM + таймаут
-│   │   │   └── codegen_runner.py  — прогон кода шага (когда тула нет)
+│   │   │   ├── wasm_runtime.py    — WASM-песочница (Pyodide): лимиты RAM + таймаут
+│   │   │   └── codegen_runner.py  — кодогенерация и прогон кода шага (когда тула нет)
 │   │   │
 │   │   ├── memory/         — 4 уровня памяти (см. docs/memory.md)
 │   │   │   ├── session_memory.py    — (1) диалог + шаги, sliding window, SQLite
@@ -119,7 +144,7 @@ backend/
 │   │       └── pdf.py             — Typst/ReportLab -> .pdf-отчёт
 │   │
 │   ├── models/            — доменные Pydantic-модели (контракты конвейера)
-│   │   ├── research_step.py   — ResearchStep: тул, колонки, флаг LLM-кодген
+│   │   ├── research_step.py   — ResearchStep: тул, колонки, parameters, флаг LLM-кодген
 │   │   ├── insight.py         — Insight: headline, details, limits
 │   │   ├── enrichment.py      — ColumnEnrichment/EnrichmentBatch: описания и алиасы колонок
 │   │   └── datasource.py      — Datasource: тип, путь/DSN, таблицы
@@ -133,7 +158,8 @@ backend/
 │   └── exports/           — .xlsx / .pdf для скачивания
 │
 └── tests/
-    ├── unit/          — парсер шагов, chart_morph, семантический отбор, профилирование
+    ├── unit/          — парсер шагов, chart_morph, семантический отбор, профилирование,
+    │                    тулы (контракты, эталоны SciPy), цепочка шагов
     ├── integration/   — коннекторы -> DuckDB -> агент end-to-end, паспорт demo_events
     ├── benchmark/     — производительность профилирования (pytest -m benchmark)
     └── e2e/           — сценарии: «что передо мной» -> ответ -> график -> дашборд
@@ -182,6 +208,7 @@ docs/
 ├── prompts.md          — назначение каждого промпта и как его менять
 ├── memory.md           — 4 уровня памяти: реализация и жизненный цикл
 ├── data_connectors.md  — как добавить новый источник (CSV/PG/CH)
+├── visualization.md    — Vega-Lite спеки, смена вида без LLM, рендер на фронте
 └── roadmap.md          — MVP -> финал (чекпоинт 2 -> итог)
 
 data/
@@ -200,7 +227,9 @@ scripts/
 ## Ключевые решения, заложенные в структуру
 
 - **Tool Registry + `core/tools/`** — новый стат-тест или SQL-шаблон добавляется
-  файлом, оркестратор (`orchestrator.py`) не меняется.
+  файлом и регистрируется в `registry.py`, оркестратор (`orchestrator.py`) не
+  меняется. Тул-отчёт (`transforms_data = False`) не меняет рабочую таблицу:
+  следующий шаг получает те же данные.
 - **`core/llm/prompts/` по файлам** — промпт алиасов, планировщика шагов и инсайта
   версионируется и тестируется независимо от кода.
 - **`parser.py` отдельным модулем** — robust-парсинг вывода LLM вынесен из

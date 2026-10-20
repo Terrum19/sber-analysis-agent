@@ -6,6 +6,7 @@ import pytest
 
 from app.core.agent.step_executor import StepExecutor
 from app.core.data.duckdb_manager import DuckDBManager
+from app.core.sandbox import codegen_runner
 from app.models.research_step import ResearchStep
 
 
@@ -68,7 +69,14 @@ def test_execute_unknown_tool_raises_valueerror(db):
         asyncio.run(executor.execute(step, "raw"))
 
 
-def test_execute_needs_llm_codegen_raises_until_implemented(db):
+def test_execute_needs_llm_codegen_runs_generated_code(db, monkeypatch):
+    calls = []
+
+    async def fake_runner(step, input_table, manager, llm, sandbox):
+        calls.append((step.purpose, input_table, manager is db))
+        return "temp_result_v9"
+
+    monkeypatch.setattr(codegen_runner, "run_generated_code", fake_runner)
     executor = StepExecutor(db=db)
     step = ResearchStep(
         step_id=0,
@@ -77,5 +85,5 @@ def test_execute_needs_llm_codegen_raises_until_implemented(db):
         needs_llm_codegen=True,
         purpose="Генерируем код",
     )
-    with pytest.raises(NotImplementedError, match="кодогенерация"):
-        asyncio.run(executor.execute(step, "raw"))
+    assert asyncio.run(executor.execute(step, "raw")) == "temp_result_v9"
+    assert calls == [("Генерируем код", "raw", True)]

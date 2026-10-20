@@ -45,7 +45,9 @@ class SelectColumnsTool(BaseTool):
 
     def execute(self, db, input_table: str, args: SelectColumnsArgs) -> str:
         return db.save_step_result(
-            input_table, f"SELECT {', '.join(args.columns)} FROM {identifier(input_table)}"
+            input_table,
+            f"SELECT {', '.join(identifier(column) for column in args.columns)} "
+            f"FROM {identifier(input_table)}",
         )
 
 
@@ -103,16 +105,17 @@ class FilterRowsTool(BaseTool):
     Args = FilterRowsArgs
 
     def execute(self, db, input_table: str, args: FilterRowsArgs) -> str:
+        column = identifier(args.column)
         if args.operator in {"IS NULL", "IS NOT NULL"}:
-            condition = f"{args.column} {args.operator}"
+            condition = f"{column} {args.operator}"
         elif args.operator in {"IN", "NOT IN"}:
             values = ", ".join(literal(value) for value in args.value)  # type: ignore[union-attr]
-            condition = f"{args.column} {args.operator} ({values})"
+            condition = f"{column} {args.operator} ({values})"
         elif args.operator == "BETWEEN":
             low, high = args.value  # type: ignore[misc]
-            condition = f"{args.column} BETWEEN {literal(low)} AND {literal(high)}"
+            condition = f"{column} BETWEEN {literal(low)} AND {literal(high)}"
         else:
-            condition = f"{args.column} {args.operator} {literal(args.value)}"
+            condition = f"{column} {args.operator} {literal(args.value)}"
         return db.save_step_result(
             input_table, f"SELECT * FROM {identifier(input_table)} WHERE {condition}"
         )
@@ -125,13 +128,17 @@ class CreateColumnArgs(ToolArgs):
 
 class CreateColumnTool(BaseTool):
     name = "create_column"
-    description = "Создать вычисляемую колонку по SQL-выражению (DuckDB)"
+    description = (
+        "Создать вычисляемую колонку по скалярному SQL-выражению (DuckDB) над колонками "
+        "таблицы (без подзапросов)"
+    )
     Args = CreateColumnArgs
 
     def execute(self, db, input_table: str, args: CreateColumnArgs) -> str:
         return db.save_step_result(
             input_table,
-            f"SELECT *, ({args.expression}) AS {args.new_column} FROM {identifier(input_table)}",
+            f"SELECT *, ({args.expression}) AS {identifier(args.new_column)} "
+            f"FROM {identifier(input_table)}",
         )
 
 
@@ -148,7 +155,7 @@ class RenameColumnTool(BaseTool):
     def execute(self, db, input_table: str, args: RenameColumnArgs) -> str:
         return db.save_step_result(
             input_table,
-            f"SELECT * EXCLUDE ({args.old_name}), {args.old_name} AS {args.new_name} "
+            f"SELECT * RENAME ({identifier(args.old_name)} AS {identifier(args.new_name)}) "
             f"FROM {identifier(input_table)}",
         )
 
@@ -173,7 +180,7 @@ class JoinTablesTool(BaseTool):
         return db.save_step_result(
             input_table,
             f"SELECT * FROM {identifier(input_table)} AS t "
-            f"{self.join} {args.right_table} AS t_right ON {condition}",
+            f"{self.join} {identifier(args.right_table)} AS t_right ON ({condition})",
         )
 
 
@@ -226,10 +233,10 @@ class GroupByTool(BaseTool):
         metrics = args.metrics or [Metric(function=args.function, column=args.column)]
         selected = [
             f"{aggregate_sql(m.function, m.column)} AS "
-            f"{m.alias or aggregate_alias(m.function, m.column)}"
+            f"{identifier(m.alias or aggregate_alias(m.function, m.column))}"
             for m in metrics
         ]
-        keys = ", ".join(by)
+        keys = ", ".join(identifier(column) for column in by)
         return db.save_step_result(
             input_table,
             f"SELECT {keys}, {', '.join(selected)} FROM {identifier(input_table)} "
@@ -252,8 +259,9 @@ class PivotTool(BaseTool):
     def execute(self, db, input_table: str, args: PivotArgs) -> str:
         return db.save_step_result(
             input_table,
-            f"PIVOT {identifier(input_table)} ON {args.column_column} "
-            f"USING {args.function}({args.value_column}) GROUP BY {args.row_column}",
+            f"PIVOT {identifier(input_table)} ON {identifier(args.column_column)} "
+            f"USING {args.function}({identifier(args.value_column)}) "
+            f"GROUP BY {identifier(args.row_column)}",
         )
 
 
@@ -290,13 +298,14 @@ class TimeBucketTool(BaseTool):
             raise ValueError(f"time_bucket: {args.function} requires metric_column")
         metric = (
             f"{aggregate_sql(args.function, args.metric_column)} AS "
-            f"{aggregate_alias(args.function, args.metric_column)}"
+            f"{identifier(aggregate_alias(args.function, args.metric_column))}"
         )
-        keys = ", ".join(["period", *args.by])
-        extra = "".join(f", {column}" for column in args.by)
+        by = [identifier(column) for column in args.by]
+        keys = ", ".join(["period", *by])
+        extra = "".join(f", {column}" for column in by)
         return db.save_step_result(
             input_table,
-            f"SELECT date_trunc('{args.interval}', {args.date_column}) AS period{extra}, "
+            f"SELECT date_trunc('{args.interval}', {identifier(args.date_column)}) AS period{extra}, "
             f"{metric} FROM {identifier(input_table)} GROUP BY {keys} ORDER BY {keys}",
         )
 
@@ -319,7 +328,7 @@ class SortLimitTool(BaseTool):
         return db.save_step_result(
             input_table,
             f"SELECT * FROM {identifier(input_table)} "
-            f"ORDER BY {', '.join(f'{column} {direction}' for column in order)}{limit}",
+            f"ORDER BY {', '.join(f'{identifier(column)} {direction}' for column in order)}{limit}",
         )
 
 
@@ -356,9 +365,15 @@ class WindowArgs(ToolArgs):
     partition_by: list[Ident] = Field(default_factory=list)
 
 
-def _over(order_column: str | None, partition_by: list[str], frame: str = "") -> str:
-    partition = f"PARTITION BY {', '.join(partition_by)} " if partition_by else ""
-    return f"OVER ({partition}ORDER BY {order_column or 'rowid'}{frame})"
+def _partition(partition_by: list[str]) -> str:
+    return f"PARTITION BY {', '.join(identifier(c) for c in partition_by)} " if partition_by else ""
+
+
+def _over(name: str, order_column: str | None, partition_by: list[str], frame: str = "") -> str:
+    """OVER для функций, зависящих от порядка строк: без order_column порядок не определён."""
+    if order_column is None:
+        raise ValueError(f"{name} requires an order_column to define row order")
+    return f"OVER ({_partition(partition_by)}ORDER BY {identifier(order_column)}{frame})"
 
 
 class WindowTool(BaseTool):
@@ -366,13 +381,14 @@ class WindowTool(BaseTool):
 
     def __init__(self, name: str, function: str, description: str) -> None:
         self.name, self.function = name, function
-        self.description = f"{description}; partition_by — внутри групп"
+        self.description = f"{description}; order_column обязателен, partition_by — внутри групп"
 
     def execute(self, db, input_table: str, args: WindowArgs) -> str:
         return db.save_step_result(
             input_table,
-            f"SELECT *, {self.function}({args.column}, {args.offset}) "
-            f"{_over(args.order_column, args.partition_by)} AS {self.name}_{args.column} "
+            f"SELECT *, {self.function}({identifier(args.column)}, {args.offset}) "
+            f"{_over(self.name, args.order_column, args.partition_by)} "
+            f"AS {identifier(f'{self.name}_{args.column}')} "
             f"FROM {identifier(input_table)}",
         )
 
@@ -400,32 +416,28 @@ class WindowMetricTool(BaseTool):
     name = "window_metric"
     description = (
         "Оконная метрика как новая колонка {function}_{column}: cumulative_sum, "
-        "rolling_avg (окно window строк), pct_change (к предыдущей строке), "
+        "rolling_avg (окно window строк), pct_change (к предыдущей строке) — по order_column, "
         "rank/dense_rank/row_number (по убыванию column), share_of_total (доля от суммы); "
         "partition_by — считать внутри групп"
     )
     Args = WindowMetricArgs
 
     def execute(self, db, input_table: str, args: WindowMetricArgs) -> str:
-        col, part = args.column, args.partition_by
-        partition = f"PARTITION BY {', '.join(part)}" if part else ""
-        expressions = {
-            "cumulative_sum": f"SUM({col}) {_over(args.order_column, part)}",
-            "rolling_avg": f"AVG({col}) "
-            + _over(
-                args.order_column,
-                part,
-                f" ROWS BETWEEN {args.window - 1} PRECEDING AND CURRENT ROW",
-            ),
-            "pct_change": f"({col} - LAG({col}) {_over(args.order_column, part)}) "
-            f"/ NULLIF(LAG({col}) {_over(args.order_column, part)}, 0)",
-            "rank": f"RANK() OVER ({partition} ORDER BY {col} DESC)",
-            "dense_rank": f"DENSE_RANK() OVER ({partition} ORDER BY {col} DESC)",
-            "row_number": f"ROW_NUMBER() OVER ({partition} ORDER BY {col} DESC)",
-            "share_of_total": f"{col} / NULLIF(SUM({col}) OVER ({partition}), 0)",
-        }
+        col, name, partition = identifier(args.column), args.function, _partition(args.partition_by)
+        if name == "cumulative_sum":
+            sql = f"SUM({col}) {_over(name, args.order_column, args.partition_by)}"
+        elif name == "rolling_avg":
+            frame = f" ROWS BETWEEN {args.window - 1} PRECEDING AND CURRENT ROW"
+            sql = f"AVG({col}) {_over(name, args.order_column, args.partition_by, frame)}"
+        elif name == "pct_change":
+            previous = f"LAG({col}) {_over(name, args.order_column, args.partition_by)}"
+            sql = f"({col} - {previous}) / NULLIF({previous}, 0)"
+        elif name == "share_of_total":
+            sql = f"{col} / NULLIF(SUM({col}) OVER ({partition.strip()}), 0)"
+        else:
+            sql = f"{name.upper()}() OVER ({partition}ORDER BY {col} DESC)"
         return db.save_step_result(
             input_table,
-            f"SELECT *, {expressions[args.function]} AS {args.function}_{col} "
+            f"SELECT *, {sql} AS {identifier(f'{name}_{args.column}')} "
             f"FROM {identifier(input_table)}",
         )

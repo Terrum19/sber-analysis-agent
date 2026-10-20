@@ -23,8 +23,9 @@ class AggregateTool(BaseTool):
 
     def execute(self, db, input_table: str, args: AggregateArgs) -> str:
         limit = f" LIMIT {args.limit}" if args.limit else ""
+        column = identifier(args.column)
         sql = (
-            f"SELECT {args.column}, COUNT(*) AS cnt FROM {identifier(input_table)} "
-            f"GROUP BY {args.column} ORDER BY cnt DESC{limit}"
+            f"SELECT {column}, COUNT(*) AS cnt FROM {identifier(input_table)} "
+            f"GROUP BY {column} ORDER BY cnt DESC{limit}"
         )
         return db.save_step_result(input_table, sql)

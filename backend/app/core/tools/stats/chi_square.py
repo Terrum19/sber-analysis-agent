@@ -14,7 +14,7 @@ class ChiSquareTool(BaseTool):
     Args = TwoColumnsArgs
 
     def execute(self, db, input_table: str, args: TwoColumnsArgs) -> str:
-        first, second = args.column_a, args.column_b
+        first, second = identifier(args.column_a), identifier(args.column_b)
         rows = db.query(
             f"SELECT {first} AS first_value, {second} AS second_value "
             f"FROM {identifier(input_table)} "

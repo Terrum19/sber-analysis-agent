@@ -40,8 +40,8 @@ class SearchCategoricalValuesTool(BaseTool):
 
     def execute(self, db, input_table: str, args: SearchCategoricalArgs) -> str:
         rows = db.query(
-            f"SELECT DISTINCT CAST({args.column} AS VARCHAR) AS stored_value "
-            f"FROM {identifier(input_table)} WHERE {args.column} IS NOT NULL"
+            f"SELECT DISTINCT CAST({identifier(args.column)} AS VARCHAR) AS stored_value "
+            f"FROM {identifier(input_table)} WHERE {identifier(args.column)} IS NOT NULL"
         )
         query_lower = args.query.casefold()
         scored = [(row["stored_value"], _score(query_lower, row["stored_value"])) for row in rows]

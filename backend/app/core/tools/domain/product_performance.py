@@ -17,7 +17,7 @@ class ProductPerformanceTool(BaseTool):
     Args = ProductPerformanceArgs
 
     def execute(self, db, input_table: str, args: ProductPerformanceArgs) -> str:
-        metric, group = args.metric_column, args.group_column
+        metric, group = identifier(args.metric_column), identifier(args.group_column)
         return db.save_step_result(
             input_table,
             f"SELECT {group} AS segment, "

@@ -56,14 +56,11 @@ class ForecastTool(BaseTool):
     Args = ForecastArgs
 
     def execute(self, db, input_table: str, args: ForecastArgs) -> str:
-        period_sql = (
-            f"date_trunc('{args.interval}', {args.date_column})"
-            if args.interval
-            else args.date_column
-        )
+        date_col, metric_col = identifier(args.date_column), identifier(args.metric_column)
+        period_sql = f"date_trunc('{args.interval}', {date_col})" if args.interval else date_col
         rows = db.query(
-            f"SELECT {period_sql} AS period, {args.function}({args.metric_column}) AS value "
-            f"FROM {identifier(input_table)} WHERE {args.date_column} IS NOT NULL "
+            f"SELECT {period_sql} AS period, {args.function}({metric_col}) AS value "
+            f"FROM {identifier(input_table)} WHERE {date_col} IS NOT NULL "
             "GROUP BY period ORDER BY period"
         )
         history = [(row["period"], float(row["value"])) for row in rows if row["value"] is not None]

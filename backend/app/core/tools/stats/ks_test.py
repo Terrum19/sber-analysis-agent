@@ -10,7 +10,11 @@ from app.core.tools.stats._common import result, values
 
 class KSTestTool(BaseTool):
     name = "ks_test"
-    description = "Тест Колмогорова-Смирнова на нормальность колонки: statistic, p_value"
+    description = (
+        "Тест Колмогорова-Смирнова на нормальность колонки (statistic, p_value); "
+        "параметры нормального распределения оцениваются по выборке, поэтому p_value "
+        "завышен (для проверки нормальности точнее shapiro_wilk)"
+    )
     kind = "analysis"
     Args = OneColumnArgs
 

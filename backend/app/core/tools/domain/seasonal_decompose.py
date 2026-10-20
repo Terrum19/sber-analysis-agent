@@ -1,15 +1,16 @@
-"""Additive or multiplicative trend/seasonal/residual decomposition."""
+"""Classical additive or multiplicative trend/seasonal/residual decomposition."""
 
 from typing import Literal
 
+from pydantic import Field
+
 from app.core.tools.base import BaseTool
 from app.core.tools.domain._common import (
-    Field,
     SeriesArgs,
+    moving_average,
     observations,
     period_index,
     rows_result,
-    trend,
 )
 
 
@@ -21,47 +22,56 @@ class DecomposeArgs(SeriesArgs):
 class SeasonalDecomposeTool(BaseTool):
     name = "seasonal_decompose"
     description = (
-        "Разложение временного ряда на trend, seasonal и residual (additive/multiplicative)"
+        "Классическое разложение ряда на trend (скользящее среднее за сезон), seasonal "
+        "и residual (additive/multiplicative); нужно не меньше двух полных сезонов"
     )
     kind = "analysis"
     Args = DecomposeArgs
 
     def execute(self, db, input_table: str, args: DecomposeArgs) -> str:
-        observations_ = observations(db, input_table, args.date_column, args.value_column)
         mode, seasonality_period = args.mode, args.seasonality_period
-        if not observations_:
-            raise ValueError("seasonal_decompose requires observations")
+        observations_ = observations(db, input_table, args.date_column, args.value_column)
+        if len(observations_) < 2 * seasonality_period:
+            raise ValueError(
+                f"seasonal_decompose requires at least {2 * seasonality_period} observations "
+                f"(two full seasons of {seasonality_period})"
+            )
+        timestamps = [timestamp for timestamp, _ in observations_]
         values = [value for _, value in observations_]
-        if mode == "multiplicative" and any(value <= 0 for value in values):
+        multiplicative = mode == "multiplicative"
+        if multiplicative and any(value <= 0 for value in values):
             raise ValueError("multiplicative decomposition requires positive values")
-        slope, intercept, _ = trend(values)
-        trend_values = [intercept + slope * index for index in range(len(values))]
-        seasonal = {}
-        for period in range(1, seasonality_period + 1):
-            ratios = []
-            for position, ((timestamp, value), trend_value) in enumerate(
-                zip(observations_, trend_values)
-            ):
-                if period_index(timestamp, position, seasonality_period) == period and trend_value:
-                    ratios.append(
-                        value / trend_value if mode == "multiplicative" else value - trend_value
-                    )
-            seasonal[period] = (
-                sum(ratios) / len(ratios) if ratios else (1.0 if mode == "multiplicative" else 0.0)
-            )
+        trend_values = moving_average(values, seasonality_period)
+        seasons = [
+            period_index(timestamp, position, seasonality_period)
+            for position, timestamp in enumerate(timestamps)
+        ]
+        detrended: dict[int, list[float]] = {}
+        for value, trend_value, season in zip(values, trend_values, seasons):
+            if trend_value is not None:
+                deviation = value / trend_value if multiplicative else value - trend_value
+                detrended.setdefault(season, []).append(deviation)
+        raw_seasonal = {season: sum(items) / len(items) for season, items in detrended.items()}
+        center = sum(raw_seasonal.values()) / len(raw_seasonal)
+        seasonal = {
+            season: value / center if multiplicative else value - center
+            for season, value in raw_seasonal.items()
+        }
+        neutral = 1.0 if multiplicative else 0.0
         rows = []
-        for index, (timestamp, value) in enumerate(observations_):
-            seasonal_value = seasonal[period_index(timestamp, index, seasonality_period)]
-            fitted = (
-                trend_values[index] * seasonal_value
-                if mode == "multiplicative"
-                else trend_values[index] + seasonal_value
-            )
-            residual = value / fitted if mode == "multiplicative" else value - fitted
-            rows.append((timestamp, trend_values[index], seasonal_value, residual, mode))
+        for timestamp, value, trend_value, season in zip(timestamps, values, trend_values, seasons):
+            seasonal_value = seasonal.get(season, neutral)
+            residual = None
+            if trend_value is not None:
+                residual = (
+                    value / (trend_value * seasonal_value)
+                    if multiplicative
+                    else value - trend_value - seasonal_value
+                )
+            rows.append((timestamp, value, trend_value, seasonal_value, residual, mode))
         return rows_result(
             db,
             input_table,
-            ["period", "trend", "seasonal", "residual", "mode"],
+            ["period", "value", "trend", "seasonal", "residual", "mode"],
             rows,
         )

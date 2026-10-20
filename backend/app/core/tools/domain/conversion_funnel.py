@@ -4,13 +4,15 @@
 """
 
 from app.core.tools.base import BaseTool, Ident, ToolArgs
-from app.core.tools.funnel.funnel_steps import FunnelStepsArgs, FunnelStepsTool
+from app.core.tools.funnel._common import FunnelArgs
+from app.core.tools.funnel.funnel_steps import FunnelStepsTool
 
 
 class ConversionFunnelArgs(ToolArgs):
     event_column: Ident
     user_column: Ident
     timestamp_column: Ident
+    steps: list[str | int | float] | None = None
 
 
 class ConversionFunnelTool(BaseTool):
@@ -22,9 +24,10 @@ class ConversionFunnelTool(BaseTool):
         return FunnelStepsTool().execute(
             db,
             input_table,
-            FunnelStepsArgs(
+            FunnelArgs(
                 step_column=args.event_column,
                 order_column=args.timestamp_column,
                 user_column=args.user_column,
+                steps=args.steps,
             ),
         )

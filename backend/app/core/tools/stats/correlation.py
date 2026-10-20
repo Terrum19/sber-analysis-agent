@@ -17,7 +17,7 @@ class CorrelationTool(BaseTool):
 
     def execute(self, db, input_table: str, args: TwoColumnsArgs) -> str:
         sql = (
-            f"SELECT corr({args.column_a}, {args.column_b}) AS correlation "
+            f"SELECT corr({identifier(args.column_a)}, {identifier(args.column_b)}) AS correlation "
             f"FROM {identifier(input_table)}"
         )
         return db.save_step_result(input_table, sql)

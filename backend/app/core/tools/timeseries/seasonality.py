@@ -27,8 +27,8 @@ class SeasonalityTool(BaseTool):
     def execute(self, db, input_table: str, args: SeasonalityArgs) -> str:
         part = _PARTS[args.period]
         sql = (
-            f"SELECT date_part('{part}', {args.date_column}) AS {args.period}, "
-            f"AVG({args.metric_column}) AS avg_level, COUNT(*) AS n "
+            f"SELECT date_part('{part}', {identifier(args.date_column)}) AS {args.period}, "
+            f"AVG({identifier(args.metric_column)}) AS avg_level, COUNT(*) AS n "
             f"FROM {identifier(input_table)} GROUP BY 1 ORDER BY 1"
         )
         return db.save_step_result(input_table, sql)

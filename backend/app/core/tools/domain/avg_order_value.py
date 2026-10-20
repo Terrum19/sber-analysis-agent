@@ -16,7 +16,8 @@ class AverageOrderValueTool(BaseTool):
     Args = AverageOrderValueArgs
 
     def execute(self, db, input_table: str, args: AverageOrderValueArgs) -> str:
-        value, group = args.order_value_column, args.group_column
+        value = identifier(args.order_value_column)
+        group = identifier(args.group_column) if args.group_column else None
         prefix = f"{group} AS segment, " if group else ""
         group_sql = f" GROUP BY {group}" if group else ""
         order_sql = " ORDER BY segment" if group else ""

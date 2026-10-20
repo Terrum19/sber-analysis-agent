@@ -26,7 +26,8 @@ class BootstrapCorrelationTool(BaseTool):
     def execute(self, db, input_table: str, args: BootstrapCorrArgs) -> str:
         data_count = db.query(
             f"SELECT COUNT(*) AS n FROM {identifier(input_table)} "
-            f"WHERE {args.column_a} IS NOT NULL AND {args.column_b} IS NOT NULL"
+            f"WHERE {identifier(args.column_a)} IS NOT NULL "
+            f"AND {identifier(args.column_b)} IS NOT NULL"
         )[0]["n"]
         if data_count > args.max_observations:
             raise ValueError(

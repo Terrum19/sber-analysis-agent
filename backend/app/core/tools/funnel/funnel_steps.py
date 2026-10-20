@@ -1,41 +1,30 @@
 """Conversion funnel by ordered event steps."""
 
-from app.core.tools.base import BaseTool, Ident, identifier
-from app.core.tools.funnel._common import StepOrderArgs, rows_result
-
-
-class FunnelStepsArgs(StepOrderArgs):
-    user_column: Ident | None = None
+from app.core.tools.base import BaseTool
+from app.core.tools.funnel._common import FunnelArgs, rows_result, step_counts
 
 
 class FunnelStepsTool(BaseTool):
     name = "funnel_steps"
     description = (
-        "Воронка: число событий (или уникальных user_column) на шаг, conversion_rate "
-        "от первого шага и step_conversion_rate от предыдущего"
+        "Воронка: число событий на шаг (с user_column — пользователей, прошедших "
+        "предыдущие шаги по порядку), conversion_rate от первого шага и "
+        "step_conversion_rate от предыдущего; steps — порядок шагов (иначе выводится из данных)"
     )
-    Args = FunnelStepsArgs
+    Args = FunnelArgs
 
-    def execute(self, db, input_table: str, args: FunnelStepsArgs) -> str:
-        step_col, order_col, user_col = args.step_column, args.order_column, args.user_column
-        count_expr = f"COUNT(DISTINCT {identifier(user_col)})" if user_col else "COUNT(*)"
-        rows = db.query(
-            f"SELECT {identifier(step_col)} AS step, {count_expr} AS count, "
-            f"MIN({identifier(order_col)}) AS first_order "
-            f"FROM {identifier(input_table)} GROUP BY {identifier(step_col)} "
-            "ORDER BY first_order, step"
+    def execute(self, db, input_table: str, args: FunnelArgs) -> str:
+        counts = step_counts(
+            db, input_table, args.step_column, args.order_column, args.user_column, args.steps
         )
-        if not rows:
-            raise ValueError("funnel_steps requires at least one step")
-        first_count = float(rows[0]["count"])
+        first_count = counts[0][1]
         previous = first_count
         result_rows = []
-        for row in rows:
-            count = float(row["count"])
+        for step, count in counts:
             result_rows.append(
                 (
-                    row["step"],
-                    int(count),
+                    step,
+                    count,
                     count / first_count if first_count else None,
                     count / previous if previous else None,
                 )
