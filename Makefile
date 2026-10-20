@@ -3,6 +3,7 @@
 HK_REPO = https://gitverse.ru/kban/HK_Datasets
 
 help:
+	@echo "make hooks    — git-хуки репозитория (сообщения коммитов, ruff)"
 	@echo "make install  — зависимости backend+frontend"
 	@echo "make seed     — демо-данные в DuckDB"
 	@echo "make hk-data  — датасеты хакатона в DuckDB"
@@ -11,6 +12,9 @@ help:
 	@echo "make up/down  — docker compose"
 	@echo "make test     — pytest"
 	@echo "make lint     — ruff + next lint"
+
+hooks:
+	git config core.hooksPath .githooks
 
 install:
 	cd backend && pip install -r requirements.txt

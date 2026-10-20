@@ -1,6 +1,17 @@
+import pytest
 from fastapi.testclient import TestClient
 
+from app.core.llm.fake_client import FakeLLM
 from app.main import app
+
+
+@pytest.fixture(autouse=True)
+def fake_llm(monkeypatch: pytest.MonkeyPatch) -> FakeLLM:
+    """Подменяет LLMClient на FakeLLM для всех тестов этого модуля."""
+    monkeypatch.setattr("app.core.llm.client.LLMClient", FakeLLM)
+    monkeypatch.setattr("app.core.agent.planner.LLMClient", FakeLLM)
+    monkeypatch.setattr("app.core.agent.insight.LLMClient", FakeLLM)
+    return FakeLLM()
 
 
 def test_chat_stream_forbids_proxy_buffering() -> None:

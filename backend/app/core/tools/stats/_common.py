@@ -32,14 +32,6 @@ def paired_values(
     )
 
 
-def alternative(kwargs: dict) -> str:
-    """Alternative hypothesis of a two-sample test from the step parameters."""
-    value = str(kwargs.get("alternative", "two-sided")).lower()
-    if value not in {"two-sided", "less", "greater"}:
-        raise ValueError("alternative must be two-sided, less or greater")
-    return value
-
-
 def text_literal(value: str) -> str:
     escaped = value.replace("'", "''")
     return f"'{escaped}'"
@@ -91,3 +83,58 @@ def result(db, source: str, columns: str, values_: tuple[object, ...]) -> str:
     if len(names) != len(values_):
         raise ValueError("Result column/value count mismatch")
     return rows_result(db, source, names, [values_])
+
+
+NUMERIC_TYPES = (
+    "TINYINT",
+    "SMALLINT",
+    "INTEGER",
+    "BIGINT",
+    "HUGEINT",
+    "UTINYINT",
+    "USMALLINT",
+    "UINTEGER",
+    "UBIGINT",
+    "UHUGEINT",
+    "FLOAT",
+    "DOUBLE",
+    "DECIMAL",
+)
+
+
+def detect_mode(db, table: str, column: str) -> str:
+    """Group mode for a text column or a numeric column with exactly two values."""
+    row = db.query(
+        f"SELECT COUNT(DISTINCT {identifier(column)}) AS levels, "
+        f"any_value(typeof({identifier(column)})) AS kind "
+        f"FROM {identifier(table)} WHERE {identifier(column)} IS NOT NULL"
+    )[0]
+    numeric = str(row["kind"] or "").upper().startswith(NUMERIC_TYPES)
+    return "samples" if numeric and row["levels"] != 2 else "groups"
+
+
+def two_samples(
+    db, table: str, first: str, second: str, mode: str = "auto"
+) -> tuple[list[float], list[float]]:
+    """Две выборки: samples — две числовые колонки [value_a, value_b];
+    groups — [value_column, group_column] ровно с двумя группами."""
+    if mode == "auto":
+        mode = detect_mode(db, table, second)
+    if mode == "samples":
+        return values(db, table, first), values(db, table, second)
+    rows = db.query(
+        f"SELECT {identifier(first)} AS value, {identifier(second)} AS group_name "
+        f"FROM {identifier(table)} "
+        f"WHERE {identifier(first)} IS NOT NULL AND {identifier(second)} IS NOT NULL "
+        f"ORDER BY group_name"
+    )
+    groups: dict[object, list[float]] = {}
+    for row in rows:
+        groups.setdefault(row["group_name"], []).append(float(row["value"]))
+    if len(groups) != 2:
+        raise ValueError(
+            f"Group comparison requires exactly two groups, got {len(groups)}; "
+            "use anova_one_way for more"
+        )
+    first_group, second_group = groups.values()
+    return first_group, second_group

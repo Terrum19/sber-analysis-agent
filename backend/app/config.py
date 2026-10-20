@@ -5,16 +5,25 @@
 """
 
 from functools import lru_cache
+from pathlib import Path
 
+from pydantic import SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+_BACKEND_DIR = Path(__file__).resolve().parent.parent
+# .env ищем не от текущей папки, а рядом с кодом: корень репозитория
+# (docker-compose) и backend/ — значения из backend/.env важнее.
+ENV_FILES = (_BACKEND_DIR.parent / ".env", _BACKEND_DIR / ".env")
 
 
 class Settings(BaseSettings):
-    model_config = SettingsConfigDict(env_file=".env", extra="ignore")
+    model_config = SettingsConfigDict(env_file=ENV_FILES, extra="ignore")
 
     # LLM (локально, без облака)
     llm_base_url: str = "http://localhost:11434/v1"  # Ollama / vLLM (OpenAI-совместимый)
     llm_model: str = "qwen2.5-coder:14b"
+    # Ключ провайдера (OpenRouter и т.п.); локальным Ollama/vLLM не нужен.
+    llm_api_key: SecretStr = SecretStr("not-needed")
     llm_timeout_s: int = 120
     llm_temperature: float = 0.0
 
@@ -47,6 +56,12 @@ class Settings(BaseSettings):
 def get_settings() -> Settings:
     """Кешированный доступ к настройкам."""
     return Settings()
+
+
+def reload_settings() -> Settings:
+    """Сбросить кэш настроек и перечитать .env (нужно после изменения переменных)."""
+    get_settings.cache_clear()
+    return get_settings()
 
 
 settings = get_settings()

@@ -1,22 +1,21 @@
 """Drop-off between consecutive funnel steps."""
 
 from app.core.tools.base import BaseTool
-from app.core.tools.funnel._common import columns, rows_result, step_counts
+from app.core.tools.funnel._common import FunnelArgs, rows_result, step_counts
 
 
 class FunnelDropOffTool(BaseTool):
     name = "funnel_drop_off"
     description = (
-        "Потери между шагами воронки: columns=[step_col, order_col, user_id_col?]; "
-        "без user_id_col считаются события, а не пользователи; "
-        "parameters: steps — порядок шагов"
+        "Потери между шагами воронки (drop_off, drop_off_rate); без user_column "
+        "считаются события, а не пользователи; steps — порядок шагов"
     )
+    Args = FunnelArgs
 
-    def run(self, db, input_table: str, columns_: list[str], **kwargs: object) -> str:
-        columns(columns_, 2, 3, self.name)
-        step_col, order_col = columns_[:2]
-        user_col = columns_[2] if len(columns_) == 3 else None
-        counts = step_counts(db, input_table, step_col, order_col, user_col, kwargs.get("steps"))
+    def execute(self, db, input_table: str, args: FunnelArgs) -> str:
+        counts = step_counts(
+            db, input_table, args.step_column, args.order_column, args.user_column, args.steps
+        )
         result_rows = []
         previous = None
         for step, count in counts:

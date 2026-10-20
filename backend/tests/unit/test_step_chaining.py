@@ -5,7 +5,7 @@ import pytest
 from app.api.schemas.chat import ChatRequest
 from app.config import settings
 from app.core.agent.orchestrator import AgentOrchestrator
-from app.core.agent.step_executor import StepExecutor, transforms_data
+from app.core.agent.step_executor import StepExecutor, tool_kind
 from app.core.data.duckdb_manager import DuckDBManager
 from app.models.insight import Insight
 from app.models.research_step import ResearchPlan, ResearchStep
@@ -23,7 +23,7 @@ class RecordingInsight:
     def __init__(self) -> None:
         self.tables: list[str] = []
 
-    async def generate(self, question: str, result_table: str) -> Insight:
+    async def generate(self, question: str, result_table: str, **kwargs: object) -> Insight:
         self.tables.append(result_table)
         return Insight(headline="готово", details=[])
 
@@ -47,11 +47,11 @@ def db():
 
 
 def test_report_tools_do_not_transform_data() -> None:
-    assert not transforms_data(ResearchStep(tool="t_test_ind"))
-    assert not transforms_data(ResearchStep(tool="search_categorical_values"))
-    assert transforms_data(ResearchStep(tool="create_column"))
-    assert transforms_data(ResearchStep(tool="unknown_tool"))
-    assert transforms_data(ResearchStep(needs_llm_codegen=True))
+    assert tool_kind(ResearchStep(tool="t_test_ind")) == "analysis"
+    assert tool_kind(ResearchStep(tool="search_categorical_values")) == "lookup"
+    assert tool_kind(ResearchStep(tool="create_column")) == "transform"
+    assert tool_kind(ResearchStep(tool="unknown_tool")) == "transform"
+    assert tool_kind(ResearchStep(needs_llm_codegen=True)) == "transform"
 
 
 async def test_steps_after_a_report_still_see_the_data(db) -> None:
@@ -59,8 +59,7 @@ async def test_steps_after_a_report_still_see_the_data(db) -> None:
         ResearchStep(step_id=1, tool="create_column", columns=["revenue", "price * qty"]),
         ResearchStep(step_id=2, tool="t_test_ind", columns=["revenue", "product"]),
         ResearchStep(step_id=3, tool="bootstrap_ci", columns=["revenue"]),
-        ResearchStep(step_id=4, tool="search_categorical_values", columns=["product", "a"]),
-        ResearchStep(step_id=5, tool="pearson_corr", columns=["price", "qty"]),
+        ResearchStep(step_id=4, tool="pearson_corr", columns=["price", "qty"]),
     ]
     insight = RecordingInsight()
     agent = AgentOrchestrator(
@@ -70,5 +69,5 @@ async def test_steps_after_a_report_still_see_the_data(db) -> None:
         event async for event in agent.run(ChatRequest(session_id="chain", question="выручка"))
     ]
     assert [event["type"] for event in events if event["type"] == "error"] == []
-    assert insight.tables == ["temp_result_v5"]
-    assert set(db.to_records("temp_result_v5")[0]) == {"correlation", "p_value"}
+    assert insight.tables == ["temp_result_v4"]
+    assert set(db.to_records("temp_result_v4")[0]) == {"correlation", "p_value", "n"}

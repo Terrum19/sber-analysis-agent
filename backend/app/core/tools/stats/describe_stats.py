@@ -4,18 +4,18 @@ import numpy as np
 from scipy import stats
 
 from app.core.tools.base import BaseTool
+from app.core.tools.stats._args import OneColumnArgs
 from app.core.tools.stats._common import result, values
 
 
 class DescribeStatsTool(BaseTool):
     name = "describe_stats"
     description = "Описательная статистика: n, mean, std, min, max, q1, q3, skew, kurtosis"
-    transforms_data = False
+    kind = "analysis"
+    Args = OneColumnArgs
 
-    def run(self, db, input_table: str, columns: list[str], **kwargs: object) -> str:
-        if len(columns) != 1:
-            raise ValueError("describe_stats requires [column]")
-        items = values(db, input_table, columns[0])
+    def execute(self, db, input_table: str, args: OneColumnArgs) -> str:
+        items = values(db, input_table, args.column)
         if not items:
             result_stats = (0, None, None, None, None, None, None, None, None)
         else:

@@ -1,10 +1,10 @@
-"""Стат-тул: корреляция между двумя колонками.
+"""Стат-тул: корреляция между двумя колонками (SQL, без p-value).
 
-Пример сценария: «Изменения в поле C предшествуют росту D на 5 дней?»
-(вместе с timeseries/lag.py — поиск лагов и причинных связей).
+Оставлен для совместимости; планировщику показывается pearson_corr.
 """
 
 from app.core.tools.base import BaseTool, identifier
+from app.core.tools.stats._args import TwoColumnsArgs
 
 
 class CorrelationTool(BaseTool):
@@ -12,11 +12,12 @@ class CorrelationTool(BaseTool):
 
     name = "correlation"
     description = "Посчитать корреляцию между двумя числовыми колонками"
-    transforms_data = False
+    kind = "analysis"
+    Args = TwoColumnsArgs
 
-    def run(self, db, input_table: str, columns: list[str], **kwargs: object) -> str:
-        if len(columns) != 2:
-            raise ValueError("correlation requires [column_a, column_b]")
-        col_a, col_b = identifier(columns[0]), identifier(columns[1])
-        sql = f"SELECT corr({col_a}, {col_b}) AS correlation FROM {identifier(input_table)}"
+    def execute(self, db, input_table: str, args: TwoColumnsArgs) -> str:
+        sql = (
+            f"SELECT corr({identifier(args.column_a)}, {identifier(args.column_b)}) AS correlation "
+            f"FROM {identifier(input_table)}"
+        )
         return db.save_step_result(input_table, sql)

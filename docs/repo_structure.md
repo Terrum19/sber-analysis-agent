@@ -127,17 +127,17 @@ backend/
 │   │   ├── memory/         — 4 уровня памяти (см. docs/memory.md)
 │   │   │   ├── session_memory.py    — (1) диалог + шаги, sliding window, SQLite
 │   │   │   ├── state_cache.py       — (2) результаты в temp-таблицах DuckDB
-│   │   │   ├── profile_memory.py    — (3) «паспорт данных»: профиль/описания/алиасы (DuckDB _meta)
-│   │   │   └── artifact_registry.py — (4) реестр дашбордов + Vega-конфиги
+│   │   │   └── profile_memory.py    — (3) «паспорт данных»: профиль/описания/алиасы (DuckDB _meta)
 │   │   │
 │   │   ├── viz/            — визуализация
 │   │   │   ├── chart_selector.py    — какой график под вопрос
 │   │   │   ├── vega_spec_builder.py — таблица -> Vega-Lite JSON-спека
 │   │   │   └── chart_morph.py       — перерисовать в другой вид БЕЗ вызова LLM
 │   │   │
-│   │   ├── dashboards/     — генерация дашбордов
-│   │   │   ├── models.py        — DashboardSpec: плитки, SQL, Vega
-│   │   │   └── generator.py     — собрать дашборд из визуализаций, сохранить
+│   │   ├── dashboards/     — генерация и хранение дашбордов (4-й уровень памяти)
+│   │   │   ├── models.py        — Dashboard, DashboardTile, DashboardSummary
+│   │   │   ├── store.py         — DashboardStore: дашборды и плитки в SQLite сессий
+│   │   │   └── generator.py     — собрать дашборд из плиток, снять данные, сохранить
 │   │   │
 │   │   └── export/         — выгрузка инсайта в делимый файл
 │   │       ├── excel.py           — openpyxl: таблицы + графики -> .xlsx
@@ -152,9 +152,8 @@ backend/
 │   └── workers/           — опц.: фоновые задачи (тяжёлые отчёты, экспорт)
 │
 ├── storage/               — РАНТАЙМ-состояние (gitignored)
-│   ├── sessions/          — SQLite/JSON истории диалогов
+│   ├── sessions/          — SQLite: истории диалогов, дашборды и их плитки
 │   ├── duckdb/            — *.duckdb: сырые данные, temp-таблицы шагов, паспорт данных (_meta)
-│   ├── dashboards/        — сгенерированные дашборды + их Vega/SQL
 │   └── exports/           — .xlsx / .pdf для скачивания
 │
 └── tests/
@@ -236,12 +235,13 @@ scripts/
   версионируется и тестируется независимо от кода.
 - **`parser.py` отдельным модулем** — robust-парсинг вывода LLM вынесен из
   планировщика, чтобы стратегии парсинга менялись/тестировались изолированно.
-- **`memory/` = 4 модуля** — ровно 4 уровня памяти, каждый со своей зоной
-  ответственности и хранилищем (SQLite / DuckDB temp / DuckDB _meta / файловый реестр).
+- **4 уровня памяти** — `memory/` (сессия, state cache, паспорт данных) и
+  `dashboards/store.py`, каждый со своей зоной ответственности и хранилищем
+  (SQLite / DuckDB temp / DuckDB _meta / SQLite).
 - **`viz/chart_morph.py`** — «перерисуй в другом виде» решается без нового вызова
   LLM, из сохранённого состояния (state cache).
-- **`dashboards/` + `artifact_registry.py`** — дашборд хранит и SQL, и Vega-спеки,
-  поэтому доступен повторно из чата и из UI (`/dashboard/[id]`).
+- **`dashboards/`** — плитка хранит Vega-спеку, temp-таблицу и снимок данных,
+  поэтому дашборд доступен повторно из чата и из UI (`/dashboard/[id]`).
 - **`sandbox/` изолирован** — WASM-рантайм подменяем, не задевая остальное.
 - **`storage/` целиком в `.gitignore`** — рантайм не мусорит в репозитории;
   веса моделей (`models/`) тоже вне git.

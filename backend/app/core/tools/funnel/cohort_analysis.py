@@ -1,16 +1,25 @@
 """Cohort aggregation by cohort and analysis period."""
 
-from app.core.tools.base import BaseTool, identifier
-from app.core.tools.funnel._common import columns
+from app.core.tools.base import BaseTool, Ident, ToolArgs, identifier
+
+
+class CohortArgs(ToolArgs):
+    cohort_column: Ident
+    period_column: Ident
+    metric_column: Ident
 
 
 class CohortAnalysisTool(BaseTool):
     name = "cohort_analysis"
-    description = "Агрегация метрики по когортам и временным периодам"
+    description = "Сумма/среднее метрики по когортам и периодам"
+    Args = CohortArgs
 
-    def run(self, db, input_table: str, columns_: list[str], **kwargs: object) -> str:
-        columns(columns_, 3, 3, self.name)
-        cohort_col, period_col, metric_col = columns_
+    def execute(self, db, input_table: str, args: CohortArgs) -> str:
+        cohort_col, period_col, metric_col = (
+            args.cohort_column,
+            args.period_column,
+            args.metric_column,
+        )
         return db.save_step_result(
             input_table,
             f"SELECT {identifier(cohort_col)} AS cohort, "

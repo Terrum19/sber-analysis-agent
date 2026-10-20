@@ -16,6 +16,9 @@ async def with_retry(fn: Callable[..., Any], *args: Any, attempts: int = 3, **kw
     for attempt in range(attempts):
         try:
             return await fn(*args, **kwargs)
+        except NotImplementedError:
+            # Повтор не поможет — возможности просто нет.
+            raise
         except Exception as exc:  # noqa: BLE001
             last_exc = exc
             if attempt < attempts - 1:

@@ -7,6 +7,9 @@ import type { Datasource, DatasourceDbRequest } from "@/types/datasource";
 
 const API = "/api";
 
+/** Ответ на уточнение «пропустить шаг» (см. orchestrator._apply_recovery). */
+export const RECOVERY_SKIP_STEP = JSON.stringify({ action: "skip_step" });
+
 export async function createSession(datasourceId?: string): Promise<{ session_id: string }> {
   const res = await fetch(`${API}/sessions`, {
     method: "POST",
@@ -19,12 +22,15 @@ export async function createSession(datasourceId?: string): Promise<{ session_id
 /**
  * Подписка на SSE-поток диалога; onEvent вызывается на каждое событие,
  * onClose — один раз, когда поток закончился, оборвался или был отменён.
+ * recoveryResponse — ответ на clarification_needed: свободный текст
+ * уточнения или JSON с действием (RECOVERY_SKIP_STEP).
  */
 export function streamChat(
   sessionId: string,
   question: string,
   onEvent: (event: ChatStreamEvent) => void,
   onClose?: (error?: string) => void,
+  recoveryResponse?: string,
 ): () => void {
   const controller = new AbortController();
 
@@ -32,7 +38,7 @@ export function streamChat(
     const res = await fetch(`${API}/chat`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ session_id: sessionId, question }),
+      body: JSON.stringify({ session_id: sessionId, question, recovery_response: recoveryResponse ?? null }),
       signal: controller.signal,
     });
     if (!res.ok) throw new Error(await errorDetail(res));

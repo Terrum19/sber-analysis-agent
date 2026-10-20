@@ -4,6 +4,8 @@ import inspect
 
 from app.core.tools.registry import tool_registry
 
+HIDDEN_TOOLS = {"time_series", "correlation", "product_performance", "conversion_funnel"}
+
 EXPECTED_TOOLS = {
     "select_columns",
     "filter_rows",
@@ -46,18 +48,29 @@ EXPECTED_TOOLS = {
     "avg_order_value",
     "trend_analysis",
     "seasonal_decompose",
+    "sort_limit",
+    "sample",
+    "window_metric",
 }
 
 
 def test_registry_exposes_every_tool_to_llm() -> None:
     assert EXPECTED_TOOLS <= set(tool_registry._tools)
     description = tool_registry.describe()
-    for name in EXPECTED_TOOLS:
-        assert f"{name}:" in description
+    for name in EXPECTED_TOOLS - HIDDEN_TOOLS:
+        assert f"- {name} [" in description
+    for name in HIDDEN_TOOLS:
+        assert f"- {name} [" not in description
+
+
+def test_every_planner_tool_describes_its_arguments() -> None:
+    for tool in tool_registry.planner_tools():
+        assert "arguments={" in tool.describe()
+        assert tool.kind in {"transform", "analysis", "lookup"}
 
 
 def test_registry_describes_each_tool_once() -> None:
-    names = [line.split(":", 1)[0] for line in tool_registry.describe().splitlines()]
+    names = [line[2:].split(" ", 1)[0] for line in tool_registry.describe().splitlines()]
     assert len(names) == len(set(names))
     assert "funnel_drop_off" in names
     assert tool_registry.get("funnel-drop-off") is tool_registry.get("funnel_drop_off")

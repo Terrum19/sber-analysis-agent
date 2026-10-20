@@ -11,6 +11,7 @@ ATTRIBUTION = re.compile(
     re.IGNORECASE,
 )
 FORBIDDEN_PATHS = re.compile(r"(^|/)\.claude/|(^|/)CLAUDE\.md$")
+SCISSORS = "# ------------------------ >8 ------------------------"
 
 
 def git(*args: str) -> str:
@@ -19,8 +20,8 @@ def git(*args: str) -> str:
     ).stdout
 
 
-def message_problems(commit: str) -> list[str]:
-    subject, _, body = git("log", "-1", "--format=%B", commit).partition("\n")
+def text_problems(message: str) -> list[str]:
+    subject, _, body = message.lstrip("\n").partition("\n")
     problems = []
     if CYRILLIC.search(subject):
         problems.append(f"заголовок коммита должен быть на английском: «{subject}»")
@@ -33,6 +34,31 @@ def message_problems(commit: str) -> list[str]:
         if ATTRIBUTION.search(line):
             problems.append(f"упоминание Claude в сообщении коммита: «{line.strip()}»")
     return problems
+
+
+def message_problems(commit: str) -> list[str]:
+    return text_problems(git("log", "-1", "--format=%B", commit))
+
+
+def editor_message(text: str) -> str:
+    kept = []
+    for line in text.splitlines():
+        if line == SCISSORS:
+            break
+        if not line.startswith("#"):
+            kept.append(line)
+    return "\n".join(kept)
+
+
+def check_message_file(path: str) -> int:
+    with open(path, encoding="utf-8") as message_file:
+        problems = text_problems(editor_message(message_file.read()))
+    if not problems:
+        return 0
+    print("✗ сообщение коммита не прошло проверку конвенций:", file=sys.stderr)
+    for problem in problems:
+        print(f"    {problem}", file=sys.stderr)
+    return 1
 
 
 def changed_files(commit: str) -> list[tuple[str, str]]:
@@ -73,4 +99,6 @@ def main(commits: list[str]) -> int:
 
 
 if __name__ == "__main__":
+    if sys.argv[1:2] == ["--message-file"] and len(sys.argv) == 3:
+        sys.exit(check_message_file(sys.argv[2]))
     sys.exit(main(sys.argv[1:]))
