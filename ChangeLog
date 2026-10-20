@@ -26,6 +26,18 @@
 	* docs/memory.md, docs/repo_structure.md, docs/architecture.md:
 	Описание хранилища дашбордов.
 
+	Локальный хук pre-commit с ruff (#88).
+	* .githooks/pre-commit: Новый хук: ruff check и ruff format --check
+	на индексированных .py-файлах backend/ с конфигом
+	backend/pyproject.toml, как в Backend CI.  Без ruff (ни в PATH, ни
+	как python3 -m ruff) предупреждает и пропускает коммит.
+	* backend/requirements.txt: Версия ruff закреплена (0.17.1, как в
+	CI), чтобы хук и CI проверяли одинаково.
+	* Makefile (help), CONTRIBUTING.md: Описание хука; подключается тем
+	же make hooks.
+	* backend/tests/unit/test_git_hooks.py: Тесты хука на временном
+	репозитории.
+
 	Локальный хук commit-msg с проверками CI (#36).
 	* .github/scripts/check_conventions.py (text_problems): Проверка
 	текста сообщения вынесена из message_problems, которая теперь
