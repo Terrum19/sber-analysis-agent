@@ -1,9 +1,10 @@
 #!/bin/sh
-# Ruff на индексированных .py-файлах бэкенда, как в Backend CI (конфиг —
-# backend/pyproject.toml). Подключается командой make hooks.
+# Ruff на индексированных .py-файлах backend/app и backend/tests — та же
+# область, что в Backend CI (конфиг — backend/pyproject.toml).
+# Подключается командой make hooks.
 cd "$(git rev-parse --show-toplevel)" || exit 1
 
-if git diff --cached --quiet --diff-filter=ACMR -- 'backend/*.py'; then
+if git diff --cached --quiet --diff-filter=ACMR -- ':(glob)backend/app/**/*.py' ':(glob)backend/tests/**/*.py'; then
   exit 0
 fi
 
@@ -17,12 +18,12 @@ else
 fi
 
 status=0
-git diff --cached -z --name-only --diff-filter=ACMR -- 'backend/*.py' \
+git diff --cached -z --name-only --diff-filter=ACMR -- ':(glob)backend/app/**/*.py' ':(glob)backend/tests/**/*.py' \
   | xargs -0 "$@" check -- || status=1
-git diff --cached -z --name-only --diff-filter=ACMR -- 'backend/*.py' \
+git diff --cached -z --name-only --diff-filter=ACMR -- ':(glob)backend/app/**/*.py' ':(glob)backend/tests/**/*.py' \
   | xargs -0 "$@" format --check -- || status=1
 
 if [ "$status" -ne 0 ]; then
-  echo "pre-commit: ruff нашёл нарушения; исправьте (cd backend && ruff check --fix . && ruff format .) и добавьте файлы снова" >&2
+  echo "pre-commit: ruff нашёл нарушения; исправьте (cd backend && ruff check --fix app tests && ruff format app tests) и добавьте файлы снова" >&2
 fi
 exit "$status"
