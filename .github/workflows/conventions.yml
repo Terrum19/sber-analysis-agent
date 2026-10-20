@@ -1,3 +1,7 @@
+# Правила репозитория: заголовок коммита на английском, описание на русском,
+# без упоминаний Claude и служебных файлов .claude/.
+# Проверяются только новые коммиты: то, что уже лежит в dev или main, не
+# проверяется повторно. Дёшево: ~1 минута.
 name: Conventions
 
 on:
@@ -20,6 +24,11 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+
+      # pull_request: base..head. push: before..after без коммитов из dev и main
+      # (при push в dev или main сама ветка из исключений убирается); для новой
+      # ветки или после force-push (before неизвестен) — коммиты, которых нет ни
+      # в одной другой удалённой ветке.
       - name: Collect commits
         env:
           EVENT: ${{ github.event_name }}
