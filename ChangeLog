@@ -1,5 +1,31 @@
 2026-10-20  mb6ockatf  <smokenmirror@tutamail.com>
 
+	Дашборды хранятся в SQLite (#45).
+	* backend/app/core/dashboards/store.py (DashboardStore): Новое
+	хранилище в том же SQLite, что и SessionMemory: таблицы dashboards и
+	dashboard_tiles с каскадным удалением плиток.  Методы create, get,
+	list (сводки по updated_at, новые первыми), update (плитки заменяются в
+	одной транзакции), delete, update_snapshot.  Снимки данных приводятся
+	к JSON-совместимому виду, как значения Vega-спеки.
+	* backend/app/core/dashboards/models.py (DashboardTile, Dashboard):
+	Плитка хранит id, шаг и temp-таблицу, инсайт, признак KPI, раскладку и
+	снимок данных; дашборд — id, сессию, шаблон и время создания и
+	изменения.  (DashboardSummary): Новая сводка для списка.
+	* backend/app/core/dashboards/generator.py (DashboardGenerator.generate):
+	Принимает плитки, снимает данные плиток с result_table (до
+	SPEC_ROW_LIMIT строк), сохраняет через DashboardStore и возвращает
+	дашборд.
+	* backend/app/core/agent/orchestrator.py (AgentOrchestrator.run):
+	Дашборд по запросу собирается из плитки графика с его temp-таблицей и
+	инсайтом.
+	* backend/app/api/routes/dashboards.py: Читает из DashboardStore.
+	* backend/app/core/memory/artifact_registry.py: Удалён: JSON-файлы
+	storage/dashboards/ больше не пишутся и не мигрируются.
+	* backend/tests/unit/test_dashboard_store.py: Тесты хранилища и
+	снимков при generate.
+	* docs/memory.md, docs/repo_structure.md, docs/architecture.md:
+	Описание хранилища дашбордов.
+
 	Проверка конвенций не проверяет повторно коммиты из dev и main (#35).
 	* .github/workflows/conventions.yml (Collect commits): При push
 	диапазон before..after берётся без коммитов, уже лежащих в origin/dev

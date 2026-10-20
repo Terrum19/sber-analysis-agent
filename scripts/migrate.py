@@ -1,6 +1,6 @@
 """Миграции рантайм-хранилища (SQLite/реестр дашбордов).
 
-TODO(round-2): версионирование схемы sessions.sqlite и artifact_registry,
+TODO(round-2): версионирование схемы sessions.sqlite (сессии и дашборды),
 идемпотентные апгрейды при смене формата.
 
 Запуск: python scripts/migrate.py

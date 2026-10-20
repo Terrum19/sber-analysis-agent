@@ -5,9 +5,9 @@ import pytest
 from app.api.schemas.chat import ChatRequest
 from app.config import settings
 from app.core.agent.orchestrator import AgentOrchestrator
+from app.core.dashboards.store import DashboardStore
 from app.core.data.duckdb_manager import DuckDBManager
 from app.core.data.profiling import profile_table
-from app.core.memory.artifact_registry import ArtifactRegistry
 from app.core.memory.profile_memory import ProfileMemory
 from app.core.memory.session_memory import SessionMemory
 from app.core.memory.state_cache import StateCache
@@ -193,8 +193,10 @@ async def test_dashboard_request_saves_spec(db) -> None:
     agent.planner.plan = plan_with_dashboard
     events = await collect(agent, "Создай дашборд по регионам")
     dashboard = next(event for event in events if event["type"] == "dashboard")
-    saved = ArtifactRegistry().get(dashboard["data"]["dashboard_id"])
-    assert saved["tiles"][0]["spec"]["mark"] == "bar"
+    saved = DashboardStore().get(dashboard["data"]["dashboard_id"])
+    assert saved.tiles[0].spec["mark"] == "bar"
+    assert saved.tiles[0].result_table is not None
+    assert saved.tiles[0].snapshot_data
 
 
 def test_state_cache_put_and_get(db) -> None:
