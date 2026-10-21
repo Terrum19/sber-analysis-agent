@@ -31,11 +31,20 @@ async def chat(
 
     orchestrator = AgentOrchestrator(db=db)
 
+    import logging
+
+    logger = logging.getLogger(__name__)
+
     async def event_stream():
         """Генерирует SSE-события от оркестратора."""
-        async for event in orchestrator.run(payload):
-            # Валидируем через ChatEvent и сериализуем в JSON
-            chat_event = ChatEvent(**event)
+        try:
+            async for event in orchestrator.run(payload):
+                # Валидируем через ChatEvent и сериализуем в JSON
+                chat_event = ChatEvent(**event)
+                yield f"data: {chat_event.model_dump_json()}\n\n"
+        except Exception as exc:
+            logger.exception("Ошибка в event_stream")
+            chat_event = ChatEvent(type="error", data={"message": str(exc)})
             yield f"data: {chat_event.model_dump_json()}\n\n"
 
     STREAM_HEADERS = {
