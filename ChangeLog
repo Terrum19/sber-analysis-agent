@@ -29,6 +29,79 @@
 	* backend/tests: Тесты оркестратора выбирают таблицу raw явно через
 	сессию; API-тесты подменяют get_db.
 	* docs/memory.md, docs/visualization.md: Таблица сессии.
+2026-10-20  Alexander Yurits  <terruwork@gmail.com>
+
+	Отклонённое исправление шага больше не подменяет ошибку шага (#39).
+	* backend/app/core/agent/orchestrator.py (AgentOrchestrator._run_step):
+	Фронт и пользователь видят последнюю ошибку выполнения шага; если
+	исправление не прошло валидацию, планировщик получает эту ошибку
+	вместе с отклонённым шагом и причиной отказа.  attempts_made — число
+	выполнений шага: отклонённое исправление и недоступная LLM его не
+	увеличивают.
+	(AgentOrchestrator._input_columns): Сбой чтения колонок не прерывает
+	исправление — планировщик получает «нет».
+	(_StepFailed): attempts переименован в executions.
+	* backend/app/core/agent/planner.py (StepPlanner.fix_step): В тексте
+	ValueError — отклонённый шаг.
+	* backend/tests/unit/test_recovery_and_cache.py: Тесты отклонённых
+	исправлений и недоступных колонок.
+	* backend/tests/unit/test_orchestrator_viz.py: Без лишнего monkeypatch.
+	* docs/architecture.md: Что лежит в error события fixing.
+	* docs/issue_agent_loop_planning.md,
+	docs/reports/architecture_compliance_report.md,
+	docs/team_plans/terrum/agent-planner.md: with_retry заменён fix_step.
+
+2026-10-20  Alexander Yurits  <terruwork@gmail.com>
+
+	Упавший шаг исправляется планировщиком по тексту ошибки (#39, #33).
+	* backend/app/core/agent/orchestrator.py (AgentOrchestrator._run_step):
+	Новый метод: шаг с ошибкой в аргументах (ValueError, duckdb.Error)
+	отдаётся планировщику с текстом ошибки и колонками входной таблицы и
+	выполняется заново, до STEP_FIX_ATTEMPTS раз; затем, как раньше,
+	pending_recovery и clarification_needed (attempts_made — число
+	попыток, включая первую).  Повтора шага с теми же аргументами и паузой
+	больше нет.
+	(AgentOrchestrator.run, AgentOrchestrator._research): План и шаги идут
+	задачей; события, которые она шлёт через emit, run() отдаёт из очереди
+	сразу.  Отключение клиента отменяет задачу.
+	(_fixing_event): Событие progress со статусом fixing на каждую попытку
+	исправления.
+	* backend/app/core/agent/planner.py (StepPlanner.fix_step): Новый
+	метод: исправленный шаг сохраняет step_id и purpose и проходит
+	_validate_step; не прошёл — ValueError с ошибками валидации.
+	* backend/app/core/llm/prompts/step_planner.py (STEP_FIX): Новый промпт.
+	* backend/app/core/agent/recovery.py (with_retry, retryable): Удалены.
+	(STEP_FIX_ATTEMPTS, FIXABLE_ERRORS, fixable): Какие сбои исправляются:
+	шаг кодогенерации, NotImplementedError и SandboxError — нет.
+	* backend/app/core/agent/step_executor.py (resolve_input): Таблица,
+	из которой шаг берёт данные.
+	* backend/app/api/schemas/chat.py (ProgressPayload): Новая схема.
+	(ChatEvent): Тип progress.
+	* backend/tests/unit/test_recovery_and_cache.py: Тесты исправления шага
+	вместо тестов with_retry.
+	* backend/tests/unit/test_plan_execution.py,
+	backend/tests/unit/test_orchestrator_viz.py: Без живой LLM и паузы ретрая.
+	* docs/architecture.md: События стрима чата и контракт progress.
+	* docs/sandbox.md, docs/repo_structure.md: Новая обработка ошибок шага.
+
+2026-10-20  Saitbatalov Bulat  <saitbatalovbulat200@gmail.com>
+
+	Загрузка датасетов хакатона одной командой.
+	* scripts/load_hk_datasets.py: Каждый CSV из data/hk_datasets
+	проходит рабочий пайплайн: CSVConnector, профиль и паспорт таблицы,
+	без --no-llm ещё описания колонок от LLM.  Печатается таблица со
+	строками, колонками, временем загрузки и профиля и ошибками, включая
+	признаки нестрогого разбора CSV и число колонок без описания LLM.
+	Ошибка одного файла не прерывает прогон, но даёт код выхода 1.  Все
+	таблицы обрабатываются в одном event loop.
+	* Makefile (hk-data): Если в data/hk_datasets не ровно 9 CSV,
+	клонируется HK_Datasets и докопируются недостающие файлы, затем
+	запускается загрузка с --no-llm.
+	* data/hk_datasets/README.md: Скачивание через make hk-data, раздел
+	«Результаты загрузки».
+	* docs/data_connectors.md: Время загрузки всех датасетов по новому
+	замеру.
+	* docs/repo_structure.md: Цель hk-data и скрипты в scripts/.
 
 2026-10-20  mb6ockatf  <smokenmirror@tutamail.com>
 
