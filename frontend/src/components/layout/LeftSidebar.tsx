@@ -95,6 +95,8 @@ function DatabaseRow({
     });
   }, [database.sessions]);
 
+  const hasTables = Boolean(database.tables && database.tables.length > 0);
+
   return (
     <div>
       <div
@@ -112,9 +114,10 @@ function DatabaseRow({
         </button>
         <button
           type="button"
-          onClick={() => startSession(database)}
-          className="flex min-w-0 flex-1 items-start gap-2 py-1.5 text-left text-[13px]"
-          title={`${t("sidebar.openNewSession", { title: database.title })}\n${description}`}
+          onClick={() => hasTables && startSession(database)}
+          disabled={!hasTables}
+          className="flex min-w-0 flex-1 items-start gap-2 py-1.5 text-left text-[13px] disabled:opacity-50 disabled:cursor-not-allowed"
+          title={!hasTables ? t("welcome.noDataToStart") : `${t("sidebar.openNewSession", { title: database.title })}\n${description}`}
         >
           <Icon name={collapsed ? "folder" : "folderOpen"} className="mt-0.5 shrink-0 text-graphite-400" />
           <span className="min-w-0">
@@ -134,9 +137,10 @@ function DatabaseRow({
         </button>
         <button
           type="button"
-          onClick={() => startSession(database)}
-          className="mt-0.5 flex h-6 w-6 shrink-0 items-center justify-center self-start rounded-md text-graphite-500 hover:bg-graphite-800 hover:text-graphite-100"
-          title={t("sidebar.newSession")}
+          onClick={() => hasTables && startSession(database)}
+          disabled={!hasTables}
+          className="mt-0.5 flex h-6 w-6 shrink-0 items-center justify-center self-start rounded-md text-graphite-500 hover:bg-graphite-800 hover:text-graphite-100 disabled:opacity-30 disabled:cursor-not-allowed"
+          title={!hasTables ? t("welcome.noDataToStart") : t("sidebar.newSession")}
         >
           <Icon name="plus" size={14} />
         </button>

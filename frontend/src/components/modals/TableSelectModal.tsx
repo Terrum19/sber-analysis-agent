@@ -9,7 +9,7 @@ interface TableSelectModalProps {
   onClose: () => void;
   databaseTitle: string;
   tables: string[];
-  onSelect: (table: string) => void;
+  onSelect: (table: string) => Promise<void> | void;
 }
 
 export default function TableSelectModal({
@@ -21,20 +21,36 @@ export default function TableSelectModal({
 }: TableSelectModalProps) {
   const t = useT();
   const [selectedTable, setSelectedTable] = useState<string>("");
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     if (isOpen) {
       setSelectedTable(tables[0] || "");
+      setError(null);
+      setIsSubmitting(false);
     }
   }, [isOpen, tables]);
 
   if (!isOpen) return null;
 
-  function handleSubmit(e: React.FormEvent) {
+  async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
-    if (!selectedTable) return;
-    onSelect(selectedTable);
-    onClose();
+    if (!selectedTable || isSubmitting) return;
+    setIsSubmitting(true);
+    setError(null);
+    try {
+      await onSelect(selectedTable);
+      onClose();
+    } catch (err: any) {
+      if (err?.status === 404) {
+        setError(t("chat.tableNotFound"));
+      } else {
+        setError(err?.detail || err?.message || t("chat.tableNotFound"));
+      }
+    } finally {
+      setIsSubmitting(false);
+    }
   }
 
   return (
@@ -82,20 +98,28 @@ export default function TableSelectModal({
             })}
           </div>
 
+          {error && (
+            <div className="rounded-lg border border-bad/30 bg-bad/10 p-2.5 text-xs text-bad flex items-center justify-between">
+              <span>{error}</span>
+              <Icon name="x" size={12} className="cursor-pointer shrink-0 ml-2" onClick={() => setError(null)} />
+            </div>
+          )}
+
           <div className="flex justify-end gap-2 pt-2 border-t border-graphite-800">
             <button
               type="button"
               onClick={onClose}
-              className="rounded-lg border border-graphite-700 px-3.5 py-1.5 text-xs text-graphite-300 hover:bg-graphite-800 transition"
+              disabled={isSubmitting}
+              className="rounded-lg border border-graphite-700 px-3.5 py-1.5 text-xs text-graphite-300 hover:bg-graphite-800 transition disabled:opacity-50"
             >
               {t("modal.cancel")}
             </button>
             <button
               type="submit"
-              disabled={!selectedTable}
+              disabled={!selectedTable || isSubmitting}
               className="rounded-lg bg-graphite-100 px-4 py-1.5 text-xs font-medium text-graphite-950 hover:bg-graphite-50 disabled:opacity-50 disabled:cursor-not-allowed transition"
             >
-              {t("modal.selectTableBtn")}
+              {isSubmitting ? "..." : t("modal.selectTableBtn")}
             </button>
           </div>
         </form>

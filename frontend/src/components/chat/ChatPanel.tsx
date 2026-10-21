@@ -72,9 +72,13 @@ export default function ChatPanel({ sessionId }: Props) {
             bindSession(sessionId, dbId, sess.table);
           }
         })
-        .catch(() => {});
+        .catch((err) => {
+          if (err?.status === 404) {
+            setTableError(t("chat.tableNotFound"));
+          }
+        });
     }
-  }, [sessionId, activeTable, bindSession]);
+  }, [sessionId, activeTable, bindSession, t]);
 
   async function handleTableChange(nextTable: string) {
     if (nextTable === activeTable || isTableSwitching || streaming) return;

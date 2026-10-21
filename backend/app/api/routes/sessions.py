@@ -67,5 +67,10 @@ async def set_session_table(
 async def get_session(session_id: str) -> SessionOut:
     """Получить метаданные сессии."""
     if session_id not in _SESSIONS:
+        memory = SessionMemory(session_id)
+        if memory.exists() and memory.table:
+            session = SessionOut(session_id=session_id, table=memory.table)
+            _SESSIONS[session_id] = session
+            return session
         raise HTTPException(status_code=404, detail="Сессия не найдена.")
     return _SESSIONS[session_id]

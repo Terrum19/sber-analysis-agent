@@ -64,3 +64,14 @@ def test_patch_unknown_table_is_404(client) -> None:
 
 def test_get_unknown_session_is_404(client) -> None:
     assert client.get("/api/sessions/nope").status_code == 404
+
+
+def test_get_session_recovers_from_sqlite(client) -> None:
+    from app.api.routes.sessions import _SESSIONS
+
+    session_id = client.post("/api/sessions", json={"table": "sales"}).json()["session_id"]
+    # Simulate process restart by clearing in-memory dictionary
+    _SESSIONS.clear()
+    response = client.get(f"/api/sessions/{session_id}")
+    assert response.status_code == 200
+    assert response.json()["table"] == "sales"

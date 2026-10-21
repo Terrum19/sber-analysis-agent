@@ -250,6 +250,12 @@ export function mockAttachDb(kind: "postgres" | "clickhouse", dsn: string): Data
 }
 
 export function mockCreateSession(table: string, datasourceId?: string, title?: string): SessionResponse {
+  if (!table || table === "unknown_table") {
+    const err = new Error("Таблица не найдена") as any;
+    err.status = 404;
+    err.detail = "Таблица не найдена";
+    throw err;
+  }
   return {
     session_id: `mock-session-${Date.now().toString(36)}`,
     table,

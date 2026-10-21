@@ -53,8 +53,8 @@ export default function WorkspaceShell({ tab, children }: { tab: WorkspaceTab; c
           databaseTitle={tableModalTarget.title}
           tables={tableModalTarget.tables}
           onClose={() => setTableModalTarget(null)}
-          onSelect={(table) => {
-            startSession(tableModalTarget, table);
+          onSelect={async (table) => {
+            await startSession(tableModalTarget, table);
           }}
         />
       )}

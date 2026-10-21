@@ -209,7 +209,10 @@ export const useSessionStore = create<SessionState>()(
           }
           return { messages: nextMessages, sessionTableCache: nextTableCache };
         }),
-      addTile: (tile) =>
+      addTile: (tile) => {
+        if (!useCanvasStore.getState().dashboardId) {
+          useCanvasStore.getState().addTile(tile);
+        }
         set((s) => {
           const nextTiles = [...s.tiles, tile];
           let nextTableCache = s.sessionTableCache;
@@ -224,8 +227,12 @@ export const useSessionStore = create<SessionState>()(
             };
           }
           return { tiles: nextTiles, sessionTableCache: nextTableCache };
-        }),
-      setTiles: (tiles) =>
+        });
+      },
+      setTiles: (tiles) => {
+        if (!useCanvasStore.getState().dashboardId) {
+          useCanvasStore.getState().setTiles(tiles);
+        }
         set((s) => {
           let nextTableCache = s.sessionTableCache;
           if (s.sessionId && s.sessionActiveTable[s.sessionId]) {
@@ -239,7 +246,8 @@ export const useSessionStore = create<SessionState>()(
             };
           }
           return { tiles, sessionTableCache: nextTableCache };
-        }),
+        });
+      },
       selectTile: (index) => set({ selectedTile: index }),
       setDatasource: (datasource) =>
         set({
@@ -317,12 +325,28 @@ export const useSessionStore = create<SessionState>()(
         return sessionIds;
       },
       bindSession: (sessionId, databaseId, initialTable) =>
-        set((s) => ({
-          sessionDatabase: { ...s.sessionDatabase, [sessionId]: databaseId },
-          sessionActiveTable: initialTable
+        set((s) => {
+          const nextActiveTable = initialTable
             ? { ...s.sessionActiveTable, [sessionId]: initialTable }
-            : s.sessionActiveTable,
-        })),
+            : s.sessionActiveTable;
+          const nextSessionDb = { ...s.sessionDatabase, [sessionId]: databaseId };
+          let nextMessages = s.messages;
+          let nextTiles = s.tiles;
+          if (s.sessionId === sessionId && initialTable && s.messages.length === 0) {
+            const cached = s.sessionTableCache[sessionId]?.[initialTable];
+            if (cached) {
+              nextMessages = cached.messages;
+              nextTiles = cached.tiles;
+              useCanvasStore.getState().setDashboard(null, "", nextTiles);
+            }
+          }
+          return {
+            sessionDatabase: nextSessionDb,
+            sessionActiveTable: nextActiveTable,
+            messages: nextMessages,
+            tiles: nextTiles,
+          };
+        }),
       switchSessionTable: (sessionId, nextTable) => {
         const state = get();
         const currentTable = state.sessionActiveTable[sessionId];
@@ -423,6 +447,14 @@ export const useSessionStore = create<SessionState>()(
           if (state.sessionDatabase) {
             delete state.sessionDatabase["demo-sales"];
             delete state.sessionDatabase["demo-kpi"];
+          }
+          if (state.sessionActiveTable) {
+            delete state.sessionActiveTable["demo-sales"];
+            delete state.sessionActiveTable["demo-kpi"];
+          }
+          if (state.sessionTableCache) {
+            delete state.sessionTableCache["demo-sales"];
+            delete state.sessionTableCache["demo-kpi"];
           }
         }
       },

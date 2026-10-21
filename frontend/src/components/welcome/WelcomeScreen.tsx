@@ -49,6 +49,9 @@ export default function WelcomeScreen() {
   const [tutorialOpen, setTutorialOpen] = useState(false);
   const [activeStep, setActiveStep] = useState(0);
 
+  const hasValidData = databases.some((d) => d.tables && d.tables.length > 0);
+  const firstDbWithTables = databases.find((d) => d.tables && d.tables.length > 0);
+
   return (
     <div className="h-full overflow-y-auto">
       <div className="mx-auto max-w-4xl px-8 py-14 md:py-20">
@@ -63,16 +66,16 @@ export default function WelcomeScreen() {
               <div className="flex flex-col items-start gap-0.5">
                 <button
                   type="button"
-                  disabled={databases.length === 0}
-                  onClick={() => databases.length > 0 && startSession(databases[0])}
+                  disabled={!hasValidData}
+                  onClick={() => firstDbWithTables && startSession(firstDbWithTables)}
                   className="flex items-center gap-2.5 py-1 text-[13px] text-graphite-200 hover:text-graphite-50 transition disabled:opacity-40 disabled:cursor-not-allowed text-left"
-                  title={databases.length === 0 ? t("welcome.noDataToStart") : t("sidebar.newSession")}
+                  title={!hasValidData ? t("welcome.noDataToStart") : t("sidebar.newSession")}
                 >
                   <Icon name="plus" className="text-graphite-400 shrink-0" />
-                  <span className={databases.length > 0 ? "hover:underline underline-offset-4 decoration-graphite-500" : ""}>
+                  <span className={hasValidData ? "hover:underline underline-offset-4 decoration-graphite-500" : ""}>
                     {t("sidebar.newSession")}
                   </span>
-                  {databases.length === 0 && (
+                  {!hasValidData && (
                     <span className="text-[11px] text-graphite-500 font-normal">
                       ({t("welcome.noDataToStart")})
                     </span>
@@ -94,9 +97,10 @@ export default function WelcomeScreen() {
                     <button
                       key={d.id}
                       type="button"
-                      onClick={() => startSession(d)}
-                      className="flex max-w-full items-center gap-2.5 py-1 text-[13px] text-graphite-200 hover:text-graphite-50"
-                      title={t("welcome.openSession")}
+                      disabled={!d.tables || d.tables.length === 0}
+                      onClick={() => d.tables?.length > 0 && startSession(d)}
+                      className="flex max-w-full items-center gap-2.5 py-1 text-[13px] text-graphite-200 hover:text-graphite-50 disabled:opacity-40 disabled:cursor-not-allowed"
+                      title={!d.tables || d.tables.length === 0 ? t("welcome.noDataToStart") : t("welcome.openSession")}
                     >
                       <Icon name="folder" className="shrink-0 text-graphite-400" />
                       <span className="truncate hover:underline underline-offset-4 decoration-graphite-500">{d.title}</span>

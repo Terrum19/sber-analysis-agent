@@ -37,10 +37,7 @@ export function useStartSession() {
       return;
     }
 
-    // Если таблиц нет (аномалия), используем fallback
-    const fallbackTable = "default";
-    const { session_id } = await createSession(fallbackTable, database.id);
-    bindSession(session_id, database.id, fallbackTable);
-    router.push(`/session/${session_id}`);
+    // Если таблиц нет, создать сессию без таблицы нельзя
+    return;
   };
 }

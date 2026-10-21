@@ -67,7 +67,7 @@ export default function Canvas({ sessionId }: Props) {
   // Session store tiles (backup if canvas store has no active dashboard yet)
   const sessionTiles = useSessionStore((s) => s.tiles);
 
-  const displayTiles = tiles.length > 0 ? tiles : sessionTiles;
+  const displayTiles = dashboardId ? tiles : (sessionTiles.length > 0 ? sessionTiles : tiles);
 
   // Координаты сетки react-grid-layout
   // В узкой панели график по умолчанию во всю ширину, KPI — в половину
