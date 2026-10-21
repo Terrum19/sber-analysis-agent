@@ -52,7 +52,12 @@ export default function DashboardPage({ params }: { params: { id: string } }) {
       setLoading(true);
       setError(null);
       try {
-        setConfig(await fetchDashboard(params.id));
+        const data = await fetchDashboard(params.id);
+        if (!data || !data.id) {
+          setError(t("dashboard.notFound"));
+        } else {
+          setConfig(data);
+        }
       } catch (err: any) {
         setError(err.message || t("dashboard.notFound"));
       } finally {

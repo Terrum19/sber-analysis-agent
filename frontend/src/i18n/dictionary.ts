@@ -182,6 +182,8 @@ const ru = {
   "tile.noData": "Нет данных для визуализации",
   "tile.kpiSlice": "срез DuckDB",
   "tile.kpiDefault": "Итог анализа",
+  "tile.stale": "Снимок",
+  "tile.staleTooltip": "Таблица очищена, отображаются зафиксированные данные снимка",
 
   "registry.title": "Дашборды",
   "registry.subtitle": "Все дашборды, созданные агентом и пользователем, по базам данных.",
@@ -393,6 +395,8 @@ const en: Record<MessageKey, string> = {
   "tile.noData": "No data to visualize",
   "tile.kpiSlice": "DuckDB slice",
   "tile.kpiDefault": "Analysis result",
+  "tile.stale": "Snapshot",
+  "tile.staleTooltip": "Table cleared, displaying persisted snapshot data",
 
   "registry.title": "Dashboards",
   "registry.subtitle": "Every dashboard built by the agent and by users, grouped by database.",

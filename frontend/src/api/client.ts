@@ -288,7 +288,16 @@ export async function deleteDashboard(id: string): Promise<{ ok: boolean }> {
       method: "DELETE",
     });
     if (!res.ok) throw await parseApiError(res);
-    return await res.json();
+    if (res.status === 204 || res.headers.get("content-length") === "0") {
+      return { ok: true };
+    }
+    const text = await res.text();
+    if (!text) return { ok: true };
+    try {
+      return JSON.parse(text);
+    } catch {
+      return { ok: true };
+    }
   } catch (err) {
     throw toApiError(err);
   }

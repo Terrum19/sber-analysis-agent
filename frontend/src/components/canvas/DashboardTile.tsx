@@ -237,6 +237,14 @@ export default function DashboardTile({
                   KPI
                 </span>
               )}
+              {tile.stale && (
+                <span
+                  className="shrink-0 rounded border border-amber-500/30 bg-amber-500/10 px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wider text-amber-400"
+                  title={t("tile.staleTooltip")}
+                >
+                  {t("tile.stale")}
+                </span>
+              )}
               <h3
                 className={`truncate font-semibold uppercase tracking-wider text-graphite-300 ${large ? "text-sm" : "text-xs"}`}
                 title={tile.title}

@@ -20,6 +20,7 @@ export interface DashboardTile {
   result_table?: string;
   insight?: string;
   is_kpi?: boolean;
+  stale?: boolean;
   snapshot_data?: any;
   snapshot_at?: number;
   updated_at?: number | string;
@@ -29,6 +30,7 @@ export interface DashboardConfig {
   id: string;
   session_id: string;
   title: string;
+  template_id?: string | null;
   tiles: DashboardTile[];
   created_at?: number | string;
   updated_at?: number | string;
@@ -54,3 +56,10 @@ export interface DashboardUpdatePayload {
   title?: string;
   tiles?: DashboardTile[];
 }
+
+/** Алиасы контракта бэкенда (B-01 / B-03, Epic #27 / Issue F-07) */
+export type DashboardOut = DashboardConfig;
+export type DashboardSummary = DashboardListItem;
+export type DashboardTileOut = DashboardTile;
+export type DashboardCreate = DashboardCreatePayload;
+export type DashboardUpdate = DashboardUpdatePayload;
