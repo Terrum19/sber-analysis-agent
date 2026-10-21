@@ -185,34 +185,9 @@ class AgentOrchestrator:
         task = asyncio.create_task(self._research(memory, pending, request, events.put_nowait))
         task.add_done_callback(lambda _: events.put_nowait(None))
         try:
-            if pending is not None:
-                question = pending.get("question") or request.question
-                execution = await self._apply_recovery(memory, pending, request)
-                memory.clear_pending_recovery()
-            else:
-                # Обычный путь: новый вопрос -> план -> выполнение шагов.
-                question = request.question
-                context = memory.build_context(request.question)
-                logger.info(">>> run() планируем шаги (planner.plan)")
-                plan = await self.planner.plan(request.question, context)
-                logger.info(
-                    "<<< run() план получен: шагов=%d final_viz=%s dashboard=%s",
-                    len(plan.steps),
-                    plan.final_viz,
-                    plan.dashboard_requested,
-                )
-                for i, s in enumerate(plan.steps):
-                    logger.info(
-                        "    шаг %d: tool=%s input=%s args=%s columns=%s purpose=%r",
-                        s.step_id,
-                        s.tool,
-                        s.input,
-                        s.arguments,
-                        s.columns,
-                        s.purpose,
-                    )
-                _require_steps(plan)
-                execution = await self._execute_plan(memory, plan, table, request.question)
+            while (event := await events.get()) is not None:
+                yield event
+            question, execution = await task
         except ClarificationNeeded as exc:
             yield {
                 "type": "clarification_needed",
@@ -303,8 +278,9 @@ class AgentOrchestrator:
                 s.purpose,
             )
         _require_steps(plan)
-        datasource = memory._state.get("datasource") or "raw"
-        execution = await self._execute_plan(memory, plan, datasource, request.question, emit=emit)
+        execution = await self._execute_plan(
+            memory, plan, memory.table, request.question, emit=emit
+        )
         return request.question, execution
 
     async def _execute_plan(
