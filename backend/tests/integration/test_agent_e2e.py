@@ -12,6 +12,7 @@ from app.core.agent.planner import StepPlanner
 from app.core.agent.step_executor import StepExecutor
 from app.core.data.duckdb_manager import DuckDBManager
 from app.core.llm.fake_client import FakeLLM
+from app.core.memory.session_memory import SessionMemory
 
 
 @pytest.fixture
@@ -62,6 +63,7 @@ async def test_full_research_flow(fake_llm: FakeLLM, test_orchestrator: AgentOrc
     """Полный цикл исследования с FakeLLM."""
     from app.api.schemas.chat import ChatRequest
 
+    SessionMemory("test-session-1").set_table("raw", test_orchestrator.db.columns("raw"))
     events = []
     async for event in test_orchestrator.run(
         ChatRequest(session_id="test-session-1", question="Сколько категорий?")

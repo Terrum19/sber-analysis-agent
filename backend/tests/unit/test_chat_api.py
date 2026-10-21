@@ -1,17 +1,24 @@
+from collections.abc import Iterator
+
 import pytest
 from fastapi.testclient import TestClient
 
+from app.api.deps import get_db
+from app.core.data.duckdb_manager import DuckDBManager
 from app.core.llm.fake_client import FakeLLM
 from app.main import app
 
 
 @pytest.fixture(autouse=True)
-def fake_llm(monkeypatch: pytest.MonkeyPatch) -> FakeLLM:
-    """Подменяет LLMClient на FakeLLM для всех тестов этого модуля."""
+def fake_llm(monkeypatch: pytest.MonkeyPatch) -> Iterator[FakeLLM]:
+    """Подменяет LLMClient на FakeLLM и DuckDB приложения на пустую in-memory базу."""
     monkeypatch.setattr("app.core.llm.client.LLMClient", FakeLLM)
     monkeypatch.setattr("app.core.agent.planner.LLMClient", FakeLLM)
     monkeypatch.setattr("app.core.agent.insight.LLMClient", FakeLLM)
-    return FakeLLM()
+    db = DuckDBManager(":memory:")
+    app.dependency_overrides[get_db] = lambda: db
+    yield FakeLLM()
+    app.dependency_overrides.pop(get_db)
 
 
 def test_chat_stream_forbids_proxy_buffering() -> None:
@@ -27,3 +34,4 @@ def test_chat_stream_forbids_proxy_buffering() -> None:
     assert response.headers["x-accel-buffering"] == "no"
     assert "content-encoding" not in response.headers
     assert response.text.startswith("data: ")
+    assert '"type":"error"' in response.text

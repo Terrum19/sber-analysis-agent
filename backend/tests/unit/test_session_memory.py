@@ -40,7 +40,9 @@ def test_build_context_reads_profile_and_columns_from_passport(tmp_path):
     try:
         db.execute("CREATE TABLE raw AS SELECT 'msk' AS region, 10.0 AS amount")
         ProfileMemory(db).save_profile(profile_table(db, "raw"))
-        ctx = SessionMemory("profile-session", db=db).build_context("Выручка по регионам")
+        memory = SessionMemory("profile-session", db=db)
+        memory.set_table("raw", [])
+        ctx = memory.build_context("Выручка по регионам")
         assert ctx["profile"].table == "raw"
         assert ctx["columns"] == ["region", "amount"]
     finally:
@@ -64,10 +66,49 @@ def test_record_step_and_answer(memory):
     assert "шаг 0: Тест шага" in ctx["summary"]
 
 
-def test_set_datasource(memory):
-    memory.set_datasource("raw", ["category", "revenue"])
-    assert memory._state["datasource"] == "raw"
+def test_table_is_none_until_set(memory):
+    assert memory.table is None
+    assert memory.build_context("Вопрос")["datasource"] is None
+
+
+def test_set_table(memory):
+    memory.set_table("raw", ["category", "revenue"])
+    assert memory.table == "raw"
     assert memory._state["columns"] == ["category", "revenue"]
+    assert SessionMemory("test-session").table == "raw"
+
+
+def test_exists_after_set_table(memory):
+    assert not memory.exists()
+    memory.set_table("raw", ["category"])
+    assert memory.exists()
+
+
+def test_history_and_chart_are_kept_per_table(memory):
+    memory.set_table("sales", ["revenue"])
+    memory.record_chart("bar", "temp_result_v1", "Выручка")
+    memory.record_answer("Ответ по продажам")
+    memory.set_table("users", ["age"])
+    assert memory.last_chart() is None
+    assert memory.build_context("Вопрос")["messages"] == []
+    memory.record_answer("Ответ по пользователям")
+    memory.set_table("sales", ["revenue"])
+    restored = SessionMemory("test-session")
+    assert restored.last_chart()["result_table"] == "temp_result_v1"
+    assert [m["content"] for m in restored.build_context("Вопрос")["messages"]] == [
+        "Ответ по продажам"
+    ]
+
+
+def test_set_table_drops_steps_and_pending_recovery(memory):
+    from app.models.research_step import ResearchStep
+
+    memory.set_table("sales", ["revenue"])
+    memory.record_step(ResearchStep(step_id=0, tool="aggregate", purpose="шаг"), "temp_result_v1")
+    memory.set_pending_recovery({"failed_step_id": 0})
+    memory.set_table("users", ["age"])
+    assert memory.build_context("Вопрос")["summary"] == ""
+    assert memory.get_pending_recovery() is None
 
 
 def test_persist_and_load(tmp_path):
@@ -75,6 +116,7 @@ def test_persist_and_load(tmp_path):
     settings.sqlite_path = str(tmp_path / "sessions2.sqlite")
     try:
         mem1 = SessionMemory("persist-session")
+        mem1.set_table("raw", ["a"])
         mem1.record_answer("Первый ответ")
         mem2 = SessionMemory("persist-session")
         ctx = mem2.build_context("Проверка")

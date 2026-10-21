@@ -85,6 +85,16 @@ class DuckDBManager:
         )
         return rows[0]["n"] or 0
 
+    def columns(self, table: str) -> list[str]:
+        """Имена колонок таблицы или представления по порядку ([] — таблицы нет)."""
+        rows = self.query(
+            """SELECT column_name FROM information_schema.columns
+            WHERE table_catalog = current_database() AND table_name = $table
+            ORDER BY ordinal_position""",
+            {"table": table},
+        )
+        return [row["column_name"] for row in rows]
+
     def to_records(self, table: str, limit: int = 100) -> list[dict]:
         """Выгрузить temp-таблицу в список словарей (для LLM/инсайта)."""
         return self.query(f"SELECT * FROM {table} LIMIT {limit}")

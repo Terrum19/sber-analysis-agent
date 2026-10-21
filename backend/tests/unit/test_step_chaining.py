@@ -7,6 +7,7 @@ from app.config import settings
 from app.core.agent.orchestrator import AgentOrchestrator
 from app.core.agent.step_executor import StepExecutor, tool_kind
 from app.core.data.duckdb_manager import DuckDBManager
+from app.core.memory.session_memory import SessionMemory
 from app.models.insight import Insight
 from app.models.research_step import ResearchPlan, ResearchStep
 
@@ -62,6 +63,7 @@ async def test_steps_after_a_report_still_see_the_data(db) -> None:
         ResearchStep(step_id=4, tool="pearson_corr", columns=["price", "qty"]),
     ]
     insight = RecordingInsight()
+    SessionMemory("chain").set_table("raw", db.columns("raw"))
     agent = AgentOrchestrator(
         planner=FixedPlanner(steps), executor=StepExecutor(db), insight_gen=insight
     )

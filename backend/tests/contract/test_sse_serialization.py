@@ -3,6 +3,7 @@
 import pytest
 from fastapi.testclient import TestClient
 
+from app.api.deps import get_db
 from app.main import app
 
 
@@ -28,16 +29,21 @@ def fake_llm(monkeypatch: pytest.MonkeyPatch):
         ) AS t(category, revenue, date)
         """
     )
-    monkeypatch.setattr("app.core.data.duckdb_manager.DuckDBManager", lambda path=None: db)
-    monkeypatch.setattr("app.core.agent.step_executor.DuckDBManager", lambda path=None: db)
-    return FakeLLM()
+    app.dependency_overrides[get_db] = lambda: db
+    yield FakeLLM()
+    app.dependency_overrides.pop(get_db)
+
+
+def session(client: TestClient) -> str:
+    """Сессия над таблицей raw, созданная через API."""
+    return client.post("/api/sessions", json={"table": "raw"}).json()["session_id"]
 
 
 def test_sse_compact_json_no_spaces(fake_llm):
     client = TestClient(app)
     response = client.post(
         "/api/chat",
-        json={"session_id": "s1", "question": "Тест SSE"},
+        json={"session_id": session(client), "question": "Тест SSE"},
     )
     text = response.text
     assert "data: " in text
