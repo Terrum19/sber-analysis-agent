@@ -6,12 +6,18 @@ from pydantic import BaseModel, Field
 
 
 class SessionCreate(BaseModel):
+    table: str
     datasource_id: str | None = None
     title: str | None = None
 
 
+class SessionTable(BaseModel):
+    table: str
+
+
 class SessionOut(BaseModel):
     session_id: str
+    table: str | None = None
     datasource_id: str | None = None
     title: str | None = None
 

@@ -3,6 +3,7 @@
 import pytest
 from fastapi.testclient import TestClient
 
+from app.api.deps import get_db
 from app.main import app
 
 
@@ -28,16 +29,21 @@ def fake_llm(monkeypatch: pytest.MonkeyPatch):
         ) AS t(category, revenue, date)
         """
     )
-    monkeypatch.setattr("app.core.data.duckdb_manager.DuckDBManager", lambda path=None: db)
-    monkeypatch.setattr("app.core.agent.step_executor.DuckDBManager", lambda path=None: db)
-    return FakeLLM()
+    app.dependency_overrides[get_db] = lambda: db
+    yield FakeLLM()
+    app.dependency_overrides.pop(get_db)
+
+
+def session(client: TestClient) -> str:
+    """Сессия над таблицей raw, созданная через API."""
+    return client.post("/api/sessions", json={"table": "raw"}).json()["session_id"]
 
 
 def test_empty_question(fake_llm):
     client = TestClient(app)
     response = client.post(
         "/api/chat",
-        json={"session_id": "ext-1", "question": ""},
+        json={"session_id": session(client), "question": ""},
     )
     assert response.status_code == 200
 
@@ -46,7 +52,7 @@ def test_viz_type_change(fake_llm):
     client = TestClient(app)
     response = client.post(
         "/api/chat",
-        json={"session_id": "ext-2", "question": "Покажи линейный график"},
+        json={"session_id": session(client), "question": "Покажи линейный график"},
     )
     assert response.status_code == 200
     text = response.text
@@ -58,7 +64,7 @@ def test_large_question(fake_llm):
     response = client.post(
         "/api/chat",
         json={
-            "session_id": "ext-3",
+            "session_id": session(client),
             "question": "Анализируй все категории, посчитай сумму, среднее, максимум и минимум по каждой, сделай сравнительный отчёт",
         },
     )

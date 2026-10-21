@@ -46,7 +46,7 @@ from app.core.viz.chart_selector import select_chart
 from app.core.viz.vega_spec_builder import SPEC_ROW_LIMIT, build_vega_spec, column_aliases
 from app.models.research_step import ResearchPlan, ResearchStep
 
-SOURCE_TABLE = "raw"
+NO_TABLE_MESSAGE = "Сначала подключите данные"
 
 # Количество попыток вызова инструмента перед уточнением у пользователя.
 STEP_RETRY_ATTEMPTS = 2
@@ -115,11 +115,16 @@ class AgentOrchestrator:
         """Выполнить исследование и вернуть поток событий для фронта."""
         logger.info(">>> run() session_id=%s question=%r", request.session_id, request.question)
         memory = SessionMemory(request.session_id, db=self.db)
+        table = memory.table
+        if table is None:
+            yield {"type": "error", "data": {"message": NO_TABLE_MESSAGE}}
+            yield {"type": "done", "data": {}}
+            return
         titles = column_aliases(
             {
-                "glossary": self.profiles.load_glossary(SOURCE_TABLE),
+                "glossary": self.profiles.load_glossary(table),
                 "aliases": {
-                    row.column: row.aliases for row in self.profiles.load_enrichment(SOURCE_TABLE)
+                    row.column: row.aliases for row in self.profiles.load_enrichment(table)
                 },
             }
         )
@@ -168,8 +173,7 @@ class AgentOrchestrator:
                         s.purpose,
                     )
                 _require_steps(plan)
-                datasource = memory._state.get("datasource") or "raw"
-                execution = await self._execute_plan(memory, plan, datasource, request.question)
+                execution = await self._execute_plan(memory, plan, table, request.question)
         except ClarificationNeeded as exc:
             yield {
                 "type": "clarification_needed",

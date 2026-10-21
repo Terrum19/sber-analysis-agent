@@ -4,17 +4,23 @@
 готовности, ссылки на дашборды. Оркестрация — в core/agent/orchestrator.py.
 """
 
-from fastapi import APIRouter
+from typing import Annotated
+
+from fastapi import APIRouter, Depends
 from fastapi.responses import StreamingResponse
 
+from app.api.deps import get_db
 from app.api.schemas.chat import ChatEvent, ChatRequest
+from app.core.data.duckdb_manager import DuckDBManager
 
 router = APIRouter()
 STREAM_HEADERS = {"Cache-Control": "no-cache, no-transform", "X-Accel-Buffering": "no"}
 
 
 @router.post("")
-async def chat(payload: ChatRequest) -> StreamingResponse:
+async def chat(
+    payload: ChatRequest, db: Annotated[DuckDBManager, Depends(get_db)]
+) -> StreamingResponse:
     """Один ход диалога: вопрос -> (текст, визуализации, дашборды).
 
     Запускает AgentOrchestrator.run() и стримит события через StreamingResponse.
@@ -23,7 +29,7 @@ async def chat(payload: ChatRequest) -> StreamingResponse:
 
     from app.core.agent.orchestrator import AgentOrchestrator
 
-    orchestrator = AgentOrchestrator()
+    orchestrator = AgentOrchestrator(db=db)
 
     async def event_stream():
         """Генерирует SSE-события от оркестратора."""

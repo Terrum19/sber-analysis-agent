@@ -1,3 +1,35 @@
+2026-10-21  thebulkapro  <saitbatalovbulat200@gmail.com>
+
+	Таблица сессии вместо жёстко заданной raw.
+	* backend/app/core/memory/session_memory.py (SessionMemory.table):
+	Новое свойство: таблица сессии, None — данные не подключены.
+	(set_table): Заменяет set_datasource; сбрасывает шаги и
+	pending_recovery.  (exists): Есть ли сессия в SQLite.
+	(record_answer, record_chart, last_chart, build_context): Сообщения и
+	последний график хранятся отдельно для каждой таблицы; без таблицы
+	паспорт не читается и raw не подставляется.
+	* backend/app/core/agent/orchestrator.py (AgentOrchestrator.run):
+	SOURCE_TABLE удалён: алиасы, глоссарий и вход плана берутся от
+	таблицы сессии.  Без таблицы — событие error «Сначала подключите
+	данные» и done.
+	* backend/app/core/data/duckdb_manager.py (DuckDBManager.columns):
+	Новый метод: имена колонок таблицы или представления.
+	* backend/app/api/routes/chat.py (chat): Оркестратор получает общий
+	DuckDB приложения через get_db вместо нового соединения на запрос.
+	* backend/app/api/routes/sessions.py (create_session): Поле table
+	обязательно, неизвестная таблица — 404; таблица и её колонки
+	записываются в SessionMemory.  (set_session_table): Новый эндпоинт
+	PATCH /api/sessions/{id}: смена таблицы, 404 для неизвестной сессии
+	(по SQLite) или таблицы.  (get_session): 404 вместо 500.
+	* backend/app/api/schemas/chat.py (SessionCreate, SessionOut,
+	SessionTable): Поле table.
+	* backend/tests/integration/test_memory_integration.py: Две таблицы
+	и две сессии, сессия без таблицы, смена вида графика по таблице.
+	* backend/tests/unit/test_sessions_api.py: Тесты API сессий.
+	* backend/tests: Тесты оркестратора выбирают таблицу raw явно через
+	сессию; API-тесты подменяют get_db.
+	* docs/memory.md, docs/visualization.md: Таблица сессии.
+
 2026-10-20  mb6ockatf  <smokenmirror@tutamail.com>
 
 	Дашборды хранятся в SQLite (#45).

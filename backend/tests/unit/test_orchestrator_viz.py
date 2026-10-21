@@ -78,6 +78,8 @@ def db():
         "CREATE TABLE raw AS SELECT * FROM (VALUES ('msk', 10.0), ('spb', 4.0), ('msk', 2.5)) "
         "AS rows(region, amount)"
     )
+    for session in ("s1", "fresh"):
+        SessionMemory(session).set_table("raw", manager.columns("raw"))
     manager.statements.clear()
     yield manager
     manager.close()

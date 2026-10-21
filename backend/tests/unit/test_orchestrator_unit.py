@@ -5,6 +5,7 @@ import pytest
 from app.api.schemas.chat import ChatRequest
 from app.core.agent.orchestrator import AgentOrchestrator
 from app.core.data.duckdb_manager import DuckDBManager
+from app.core.memory.session_memory import SessionMemory
 
 
 class FakeExecutor:
@@ -53,6 +54,8 @@ def orchestrator():
     db = DuckDBManager(path=":memory:")
     db.execute("CREATE TABLE raw AS SELECT 1 AS a UNION ALL SELECT 2 AS a")
     db.execute("CREATE TABLE temp_result_v1 AS SELECT 1 AS a UNION ALL SELECT 2 AS a")
+    for session in ("s1", "s2"):
+        SessionMemory(session).set_table("raw", db.columns("raw"))
     return AgentOrchestrator(
         planner=FakePlanner(),
         executor=FakeExecutor(),
