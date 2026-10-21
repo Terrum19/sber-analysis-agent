@@ -153,8 +153,8 @@ class AgentOrchestrator:
         titles = column_aliases(
             {
                 "glossary": self.profiles.load_glossary(SOURCE_TABLE),
-                "aliases": {
-                    row.column: row.aliases for row in self.profiles.load_enrichment(SOURCE_TABLE)
+                "titles": {
+                    row.column: row.title for row in self.profiles.load_enrichment(SOURCE_TABLE)
                 },
             }
         )

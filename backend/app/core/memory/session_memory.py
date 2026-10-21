@@ -113,8 +113,8 @@ class SessionMemory:
             "columns_summary": columns_summary,
             "datasource": datasource or "raw",
             "profile": profile,
-            # Обогащение паспорта: алиасы для отбора колонок, описания для промпта.
-            "aliases": {row.column: row.aliases for row in enrichment if row.aliases},
+            # Описание таблицы из паспорта: названия для отбора колонок, описания для промпта.
+            "titles": {row.column: row.title for row in enrichment if row.title},
             "descriptions": {row.column: row.description for row in enrichment if row.description},
         }
 

@@ -36,9 +36,8 @@ def db():
 
 def enrichment(column: str, **fields) -> ColumnEnrichment:
     values = {
+        "title": f"Название {column}",
         "description": f"описание {column}",
-        "aliases": [f"{column} 1", f"{column} 2"],
-        "description_original": f"описание {column}",
         "description_source": "source",
         "fingerprint": f"fp-{column}",
     }
@@ -101,12 +100,12 @@ def test_meta_schema_holds_passport(db) -> None:
     ]
     columns = db.query(
         "SELECT column_name, position, kind, min_value, top_values, lower_fence, upper_fence, "
-        "outlier_count, aliases, fingerprint FROM _meta.column_passport ORDER BY position"
+        "outlier_count, title, fingerprint FROM _meta.column_passport ORDER BY position"
     )
     amount, region, day = columns
     assert amount["column_name"] == "amount"
     assert (amount["lower_fence"], amount["upper_fence"], amount["outlier_count"]) == (0.5, 4.5, 1)
-    assert amount["aliases"] == [] and amount["fingerprint"] is None
+    assert amount["title"] is None and amount["fingerprint"] is None
     assert region["top_values"] == '[{"value": "msk", "count": 3}, {"value": "spb", "count": 1}]'
     assert (region["lower_fence"], region["upper_fence"]) == (None, None)
     assert (day["position"], day["kind"], day["min_value"]) == (2, "temporal", '"2024-01-05"')
@@ -125,7 +124,7 @@ def test_upsert_keeps_enrichment_and_drops_removed_columns(db) -> None:
     saved = {row.column: row for row in memory.load_enrichment("sales")}
     assert list(saved) == ["amount", "region", "channel"]
     assert saved["amount"] == enrichment("amount")
-    assert saved["region"].aliases == ["region 1", "region 2"]
+    assert saved["region"].title == "Название region"
     assert saved["channel"] == ColumnEnrichment(column="channel")
     assert db.query("SELECT row_count FROM _meta.table_passport") == [{"row_count": 6}]
 
@@ -146,7 +145,7 @@ def test_save_enrichment_marks_time(db) -> None:
     assert db.query("SELECT enriched_at IS NULL AS pending FROM _meta.table_passport") == [
         {"pending": True}
     ]
-    row = enrichment("region", aliases=[], description=None, description_source="none")
+    row = enrichment("region", title=None, description=None, description_source="none")
     memory.save_enrichment("sales", [row])
     assert memory.load_enrichment("sales")[1] == row
     flags = db.query(
@@ -194,3 +193,24 @@ def test_no_json_files_are_written(db, tmp_path, monkeypatch) -> None:
     memory.save_profile(profile_table(db, "sales", approx=False))
     memory.save_enrichment("sales", [enrichment("amount")])
     assert list(tmp_path.iterdir()) == []
+
+
+def test_old_passport_gets_title_column(tmp_path) -> None:
+    path = str(tmp_path / "main.duckdb")
+    old = DuckDBManager(path)
+    old.execute("CREATE SCHEMA _meta")
+    old.execute(
+        "CREATE TABLE _meta.column_passport (table_name VARCHAR, column_name VARCHAR, "
+        "description VARCHAR, aliases VARCHAR[] NOT NULL DEFAULT [])"
+    )
+    old.close()
+    db = DuckDBManager(path)
+    try:
+        ProfileMemory(db)
+        columns = db.query(
+            "SELECT column_name FROM information_schema.columns "
+            "WHERE table_schema = '_meta' AND table_name = 'column_passport'"
+        )
+        assert "title" in {row["column_name"] for row in columns}
+    finally:
+        db.close()

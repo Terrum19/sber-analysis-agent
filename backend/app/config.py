@@ -50,6 +50,8 @@ class Settings(BaseSettings):
 
     enrich_description_max_chars: int = 200
     enrich_batch_size: int = 25
+    # Документ-описание таблицы длиннее порога обрезается перед отправкой в LLM.
+    enrich_document_max_chars: int = 20_000
 
 
 @lru_cache

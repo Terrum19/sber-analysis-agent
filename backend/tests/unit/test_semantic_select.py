@@ -51,12 +51,12 @@ def test_identifier_columns_not_boosted_for_aggregations() -> None:
     assert picked == ["Сколько_Купили"]
 
 
-def test_russian_question_finds_latin_columns_by_alias_and_value() -> None:
+def test_russian_question_finds_latin_columns_by_title_and_value() -> None:
     profile = make_profile({"client": "numeric", "revenue": "numeric", "category": "text"})
     profile.columns[2].top_values = [{"value": "Электроника", "count": 3}]
     names = [column.name for column in profile.columns]
     picked = select_columns(
-        "Средняя выручка продаж электроники", names, 2, profile, aliases={"revenue": ["выручка"]}
+        "Средняя выручка продаж электроники", names, 2, profile, titles={"revenue": "Выручка"}
     )
     assert picked == ["revenue", "category"]
 
@@ -89,3 +89,13 @@ def test_describe_columns_omits_facts_the_profile_does_not_have() -> None:
         "- date [temporal, ]",
         "- flag [boolean, ]",
     ]
+
+
+def test_describe_columns_shows_titles_from_passport() -> None:
+    from app.core.data.semantic_select import describe_columns
+
+    profile = make_profile({"revenue": "numeric", "flag": "boolean"})
+    text = describe_columns(
+        ["revenue", "flag"], profile, {"revenue": "Сумма"}, {"revenue": "Выручка"}
+    )
+    assert text.splitlines() == ["- revenue «Выручка» [numeric, ] — Сумма", "- flag [boolean, ]"]
