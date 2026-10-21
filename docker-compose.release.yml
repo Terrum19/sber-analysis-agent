@@ -9,6 +9,12 @@ services:
   backend:
     image: sber-backend:${SBER_VERSION:?укажите SBER_VERSION, например v0.1.0}
     env_file: .env
+    # Пути данных внутри контейнера — на смонтированном томе /app/storage
+    # (относительные пути из .env рассчитаны на запуск из корня репозитория).
+    environment:
+      STORAGE_DIR: /app/storage
+      DUCKDB_PATH: /app/storage/duckdb/main.duckdb
+      SQLITE_PATH: /app/storage/sessions/sessions.sqlite
     ports:
       - "8000:8000"
     volumes:
