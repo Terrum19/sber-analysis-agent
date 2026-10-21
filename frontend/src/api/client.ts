@@ -5,7 +5,7 @@
  * При ошибках сети или бэкенда выбрасывается ApiError.
  */
 import type { ChatStreamEvent } from "@/types/chat";
-import type { Datasource, DatasourceDbRequest } from "@/types/datasource";
+import type { Datasource, DatasourceDbRequest, SessionResponse } from "@/types/datasource";
 import type {
   DashboardConfig,
   DashboardCreatePayload,
@@ -16,9 +16,11 @@ import {
   mockAttachCsv,
   mockAttachDb,
   mockCreateDashboard,
+  mockCreateSession,
   mockDeleteDashboard,
   mockFetchDashboard,
   mockFetchDashboards,
+  mockPatchSession,
   mockRecalculateDashboard,
   mockStreamChat,
   mockUpdateDashboard,
@@ -85,20 +87,73 @@ export function setMockMode(enabled: boolean): void {
   }
 }
 
-export async function createSession(datasourceId?: string): Promise<{ session_id: string }> {
+export async function createSession(
+  table: string,
+  datasourceId?: string | null,
+  title?: string | null,
+): Promise<SessionResponse> {
   if (isMockMode()) {
-    return { session_id: `mock-session-${Date.now().toString(36)}` };
+    return mockCreateSession(table, datasourceId ?? undefined, title ?? undefined);
   }
   try {
     const res = await fetch(`${API}/sessions`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ datasource_id: datasourceId ?? null }),
+      body: JSON.stringify({
+        table,
+        datasource_id: datasourceId ?? null,
+        title: title ?? null,
+      }),
     });
     if (!res.ok) throw await parseApiError(res);
     return await res.json();
   } catch (err) {
-    throw toApiError(err);
+    const apiErr = toApiError(err);
+    if (apiErr.status === 404) {
+      apiErr.detail = "Таблица не найдена";
+    }
+    throw apiErr;
+  }
+}
+
+export async function patchSession(
+  sessionId: string,
+  table: string,
+): Promise<SessionResponse> {
+  if (isMockMode()) {
+    return mockPatchSession(sessionId, table);
+  }
+  try {
+    const res = await fetch(`${API}/sessions/${encodeURIComponent(sessionId)}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ table }),
+    });
+    if (!res.ok) throw await parseApiError(res);
+    return await res.json();
+  } catch (err) {
+    const apiErr = toApiError(err);
+    if (apiErr.status === 404) {
+      apiErr.detail = "Таблица не найдена";
+    }
+    throw apiErr;
+  }
+}
+
+export async function getSession(sessionId: string): Promise<SessionResponse> {
+  if (isMockMode()) {
+    return { session_id: sessionId, table: "mock_table" };
+  }
+  try {
+    const res = await fetch(`${API}/sessions/${encodeURIComponent(sessionId)}`);
+    if (!res.ok) throw await parseApiError(res);
+    return await res.json();
+  } catch (err) {
+    const apiErr = toApiError(err);
+    if (apiErr.status === 404) {
+      apiErr.detail = "Сессия не найдена";
+    }
+    throw apiErr;
   }
 }
 

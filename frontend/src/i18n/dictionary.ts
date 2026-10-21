@@ -46,6 +46,8 @@ const ru = {
   "sidebar.newName": "Новое название",
 
   "modal.title": "Подключение базы данных",
+  "modal.selectTableTitle": "Выберите таблицу для анализа",
+  "modal.selectTableBtn": "Начать анализ",
   "modal.dbms": "СУБД",
   "modal.dsn": "Строка подключения (DSN)",
   "modal.schema": "Схема (опционально)",
@@ -93,6 +95,7 @@ const ru = {
   "welcome.openRegistry": "Открыть реестр дашбордов",
   "welcome.recent": "Недавние базы данных",
   "welcome.noRecent": "Пока нет загруженных баз данных.",
+  "welcome.noDataToStart": "Сначала подключите данные (CSV или БД)",
   "welcome.openSession": "Открыть новую сессию",
   "welcome.whatCanDo": "Что можно сделать",
   "welcome.cap1": "Задавайте вопросы к данным на естественном языке — агент сам напишет SQL.",
@@ -118,6 +121,8 @@ const ru = {
 
   "chat.newSession": "Новая сессия",
   "chat.tables": "Таблицы:",
+  "chat.activeTable": "Активная таблица",
+  "chat.tableNotFound": "Таблица не найдена",
   "chat.suggest1": "Создай дашборд по регионам и продажам",
   "chat.suggest2": "Сравни выручку по категориям",
   "chat.quoted": "«{q}»",
@@ -259,6 +264,8 @@ const en: Record<MessageKey, string> = {
   "sidebar.newName": "New name",
 
   "modal.title": "Connect a database",
+  "modal.selectTableTitle": "Select table for analysis",
+  "modal.selectTableBtn": "Start analysis",
   "modal.dbms": "DBMS",
   "modal.dsn": "Connection string (DSN)",
   "modal.schema": "Schema (optional)",
@@ -306,6 +313,7 @@ const en: Record<MessageKey, string> = {
   "welcome.openRegistry": "Open dashboard registry",
   "welcome.recent": "Recent databases",
   "welcome.noRecent": "No databases loaded yet.",
+  "welcome.noDataToStart": "Connect data first (CSV or DB)",
   "welcome.openSession": "Open a new session",
   "welcome.whatCanDo": "What you can do",
   "welcome.cap1": "Ask questions about your data in plain language — the agent writes the SQL.",
@@ -331,6 +339,8 @@ const en: Record<MessageKey, string> = {
 
   "chat.newSession": "New session",
   "chat.tables": "Tables:",
+  "chat.activeTable": "Active table",
+  "chat.tableNotFound": "Table not found",
   "chat.suggest1": "Build a dashboard by region and sales",
   "chat.suggest2": "Compare revenue by category",
   "chat.quoted": "“{q}”",

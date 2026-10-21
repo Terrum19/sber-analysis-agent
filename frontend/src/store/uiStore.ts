@@ -7,6 +7,7 @@
  */
 import { create } from "zustand";
 import { persist, createJSONStorage } from "zustand/middleware";
+import type { DatabaseFolder } from "@/store/sessionStore";
 
 export type Theme = "dark" | "light";
 export type Locale = "ru" | "en";
@@ -49,6 +50,7 @@ interface UiState {
   theme: Theme;
   locale: Locale;
   dbModalOpen: boolean;
+  tableModalTarget: DatabaseFolder | null;
   csvPickRequest: number;
   canvasOpen: boolean;
   tabs: WorkspaceTab[];
@@ -59,6 +61,7 @@ interface UiState {
   setTheme: (theme: Theme) => void;
   setLocale: (locale: Locale) => void;
   setDbModalOpen: (open: boolean) => void;
+  setTableModalTarget: (target: DatabaseFolder | null) => void;
   requestCsvPick: () => void;
   setCanvasOpen: (open: boolean) => void;
   setSidebarWidth: (px: number) => void;
@@ -79,6 +82,7 @@ export const useUiStore = create<UiState>()(
       theme: "dark",
       locale: "ru",
       dbModalOpen: false,
+      tableModalTarget: null,
       csvPickRequest: 0,
       canvasOpen: true,
       tabs: [{ kind: "welcome" }],
@@ -92,6 +96,7 @@ export const useUiStore = create<UiState>()(
       },
       setLocale: (locale) => set({ locale }),
       setDbModalOpen: (dbModalOpen) => set({ dbModalOpen }),
+      setTableModalTarget: (tableModalTarget) => set({ tableModalTarget }),
       requestCsvPick: () => set((s) => ({ csvPickRequest: s.csvPickRequest + 1 })),
       setCanvasOpen: (canvasOpen) => set({ canvasOpen }),
       setSidebarWidth: (px) => set({ sidebarWidth: clamp(Math.round(px), SIDEBAR_WIDTH.min, SIDEBAR_WIDTH.max) }),

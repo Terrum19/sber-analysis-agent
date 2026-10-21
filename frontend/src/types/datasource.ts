@@ -15,3 +15,20 @@ export interface DatasourceDbRequest {
   dsn: string;
   schema?: string;
 }
+
+export interface SessionCreatePayload {
+  table: string;
+  datasource_id?: string | null;
+  title?: string | null;
+}
+
+export interface SessionPatchPayload {
+  table: string;
+}
+
+export interface SessionResponse {
+  session_id: string;
+  table: string;
+  datasource_id?: string | null;
+  title?: string | null;
+}

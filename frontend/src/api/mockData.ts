@@ -8,7 +8,7 @@
  */
 import type { DashboardConfig, DashboardListItem, DashboardTile } from "@/types/dashboard";
 import type { ChatStreamEvent } from "@/types/chat";
-import type { Datasource } from "@/types/datasource";
+import type { Datasource, SessionResponse } from "@/types/datasource";
 
 const STORAGE_KEY = "sber_mock_dashboards_db";
 
@@ -246,6 +246,28 @@ export function mockAttachDb(kind: "postgres" | "clickhouse", dsn: string): Data
     kind,
     tables: ["sales_orders", "regional_revenue", "customer_segments", "products"],
     profile_summary: `${kind.toUpperCase()} (${dsn.split("@")[1] || "подключено"}): 4 таблицы`,
+  };
+}
+
+export function mockCreateSession(table: string, datasourceId?: string, title?: string): SessionResponse {
+  return {
+    session_id: `mock-session-${Date.now().toString(36)}`,
+    table,
+    datasource_id: datasourceId ?? null,
+    title: title ?? null,
+  };
+}
+
+export function mockPatchSession(sessionId: string, table: string): SessionResponse {
+  if (!table || table === "unknown_table") {
+    const err = new Error("Таблица не найдена") as any;
+    err.status = 404;
+    err.detail = "Таблица не найдена";
+    throw err;
+  }
+  return {
+    session_id: sessionId,
+    table,
   };
 }
 

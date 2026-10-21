@@ -8,6 +8,8 @@ import { useEffect, useRef } from "react";
 import LeftSidebar from "@/components/layout/LeftSidebar";
 import TopHeader from "@/components/layout/TopHeader";
 import Splitter from "@/components/ui/Splitter";
+import TableSelectModal from "@/components/modals/TableSelectModal";
+import { useStartSession } from "@/hooks/useStartSession";
 import { SIDEBAR_WIDTH, tabKey, useUiStore, type WorkspaceTab } from "@/store/uiStore";
 import { useT } from "@/i18n/useT";
 
@@ -16,6 +18,9 @@ export default function WorkspaceShell({ tab, children }: { tab: WorkspaceTab; c
   const openTab = useUiStore((s) => s.openTab);
   const sidebarWidth = useUiStore((s) => s.sidebarWidth);
   const setSidebarWidth = useUiStore((s) => s.setSidebarWidth);
+  const tableModalTarget = useUiStore((s) => s.tableModalTarget);
+  const setTableModalTarget = useUiStore((s) => s.setTableModalTarget);
+  const startSession = useStartSession();
   const dragStartWidth = useRef(sidebarWidth);
   const key = tabKey(tab);
   const title = "title" in tab ? tab.title : undefined;
@@ -42,6 +47,17 @@ export default function WorkspaceShell({ tab, children }: { tab: WorkspaceTab; c
         <TopHeader active={tab} />
         <div className="flex min-h-0 flex-1 flex-col overflow-hidden bg-graphite-900">{children}</div>
       </div>
+      {tableModalTarget && (
+        <TableSelectModal
+          isOpen={Boolean(tableModalTarget)}
+          databaseTitle={tableModalTarget.title}
+          tables={tableModalTarget.tables}
+          onClose={() => setTableModalTarget(null)}
+          onSelect={(table) => {
+            startSession(tableModalTarget, table);
+          }}
+        />
+      )}
     </div>
   );
 }

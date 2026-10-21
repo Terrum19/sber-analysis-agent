@@ -60,7 +60,24 @@ export default function WelcomeScreen() {
           <div className="space-y-10">
             <section>
               <h2 className="mb-3 text-[15px] font-medium text-graphite-100">{t("welcome.start")}</h2>
-              <div className="flex flex-col items-start">
+              <div className="flex flex-col items-start gap-0.5">
+                <button
+                  type="button"
+                  disabled={databases.length === 0}
+                  onClick={() => databases.length > 0 && startSession(databases[0])}
+                  className="flex items-center gap-2.5 py-1 text-[13px] text-graphite-200 hover:text-graphite-50 transition disabled:opacity-40 disabled:cursor-not-allowed text-left"
+                  title={databases.length === 0 ? t("welcome.noDataToStart") : t("sidebar.newSession")}
+                >
+                  <Icon name="plus" className="text-graphite-400 shrink-0" />
+                  <span className={databases.length > 0 ? "hover:underline underline-offset-4 decoration-graphite-500" : ""}>
+                    {t("sidebar.newSession")}
+                  </span>
+                  {databases.length === 0 && (
+                    <span className="text-[11px] text-graphite-500 font-normal">
+                      ({t("welcome.noDataToStart")})
+                    </span>
+                  )}
+                </button>
                 <StartLink icon="upload" label={t("welcome.uploadCsv")} onClick={requestCsvPick} />
                 <StartLink icon="database" label={t("welcome.connectDb")} onClick={() => setDbModalOpen(true)} />
                 <StartLink icon="layout" label={t("welcome.openRegistry")} onClick={() => router.push("/dashboards")} />

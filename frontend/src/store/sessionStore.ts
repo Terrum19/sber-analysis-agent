@@ -10,6 +10,7 @@ import { persist, createJSONStorage } from "zustand/middleware";
 import type { DashboardTile } from "@/types/dashboard";
 import type { DashboardEvent, ChartEvent } from "@/types/chat";
 import type { Datasource } from "@/types/datasource";
+import { useCanvasStore } from "@/store/canvasStore";
 
 export interface ChatMessage {
   id?: string;
@@ -42,7 +43,12 @@ export interface DatabaseFolder {
   pinned?: boolean;
 }
 
-interface SessionSnapshot {
+export interface SessionSnapshot {
+  messages: ChatMessage[];
+  tiles: DashboardTile[];
+}
+
+export interface SessionTableSnapshot {
   messages: ChatMessage[];
   tiles: DashboardTile[];
 }
@@ -59,8 +65,12 @@ interface SessionState {
   collapsedDatabases: Record<string, boolean>;
   /** К какой базе данных относится сессия (в т.ч. ещё пустая). */
   sessionDatabase: Record<string, string>;
+  /** Активная таблица для каждой сессии. */
+  sessionActiveTable: Record<string, string>;
   /** Сообщения и плитки сессий, открытых в этой вкладке. */
   sessionCache: Record<string, SessionSnapshot>;
+  /** Кеш сообщений и плиток сессии, изолированный по таблицам. */
+  sessionTableCache: Record<string, Record<string, SessionTableSnapshot>>;
 
   setSession: (id: string) => void;
   addMessage: (msg: ChatMessage) => void;
@@ -78,25 +88,14 @@ interface SessionState {
   renameDatabase: (databaseId: string, title: string) => void;
   togglePinDatabase: (databaseId: string) => void;
   deleteDatabase: (databaseId: string) => string[];
-  bindSession: (sessionId: string, databaseId: string) => void;
+  bindSession: (sessionId: string, databaseId: string, initialTable?: string) => void;
+  switchSessionTable: (sessionId: string, nextTable: string) => void;
   /** Добавляет сессию в папку базы данных при первом вопросе. */
   registerSession: (sessionId: string, title: string) => void;
   renameSession: (sessionId: string, title: string) => void;
   togglePinSession: (sessionId: string) => void;
   deleteSession: (sessionId: string) => void;
 }
-
-const DEMO_DATABASE: DatabaseFolder = {
-  id: "demo-sales-passport",
-  title: "sales_passport (DuckDB)",
-  kind: "duckdb",
-  tables: ["sales_passport"],
-  demo: true,
-  sessions: [
-    { id: "demo-sales", title: "Анализ выручки по регионам", created_at: Date.now() - 3600000 },
-    { id: "demo-kpi", title: "Динамика среднего чека и клиентов", created_at: Date.now() - 86400000 },
-  ],
-};
 
 export const useSessionStore = create<SessionState>()(
   persist(
@@ -108,57 +107,139 @@ export const useSessionStore = create<SessionState>()(
       datasource: null,
       datasourceTitle: null,
 
-      databases: [DEMO_DATABASE],
+      databases: [],
       collapsedDatabases: {},
-      sessionDatabase: {
-        "demo-sales": DEMO_DATABASE.id,
-        "demo-kpi": DEMO_DATABASE.id,
-      },
+      sessionDatabase: {},
+      sessionActiveTable: {},
       sessionCache: {},
+      sessionTableCache: {},
 
       setSession: (id) =>
         set((s) => {
           if (s.sessionId === id) return {};
           const cache = { ...s.sessionCache };
-          if (s.sessionId) cache[s.sessionId] = { messages: s.messages, tiles: s.tiles };
-          const next = cache[id] ?? { messages: [], tiles: [] };
-          return { sessionId: id, sessionCache: cache, messages: next.messages, tiles: next.tiles, selectedTile: null };
+          const tableCache = { ...s.sessionTableCache };
+          if (s.sessionId) {
+            cache[s.sessionId] = { messages: s.messages, tiles: s.tiles };
+            const prevTable = s.sessionActiveTable[s.sessionId];
+            if (prevTable) {
+              tableCache[s.sessionId] = {
+                ...(tableCache[s.sessionId] || {}),
+                [prevTable]: { messages: s.messages, tiles: s.tiles },
+              };
+            }
+          }
+          const activeTable = s.sessionActiveTable[id];
+          let next: SessionSnapshot = { messages: [], tiles: [] };
+          if (activeTable && tableCache[id]?.[activeTable]) {
+            next = tableCache[id][activeTable];
+          } else if (cache[id]) {
+            next = cache[id];
+          }
+          useCanvasStore.getState().setDashboard(null, "", next.tiles);
+          return {
+            sessionId: id,
+            sessionCache: cache,
+            sessionTableCache: tableCache,
+            messages: next.messages,
+            tiles: next.tiles,
+            selectedTile: null,
+          };
         }),
       addMessage: (msg) =>
-        set((s) => ({
-          messages: [
-            ...s.messages,
-            {
-              ...msg,
-              id: msg.id || `msg-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
-              timestamp: msg.timestamp || new Date().toLocaleTimeString("ru-RU", { hour: "2-digit", minute: "2-digit" }),
-            },
-          ],
-        })),
+        set((s) => {
+          const newMsg: ChatMessage = {
+            ...msg,
+            id: msg.id || `msg-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+            timestamp: msg.timestamp || new Date().toLocaleTimeString("ru-RU", { hour: "2-digit", minute: "2-digit" }),
+          };
+          const nextMessages = [...s.messages, newMsg];
+          let nextTableCache = s.sessionTableCache;
+          if (s.sessionId && s.sessionActiveTable[s.sessionId]) {
+            const curTable = s.sessionActiveTable[s.sessionId];
+            nextTableCache = {
+              ...s.sessionTableCache,
+              [s.sessionId]: {
+                ...(s.sessionTableCache[s.sessionId] || {}),
+                [curTable]: { messages: nextMessages, tiles: s.tiles },
+              },
+            };
+          }
+          return { messages: nextMessages, sessionTableCache: nextTableCache };
+        }),
       appendToLastMessage: (chunk) =>
         set((s) => {
           const last = s.messages[s.messages.length - 1];
           if (!last) return {};
-          return {
-            messages: [
-              ...s.messages.slice(0, -1),
-              { ...last, content: last.content + chunk },
-            ],
-          };
+          const nextMessages = [
+            ...s.messages.slice(0, -1),
+            { ...last, content: last.content + chunk },
+          ];
+          let nextTableCache = s.sessionTableCache;
+          if (s.sessionId && s.sessionActiveTable[s.sessionId]) {
+            const curTable = s.sessionActiveTable[s.sessionId];
+            nextTableCache = {
+              ...s.sessionTableCache,
+              [s.sessionId]: {
+                ...(s.sessionTableCache[s.sessionId] || {}),
+                [curTable]: { messages: nextMessages, tiles: s.tiles },
+              },
+            };
+          }
+          return { messages: nextMessages, sessionTableCache: nextTableCache };
         }),
       updateLastMessage: (patch) =>
         set((s) => {
           const last = s.messages[s.messages.length - 1];
           if (!last) return {};
-          return {
-            messages: [
-              ...s.messages.slice(0, -1),
-              { ...last, ...patch },
-            ],
-          };
+          const nextMessages = [
+            ...s.messages.slice(0, -1),
+            { ...last, ...patch },
+          ];
+          let nextTableCache = s.sessionTableCache;
+          if (s.sessionId && s.sessionActiveTable[s.sessionId]) {
+            const curTable = s.sessionActiveTable[s.sessionId];
+            nextTableCache = {
+              ...s.sessionTableCache,
+              [s.sessionId]: {
+                ...(s.sessionTableCache[s.sessionId] || {}),
+                [curTable]: { messages: nextMessages, tiles: s.tiles },
+              },
+            };
+          }
+          return { messages: nextMessages, sessionTableCache: nextTableCache };
         }),
-      addTile: (tile) => set((s) => ({ tiles: [...s.tiles, tile] })),
-      setTiles: (tiles) => set({ tiles }),
+      addTile: (tile) =>
+        set((s) => {
+          const nextTiles = [...s.tiles, tile];
+          let nextTableCache = s.sessionTableCache;
+          if (s.sessionId && s.sessionActiveTable[s.sessionId]) {
+            const curTable = s.sessionActiveTable[s.sessionId];
+            nextTableCache = {
+              ...s.sessionTableCache,
+              [s.sessionId]: {
+                ...(s.sessionTableCache[s.sessionId] || {}),
+                [curTable]: { messages: s.messages, tiles: nextTiles },
+              },
+            };
+          }
+          return { tiles: nextTiles, sessionTableCache: nextTableCache };
+        }),
+      setTiles: (tiles) =>
+        set((s) => {
+          let nextTableCache = s.sessionTableCache;
+          if (s.sessionId && s.sessionActiveTable[s.sessionId]) {
+            const curTable = s.sessionActiveTable[s.sessionId];
+            nextTableCache = {
+              ...s.sessionTableCache,
+              [s.sessionId]: {
+                ...(s.sessionTableCache[s.sessionId] || {}),
+                [curTable]: { messages: s.messages, tiles },
+              },
+            };
+          }
+          return { tiles, sessionTableCache: nextTableCache };
+        }),
       selectTile: (index) => set({ selectedTile: index }),
       setDatasource: (datasource) =>
         set({
@@ -212,9 +293,13 @@ export const useSessionStore = create<SessionState>()(
           delete nextCollapsed[databaseId];
           const nextSessionDb = { ...s.sessionDatabase };
           const nextCache = { ...s.sessionCache };
+          const nextActiveTable = { ...s.sessionActiveTable };
+          const nextTableCache = { ...s.sessionTableCache };
           for (const sid of sessionIds) {
             delete nextSessionDb[sid];
             delete nextCache[sid];
+            delete nextActiveTable[sid];
+            delete nextTableCache[sid];
           }
           const isActiveDeleted = s.sessionId ? sessionIds.includes(s.sessionId) : false;
           const isDatasourceDeleted = s.datasource?.datasource_id === databaseId;
@@ -223,14 +308,52 @@ export const useSessionStore = create<SessionState>()(
             collapsedDatabases: nextCollapsed,
             sessionDatabase: nextSessionDb,
             sessionCache: nextCache,
+            sessionActiveTable: nextActiveTable,
+            sessionTableCache: nextTableCache,
             ...(isActiveDeleted ? { sessionId: null, messages: [], tiles: [], selectedTile: null } : {}),
             ...(isDatasourceDeleted ? { datasource: null, datasourceTitle: null } : {}),
           };
         });
         return sessionIds;
       },
-      bindSession: (sessionId, databaseId) =>
-        set((s) => ({ sessionDatabase: { ...s.sessionDatabase, [sessionId]: databaseId } })),
+      bindSession: (sessionId, databaseId, initialTable) =>
+        set((s) => ({
+          sessionDatabase: { ...s.sessionDatabase, [sessionId]: databaseId },
+          sessionActiveTable: initialTable
+            ? { ...s.sessionActiveTable, [sessionId]: initialTable }
+            : s.sessionActiveTable,
+        })),
+      switchSessionTable: (sessionId, nextTable) => {
+        const state = get();
+        const currentTable = state.sessionActiveTable[sessionId];
+        const sessionTableCache = { ...state.sessionTableCache };
+        const currentSessionTableCache = { ...(sessionTableCache[sessionId] || {}) };
+
+        if (currentTable) {
+          currentSessionTableCache[currentTable] = {
+            messages: state.messages,
+            tiles: state.tiles,
+          };
+        }
+        sessionTableCache[sessionId] = currentSessionTableCache;
+
+        const nextSnapshot = currentSessionTableCache[nextTable] || { messages: [], tiles: [] };
+        const sessionCache = {
+          ...state.sessionCache,
+          [sessionId]: { messages: nextSnapshot.messages, tiles: nextSnapshot.tiles },
+        };
+
+        useCanvasStore.getState().setDashboard(null, "", nextSnapshot.tiles);
+
+        set({
+          sessionActiveTable: { ...state.sessionActiveTable, [sessionId]: nextTable },
+          sessionTableCache,
+          sessionCache,
+          messages: nextSnapshot.messages,
+          tiles: nextSnapshot.tiles,
+          selectedTile: null,
+        });
+      },
       registerSession: (sessionId, title) => {
         const databaseId = get().sessionDatabase[sessionId];
         if (!databaseId) return;
@@ -267,11 +390,17 @@ export const useSessionStore = create<SessionState>()(
           delete nextSessionDb[sessionId];
           const nextCache = { ...s.sessionCache };
           delete nextCache[sessionId];
+          const nextActiveTable = { ...s.sessionActiveTable };
+          delete nextActiveTable[sessionId];
+          const nextTableCache = { ...s.sessionTableCache };
+          delete nextTableCache[sessionId];
           const isActiveDeleted = s.sessionId === sessionId;
           return {
             databases: nextDatabases,
             sessionDatabase: nextSessionDb,
             sessionCache: nextCache,
+            sessionActiveTable: nextActiveTable,
+            sessionTableCache: nextTableCache,
             ...(isActiveDeleted ? { sessionId: null, messages: [], tiles: [], selectedTile: null } : {}),
           };
         }),
@@ -280,10 +409,23 @@ export const useSessionStore = create<SessionState>()(
       name: "sber_databases",
       storage: createJSONStorage(() => (typeof window !== "undefined" ? localStorage : ({} as any))),
       partialize: (state) => ({
-        databases: state.databases,
+        databases: state.databases.filter((d) => !d.demo && d.id !== "demo-sales-passport"),
         collapsedDatabases: state.collapsedDatabases,
         sessionDatabase: state.sessionDatabase,
+        sessionActiveTable: state.sessionActiveTable,
+        sessionTableCache: state.sessionTableCache,
       }),
+      onRehydrateStorage: () => (state) => {
+        if (state) {
+          if (state.databases?.some((d) => d.demo || d.id === "demo-sales-passport")) {
+            state.databases = state.databases.filter((d) => !d.demo && d.id !== "demo-sales-passport");
+          }
+          if (state.sessionDatabase) {
+            delete state.sessionDatabase["demo-sales"];
+            delete state.sessionDatabase["demo-kpi"];
+          }
+        }
+      },
     }
   )
 );

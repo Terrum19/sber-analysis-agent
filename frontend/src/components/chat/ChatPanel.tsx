@@ -8,7 +8,7 @@
  */
 import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
-import { streamChat } from "@/api/client";
+import { getSession, patchSession, streamChat } from "@/api/client";
 import { useSessionStore, useSessionDatabase } from "@/store/sessionStore";
 import { useCanvasStore } from "@/store/canvasStore";
 import { useUiStore } from "@/store/uiStore";
@@ -54,7 +54,45 @@ export default function ChatPanel({ sessionId }: Props) {
   const database = useSessionDatabase(sessionId);
   const sessionTitle = database?.sessions.find((x) => x.id === sessionId)?.title;
 
+  const activeTable = useSessionStore((s) => s.sessionActiveTable[sessionId]);
+  const switchSessionTable = useSessionStore((s) => s.switchSessionTable);
+  const bindSession = useSessionStore((s) => s.bindSession);
+
+  const [isTableSwitching, setIsTableSwitching] = useState(false);
+  const [tableError, setTableError] = useState<string | null>(null);
+
   const setCanvasDashboard = useCanvasStore((s) => s.setDashboard);
+
+  useEffect(() => {
+    if (!activeTable && sessionId) {
+      getSession(sessionId)
+        .then((sess) => {
+          if (sess.table) {
+            const dbId = useSessionStore.getState().sessionDatabase[sessionId] || sess.datasource_id || "";
+            bindSession(sessionId, dbId, sess.table);
+          }
+        })
+        .catch(() => {});
+    }
+  }, [sessionId, activeTable, bindSession]);
+
+  async function handleTableChange(nextTable: string) {
+    if (nextTable === activeTable || isTableSwitching || streaming) return;
+    setIsTableSwitching(true);
+    setTableError(null);
+    try {
+      await patchSession(sessionId, nextTable);
+      switchSessionTable(sessionId, nextTable);
+    } catch (err: any) {
+      if (err?.status === 404) {
+        setTableError(t("chat.tableNotFound"));
+      } else {
+        setTableError(err?.detail || err?.message || t("chat.tableNotFound"));
+      }
+    } finally {
+      setIsTableSwitching(false);
+    }
+  }
 
   // Отмена стрима
   const stopRef = useRef<(() => void) | null>(null);
@@ -171,6 +209,42 @@ export default function ChatPanel({ sessionId }: Props) {
 
   return (
     <div className="flex h-full flex-col bg-graphite-900 text-graphite-100">
+      {/* Шапка чата: база данных и переключение таблицы */}
+      <div className="flex h-10 shrink-0 items-center justify-between border-b border-graphite-800 bg-graphite-950/60 px-4 md:px-8">
+        <div className="flex items-center gap-2 min-w-0">
+          <Icon name="folder" size={13} className="text-graphite-400 shrink-0" />
+          <span className="text-[12px] text-graphite-400 truncate max-w-[140px] md:max-w-[200px]" title={database?.title}>
+            {database?.title ?? t("header.database")}
+          </span>
+          <span className="text-graphite-600 text-xs">/</span>
+          <span className="text-[12px] text-graphite-400 shrink-0">{t("chat.activeTable")}:</span>
+          {database && database.tables.length > 1 ? (
+            <select
+              value={activeTable || (database.tables[0] ?? "")}
+              onChange={(e) => handleTableChange(e.target.value)}
+              disabled={isTableSwitching || streaming}
+              className="rounded-md border border-graphite-700 bg-graphite-850 px-2 py-0.5 text-xs font-mono text-graphite-100 outline-none focus:border-graphite-500 cursor-pointer disabled:opacity-50"
+            >
+              {database.tables.map((tbl) => (
+                <option key={tbl} value={tbl}>
+                  {tbl}
+                </option>
+              ))}
+            </select>
+          ) : (
+            <span className="rounded-md bg-graphite-800/80 px-2 py-0.5 font-mono text-xs text-graphite-200">
+              {activeTable || (database?.tables?.[0] ?? "—")}
+            </span>
+          )}
+        </div>
+        {tableError && (
+          <div className="flex items-center gap-1.5 text-xs text-bad bg-bad/10 border border-bad/30 rounded-md px-2 py-0.5">
+            <Icon name="x" size={12} className="cursor-pointer" onClick={() => setTableError(null)} />
+            <span>{tableError}</span>
+          </div>
+        )}
+      </div>
+
       {/* Лента сообщений */}
       <div className="flex-1 space-y-5 overflow-y-auto px-4 py-6 md:px-8">
         {messages.length === 0 ? (
@@ -184,6 +258,11 @@ export default function ChatPanel({ sessionId }: Props) {
               <p className="mt-2 text-[13px] text-graphite-400">
                 {t("chat.tables")}{" "}
                 <span className="font-mono text-[12px] text-graphite-300">{database.tables.join(", ")}</span>
+                {activeTable && (
+                  <span className="ml-2 text-graphite-400">
+                    ({t("chat.activeTable")}: <strong className="text-graphite-200 font-mono font-medium">{activeTable}</strong>)
+                  </span>
+                )}
               </p>
             )}
             <div className="mt-6 flex flex-col items-start gap-1">
