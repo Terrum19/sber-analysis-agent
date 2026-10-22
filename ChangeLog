@@ -1,5 +1,25 @@
 2026-10-22  mb6ockatf  <smokenmirror@tutamail.com>
 
+	Чат: типы событий по контракту dev, уточнения и отказы, прогресс
+	шагов (#68, #70, #71).
+	* frontend/src/types/chat.ts: События clarification_needed, refusal,
+	progress (ProgressPayload); RECOVERY_SKIP_STEP.
+	(StepState, TurnProgress, applyProgress): Прогресс хода по событиям
+	progress.
+	* frontend/src/api/client.ts (streamChat): Параметр recoveryResponse
+	уходит в поле recovery_response.
+	* frontend/src/store/sessionStore.ts (ChatMessage): Поля
+	clarification, refusal, progress.
+	(updateMessage): Новое действие: обновить сообщение по id.
+	* frontend/src/components/chat/ChatPanel.tsx (sendQuestion): Ответ на
+	уточнение через recovery_response; поток без done и без уточнения
+	показывается как ошибка; сообщение с прогрессом шагов над ответом;
+	отказ с чипами переформулировок.
+	* frontend/src/components/chat/ClarificationCard.tsx: Новый файл.
+	* frontend/src/components/chat/StepProgress.tsx: Новый файл.
+	* frontend/src/i18n/dictionary.ts: Строки уточнений, отказа и
+	прогресса.
+
 	События прогресса хода (S-01, #49).
 	* backend/app/core/agent/orchestrator.py (_progress_event)
 	(_step_event, _elapsed_ms): Новые функции: событие progress и время

@@ -160,12 +160,15 @@ export async function getSession(sessionId: string): Promise<SessionResponse> {
 /**
  * Подписка на SSE-поток диалога; onEvent вызывается на каждое событие,
  * onClose — один раз, когда поток закончился, оборвался или был отменён.
+ * recoveryResponse — ответ на clarification_needed (JSON с action или
+ * свободный текст), уходит в поле recovery_response.
  */
 export function streamChat(
   sessionId: string,
   question: string,
   onEvent: (event: ChatStreamEvent) => void,
   onClose?: (error?: string) => void,
+  recoveryResponse?: string,
 ): () => void {
   if (isMockMode()) {
     return mockStreamChat(sessionId, question, onEvent, onClose);
@@ -178,7 +181,11 @@ export function streamChat(
       const res = await fetch(`${API}/chat`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ session_id: sessionId, question }),
+        body: JSON.stringify({
+          session_id: sessionId,
+          question,
+          recovery_response: recoveryResponse ?? null,
+        }),
         signal: controller.signal,
       });
 

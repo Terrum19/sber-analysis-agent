@@ -11,6 +11,7 @@ import type { DashboardTile } from "@/types/dashboard";
 import type { DashboardEvent, ChartEvent } from "@/types/chat";
 import type { Datasource } from "@/types/datasource";
 import { useCanvasStore } from "@/store/canvasStore";
+import type { ClarificationEvent, RefusalEvent, TurnProgress } from "@/types/chat";
 
 export interface ChatMessage {
   id?: string;
@@ -21,6 +22,12 @@ export interface ChatMessage {
   timestamp?: string;
   /** Сообщение об ошибке или обрыве — под ним кнопка повтора. */
   failed?: boolean;
+  /** Карточка уточнения (clarification_needed). */
+  clarification?: ClarificationEvent["data"];
+  /** Отказ агента (refusal) с переформулировками. */
+  refusal?: RefusalEvent["data"];
+  /** Прогресс хода по событиям progress. */
+  progress?: TurnProgress;
 }
 
 export interface SessionItem {
@@ -76,6 +83,7 @@ interface SessionState {
   addMessage: (msg: ChatMessage) => void;
   appendToLastMessage: (chunk: string) => void;
   updateLastMessage: (patch: Partial<ChatMessage>) => void;
+  updateMessage: (id: string, patch: Partial<ChatMessage>) => void;
   addTile: (tile: DashboardTile) => void;
   setTiles: (tiles: DashboardTile[]) => void;
   selectTile: (index: number | null) => void;
@@ -175,6 +183,23 @@ export const useSessionStore = create<SessionState>()(
             ...s.messages.slice(0, -1),
             { ...last, content: last.content + chunk },
           ];
+          let nextTableCache = s.sessionTableCache;
+          if (s.sessionId && s.sessionActiveTable[s.sessionId]) {
+            const curTable = s.sessionActiveTable[s.sessionId];
+            nextTableCache = {
+              ...s.sessionTableCache,
+              [s.sessionId]: {
+                ...(s.sessionTableCache[s.sessionId] || {}),
+                [curTable]: { messages: nextMessages, tiles: s.tiles },
+              },
+            };
+          }
+          return { messages: nextMessages, sessionTableCache: nextTableCache };
+        }),
+      updateMessage: (id, patch) =>
+        set((s) => {
+          if (!s.messages.some((m) => m.id === id)) return {};
+          const nextMessages = s.messages.map((m) => (m.id === id ? { ...m, ...patch } : m));
           let nextTableCache = s.sessionTableCache;
           if (s.sessionId && s.sessionActiveTable[s.sessionId]) {
             const curTable = s.sessionActiveTable[s.sessionId];
