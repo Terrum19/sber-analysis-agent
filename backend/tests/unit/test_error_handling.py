@@ -20,7 +20,6 @@ def test_step_executor_missing_table(db):
         step_id=0,
         tool="aggregate",
         columns=["x"],
-        needs_llm_codegen=False,
         purpose="test",
     )
     with pytest.raises(ValueError):
@@ -34,7 +33,6 @@ def test_step_executor_unknown_tool(db):
         step_id=0,
         tool="nonexistent",
         columns=["x"],
-        needs_llm_codegen=False,
         purpose="test",
     )
     with pytest.raises(ValueError):

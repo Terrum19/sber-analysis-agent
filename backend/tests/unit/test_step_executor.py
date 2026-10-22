@@ -35,7 +35,6 @@ def test_execute_known_tool_returns_result_table(db):
         step_id=0,
         tool="aggregate",
         columns=["category"],
-        needs_llm_codegen=False,
         purpose="Агрегируем по категории",
     )
     result = asyncio.run(executor.execute(step, "raw"))
@@ -49,7 +48,6 @@ def test_execute_missing_table_raises_valueerror(db):
         step_id=0,
         tool="aggregate",
         columns=["category"],
-        needs_llm_codegen=False,
         purpose="test",
     )
     with pytest.raises(ValueError, match="не найдена"):
@@ -62,28 +60,34 @@ def test_execute_unknown_tool_raises_valueerror(db):
         step_id=0,
         tool="nonexistent_tool",
         columns=["category"],
-        needs_llm_codegen=False,
         purpose="test",
     )
     with pytest.raises(ValueError, match="не зарегистрирован"):
         asyncio.run(executor.execute(step, "raw"))
 
 
-def test_execute_needs_llm_codegen_runs_generated_code(db, monkeypatch):
+def test_execute_step_without_tool_is_an_error(db):
+    executor = StepExecutor(db=db)
+    with pytest.raises(ValueError, match="Не указан инструмент"):
+        asyncio.run(executor.execute(ResearchStep(step_id=0, tool=None, purpose="x"), "raw"))
+
+
+def test_run_python_gets_llm_and_sandbox_from_executor(db, monkeypatch, codegen_available):
     calls = []
 
-    async def fake_runner(step, input_table, manager, llm, sandbox):
-        calls.append((step.purpose, input_table, manager is db))
+    async def fake_runner(purpose, input_table, manager, llm, sandbox, output):
+        calls.append((purpose, input_table, manager is db, llm, sandbox, output))
         return "temp_result_v9"
 
     monkeypatch.setattr(codegen_runner, "run_generated_code", fake_runner)
-    executor = StepExecutor(db=db)
+    llm, sandbox = object(), object()
+    executor = StepExecutor(db=db, llm=llm, sandbox=sandbox)
     step = ResearchStep(
         step_id=0,
-        tool=None,
-        columns=["category"],
-        needs_llm_codegen=True,
-        purpose="Генерируем код",
+        tool="run_python",
+        arguments={"purpose": "Медиана выручки по скользящему окну 7 дней", "output": "scalar"},
     )
     assert asyncio.run(executor.execute(step, "raw")) == "temp_result_v9"
-    assert calls == [("Генерируем код", "raw", True)]
+    assert calls == [
+        ("Медиана выручки по скользящему окну 7 дней", "raw", True, llm, sandbox, "scalar")
+    ]

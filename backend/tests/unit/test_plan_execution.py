@@ -5,7 +5,7 @@ import asyncio
 import pytest
 
 from app.core.agent.orchestrator import (
-    CLARIFICATION_SUGGESTIONS,
+    UNSUPPORTED_SUGGESTIONS,
     AgentOrchestrator,
     ClarificationNeeded,
 )
@@ -221,7 +221,7 @@ def test_validate_plan_reports_tool_argument_and_reference_errors() -> None:
             ResearchStep(
                 step_id=2, tool="aggregate", input="$step_5", arguments={"column": "region"}
             ),
-            ResearchStep(step_id=3, tool=None, needs_llm_codegen=True),
+            ResearchStep(step_id=3, tool=None),
         ],
         result_step=9,
     )
@@ -230,7 +230,7 @@ def test_validate_plan_reports_tool_argument_and_reference_errors() -> None:
     assert "неизвестный инструмент" in errors[0]
     assert "filter_rows" in errors[1]
     assert "$step_5" in errors[2]
-    assert "кодогенерация" in errors[3]
+    assert "не указан инструмент" in errors[3]
     assert "result_step=9" in errors[4]
 
 
@@ -367,19 +367,22 @@ def test_lookup_step_triggers_replanning_with_observation(db: DuckDBManager) -> 
     assert [row["id"] for row in db.to_records(execution.result_table)] == [3, 4]
 
 
-def test_sandbox_error_is_an_ordinary_step_error(
-    db: DuckDBManager, monkeypatch: pytest.MonkeyPatch
+def test_sandbox_error_asks_the_user_without_fixing_the_step(
+    db: DuckDBManager, monkeypatch: pytest.MonkeyPatch, codegen_available
 ) -> None:
     async def failing_codegen(*args, **kwargs):
         raise SandboxError("код упал в песочнице")
 
     monkeypatch.setattr(codegen_runner, "run_generated_code", failing_codegen)
-    plan = ResearchPlan(steps=[ResearchStep(step_id=0, tool=None, needs_llm_codegen=True)])
+    step = ResearchStep(
+        step_id=0, tool="run_python", arguments={"purpose": "Медиана по окну 7 дней с весами"}
+    )
     memory = FakeMemory()
     with pytest.raises(ClarificationNeeded) as exc:
-        run_plan(orchestrator(db), memory, plan)
-    assert exc.value.suggestions == CLARIFICATION_SUGGESTIONS
+        run_plan(orchestrator(db), memory, ResearchPlan(steps=[step]))
+    assert exc.value.suggestions == UNSUPPORTED_SUGGESTIONS
     assert "песочнице" in memory.pending["error"]
+    assert memory.pending["attempts_made"] == 1
 
 
 def test_skip_step_resumes_with_saved_step_tables(db: DuckDBManager) -> None:
