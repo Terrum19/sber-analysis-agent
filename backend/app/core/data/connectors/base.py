@@ -24,3 +24,7 @@ class BaseConnector(ABC):
         table — имя таблицы/представления, которое вернул connect().
         """
         return {}
+
+    def warnings(self, table: str) -> list[str]:
+        """Что загрузчик исправил в данных таблицы или не смог исправить (по умолчанию ничего)."""
+        return []
