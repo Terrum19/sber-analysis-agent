@@ -324,6 +324,12 @@ def test_clickhouse_error_code_in_text_is_classified() -> None:
     assert "не существует" in describe_failure(
         "ClickHouse error 81 (UNKNOWN_DATABASE): Database missing does not exist"
     )
+    assert "учётные данные" in describe_failure(
+        "ClickHouse error 516 (AUTHENTICATION_FAILED): invalid credentials"
+    )
+    assert "Не удалось подключиться к ClickHouse." in describe_failure(
+        "ClickHouse error 999 (UNKNOWN): unexpected failure"
+    )
     assert "недоступен" in describe_failure("Failed to connect to ClickHouse at host:9000")
 
 
@@ -391,6 +397,18 @@ def test_column_comments_for_unknown_view_skip_the_source() -> None:
     issued = len(db.statements)
     assert connector.column_comments(db, "not_from_clickhouse") == {}
     assert len(db.statements) == issued
+
+
+def test_rollback_releases_attached_source_and_is_safe_before_connect() -> None:
+    db = FakeDuckDB(tables=["orders"])
+    connector = ClickHouseConnector(DSN)
+
+    connector.rollback(db)
+    assert db.statements == []
+
+    connector.connect(db)
+    connector.rollback(db)
+    assert any(statement.startswith("DETACH DATABASE") for statement in db.statements)
 
 
 def test_reconnect_forgets_previous_views() -> None:
