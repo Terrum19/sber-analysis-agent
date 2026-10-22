@@ -1,3 +1,31 @@
+2026-10-22  Alexander Yurits  <terruwork@gmail.com>
+
+	Повторное подключение и сбой профиля PostgreSQL по ревью #97 (#115).
+	* backend/app/core/data/schema_enrichment.py (SchemaEnricher.enrich):
+	Без документа колонка обрабатывается заново, только если изменился
+	её комментарий; название из документа сохраняется.  Раньше
+	повторное подключение без description стирало названия и описания
+	из документа у всех колонок.
+	(previous_comment): Новая функция.
+	* backend/app/core/data/connectors/base.py (BaseConnector.skip)
+	(BaseConnector.rollback, BaseConnector.scrub): Новые методы.
+	* backend/app/core/data/connectors/postgres.py
+	(PostgresConnector.skip): Таблица без прав на SELECT пропускается с
+	предупреждением, её представление удаляется.
+	(PostgresConnector.rollback): Снимает представления и ATTACH этого
+	подключения.  Раньше после сбоя профиля представления оставались
+	без паспорта.
+	(PostgresConnector.scrub): Новый метод.
+	* backend/app/core/data/ingest.py (attach): Вызывает connector.skip
+	при duckdb.Error профиля и connector.rollback без getattr.
+	* backend/app/api/routes/datasources.py (attach_db): duckdb.Error ->
+	422 с текстом без пароля вместо 500; description больше 1 МБ -> 413.
+	* backend/tests/unit/test_schema_enrichment.py,
+	backend/tests/unit/test_ingest.py,
+	backend/tests/unit/test_connectors_postgres.py,
+	backend/tests/unit/test_datasources_api.py: Тесты.
+	* docs/data_connectors.md: Поле description, коды 413/422, откат.
+
 2026-10-22  thebulkapro  <saitbatalovbulat200@gmail.com>
 
 	Исправления API сессий по ревью #111.

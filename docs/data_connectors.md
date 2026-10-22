@@ -126,8 +126,15 @@ curl -F files=@Продажи.csv -F files=@users.csv http://localhost:8000/api/
 `POST /api/datasources/db`:
 
 ```json
-{"kind": "postgres", "dsn": "postgresql://analyst:***@db.local:5432/shop", "schema": "public"}
+{"kind": "postgres", "dsn": "postgresql://analyst:***@db.local:5432/shop", "schema": "public",
+ "description": "## orders\n- amount — сумма заказа"}
 ```
+
+`description` — необязательный документ-описание таблиц (README, словарь
+колонок, не больше 1 МБ в UTF-8): из него в паспорт попадают названия и
+описания колонок (фоновая задача после ответа). Повторное подключение без
+`description` названия из прошлого документа не стирает: сравнивается
+только комментарий колонки.
 
 Ответ `200`:
 
@@ -141,12 +148,21 @@ curl -F files=@Продажи.csv -F files=@users.csv http://localhost:8000/api/
 | Код | Когда |
 |---|---|
 | 400 | некорректная строка подключения (`ValueError`) |
+| 413 | `description` больше 1 МБ |
 | 422 | неизвестный `kind` (валидация pydantic) |
+| 422 | не удалось профилировать таблицу (`duckdb.Error`); подключение откатывается |
 | 501 | коннектор ещё не реализован (ClickHouse) |
 | 502 | PostgreSQL недоступен или отклонил подключение (`PostgresConnectionError`) |
 | 503 | в DuckDB нет расширения `postgres_scanner` (`PostgresExtensionUnavailableError`) |
 
 Тексты ошибок — на русском и никогда не содержат пароль.
+
+Таблица, на которую у пользователя нет прав `SELECT`, не подключается:
+профиль её не прочитал, представление удаляется, в лог пишется
+`logging.warning`, остальные таблицы схемы подключаются. Любая другая
+ошибка профиля откатывает подключение (`PostgresConnector.rollback` снимает
+представления и `ATTACH`). Прежнее подключение того же источника к этому
+моменту уже снято, источник нужно подключить заново.
 
 ### Строка подключения
 
@@ -433,7 +449,9 @@ python scripts/run_profile_benchmark.py --max-seconds 10
   паспорт (таблицы схемы `_meta`, `ProfileMemory`, см. [memory.md](memory.md)).
   Так подключают источник `POST /api/datasources/*`, `scripts/load_hk_datasets.py`
   и `backend/run_full_llm_cycle.py`. Упало профилирование — подключённые
-  таблицы откатываются.
+  таблицы откатываются (`connector.rollback`); таблицу, которую нельзя
+  прочитать, коннектор может пропустить (`connector.skip`, у PostgreSQL —
+  при `permission denied`).
 - `core/data/schema_enrichment.py` — `SchemaEnricher` профиль не считает: если
   у таблицы есть описание, переносит из него в паспорт названия и описания
   колонок (см. [memory.md](memory.md#описание-таблицы--coredataschema_enrichmentpy)).
