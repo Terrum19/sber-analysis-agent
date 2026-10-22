@@ -18,6 +18,7 @@ VEGA_LITE_SCHEMA = "https://vega.github.io/schema/vega-lite/v5.json"
 SPEC_ROW_LIMIT = 500
 CHART_TYPES = ("bar", "line", "area", "scatter", "histogram", "box", "heatmap", "table", "kpi")
 COUNT_TITLE = "Количество"
+KPI_FORMAT = ",.2~f"
 ROW_FIELD = "_row"
 COLUMN_FIELD = "_column"
 VALUE_FIELD = "_value"
@@ -315,8 +316,9 @@ def _kpi(columns: _Columns) -> tuple[str, dict]:
     metric = columns.metric()
     if metric is None:
         return _table(columns)
-    text_channel = columns.channel(metric)
+    text_channel = columns.channel(metric, format=KPI_FORMAT)
     return "kpi", {
+        "title": columns.labels[metric],
         "transform": [
             {"window": [{"op": "row_number", "as": ROW_FIELD}]},
             {"filter": f"datum.{ROW_FIELD} == 1"},

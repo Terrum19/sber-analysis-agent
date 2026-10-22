@@ -316,8 +316,11 @@ def test_kpi_shows_one_number_with_the_title() -> None:
         "field": "total",
         "type": "quantitative",
         "title": "Выручка",
+        "format": ",.2~f",
     }
-    assert spec["encoding"]["tooltip"] == [spec["encoding"]["text"]]
+    assert spec["encoding"]["tooltip"] == [
+        {"field": "total", "type": "quantitative", "title": "Выручка"}
+    ]
     assert spec["title"] == "Выручка за квартал"
     assert spec["data"]["values"] == [{"total": 1250.5}]
     json.dumps(spec, allow_nan=False)
@@ -338,3 +341,9 @@ def test_kpi_without_numbers_falls_back_to_table() -> None:
     assert spec["usermeta"]["chart_type"] == "table"
     assert spec["usermeta"]["requested_type"] == "kpi"
     assert spec["mark"] == "text"
+
+
+def test_kpi_without_title_is_captioned_by_its_metric() -> None:
+    spec = build_vega_spec("kpi", None, data=[{"total": 5}], titles={"total": "Выручка"})
+    assert spec["title"] == "Выручка"
+    assert build_vega_spec("kpi", None, data=[{"total": 5}])["title"] == "total"

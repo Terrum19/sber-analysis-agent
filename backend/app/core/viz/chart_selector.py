@@ -4,24 +4,26 @@
 пользователя. Логика: явный запрос вида -> таблица результата -> LLM.
 """
 
+import math
+
 from app.core.viz.vega_spec_builder import infer_field_types
 
 
 def is_single_number(records: list[dict] | None) -> bool:
-    return (
-        records is not None
-        and len(records) == 1
-        and list(infer_field_types(records).values()) == ["quantitative"]
-    )
+    if records is None or len(records) != 1:
+        return False
+    if list(infer_field_types(records).values()) != ["quantitative"]:
+        return False
+    return all(math.isfinite(value) for value in records[0].values())
 
 
 def select_chart(
     question: str, result_table: str, requested: str = "auto", records: list[dict] | None = None
 ) -> str:
-    """Подобрать тип графика: bar | line | scatter | histogram | kpi.
+    """Подобрать тип графика: bar | line | scatter | histogram | kpi (или явный requested).
 
     Явный requested берётся как есть; результат из одной строки с одним
-    числом — kpi; иначе простые эвристики по ключевым словам вопроса.
+    конечным числом — kpi; иначе простые эвристики по ключевым словам вопроса.
     """
     if requested != "auto":
         return requested

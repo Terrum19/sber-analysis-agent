@@ -57,6 +57,6 @@ def test_dashboard_event_matches_payload_without_snapshot():
     assert tile.snapshot_data == records
 
 
-def test_dashboard_payload_rejects_untyped_tiles():
+def test_dashboard_payload_rejects_tiles_without_title():
     with pytest.raises(ValueError):
         DashboardPayload(dashboard_id="d1", title="Пусто", tiles=[{"spec": {}}])
