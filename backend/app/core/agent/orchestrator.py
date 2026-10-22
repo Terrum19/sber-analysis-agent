@@ -557,7 +557,7 @@ class AgentOrchestrator:
             parsed = json.loads(recovery_text)
             if isinstance(parsed, dict) and "action" in parsed:
                 action = parsed["action"]
-                free_text = parsed.get("text", "")
+                free_text = parsed.get("text") or parsed.get("answer") or ""
         except (json.JSONDecodeError, TypeError):
             action = None
             free_text = recovery_text
