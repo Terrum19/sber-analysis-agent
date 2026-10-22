@@ -5,17 +5,38 @@
  * период, краткое описание, бейдж статуса описания колонок и предупреждения
  * загрузчика. Показывает только те поля, что прислал бэкенд.
  */
-import type { ReactNode } from "react";
+import { type ReactNode, useState } from "react";
 import type { TableBrief } from "@/types/datasource";
+import type { DatabaseFolder } from "@/store/sessionStore";
 import { useT } from "@/i18n/useT";
+import { useWorkWithTable } from "@/hooks/useStartSession";
 
 function formatDate(value: string): string {
   const date = new Date(value);
   return Number.isNaN(date.getTime()) ? value : date.toLocaleDateString("ru-RU");
 }
 
-export default function TablePassport({ brief, children }: { brief: TableBrief; children?: ReactNode }) {
+export interface TablePassportProps {
+  brief: TableBrief;
+  children?: ReactNode;
+  database?: DatabaseFolder;
+  sessionId?: string;
+  onWorkWithTable?: (table: string) => Promise<void> | void;
+  showAction?: boolean;
+}
+
+export default function TablePassport({
+  brief,
+  children,
+  database,
+  sessionId,
+  onWorkWithTable,
+  showAction,
+}: TablePassportProps) {
   const t = useT();
+  const workWithTable = useWorkWithTable();
+  const [isBusy, setIsBusy] = useState(false);
+
   const facts: string[] = [];
   if (typeof brief.rows === "number") facts.push(t("passport.rows", { n: brief.rows.toLocaleString("ru-RU") }));
   if (typeof brief.columns === "number") facts.push(t("passport.columns", { n: brief.columns }));
@@ -26,6 +47,20 @@ export default function TablePassport({ brief, children }: { brief: TableBrief; 
         to: brief.period_to ? formatDate(brief.period_to) : "…",
       }),
     );
+  }
+
+  async function handleWorkWithTable() {
+    if (isBusy) return;
+    setIsBusy(true);
+    try {
+      if (onWorkWithTable) {
+        await onWorkWithTable(brief.table);
+      } else if (database) {
+        await workWithTable(database, brief.table, sessionId);
+      }
+    } finally {
+      setIsBusy(false);
+    }
   }
 
   return (
@@ -51,6 +86,18 @@ export default function TablePassport({ brief, children }: { brief: TableBrief; 
             <li key={warning}>{warning}</li>
           ))}
         </ul>
+      )}
+      {(showAction || onWorkWithTable) && (
+        <div className="pt-1">
+          <button
+            type="button"
+            onClick={handleWorkWithTable}
+            disabled={isBusy}
+            className="inline-flex items-center gap-1.5 rounded-md bg-graphite-800 hover:bg-graphite-700 px-2.5 py-1 text-xs font-medium text-graphite-100 border border-graphite-700 transition disabled:opacity-50"
+          >
+            <span>{isBusy ? "..." : t("passport.useTable")}</span>
+          </button>
+        </div>
       )}
       {children}
     </div>

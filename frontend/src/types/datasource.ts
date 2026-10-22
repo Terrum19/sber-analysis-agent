@@ -46,7 +46,7 @@ export interface SessionPatchPayload {
 
 export interface SessionResponse {
   session_id: string;
-  table: string;
+  table: string | null;
   datasource_id?: string | null;
   title?: string | null;
   /** ISO 8601 в UTC; у старых сессий null. */

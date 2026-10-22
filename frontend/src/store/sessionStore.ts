@@ -9,7 +9,7 @@ import { create } from "zustand";
 import { persist, createJSONStorage } from "zustand/middleware";
 import type { DashboardTile } from "@/types/dashboard";
 import type { DashboardEvent, ChartEvent } from "@/types/chat";
-import type { Datasource, TableBrief } from "@/types/datasource";
+import type { Datasource, TableBrief, SessionResponse } from "@/types/datasource";
 import { useCanvasStore } from "@/store/canvasStore";
 import type { ClarificationEvent, RefusalEvent, TurnProgress } from "@/types/chat";
 
@@ -105,6 +105,7 @@ interface SessionState {
   renameSession: (sessionId: string, title: string) => void;
   togglePinSession: (sessionId: string) => void;
   deleteSession: (sessionId: string) => void;
+  mergeSessions: (remoteSessions: SessionResponse[]) => void;
 }
 
 export const useSessionStore = create<SessionState>()(
@@ -454,6 +455,69 @@ export const useSessionStore = create<SessionState>()(
             sessionActiveTable: nextActiveTable,
             sessionTableCache: nextTableCache,
             ...(isActiveDeleted ? { sessionId: null, messages: [], tiles: [], selectedTile: null } : {}),
+          };
+        }),
+      mergeSessions: (remoteSessions: SessionResponse[]) =>
+        set((s) => {
+          const nextDatabases = s.databases.map((d) => ({
+            ...d,
+            tables: [...d.tables],
+            sessions: [...d.sessions],
+          }));
+          const nextSessionDb = { ...s.sessionDatabase };
+          const nextActiveTable = { ...s.sessionActiveTable };
+
+          for (const remote of remoteSessions) {
+            if (!remote.session_id) continue;
+
+            // 1. Map by datasource_id or matching table
+            let db = nextDatabases.find((d) => remote.datasource_id && d.id === remote.datasource_id);
+            if (!db && remote.table) {
+              db = nextDatabases.find((d) => d.tables.includes(remote.table!));
+            }
+
+            // If no existing folder matches, create a folder for the table/datasource
+            if (!db && remote.table) {
+              db = {
+                id: remote.datasource_id || `ds-${remote.table}`,
+                title: remote.table,
+                kind: "duckdb",
+                tables: [remote.table],
+                sessions: [],
+              };
+              nextDatabases.push(db);
+            }
+
+            if (db) {
+              nextSessionDb[remote.session_id] = db.id;
+              const sessionExists = db.sessions.some((x) => x.id === remote.session_id);
+              if (!sessionExists) {
+                db.sessions = [
+                  {
+                    id: remote.session_id,
+                    title: remote.title || remote.table || "Сессия",
+                    created_at: remote.created_at ? new Date(remote.created_at).getTime() : Date.now(),
+                  },
+                  ...db.sessions,
+                ];
+              } else if (remote.title) {
+                db.sessions = db.sessions.map((x) =>
+                  x.id === remote.session_id && (!x.title || x.title === "Новая сессия" || x.title === "Сессия")
+                    ? { ...x, title: remote.title || x.title }
+                    : x
+                );
+              }
+            }
+
+            if (remote.table && !nextActiveTable[remote.session_id]) {
+              nextActiveTable[remote.session_id] = remote.table;
+            }
+          }
+
+          return {
+            databases: nextDatabases,
+            sessionDatabase: nextSessionDb,
+            sessionActiveTable: nextActiveTable,
           };
         }),
     }),

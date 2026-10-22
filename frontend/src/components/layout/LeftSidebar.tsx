@@ -11,7 +11,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { useParams, useRouter } from "next/navigation";
-import { attachCsv, attachDb } from "@/api/client";
+import { attachCsv, attachDb, listSessions, SESSIONS_PAGE } from "@/api/client";
 import { useSessionStore, type DatabaseFolder, type SessionItem } from "@/store/sessionStore";
 import { useArtifactStore } from "@/store/artifactStore";
 import { useUiStore } from "@/store/uiStore";
@@ -362,6 +362,33 @@ export default function LeftSidebar() {
     if (csvPickRequest > 0) fileInputRef.current?.click();
   }, [csvPickRequest]);
 
+  // Синхронизация сессий с бэкендом на старте страницы
+  useEffect(() => {
+    let cancelled = false;
+    async function syncSessions() {
+      try {
+        let offset = 0;
+        const allSessions = [];
+        for (;;) {
+          const page = await listSessions(offset);
+          if (cancelled || !page || page.length === 0) break;
+          allSessions.push(...page);
+          if (page.length < SESSIONS_PAGE) break;
+          offset += page.length;
+        }
+        if (!cancelled && allSessions.length > 0) {
+          useSessionStore.getState().mergeSessions(allSessions);
+        }
+      } catch {
+        // Фоновая синхронизация не блокирует UI при сетевых сбоях
+      }
+    }
+    syncSessions();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
   async function handleCsvUpload(e: React.ChangeEvent<HTMLInputElement>) {
     const picked = Array.from(e.target.files ?? []);
     e.target.value = "";
@@ -504,16 +531,22 @@ export default function LeftSidebar() {
                     />
                     <span>PostgreSQL</span>
                   </label>
-                  <label className="flex items-center gap-2 cursor-pointer text-xs text-graphite-100">
+                  <label
+                    className="flex items-center gap-2 cursor-not-allowed text-xs text-graphite-500"
+                    title={t("modal.comingSoon")}
+                  >
                     <input
                       type="radio"
                       name="dbKind"
                       value="clickhouse"
-                      checked={dbKind === "clickhouse"}
-                      onChange={() => setDbKind("clickhouse")}
-                      className="accent-graphite-100"
+                      disabled
+                      checked={false}
+                      className="accent-graphite-100 cursor-not-allowed opacity-50"
                     />
                     <span>ClickHouse</span>
+                    <span className="rounded bg-graphite-800 px-1.5 py-0.5 text-[10px] text-graphite-400 border border-graphite-700">
+                      {t("modal.comingSoon")}
+                    </span>
                   </label>
                 </div>
               </div>

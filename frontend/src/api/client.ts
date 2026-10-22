@@ -20,6 +20,8 @@ import {
   mockDeleteDashboard,
   mockFetchDashboard,
   mockFetchDashboards,
+  mockListSessions,
+  mockListTables,
   mockPatchSession,
   mockRecalculateDashboard,
   mockStreamChat,
@@ -148,7 +150,7 @@ export const SESSIONS_PAGE = 30;
 
 export async function listSessions(offset = 0): Promise<SessionResponse[]> {
   if (isMockMode()) {
-    return [];
+    return mockListSessions(offset);
   }
   try {
     const res = await fetch(`${API}/sessions?offset=${offset}`);
@@ -162,7 +164,7 @@ export async function listSessions(offset = 0): Promise<SessionResponse[]> {
 /** Таблицы пользователя по алфавиту (CSV и PostgreSQL). */
 export async function listTables(): Promise<string[]> {
   if (isMockMode()) {
-    return [];
+    return mockListTables();
   }
   try {
     const res = await fetch(`${API}/datasources/tables`);

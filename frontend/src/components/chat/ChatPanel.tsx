@@ -6,9 +6,9 @@
  * - Графики и дашборды в ленту не выводятся: они уходят на правую панель,
  *   а в сообщении остаётся ссылка «Показать на панели» / «Открыть во вкладке»
  */
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
-import { getSession, patchSession, streamChat } from "@/api/client";
+import { getSession, setSessionTable, listTables, streamChat } from "@/api/client";
 import { useSessionStore, useSessionDatabase } from "@/store/sessionStore";
 import { useCanvasStore } from "@/store/canvasStore";
 import { useUiStore } from "@/store/uiStore";
@@ -64,6 +64,24 @@ export default function ChatPanel({ sessionId }: Props) {
   const switchSessionTable = useSessionStore((s) => s.switchSessionTable);
   const bindSession = useSessionStore((s) => s.bindSession);
 
+  const [remoteTables, setRemoteTables] = useState<string[]>([]);
+  useEffect(() => {
+    let cancelled = false;
+    listTables()
+      .then((tables) => {
+        if (!cancelled && Array.isArray(tables)) setRemoteTables(tables);
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const availableTables = useMemo(() => {
+    const list = [...(database?.tables ?? []), ...remoteTables];
+    return Array.from(new Set(list)).filter(Boolean);
+  }, [database?.tables, remoteTables]);
+
   const [isTableSwitching, setIsTableSwitching] = useState(false);
   const [tableError, setTableError] = useState<string | null>(null);
 
@@ -87,12 +105,15 @@ export default function ChatPanel({ sessionId }: Props) {
   }, [sessionId, activeTable, bindSession, t]);
 
   async function handleTableChange(nextTable: string) {
-    if (nextTable === activeTable || isTableSwitching || streaming) return;
+    if (!nextTable || nextTable === activeTable || isTableSwitching || streaming) return;
     setIsTableSwitching(true);
     setTableError(null);
     try {
-      await patchSession(sessionId, nextTable);
+      await setSessionTable(sessionId, nextTable);
       switchSessionTable(sessionId, nextTable);
+      if (database) {
+        bindSession(sessionId, database.id, nextTable);
+      }
     } catch (err: any) {
       if (err?.status === 404) {
         setTableError(t("chat.tableNotFound"));
@@ -120,6 +141,10 @@ export default function ChatPanel({ sessionId }: Props) {
    * видит пользователь в ленте, а бэкенд продолжает исходный вопрос.
    */
   function sendQuestion(textToSend?: string, recoveryResponse?: string) {
+    if (!activeTable) {
+      setTableError(t("chat.noTableWarning"));
+      return;
+    }
     const q = textToSend || input;
     if (!q.trim() || streaming) return;
 
@@ -279,14 +304,19 @@ export default function ChatPanel({ sessionId }: Props) {
           </span>
           <span className="text-graphite-600 text-xs">/</span>
           <span className="text-[12px] text-graphite-400 shrink-0">{t("chat.activeTable")}:</span>
-          {database && database.tables.length > 1 ? (
+          {availableTables.length > 0 ? (
             <select
-              value={activeTable || (database.tables[0] ?? "")}
+              value={activeTable || ""}
               onChange={(e) => handleTableChange(e.target.value)}
               disabled={isTableSwitching || streaming}
               className="rounded-md border border-graphite-700 bg-graphite-850 px-2 py-0.5 text-xs font-mono text-graphite-100 outline-none focus:border-graphite-500 cursor-pointer disabled:opacity-50"
             >
-              {database.tables.map((tbl) => (
+              {!activeTable && (
+                <option value="" disabled>
+                  {t("chat.chooseTable")}
+                </option>
+              )}
+              {availableTables.map((tbl) => (
                 <option key={tbl} value={tbl}>
                   {tbl}
                 </option>
@@ -294,7 +324,7 @@ export default function ChatPanel({ sessionId }: Props) {
             </select>
           ) : (
             <span className="rounded-md bg-graphite-800/80 px-2 py-0.5 font-mono text-xs text-graphite-200">
-              {activeTable || (database?.tables?.[0] ?? "—")}
+              {activeTable || "—"}
             </span>
           )}
         </div>
@@ -331,7 +361,8 @@ export default function ChatPanel({ sessionId }: Props) {
                 <button
                   key={q}
                   onClick={() => sendQuestion(q)}
-                  className="rounded-lg px-2 py-1 -mx-2 text-[13px] text-graphite-300 hover:bg-graphite-800 hover:text-graphite-50 transition"
+                  disabled={!activeTable}
+                  className="rounded-lg px-2 py-1 -mx-2 text-[13px] text-graphite-300 hover:bg-graphite-800 hover:text-graphite-50 transition disabled:opacity-50 disabled:cursor-not-allowed"
                 >
                   {t("chat.quoted", { q })}
                 </button>
@@ -447,6 +478,12 @@ export default function ChatPanel({ sessionId }: Props) {
 
       {/* Поле ввода (как композер Claude Code) */}
       <div className="mx-auto w-full max-w-3xl px-4 pb-4 md:px-8">
+        {!activeTable && (
+          <div className="mb-3 flex items-center gap-2 rounded-xl border border-amber-500/30 bg-amber-500/10 px-3.5 py-2.5 text-xs text-amber-200">
+            <Icon name="alertTriangle" size={14} className="shrink-0 text-amber-400" />
+            <span>{t("chat.noTableWarning")}</span>
+          </div>
+        )}
         {lastFailedQuestion && !streaming && (
           <div className="mb-3 flex items-center justify-between gap-3 rounded-xl border border-bad/30 bg-bad/10 px-3.5 py-2 text-xs text-bad">
             <div className="flex items-center gap-2 overflow-hidden">
@@ -454,7 +491,8 @@ export default function ChatPanel({ sessionId }: Props) {
             </div>
             <button
               onClick={() => sendQuestion(lastFailedQuestion)}
-              className="inline-flex items-center gap-1.5 rounded-lg bg-danger hover:bg-danger/90 px-3 py-1.5 text-xs font-semibold text-white shadow transition whitespace-nowrap"
+              disabled={!activeTable}
+              className="inline-flex items-center gap-1.5 rounded-lg bg-danger hover:bg-danger/90 px-3 py-1.5 text-xs font-semibold text-white shadow transition whitespace-nowrap disabled:opacity-50"
             >
               <Icon name="refresh" size={14} />
               <span>{t("chat.retry")}</span>
@@ -474,13 +512,19 @@ export default function ChatPanel({ sessionId }: Props) {
             onKeyDown={(e) => {
               if (e.key === "Enter" && !e.shiftKey) {
                 e.preventDefault();
-                sendQuestion();
+                if (activeTable) sendQuestion();
               }
             }}
             rows={1}
-            placeholder={activeClarificationId ? t("chat.clarifyPlaceholder") : t("chat.placeholder")}
-            className="max-h-40 min-h-[36px] flex-1 resize-none overflow-y-hidden bg-transparent py-2 text-sm leading-5 text-graphite-100 placeholder-graphite-500 outline-none"
-            disabled={streaming}
+            placeholder={
+              !activeTable
+                ? t("chat.noTableWarning")
+                : activeClarificationId
+                ? t("chat.clarifyPlaceholder")
+                : t("chat.placeholder")
+            }
+            className="max-h-40 min-h-[36px] flex-1 resize-none overflow-y-hidden bg-transparent py-2 text-sm leading-5 text-graphite-100 placeholder-graphite-500 outline-none disabled:cursor-not-allowed disabled:opacity-60"
+            disabled={streaming || !activeTable}
           />
           {streaming ? (
             <button
@@ -493,7 +537,7 @@ export default function ChatPanel({ sessionId }: Props) {
           ) : (
             <button
               onClick={() => sendQuestion()}
-              disabled={!input.trim()}
+              disabled={!input.trim() || !activeTable}
               className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-graphite-100 text-graphite-950 hover:bg-graphite-50 disabled:bg-graphite-700 disabled:text-graphite-500 disabled:cursor-not-allowed transition"
               title={t("chat.send")}
             >

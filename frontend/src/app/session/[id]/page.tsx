@@ -66,7 +66,7 @@ export default function SessionPage({ params }: { params: { id: string } }) {
         >
           {brief && (
             <div className="shrink-0 px-4 pt-3">
-              <TablePassport brief={brief} />
+              <TablePassport brief={brief} database={database || undefined} sessionId={params.id} />
             </div>
           )}
           <ChatPanel sessionId={params.id} />

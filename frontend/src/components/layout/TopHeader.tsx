@@ -68,6 +68,9 @@ function Tab({
     const dbId = s.sessionDatabase[tab.id];
     return s.databases.find((d) => d.id === dbId)?.title;
   });
+  const activeTable = useSessionStore((s) =>
+    tab.kind === "session" ? s.sessionActiveTable[tab.id] : undefined
+  );
 
   // Активная вкладка всегда видна в полосе
   useEffect(() => {
@@ -96,7 +99,13 @@ function Tab({
       onDrop={(e) => e.preventDefault()}
       onDragEnd={onDragEnd}
       onAuxClick={(e) => e.button === 1 && handleClose(e)}
-      title={databaseTitle ? `${databaseTitle} / ${title}` : title}
+      title={
+        databaseTitle
+          ? `${databaseTitle} / ${title}${activeTable ? ` (${activeTable})` : ""}`
+          : activeTable
+          ? `${title} (${activeTable})`
+          : title
+      }
       className={`group relative flex h-full max-w-[220px] shrink-0 items-center gap-2 border-r border-graphite-800 pl-3 pr-1.5 text-[12.5px] transition ${
         active
           ? "bg-graphite-900 text-graphite-50"
@@ -107,6 +116,14 @@ function Tab({
       {dropTarget && <span className="absolute inset-y-1 left-0 w-0.5 rounded bg-graphite-300" />}
       <Icon name={TAB_ICON[tab.kind]} size={14} className="shrink-0 text-graphite-500" />
       <span className="truncate">{title}</span>
+      {tab.kind === "session" && activeTable && (
+        <span
+          className="shrink-0 rounded bg-graphite-800 px-1.5 py-0.5 text-[10px] font-mono text-graphite-300 border border-graphite-700/60 max-w-[80px] truncate"
+          title={`${t("chat.activeTable")}: ${activeTable}`}
+        >
+          {activeTable}
+        </span>
+      )}
       <button
         type="button"
         onClick={handleClose}
