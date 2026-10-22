@@ -4,7 +4,9 @@
 к session_id. Чтобы не взрывать контекст, в промпт идёт скользящее
 окно последних 3-5 сообщений + сжатая выжимка предыдущих шагов.
 Сессия привязана к таблице DuckDB (``set_table``); сообщения и последний
-график хранятся отдельно для каждой таблицы.
+график хранятся отдельно для каждой таблицы. Метаданные сессии
+(``title``, ``datasource_id``, ``created_at``) лежат в том же состоянии,
+поэтому сессия переживает перезапуск приложения.
 
 Состояние сессии хранится в SQLite (таблица ``session_state`` по адресу
 ``settings.sqlite_path``) вместо отдельных JSON-файлов.
@@ -13,11 +15,29 @@
 import json
 import sqlite3
 import time
+from datetime import UTC, datetime
 from pathlib import Path
 
 from app.config import settings
 from app.core.data.duckdb_manager import DuckDBManager
 from app.core.memory.profile_memory import ProfileMemory
+
+
+def _connect(path: Path) -> sqlite3.Connection:
+    """Открыть SQLite сессий, создав таблицу ``session_state`` при первом обращении."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    conn = sqlite3.connect(str(path))
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS session_state (
+            session_id TEXT PRIMARY KEY,
+            state TEXT NOT NULL,
+            updated_at REAL
+        )
+        """
+    )
+    conn.commit()
+    return conn
 
 
 class SessionMemory:
@@ -29,20 +49,34 @@ class SessionMemory:
         self.db = db
         self._state = self._load()
 
+    @staticmethod
+    def list_sessions(limit: int, offset: int = 0) -> list[dict]:
+        """Метаданные сохранённых сессий одним запросом, недавно изменённые первыми.
+
+        Состояние целиком (с историей сообщений) не читается.
+        """
+        conn = _connect(Path(settings.sqlite_path))
+        conn.row_factory = sqlite3.Row
+        try:
+            rows = conn.execute(
+                """
+                SELECT session_id,
+                       json_extract(state, '$.datasource') AS "table",
+                       json_extract(state, '$.datasource_id') AS datasource_id,
+                       json_extract(state, '$.title') AS title,
+                       json_extract(state, '$.created_at') AS created_at
+                FROM session_state
+                ORDER BY updated_at DESC
+                LIMIT ? OFFSET ?
+                """,
+                (limit, offset),
+            ).fetchall()
+        finally:
+            conn.close()
+        return [dict(row) for row in rows]
+
     def _connect(self) -> sqlite3.Connection:
-        self._db_path.parent.mkdir(parents=True, exist_ok=True)
-        conn = sqlite3.connect(str(self._db_path))
-        conn.execute(
-            """
-            CREATE TABLE IF NOT EXISTS session_state (
-                session_id TEXT PRIMARY KEY,
-                state TEXT NOT NULL,
-                updated_at REAL
-            )
-            """
-        )
-        conn.commit()
-        return conn
+        return _connect(self._db_path)
 
     def _load(self) -> dict:
         """Загрузить состояние сессии из SQLite."""
@@ -96,13 +130,44 @@ class SessionMemory:
         """Таблица, к которой привязана сессия (None — данные не подключены)."""
         return self._state.get("datasource")
 
+    @property
+    def title(self) -> str | None:
+        """Название сессии для сайдбара."""
+        return self._state.get("title")
+
+    @property
+    def datasource_id(self) -> str | None:
+        """id подключения из DatasourceOut, как его передал клиент."""
+        return self._state.get("datasource_id")
+
+    @property
+    def created_at(self) -> str | None:
+        """Время создания сессии (ISO, UTC); None у сессий, созданных до его записи."""
+        return self._state.get("created_at")
+
+    def set_meta(self, title: str | None, datasource_id: str | None) -> None:
+        """Запомнить название и источник сессии; время создания ставится один раз."""
+        self._state["title"] = title
+        self._state["datasource_id"] = datasource_id
+        self._state.setdefault("created_at", datetime.now(UTC).isoformat())
+        self._persist()
+
     def set_table(self, table: str, columns: list[str]) -> None:
         """Привязать сессию к таблице и её колонкам.
 
         Сообщения и последний график хранятся отдельно для каждой таблицы
         и при возврате к ней снова доступны. Шаги и незавершённое уточнение
-        относятся к плану по прошлой таблице и сбрасываются.
+        относятся к плану по прошлой таблице и сбрасываются. При смене
+        таблицы сбрасывается и ``datasource_id``: новая таблица может быть
+        из другого источника. Та же таблица обновляет только колонки: шаги
+        и незавершённое уточнение остаются.
         """
+        if table == self.table:
+            self._state["columns"] = list(columns)
+            self._persist()
+            return
+        if self.table is not None:
+            self._state["datasource_id"] = None
         self._state["datasource"] = table
         self._state["columns"] = list(columns)
         self._state["steps"] = []

@@ -143,3 +143,19 @@ def test_result_count_stays_bounded_over_fifty_questions(db):
         db.cleanup_results(keep=set(last_charts), older_than_s=1800)
         assert len(result_tables(db)) <= len(last_charts)
     assert result_tables(db) == set(last_charts)
+
+
+def test_columns_prefers_temp_view_over_same_named_table(db):
+    db.execute("CREATE TABLE t AS SELECT 1 AS a, 2 AS b")
+    db.execute("CREATE TEMP VIEW t AS SELECT 3 AS x")
+    assert db.columns("t") == ["x"]
+    assert db.columns("t") == list(db.query("SELECT * FROM t")[0])
+
+
+def test_user_tables_skips_step_results_and_meta(db):
+    db.execute("CREATE TABLE sales AS SELECT 1 AS a")
+    db.execute("CREATE TEMP VIEW pg_orders AS SELECT 1 AS b")
+    db.execute("CREATE SCHEMA _meta")
+    db.execute("CREATE TABLE _meta.table_passport AS SELECT 1 AS c")
+    db.save_step_result("sales", "SELECT * FROM sales")
+    assert db.user_tables() == ["pg_orders", "sales"]
