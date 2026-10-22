@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import logging
+import re
 import secrets
 import time
 import urllib.parse
@@ -59,6 +60,10 @@ FAILURE_REASONS = (
         "Не удалось найти хост ClickHouse: проверьте адрес сервера.",
     ),
     (
+        ("failed to connect to clickhouse",),
+        "Сервер ClickHouse недоступен: проверьте сеть, хост и порт.",
+    ),
+    (
         (
             "connection refused",
             "timeout expired",
@@ -111,6 +116,11 @@ def describe_failure(text: str, error: Exception | None = None) -> str:
         code = getattr(error, "code", None)
         if isinstance(code, int) and code in CLICKHOUSE_ERROR_CODES:
             return CLICKHOUSE_ERROR_CODES[code]
+    match = re.search(r"\bclickhouse error\s+(\d+)\b", text, re.IGNORECASE)
+    if match:
+        code = int(match.group(1))
+        if code in CLICKHOUSE_ERROR_CODES:
+            return CLICKHOUSE_ERROR_CODES[code]
     lowered = text.lower()
     for markers, reason in FAILURE_REASONS:
         if any(marker in lowered for marker in markers):
@@ -135,7 +145,8 @@ class ClickHouseDsn:
 
     def connection_string(self) -> str:
         """Строка параметров подключения без пароля для ATTACH."""
-        return f"host={self.host} port={self.port} user={self.user} dbname={self.database}"
+        secure = " secure=true" if self.secure else ""
+        return f"host={self.host} port={self.port} user={self.user} dbname={self.database}{secure}"
 
     def scrub(self, text: str) -> str:
         if not self.password:
@@ -174,6 +185,11 @@ def parse_dsn(raw: str, default_database: str | None = None) -> ClickHouseDsn:
     secure = scheme == "clickhouses"
     if port is None:
         port = DEFAULT_NATIVE_SECURE_PORT if secure else DEFAULT_NATIVE_PORT
+    if port == 8123:
+        raise ValueError(
+            "Порт 8123 — HTTP-интерфейс ClickHouse. Для этого коннектора "
+            "используйте native-порт 9000 или защищённый 9440."
+        )
 
     user = urllib.parse.unquote(parts.username) if parts.username else DEFAULT_USER
     password = urllib.parse.unquote(parts.password) if parts.password is not None else None
@@ -225,6 +241,7 @@ class ClickHouseConnector(BaseConnector):
         started = time.perf_counter()
         self.alias = f"{self.identity}_{secrets.token_hex(3)}"
         self.sources = {}
+        self.warnings = []
 
         self.load_extension(db)
         self.attach(db)
@@ -249,8 +266,14 @@ class ClickHouseConnector(BaseConnector):
                 self.max_tables,
             )
             tables = tables[: self.max_tables]
+            self.warnings.append(
+                f"Подключены первые {self.max_tables} таблиц из-за ограничения DB_MAX_TABLES."
+            )
 
-        views = [self.create_view(db, table, taken) for table in tables]
+        try:
+            views = [self.create_view(db, table, taken) for table in tables]
+        except duckdb.Error as error:
+            self.fail(db, error)
         logger.info(
             "ClickHouse %s: подключено %d таблиц за %.2f с",
             self.source,
@@ -295,7 +318,12 @@ class ClickHouseConnector(BaseConnector):
 
     def list_tables(self, db) -> list[str]:
         try:
-            rows = db.query(f"SHOW TABLES FROM {self.alias}")
+            rows = db.query(
+                f"SELECT table_name AS name FROM duckdb_tables() "
+                f"WHERE database_name = '{self.alias}' AND schema_name = $schema "
+                "ORDER BY table_name",
+                {"schema": self.dsn.database},
+            )
             return [row["name"] for row in rows]
         except duckdb.Error as error:
             self.fail(db, error)
@@ -340,7 +368,7 @@ class ClickHouseConnector(BaseConnector):
     def previous_aliases(self, db) -> list[str]:
         rows = db.query(
             "SELECT database_name FROM duckdb_databases() "
-            "WHERE (type = 'clickhouse' OR starts_with(database_name, $prefix)) "
+            "WHERE type = 'clickhouse' AND starts_with(database_name, $prefix) "
             "AND database_name <> $current",
             {"prefix": f"{self.identity}_", "current": self.alias},
         )
@@ -351,6 +379,11 @@ class ClickHouseConnector(BaseConnector):
             db.execute(f"DROP VIEW IF EXISTS temp.main.{quote_identifier(view)}")
         db.execute(f"DETACH DATABASE IF EXISTS {alias}")
         db.execute(f"DROP TEMPORARY SECRET IF EXISTS {alias}_secret")
+
+    def rollback(self, db) -> None:
+        """Освободить подключение и временные представления после сбоя ingest."""
+        if self.alias:
+            self.release(db, self.alias)
 
     def existing_names(self, db) -> set[str]:
         rows = db.query(

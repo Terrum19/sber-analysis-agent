@@ -297,7 +297,9 @@ clickhouses://[user[:password]@]host[:9440]/database
    пытается выполнить `INSTALL clickhouse_scanner FROM community`).
 2. Создаёт временный `SECRET` для пароля.
 3. Подключает базу через `ATTACH ... (TYPE clickhouse, READ_ONLY, SECRET ...)`.
-4. Получает список таблиц через `SHOW TABLES FROM <alias>`.
+4. Получает список таблиц из каталога подключённой базы DuckDB с фильтром по
+   `database=<alias>` и `schema=<database из DSN>`, поэтому таблицы других баз
+   ClickHouse не импортируются.
 5. Создаёт временные представления
    `SELECT * FROM <alias>.<database>.<table>`.
 
@@ -314,7 +316,8 @@ HTTP-клиент отсутствуют. Лимит строк коннекто
 - Для production/offline-образов расширение следует установить на этапе сборки;
   runtime `INSTALL` требует сетевого доступа и выполняется только как попытка
   восстановления.
-- Discovery использует `SHOW TABLES`, а не `information_schema.tables`.
+- Discovery использует каталог DuckDB подключённой базы и фильтрует таблицы по
+  выбранной схеме; `SHOW TABLES` без фильтра по базе не используется.
 - `DB_MAX_TABLES` ограничивает количество создаваемых представлений, но не
   количество строк в удалённых таблицах.
 
@@ -350,7 +353,7 @@ HTTP-клиент отсутствуют. Лимит строк коннекто
 `BaseConnector.column_comments(db, table) -> dict[str, str]` — комментарии
 колонок `{колонка: описание}` — часть описания таблицы, которое энричер
 переносит в паспорт как есть; `table` — имя, которое вернул
-`connect()`. По умолчанию `{}` (ClickHouse).
+`connect()`. ClickHouse получает комментарии из `system.columns`.
 
 - **PostgreSQL.** TEMP VIEW комментарии не переносит, поэтому они читаются из
   самого источника: `col_description()` по `pg_attribute`/`pg_class`/`pg_namespace`

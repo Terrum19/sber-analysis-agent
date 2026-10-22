@@ -31,6 +31,7 @@ def test_clickhouses_scheme_sets_secure_and_default_port() -> None:
     assert dsn.secure
     assert dsn.port == 9440
     assert dsn.database == "bi"
+    assert dsn.connection_string().endswith(" secure=true")
 
 
 def test_default_user_port_database() -> None:
@@ -50,6 +51,7 @@ def test_default_user_port_database() -> None:
         "clickhouse:///db",
         "just-a-host",
         "clickhouse://localhost:notaport/db",
+        "clickhouse://localhost:8123/db",
         "mysql://user:pw@localhost/db",
         "http://localhost:8123/db",
     ],
@@ -139,7 +141,7 @@ class FakeDuckDB:
                 raise error
         if "clickhouse_query(" in sql:
             return [{"column_name": name, "comment": text} for name, text in self.comments]
-        if sql.startswith("SHOW TABLES FROM"):
+        if "FROM duckdb_tables()" in sql and "table_name AS name" in sql:
             return [{"name": table} for table in self.tables]
         if "contains(sql, $marker)" in sql:
             if any(params and params["marker"] == f" {alias}." for alias in self.previous):
@@ -185,6 +187,14 @@ def test_connect_runs_install_load_attach_in_order_and_creates_views() -> None:
     )
 
 
+def test_secure_attach_includes_tls_option() -> None:
+    db = FakeDuckDB(tables=["orders"])
+    connector = ClickHouseConnector("clickhouses://analyst:TopSecret@ch.local/analytics")
+    connector.connect(db)
+    attach = next(statement for statement in db.statements if statement.startswith("ATTACH "))
+    assert "secure=true" in attach
+
+
 def test_password_goes_only_to_the_secret() -> None:
     db = FakeDuckDB(tables=["orders"])
     ClickHouseConnector(DSN).connect(db)
@@ -212,10 +222,12 @@ def test_missing_extension_raises_extension_unavailable_error() -> None:
 
 def test_max_tables_limits_tables(caplog: pytest.LogCaptureFixture) -> None:
     db = FakeDuckDB(tables=["t1", "t2", "t3"])
+    connector = ClickHouseConnector(DSN, max_tables=2)
     with caplog.at_level(logging.WARNING):
-        views = ClickHouseConnector(DSN, max_tables=2).connect(db)
+        views = connector.connect(db)
     assert views == ["t1", "t2"]
     assert "DB_MAX_TABLES" in caplog.text
+    assert connector.warnings == ["Подключены первые 2 таблиц из-за ограничения DB_MAX_TABLES."]
 
 
 def test_name_collision_gets_prefixed() -> None:
@@ -258,8 +270,10 @@ def test_table_discovery_uses_clickhouse_catalog_command() -> None:
     db = FakeDuckDB(tables=["orders"])
     connector = ClickHouseConnector(DSN)
     connector.connect(db)
-    assert f"SHOW TABLES FROM {connector.alias}" in db.statements
-    assert not any("information_schema.tables" in statement for statement in db.statements)
+    discovery = next(statement for statement in db.statements if "table_name AS name" in statement)
+    assert f"database_name = '{connector.alias}'" in discovery
+    assert "$schema" in discovery
+    assert not any("SHOW TABLES FROM" in statement for statement in db.statements)
 
 
 def test_factory_builds_clickhouse_with_schema() -> None:
@@ -306,6 +320,32 @@ def test_attach_failure_is_readable_and_secret_free(caplog: pytest.LogCaptureFix
     assert raised.value.__suppress_context__
 
 
+def test_clickhouse_error_code_in_text_is_classified() -> None:
+    assert "не существует" in describe_failure(
+        "ClickHouse error 81 (UNKNOWN_DATABASE): Database missing does not exist"
+    )
+    assert "недоступен" in describe_failure("Failed to connect to ClickHouse at host:9000")
+
+
+def test_create_view_failure_is_translated_and_released() -> None:
+    error = duckdb.IOException("ClickHouse error 60: table does not exist")
+    db = FakeDuckDB(tables=["orders"], failing=[("CREATE OR REPLACE TEMP VIEW", error)])
+    connector = ClickHouseConnector(DSN)
+    with pytest.raises(ClickHouseConnectionError, match="таблица"):
+        connector.connect(db)
+    assert f"DETACH DATABASE IF EXISTS {connector.alias}" in db.statements
+
+
+def test_previous_aliases_are_limited_to_same_clickhouse_identity() -> None:
+    db = FakeDuckDB(previous=["ch_other_123", "ch_same_123"])
+    connector = ClickHouseConnector(DSN)
+    connector.alias = "ch_same_current"
+    connector.identity = "ch_same"
+    connector.previous_aliases(db)
+    statement = next(statement for statement in db.statements if "duckdb_databases()" in statement)
+    assert "type = 'clickhouse' AND starts_with" in statement
+
+
 def test_unreachable_server_message() -> None:
     error = duckdb.IOException("Connection refused")
     db = FakeDuckDB(failing=[("ATTACH", error)])
@@ -320,7 +360,7 @@ def test_extension_offline_install_is_tolerated() -> None:
 
 def test_failure_while_listing_tables_is_readable_and_releases_attachment() -> None:
     error = duckdb.CatalogException("permission denied for database private")
-    db = FakeDuckDB(failing=[("SHOW TABLES FROM", error)])
+    db = FakeDuckDB(failing=[("SELECT table_name AS name", error)])
     connector = ClickHouseConnector(DSN)
     with pytest.raises(ClickHouseConnectionError, match="Недостаточно прав"):
         connector.connect(db)

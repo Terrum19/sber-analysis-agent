@@ -122,6 +122,21 @@ def test_clickhouse_supports_existing_empty_table(empty_table: str, db: DuckDBMa
     assert db.query(f'SELECT COUNT(*) AS total FROM "{empty_table}"') == [{"total": 0}]
 
 
+def test_clickhouse_does_not_import_tables_from_other_databases(
+    table: str, db: DuckDBManager
+) -> None:
+    other_database = f"it_other_{secrets.token_hex(4)}"
+    other_table = f"it_other_table_{secrets.token_hex(4)}"
+    clickhouse_http(f"CREATE DATABASE {other_database}")
+    clickhouse_http(f"CREATE TABLE {other_database}.{other_table} (id UInt32) ENGINE = Memory")
+    try:
+        views = ClickHouseConnector(DSN).connect(db)
+        assert table in views
+        assert other_table not in views
+    finally:
+        clickhouse_http(f"DROP DATABASE IF EXISTS {other_database}")
+
+
 def test_clickhouse_wrong_password_is_readable_and_secret_free(
     table: str, db: DuckDBManager
 ) -> None:
