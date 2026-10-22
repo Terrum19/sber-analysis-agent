@@ -51,3 +51,19 @@ def test_save_step_result_continues_numbering_of_existing_file(tmp_path):
         assert second.to_records("temp_result_v1") == [{"x": 1}]
     finally:
         second.close()
+
+
+def test_columns_prefers_temp_view_over_same_named_table(db):
+    db.execute("CREATE TABLE t AS SELECT 1 AS a, 2 AS b")
+    db.execute("CREATE TEMP VIEW t AS SELECT 3 AS x")
+    assert db.columns("t") == ["x"]
+    assert db.columns("t") == list(db.query("SELECT * FROM t")[0])
+
+
+def test_user_tables_skips_step_results_and_meta(db):
+    db.execute("CREATE TABLE sales AS SELECT 1 AS a")
+    db.execute("CREATE TEMP VIEW pg_orders AS SELECT 1 AS b")
+    db.execute("CREATE SCHEMA _meta")
+    db.execute("CREATE TABLE _meta.table_passport AS SELECT 1 AS c")
+    db.save_step_result("sales", "SELECT * FROM sales")
+    assert db.user_tables() == ["pg_orders", "sales"]

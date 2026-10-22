@@ -15,6 +15,7 @@ from app.core.agent.planner import StepPlanner
 from app.core.agent.step_executor import StepExecutor
 from app.core.data.duckdb_manager import DuckDBManager
 from app.core.llm.fake_client import FakeLLM
+from app.core.memory.session_memory import SessionMemory
 
 
 @pytest.fixture
@@ -38,6 +39,7 @@ def db():
 
 def test_full_agent_cycle(db):
     """Полный цикл: вопрос -> план -> шаги -> инсайт -> визуализация."""
+    SessionMemory("cycle-test").set_table("raw", db.columns("raw"))
     orch = AgentOrchestrator(
         planner=StepPlanner(llm=FakeLLM()),
         executor=StepExecutor(db=db),
@@ -81,6 +83,7 @@ def test_agent_cycle_with_dashboard_request(db):
                 dashboard_requested=True,
             )
 
+    SessionMemory("dashboard-test").set_table("raw", db.columns("raw"))
     orch = AgentOrchestrator(
         planner=DashboardPlanner(),
         executor=StepExecutor(db=db),

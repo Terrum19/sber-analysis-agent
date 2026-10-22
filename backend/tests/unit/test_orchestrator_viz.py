@@ -78,6 +78,8 @@ def db():
         "CREATE TABLE raw AS SELECT * FROM (VALUES ('msk', 10.0), ('spb', 4.0), ('msk', 2.5)) "
         "AS rows(region, amount)"
     )
+    for session in ("s1", "fresh"):
+        SessionMemory(session).set_table("raw", manager.columns("raw"))
     manager.statements.clear()
     yield manager
     manager.close()
@@ -159,11 +161,7 @@ async def test_missing_cached_table_falls_back_to_planner(agent, db) -> None:
     assert agent.executor.calls == 2
 
 
-async def test_failed_step_reports_error(db, monkeypatch) -> None:
-    async def no_sleep(seconds: float) -> None:
-        return None
-
-    monkeypatch.setattr("app.core.agent.recovery.asyncio.sleep", no_sleep)
+async def test_failed_step_reports_error(db) -> None:
     agent = AgentOrchestrator(
         planner=FakePlanner(),
         executor=FakeExecutor(db, fail=True),
@@ -205,11 +203,7 @@ def test_state_cache_put_and_get(db) -> None:
     assert cache.get(table, limit=1) == [{"region": "msk"}]
 
 
-async def test_new_question_drops_pending_clarification(db, monkeypatch) -> None:
-    async def no_sleep(seconds: float) -> None:
-        return None
-
-    monkeypatch.setattr("app.core.agent.recovery.asyncio.sleep", no_sleep)
+async def test_new_question_drops_pending_clarification(db) -> None:
     executor = FakeExecutor(db, fail=True)
     agent = AgentOrchestrator(planner=FakePlanner(), executor=executor, insight_gen=FakeInsight())
     await collect(agent, "Сравни выручку по регионам")
@@ -221,16 +215,12 @@ async def test_new_question_drops_pending_clarification(db, monkeypatch) -> None
     assert SessionMemory("s1").get_pending_recovery() is None
 
 
-async def test_recovery_answers_the_original_question(db, monkeypatch) -> None:
-    async def no_sleep(seconds: float) -> None:
-        return None
-
+async def test_recovery_answers_the_original_question(db) -> None:
     class QuestionSpy(FakeInsight):
         async def generate(self, question: str, result_table: str, **_: object) -> Insight:
             self.question = question
             return await super().generate(question, result_table)
 
-    monkeypatch.setattr("app.core.agent.recovery.asyncio.sleep", no_sleep)
     executor = FakeExecutor(db, fail=True)
     insight = QuestionSpy()
     agent = AgentOrchestrator(planner=FakePlanner(), executor=executor, insight_gen=insight)

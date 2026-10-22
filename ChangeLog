@@ -1,3 +1,185 @@
+2026-10-22  thebulkapro  <saitbatalovbulat200@gmail.com>
+
+	Исправления API сессий по ревью #111.
+	* backend/app/core/data/duckdb_manager.py (DuckDBManager.columns):
+	Если имя есть и во временных представлениях, и в основной базе,
+	колонки берутся только из temp, как выбирает SELECT.  Раньше
+	колонки обоих объектов смешивались.
+	(user_tables): Новый метод: таблицы и представления пользователя без
+	temp_result_vN и служебных схем; раньше этот запрос жил в роуте.
+	* backend/app/core/memory/session_memory.py (list_sessions): Вместо
+	list_ids: метаданные сессий одним запросом через json_extract, без
+	чтения полного состояния каждой сессии.
+	(set_meta): Сохраняет состояние сразу.
+	(set_table): Та же таблица обновляет только колонки: шаги и
+	незавершённое уточнение больше не сбрасываются.
+	* backend/app/api/routes/sessions.py (list_sessions): Параметр
+	offset: сессии старше первых 30 тоже доступны.  Роуты сессий
+	синхронные (def): FastAPI выполняет их в пуле потоков, и обращения
+	к SQLite и DuckDB не блокируют event loop.
+	* backend/app/api/routes/datasources.py (list_tables): Использует
+	DuckDBManager.user_tables.
+	* backend/app/api/schemas/chat.py (SessionOut.created_at): datetime.
+	* backend/tests/unit/test_duckdb_manager.py,
+	backend/tests/unit/test_sessions_api.py: Тесты одноимённых таблицы и
+	представления, user_tables, PATCH на ту же таблицу, полей списка,
+	offset.
+	* docs/memory.md: list_sessions, user_tables.
+
+2026-10-21  thebulkapro  <saitbatalovbulat200@gmail.com>
+
+	Сессии переживают перезапуск приложения.
+	* backend/app/api/routes/sessions.py (_SESSIONS): Удалён.  Ответы
+	собираются из SessionMemory (session_out): после перезапуска GET
+	/api/sessions/{id} больше не отвечает 404 на живую сессию, а PATCH
+	не теряет title и datasource_id.
+	(list_sessions): Новый эндпоинт GET /api/sessions: до 30 сессий для
+	сайдбара, недавно изменённые первыми.
+	* backend/app/core/memory/session_memory.py (SessionMemory.set_meta):
+	Новый метод: title, datasource_id и created_at хранятся в состоянии
+	сессии в SQLite.  (list_ids): id сессий по updated_at.
+	(set_table): При смене таблицы datasource_id сбрасывается.
+	* backend/app/api/schemas/chat.py (SessionOut): Поле created_at.
+	* backend/app/api/routes/datasources.py (list_tables): Новый
+	эндпоинт GET /api/datasources/tables: таблицы и представления
+	пользователя без temp_result_vN и служебной схемы _meta.
+	* backend/app/core/data/duckdb_manager.py (DuckDBManager.columns):
+	Ищет и во временных представлениях, через которые подключён
+	PostgreSQL: сессия над таблицей PostgreSQL отвечала 404.  Таблицы
+	схемы _meta больше не находятся.
+	* backend/tests/unit/test_sessions_api.py: Сессия, созданная одним
+	экземпляром приложения, видна в другом; список, лимит, сброс
+	datasource_id, временные представления, список таблиц.
+	* docs/memory.md: Метаданные и список сессий.
+2026-10-22  mb6ockatf  <smokenmirror@tutamail.com>
+
+	Шаблоны дашбордов (#46).
+	* backend/app/core/dashboards/templates.py (TemplateTile)
+	(DashboardTemplate): Новые неизменяемые модели: шаблон задаёт роли
+	колонок (варианты имён в порядке приоритета) и плитки с подсказкой
+	планировщику; chart_type — один из известных видов, is_kpi обязан
+	совпадать с chart_type == "kpi".  (TEMPLATES): Четыре шаблона под
+	датасеты хакатона: sales_quarterly (продажи), app_events (события
+	приложения), support_tickets (техподдержка), delivery (доставка);
+	подсказки плиток не требуют колонок, которых шаблон не проверяет.
+	(normalize): Без учёта регистра, BOM, «ё», пробелов и подчёркиваний.
+	(role_columns): Для каждой роли — колонка по имени или по названию из
+	паспорта (ColumnEnrichment.title); раньше объявленный вариант важнее
+	порядка колонок, одна колонка закрывает не больше одной роли.
+	(assign): Новая функция: перебор с возвратом по ролям.  (match):
+	Из подходящих — шаблон с наибольшим числом ролей, при равенстве —
+	объявленный раньше; возвращается копия шаблона.
+	* backend/tests/unit/test_dashboard_templates.py: Тесты на заголовках
+	всех девяти CSV хакатона (четыре находят свой шаблон, остальные — нет),
+	на приоритет вариантов, одну колонку на роль, нормализацию и
+	неизменность реестра.
+	* docs/repo_structure.md: templates.py.
+
+2026-10-21  thebulkapro  <saitbatalovbulat200@gmail.com>
+
+	Таблица сессии вместо жёстко заданной raw.
+	* backend/app/core/memory/session_memory.py (SessionMemory.table):
+	Новое свойство: таблица сессии, None — данные не подключены.
+	(set_table): Заменяет set_datasource; сбрасывает шаги и
+	pending_recovery.  (exists): Есть ли сессия в SQLite.
+	(record_answer, record_chart, last_chart, build_context): Сообщения и
+	последний график хранятся отдельно для каждой таблицы; без таблицы
+	паспорт не читается и raw не подставляется.
+	* backend/app/core/agent/orchestrator.py (AgentOrchestrator.run):
+	SOURCE_TABLE удалён: алиасы, глоссарий и вход плана берутся от
+	таблицы сессии.  Без таблицы — событие error «Сначала подключите
+	данные» и done.
+	* backend/app/core/data/duckdb_manager.py (DuckDBManager.columns):
+	Новый метод: имена колонок таблицы или представления.
+	* backend/app/api/routes/chat.py (chat): Оркестратор получает общий
+	DuckDB приложения через get_db вместо нового соединения на запрос.
+	* backend/app/api/routes/sessions.py (create_session): Поле table
+	обязательно, неизвестная таблица — 404; таблица и её колонки
+	записываются в SessionMemory.  (set_session_table): Новый эндпоинт
+	PATCH /api/sessions/{id}: смена таблицы, 404 для неизвестной сессии
+	(по SQLite) или таблицы.  (get_session): 404 вместо 500.
+	* backend/app/api/schemas/chat.py (SessionCreate, SessionOut,
+	SessionTable): Поле table.
+	* backend/tests/integration/test_memory_integration.py: Две таблицы
+	и две сессии, сессия без таблицы, смена вида графика по таблице.
+	* backend/tests/unit/test_sessions_api.py: Тесты API сессий.
+	* backend/tests: Тесты оркестратора выбирают таблицу raw явно через
+	сессию; API-тесты подменяют get_db.
+	* docs/memory.md, docs/visualization.md: Таблица сессии.
+2026-10-20  Alexander Yurits  <terruwork@gmail.com>
+
+	Отклонённое исправление шага больше не подменяет ошибку шага (#39).
+	* backend/app/core/agent/orchestrator.py (AgentOrchestrator._run_step):
+	Фронт и пользователь видят последнюю ошибку выполнения шага; если
+	исправление не прошло валидацию, планировщик получает эту ошибку
+	вместе с отклонённым шагом и причиной отказа.  attempts_made — число
+	выполнений шага: отклонённое исправление и недоступная LLM его не
+	увеличивают.
+	(AgentOrchestrator._input_columns): Сбой чтения колонок не прерывает
+	исправление — планировщик получает «нет».
+	(_StepFailed): attempts переименован в executions.
+	* backend/app/core/agent/planner.py (StepPlanner.fix_step): В тексте
+	ValueError — отклонённый шаг.
+	* backend/tests/unit/test_recovery_and_cache.py: Тесты отклонённых
+	исправлений и недоступных колонок.
+	* backend/tests/unit/test_orchestrator_viz.py: Без лишнего monkeypatch.
+	* docs/architecture.md: Что лежит в error события fixing.
+	* docs/issue_agent_loop_planning.md,
+	docs/reports/architecture_compliance_report.md,
+	docs/team_plans/terrum/agent-planner.md: with_retry заменён fix_step.
+
+2026-10-20  Alexander Yurits  <terruwork@gmail.com>
+
+	Упавший шаг исправляется планировщиком по тексту ошибки (#39, #33).
+	* backend/app/core/agent/orchestrator.py (AgentOrchestrator._run_step):
+	Новый метод: шаг с ошибкой в аргументах (ValueError, duckdb.Error)
+	отдаётся планировщику с текстом ошибки и колонками входной таблицы и
+	выполняется заново, до STEP_FIX_ATTEMPTS раз; затем, как раньше,
+	pending_recovery и clarification_needed (attempts_made — число
+	попыток, включая первую).  Повтора шага с теми же аргументами и паузой
+	больше нет.
+	(AgentOrchestrator.run, AgentOrchestrator._research): План и шаги идут
+	задачей; события, которые она шлёт через emit, run() отдаёт из очереди
+	сразу.  Отключение клиента отменяет задачу.
+	(_fixing_event): Событие progress со статусом fixing на каждую попытку
+	исправления.
+	* backend/app/core/agent/planner.py (StepPlanner.fix_step): Новый
+	метод: исправленный шаг сохраняет step_id и purpose и проходит
+	_validate_step; не прошёл — ValueError с ошибками валидации.
+	* backend/app/core/llm/prompts/step_planner.py (STEP_FIX): Новый промпт.
+	* backend/app/core/agent/recovery.py (with_retry, retryable): Удалены.
+	(STEP_FIX_ATTEMPTS, FIXABLE_ERRORS, fixable): Какие сбои исправляются:
+	шаг кодогенерации, NotImplementedError и SandboxError — нет.
+	* backend/app/core/agent/step_executor.py (resolve_input): Таблица,
+	из которой шаг берёт данные.
+	* backend/app/api/schemas/chat.py (ProgressPayload): Новая схема.
+	(ChatEvent): Тип progress.
+	* backend/tests/unit/test_recovery_and_cache.py: Тесты исправления шага
+	вместо тестов with_retry.
+	* backend/tests/unit/test_plan_execution.py,
+	backend/tests/unit/test_orchestrator_viz.py: Без живой LLM и паузы ретрая.
+	* docs/architecture.md: События стрима чата и контракт progress.
+	* docs/sandbox.md, docs/repo_structure.md: Новая обработка ошибок шага.
+
+2026-10-20  Saitbatalov Bulat  <saitbatalovbulat200@gmail.com>
+
+	Загрузка датасетов хакатона одной командой.
+	* scripts/load_hk_datasets.py: Каждый CSV из data/hk_datasets
+	проходит рабочий пайплайн: CSVConnector, профиль и паспорт таблицы,
+	без --no-llm ещё описания колонок от LLM.  Печатается таблица со
+	строками, колонками, временем загрузки и профиля и ошибками, включая
+	признаки нестрогого разбора CSV и число колонок без описания LLM.
+	Ошибка одного файла не прерывает прогон, но даёт код выхода 1.  Все
+	таблицы обрабатываются в одном event loop.
+	* Makefile (hk-data): Если в data/hk_datasets не ровно 9 CSV,
+	клонируется HK_Datasets и докопируются недостающие файлы, затем
+	запускается загрузка с --no-llm.
+	* data/hk_datasets/README.md: Скачивание через make hk-data, раздел
+	«Результаты загрузки».
+	* docs/data_connectors.md: Время загрузки всех датасетов по новому
+	замеру.
+	* docs/repo_structure.md: Цель hk-data и скрипты в scripts/.
+
 2026-10-20  mb6ockatf  <smokenmirror@tutamail.com>
 
 	Дашборды хранятся в SQLite (#45).

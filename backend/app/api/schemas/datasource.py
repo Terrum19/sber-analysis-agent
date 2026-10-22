@@ -11,6 +11,9 @@ class DatasourceCreate(BaseModel):
     kind: Literal["postgres", "clickhouse"]
     dsn: str
     db_schema: str | None = Field(default=None, alias="schema")
+    # Документ-описание таблиц (README, словарь колонок): из него в паспорт
+    # попадут названия и описания колонок.
+    description: str | None = None
 
 
 class DatasourceOut(BaseModel):

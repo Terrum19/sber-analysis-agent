@@ -4,13 +4,17 @@ from concurrent.futures import ThreadPoolExecutor
 
 import duckdb
 import pytest
+from fastapi import BackgroundTasks
 from fastapi.testclient import TestClient
 
 from app.api.deps import get_db
 from app.api.routes import datasources
 from app.api.schemas.datasource import DatasourceCreate
 from app.config import settings
+from app.core.data import ingest
+from app.core.data.connectors.base import BaseConnector
 from app.core.data.duckdb_manager import DuckDBManager
+from app.core.memory.profile_memory import ProfileMemory
 from app.main import app
 
 
@@ -33,7 +37,7 @@ def test_lifespan_opens_shared_db(tmp_path, monkeypatch: pytest.MonkeyPatch) -> 
     assert path.exists()
 
 
-class RecordingConnector:
+class RecordingConnector(BaseConnector):
     identity = "pg_recorded"
 
     def __init__(self) -> None:
@@ -48,6 +52,7 @@ class RecordingConnector:
             self.peak = max(self.peak, self.active)
             self.databases.append(db)
         time.sleep(0.05)
+        db.execute("CREATE OR REPLACE TABLE orders AS SELECT 1 AS id")
         with self.guard:
             self.active -= 1
         return ["orders"]
@@ -74,7 +79,9 @@ def test_concurrent_attach_requests_are_serialised(monkeypatch: pytest.MonkeyPat
     payload = DatasourceCreate(kind="postgres", dsn="host=x")
     try:
         with ThreadPoolExecutor(max_workers=4) as pool:
-            results = list(pool.map(lambda _: datasources.attach_db(payload, db), range(4)))
+            results = list(
+                pool.map(lambda _: datasources.attach_db(payload, db, BackgroundTasks()), range(4))
+            )
     finally:
         db.close()
     assert [result.tables for result in results] == [["orders"]] * 4
@@ -191,3 +198,85 @@ def test_csv_upload_enforces_size_limit(client, storage, monkeypatch: pytest.Mon
 
 def test_csv_upload_without_files_is_rejected(client, storage) -> None:
     assert client.post("/api/datasources/csv").status_code == 422
+
+
+def test_csv_upload_profiles_tables_at_once(client, storage, monkeypatch) -> None:
+    calls = []
+
+    async def describe(connector, db, tables, document=None, llm=None):
+        calls.append((tables, document, ProfileMemory(db).load_profile(tables[0]).row_count))
+        return {}
+
+    monkeypatch.setattr(ingest, "describe", describe)
+    response = client.post(
+        "/api/datasources/csv", files=[("files", ("orders.csv", b"id,amount\n1,10\n2,20\n"))]
+    )
+    assert response.status_code == 200
+    assert calls == [(["orders"], None, 2)]
+
+
+def test_csv_description_reaches_enricher(client, storage, monkeypatch) -> None:
+    calls = []
+
+    async def describe(connector, db, tables, document=None, llm=None):
+        calls.append((tables, document))
+        return {}
+
+    monkeypatch.setattr(ingest, "describe", describe)
+    response = client.post(
+        "/api/datasources/csv",
+        files=[
+            ("files", ("orders.csv", b"id,amount\n1,10\n")),
+            ("description", ("README.md", "- amount — сумма заказа".encode(), "text/markdown")),
+        ],
+    )
+    assert response.status_code == 200
+    assert calls == [(["orders"], "- amount — сумма заказа")]
+
+
+def test_csv_without_description_does_not_build_enricher(client, storage, monkeypatch) -> None:
+    def forbidden(*args, **kwargs):
+        raise AssertionError("энричер без описания не нужен")
+
+    monkeypatch.setattr(ingest, "SchemaEnricher", forbidden)
+    response = client.post("/api/datasources/csv", files=[("files", ("orders.csv", b"id\n1\n"))])
+    assert response.status_code == 200
+
+
+def test_failed_description_does_not_fail_attach(client, storage, monkeypatch, caplog) -> None:
+    async def broken(connector, db, tables, document=None, llm=None):
+        raise RuntimeError("LLM упала")
+
+    monkeypatch.setattr(ingest, "describe", broken)
+    response = client.post(
+        "/api/datasources/csv",
+        files=[("files", ("orders.csv", b"id\n1\n")), ("description", ("d.md", b"doc"))],
+    )
+    assert response.status_code == 200
+    assert "не перенесено в паспорт" in caplog.text
+
+
+def test_too_large_description_is_413(client, storage) -> None:
+    response = client.post(
+        "/api/datasources/csv",
+        files=[
+            ("files", ("orders.csv", b"id\n1\n")),
+            ("description", ("d.md", b"x" * (datasources.DESCRIPTION_MAX_BYTES + 1))),
+        ],
+    )
+    assert response.status_code == 413
+
+
+def test_db_description_reaches_enricher(monkeypatch) -> None:
+    connector = RecordingConnector()
+    monkeypatch.setattr(datasources, "build_connector", lambda kind, dsn, schema: connector)
+    db = DuckDBManager(":memory:")
+    background = BackgroundTasks()
+    payload = DatasourceCreate(kind="postgres", dsn="host=x", description="orders — заказы")
+    try:
+        datasources.attach_db(payload, db, background)
+        assert ProfileMemory(db).load_profile("orders").row_count == 1
+    finally:
+        db.close()
+    [task] = background.tasks
+    assert task.args == (connector, db, ["orders"], "orders — заказы")

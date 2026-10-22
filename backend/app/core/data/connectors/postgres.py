@@ -240,13 +240,15 @@ class PostgresConnector(BaseConnector):
             "JOIN pg_catalog.pg_class c ON c.oid = a.attrelid "
             "JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace "
             f"WHERE n.nspname = {quote_literal(self.schema)} AND c.relname = {quote_literal(source)} "
-            "AND a.attnum > 0 AND NOT a.attisdropped"
+            "AND a.attnum > 0 AND NOT a.attisdropped "
+            "AND col_description(a.attrelid, a.attnum) IS NOT NULL"
         )
         try:
+            # Только SELECT *: DuckDB 2.0 не применяет к postgres_query проекцию и
+            # фильтр внешнего запроса — колонки приходят в порядке запроса PostgreSQL
+            # под чужими именами, а фильтр проверяет не ту колонку.
             rows = db.query(
-                "SELECT column_name, comment FROM "
-                f"postgres_query({quote_literal(self.alias)}, {quote_literal(sql)}) "
-                "WHERE comment IS NOT NULL"
+                f"SELECT * FROM postgres_query({quote_literal(self.alias)}, {quote_literal(sql)})"
             )
         except duckdb.Error as error:
             logger.warning(
