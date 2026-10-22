@@ -14,7 +14,7 @@ DuckDB. Дальше весь аналитический слой работае
 |---|---|---|
 | `csv.py` | кодировка + `sniff_csv` + `read_csv` -> TABLE (копия в DuckDB) | готов |
 | `postgres.py` | `postgres_scanner` + `ATTACH ... (TYPE postgres, READ_ONLY)` -> TEMP VIEW | готов |
-| `clickhouse.py` | clickhouse-connect / in-memory -> TEMP VIEW в DuckDB (без файлов) | готов |
+| `clickhouse.py` | `clickhouse_scanner` + `ATTACH` -> TEMP VIEW в DuckDB | готов |
 
 Коннектор выбирается фабрикой `connectors/factory.py::build_connector(kind, dsn, schema)`.
 
@@ -280,28 +280,50 @@ PostgreSQL 17): подключение с лимитом 50 занимает о�
   удаляют временную схему `it_<токен>`.
 
 ## ClickHouse
+Пользователь передаёт строку подключения с нативным портом ClickHouse:
 
-Пользователь передаёт строку подключения `clickhouse://user:password@host:8123/database` (или `clickhouses://...`).
-Коннектор поддерживает два взаимодополняющих режима:
+```text
+clickhouse://[user[:password]@]host[:9000]/database
+clickhouses://[user[:password]@]host[:9440]/database
+```
 
-1. **Основной режим (нативный `clickhouse` community extension):**
-   - Выполняет `LOAD clickhouse` (или `INSTALL clickhouse FROM community`);
-   - Создаёт временный секрет `CREATE TEMPORARY SECRET <alias>_secret (TYPE clickhouse, PASSWORD $password)`;
-   - Монтирует ClickHouse напрямую в DuckDB: `ATTACH 'host=... port=... user=... dbname=...' AS <alias> (TYPE clickhouse, READ_ONLY, SECRET ...)`;
-   - Создаёт ленивые представления: `CREATE OR REPLACE TEMP VIEW <view> AS SELECT * FROM <alias>.<database>.<table>`;
-   - Запросы выполняются потоково с pushdown предикатов и нулевым потреблением оперативной памяти Python.
+`clickhouses://` используется для защищённого native TCP-подключения. Пароль
+передаётся в DuckDB Secret и не включается в строку `ATTACH`, логи или сообщения
+об ошибках.
 
-2. **Отказоустойчивый режим (PyArrow fallback):**
-   - Если расширение отсутствует (например, в изолированном офлайн-контуре без установленного бинарника) или не совпадает ABI версия DuckDB, коннектор автоматически переключается на fallback через `clickhouse-connect`;
-   - Данные читаются в формате Apache Arrow (zero-copy для DuckDB) параллельно через `ThreadPoolExecutor`;
-   - Таблицы регистрируются в памяти без создания временных файлов на диске.
+Коннектор использует только community extension DuckDB `clickhouse_scanner`.
+
+1. Загружает расширение (`LOAD clickhouse_scanner`; при необходимости сначала
+   пытается выполнить `INSTALL clickhouse_scanner FROM community`).
+2. Создаёт временный `SECRET` для пароля.
+3. Подключает базу через `ATTACH ... (TYPE clickhouse, READ_ONLY, SECRET ...)`.
+4. Получает список таблиц через `SHOW TABLES FROM <alias>`.
+5. Создаёт временные представления
+   `SELECT * FROM <alias>.<database>.<table>`.
+
+Данные читаются при выполнении запроса через удалённый scan, без загрузки
+таблиц целиком в Python. Fallback через `clickhouse-connect` и отдельный
+HTTP-клиент отсутствуют. Лимит строк коннектор не устанавливает: ограничение
+результата задаётся самим SQL-запросом, а `DB_MAX_TABLES` ограничивает только
+число подключаемых таблиц.
+
+### Ограничения
+
+- В окружении должен быть доступен совместимый с версией DuckDB community
+  extension `clickhouse_scanner`.
+- Для production/offline-образов расширение следует установить на этапе сборки;
+  runtime `INSTALL` требует сетевого доступа и выполняется только как попытка
+  восстановления.
+- Discovery использует `SHOW TABLES`, а не `information_schema.tables`.
+- `DB_MAX_TABLES` ограничивает количество создаваемых представлений, но не
+  количество строк в удалённых таблицах.
 
 ### API
 
 `POST /api/datasources/db`:
 
 ```json
-{"kind": "clickhouse", "dsn": "clickhouse://sber:***@localhost:8123/sber_demo"}
+{"kind": "clickhouse", "dsn": "clickhouse://localhost:9000/sber_demo"}
 ```
 
 Ответ `200`:
@@ -321,10 +343,7 @@ PostgreSQL 17): подключение с лимитом 50 занимает о�
 | 400 | некорректная строка подключения (`ValueError`) |
 | 422 | неизвестный `kind` (валидация pydantic) |
 | 502 | ClickHouse недоступен или отклонил подключение (`ClickHouseConnectionError`) |
-| 503 | расширение `clickhouse` недоступно и включен строгий режим `clickhouse_require_extension=True` (`ClickHouseExtensionUnavailableError`) |
-
-Если таблица превышает `CLICKHOUSE_MAX_ROWS` (по умолчанию 1 000 000) в режиме fallback, в `warnings` попадает предупреждение, а данные скачиваются с `LIMIT`.
-
+| 503 | расширение `clickhouse_scanner` недоступно (`ClickHouseExtensionUnavailableError`) |
 
 ## Описания колонок из источника
 

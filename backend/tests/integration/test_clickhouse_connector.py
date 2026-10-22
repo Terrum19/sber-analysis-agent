@@ -9,7 +9,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app.api.deps import get_db
-from app.core.data.connectors.clickhouse import ClickHouseConnector
+from app.core.data.connectors.clickhouse import ClickHouseConnectionError, ClickHouseConnector
 from app.core.data.duckdb_manager import DuckDBManager
 from app.main import app
 
@@ -37,6 +37,30 @@ def table():
     name = f"it_orders_{secrets.token_hex(4)}"
     clickhouse_http(f"CREATE TABLE {database}.{name} (id UInt32, amount Float64) ENGINE = Memory")
     clickhouse_http(f"INSERT INTO {database}.{name} VALUES (1, 10.5), (2, 20.0), (3, 5.25)")
+    yield name
+    clickhouse_http(f"DROP TABLE IF EXISTS {database}.{name}")
+
+
+@pytest.fixture
+def empty_table():
+    database = urllib.parse.urlsplit(DSN).path.lstrip("/") or "default"
+    name = f"it_empty_{secrets.token_hex(4)}"
+    clickhouse_http(f"CREATE TABLE {database}.{name} (id UInt32) ENGINE = Memory")
+    yield name
+    clickhouse_http(f"DROP TABLE IF EXISTS {database}.{name}")
+
+
+@pytest.fixture
+def cyrillic_table():
+    database = urllib.parse.urlsplit(DSN).path.lstrip("/") or "default"
+    name = f"it_cyrillic_{secrets.token_hex(4)}"
+    clickhouse_http(
+        f"CREATE TABLE {database}.{name} "
+        '("Идентификатор" UInt32, "Сумма заказа" Float64) ENGINE = Memory'
+    )
+    clickhouse_http(
+        f'INSERT INTO {database}.{name} ("Идентификатор", "Сумма заказа") VALUES (1, 12.5)'
+    )
     yield name
     clickhouse_http(f"DROP TABLE IF EXISTS {database}.{name}")
 
@@ -80,6 +104,44 @@ def test_clickhouse_filtered_query_uses_remote_scan(table: str, db: DuckDBManage
     explain_rows = db.query(f"EXPLAIN SELECT id, amount FROM {table} WHERE amount > 15")
     plan_text = " ".join(str(val) for r in explain_rows for val in r.values()).lower()
     assert "scan" in plan_text or table.lower() in plan_text
+
+
+def test_clickhouse_supports_cyrillic_column_names(cyrillic_table: str, db: DuckDBManager) -> None:
+    views = ClickHouseConnector(DSN).connect(db)
+
+    assert cyrillic_table in views
+    assert db.query(f'SELECT "Идентификатор", "Сумма заказа" FROM "{cyrillic_table}"') == [
+        {"Идентификатор": 1, "Сумма заказа": 12.5}
+    ]
+
+
+def test_clickhouse_supports_existing_empty_table(empty_table: str, db: DuckDBManager) -> None:
+    views = ClickHouseConnector(DSN).connect(db)
+
+    assert empty_table in views
+    assert db.query(f'SELECT COUNT(*) AS total FROM "{empty_table}"') == [{"total": 0}]
+
+
+def test_clickhouse_wrong_password_is_readable_and_secret_free(
+    table: str, db: DuckDBManager
+) -> None:
+    parts = urllib.parse.urlsplit(DSN)
+    wrong_dsn = urllib.parse.urlunsplit(
+        (
+            "clickhouse",
+            f"{parts.username or 'default'}:wrong_password@{parts.hostname}:{parts.port or 9000}",
+            parts.path,
+            "",
+            "",
+        )
+    )
+
+    with pytest.raises(ClickHouseConnectionError) as raised:
+        ClickHouseConnector(wrong_dsn).connect(db)
+
+    message = str(raised.value)
+    assert "wrong_password" not in message
+    assert "парол" in message.lower() or "учётн" in message.lower()
 
 
 def test_api_attach_clickhouse(table: str, db: DuckDBManager) -> None:
