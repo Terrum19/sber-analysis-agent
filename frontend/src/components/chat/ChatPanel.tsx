@@ -14,8 +14,10 @@ import { useCanvasStore } from "@/store/canvasStore";
 import { useUiStore } from "@/store/uiStore";
 import { useOpenArtifact } from "@/hooks/useOpenArtifact";
 import Icon from "@/components/ui/Icon";
+import ClarificationCard from "@/components/chat/ClarificationCard";
 import { useT } from "@/i18n/useT";
 import type { DashboardTile as DashboardTileType } from "@/types/dashboard";
+import { RECOVERY_SKIP_STEP } from "@/types/chat";
 
 /** Плитка панели из события «chart»; id хранится в самом событии. */
 function chartTile(chartData: any, fallbackTitle: string): DashboardTileType {
@@ -43,6 +45,8 @@ export default function ChatPanel({ sessionId }: Props) {
   const [streaming, setStreaming] = useState(false);
   const [lastFailedQuestion, setLastFailedQuestion] = useState<string | null>(null);
   const lastQuestionRef = useRef<string>("");
+  // Сообщение с карточкой уточнения, на которую ещё можно ответить
+  const [activeClarificationId, setActiveClarificationId] = useState<string | null>(null);
   const messagesEndRef = useRef<HTMLDivElement | null>(null);
 
   const messages = useSessionStore((s) => s.messages);
@@ -109,11 +113,18 @@ export default function ChatPanel({ sessionId }: Props) {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages, streaming]);
 
-  function sendQuestion(textToSend?: string) {
+  /**
+   * Отправить вопрос. recoveryResponse — ответ на уточнение: тогда q — то, что
+   * видит пользователь в ленте, а бэкенд продолжает исходный вопрос.
+   */
+  function sendQuestion(textToSend?: string, recoveryResponse?: string) {
     const q = textToSend || input;
     if (!q.trim() || streaming) return;
 
-    lastQuestionRef.current = q;
+    setActiveClarificationId(null);
+    if (!recoveryResponse) lastQuestionRef.current = q;
+    // Повтор после сбоя ответа на уточнение — исходный вопрос, а не текст ответа
+    const retryQuestion = recoveryResponse ? lastQuestionRef.current : q;
     setLastFailedQuestion(null);
     addMessage({ role: "user", content: q });
     // Первая реплика: сессия появляется в папке своей базы данных
@@ -141,6 +152,17 @@ export default function ChatPanel({ sessionId }: Props) {
       (event) => {
         if (event.type === "done") {
           streamFinished = true;
+        } else if (event.type === "clarification_needed") {
+          // Бэкенд закрывает поток без done: ждёт recovery_response
+          answerStarted = false;
+          streamFinished = true;
+          const id = `msg-clarify-${Date.now().toString(36)}`;
+          addMessage({ id, role: "agent", content: "", clarification: event.data });
+          setActiveClarificationId(id);
+        } else if (event.type === "refusal") {
+          answerStarted = false;
+          streamFinished = true;
+          addMessage({ role: "agent", content: event.data.reason || t("chat.refusal"), refusal: event.data });
         } else if (event.type === "text") {
           const raw = event as any;
           const content = event.data?.headline || event.data?.chunk || raw.headline || raw.chunk || "";
@@ -176,7 +198,7 @@ export default function ChatPanel({ sessionId }: Props) {
         } else if (event.type === "error") {
           answerStarted = false;
           streamHadError = true;
-          setLastFailedQuestion(q);
+          setLastFailedQuestion(retryQuestion);
           const raw = event as any;
           const msg =
             event.data?.message ||
@@ -192,10 +214,10 @@ export default function ChatPanel({ sessionId }: Props) {
       (error) => {
         if (error) {
           streamHadError = true;
-          setLastFailedQuestion(q);
+          setLastFailedQuestion(retryQuestion);
           addMessage({ role: "agent", content: t("chat.connectionLost", { msg: error }), failed: true });
         } else if (!streamFinished && !streamHadError && !cancelled) {
-          setLastFailedQuestion(q);
+          setLastFailedQuestion(retryQuestion);
           addMessage({ role: "agent", content: t("chat.streamIncomplete"), failed: true });
         } else if (!streamHadError) {
           setLastFailedQuestion(null);
@@ -203,6 +225,7 @@ export default function ChatPanel({ sessionId }: Props) {
         stopRef.current = null;
         setStreaming(false);
       },
+      recoveryResponse,
     );
     stopRef.current = () => {
       cancelled = true;
@@ -307,7 +330,38 @@ export default function ChatPanel({ sessionId }: Props) {
                 }`}
               >
                 {/* Текст сообщения */}
-                <div className="whitespace-pre-wrap">{m.content}</div>
+                {m.content && (
+                  <div className={`whitespace-pre-wrap ${m.refusal ? "border-l-2 border-warn/60 pl-3 text-graphite-300" : ""}`}>
+                    {m.content}
+                  </div>
+                )}
+
+                {/* Уточнение после сбоя шага */}
+                {m.clarification && (
+                  <ClarificationCard
+                    data={m.clarification}
+                    active={!streaming && m.id === activeClarificationId}
+                    onSkip={() => sendQuestion(t("chat.skipStep"), RECOVERY_SKIP_STEP)}
+                    // step_id < 0 — план пуст, бэкенд не ждёт уточнения: это новый вопрос
+                    onAnswer={(text) => sendQuestion(text, m.clarification!.step_id >= 0 ? text : undefined)}
+                  />
+                )}
+
+                {/* Отказ: переформулировки отправляются как новый вопрос */}
+                {m.refusal && m.refusal.suggestions?.length > 0 && (
+                  <div className="mt-2 flex flex-wrap gap-2">
+                    {m.refusal.suggestions.map((suggestion) => (
+                      <button
+                        key={suggestion}
+                        onClick={() => sendQuestion(suggestion)}
+                        disabled={streaming}
+                        className="rounded-full border border-graphite-600 px-3 py-1 text-xs text-graphite-200 hover:bg-graphite-800 disabled:opacity-50 transition"
+                      >
+                        {suggestion}
+                      </button>
+                    ))}
+                  </div>
+                )}
 
                 {/* Кнопка повтора при ошибке или обрыве */}
                 {m.failed && !streaming && (
@@ -400,7 +454,7 @@ export default function ChatPanel({ sessionId }: Props) {
               }
             }}
             rows={1}
-            placeholder={t("chat.placeholder")}
+            placeholder={activeClarificationId ? t("chat.clarifyPlaceholder") : t("chat.placeholder")}
             className="max-h-40 min-h-[36px] flex-1 resize-none overflow-y-hidden bg-transparent py-2 text-sm leading-5 text-graphite-100 placeholder-graphite-500 outline-none"
             disabled={streaming}
           />

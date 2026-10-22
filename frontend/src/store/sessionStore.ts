@@ -8,7 +8,7 @@
 import { create } from "zustand";
 import { persist, createJSONStorage } from "zustand/middleware";
 import type { DashboardTile } from "@/types/dashboard";
-import type { DashboardEvent, ChartEvent } from "@/types/chat";
+import type { DashboardEvent, ChartEvent, ClarificationEvent, RefusalEvent } from "@/types/chat";
 import type { Datasource } from "@/types/datasource";
 import { useCanvasStore } from "@/store/canvasStore";
 
@@ -21,6 +21,10 @@ export interface ChatMessage {
   timestamp?: string;
   /** Сообщение об ошибке или обрыве — под ним кнопка повтора. */
   failed?: boolean;
+  /** Карточка уточнения (clarification_needed). */
+  clarification?: ClarificationEvent["data"];
+  /** Отказ агента (refusal) с переформулировками. */
+  refusal?: RefusalEvent["data"];
 }
 
 export interface SessionItem {
