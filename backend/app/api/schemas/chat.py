@@ -20,6 +20,7 @@ class SessionOut(BaseModel):
     table: str | None = None
     datasource_id: str | None = None
     title: str | None = None
+    created_at: str | None = None
 
 
 class ChatRequest(BaseModel):

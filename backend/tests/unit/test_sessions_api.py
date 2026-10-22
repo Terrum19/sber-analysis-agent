@@ -1,25 +1,50 @@
-"""API сессий: создание только над подключённой таблицей и смена таблицы."""
+"""API сессий: создание только над подключённой таблицей, смена таблицы,
+список и чтение после перезапуска приложения."""
 
-from collections.abc import Iterator
+import itertools
+from collections.abc import Callable, Iterator
 
 import pytest
 from fastapi.testclient import TestClient
 
 from app.api.deps import get_db
+from app.api.routes import sessions
 from app.core.data.duckdb_manager import DuckDBManager
+from app.core.memory import session_memory
+from app.core.memory.profile_memory import ProfileMemory
 from app.core.memory.session_memory import SessionMemory
 from app.main import app
 
 
 @pytest.fixture
-def client() -> Iterator[TestClient]:
-    db = DuckDBManager(":memory:")
-    db.execute("CREATE TABLE sales AS SELECT 'msk' AS region, 10.0 AS revenue")
-    db.execute("CREATE TABLE users AS SELECT 25 AS age")
-    app.dependency_overrides[get_db] = lambda: db
-    yield TestClient(app)
-    app.dependency_overrides.pop(get_db)
-    db.close()
+def new_client() -> Iterator[Callable[[], TestClient]]:
+    """Новый экземпляр приложения: свой DuckDB, общий только SQLite сессий."""
+    opened: list[DuckDBManager] = []
+
+    def make() -> TestClient:
+        db = DuckDBManager(":memory:")
+        db.execute("CREATE TABLE sales AS SELECT 'msk' AS region, 10.0 AS revenue")
+        db.execute("CREATE TABLE users AS SELECT 25 AS age")
+        opened.append(db)
+        app.dependency_overrides[get_db] = lambda: db
+        return TestClient(app)
+
+    yield make
+    app.dependency_overrides.pop(get_db, None)
+    for db in opened:
+        db.close()
+
+
+@pytest.fixture
+def client(new_client) -> TestClient:
+    return new_client()
+
+
+@pytest.fixture
+def clock(monkeypatch: pytest.MonkeyPatch) -> None:
+    """updated_at растёт на секунду с каждой записью: порядок не зависит от таймера."""
+    ticks = itertools.count(1)
+    monkeypatch.setattr(session_memory.time, "time", lambda: float(next(ticks)))
 
 
 def test_create_session_binds_table_and_columns(client) -> None:
@@ -64,3 +89,73 @@ def test_patch_unknown_table_is_404(client) -> None:
 
 def test_get_unknown_session_is_404(client) -> None:
     assert client.get("/api/sessions/nope").status_code == 404
+
+
+def test_session_survives_new_app(new_client) -> None:
+    body = {"table": "sales", "title": "Продажи", "datasource_id": "csv_1"}
+    created = new_client().post("/api/sessions", json=body).json()
+    assert created["created_at"]
+    response = new_client().get(f"/api/sessions/{created['session_id']}")
+    assert response.status_code == 200
+    assert response.json() == created
+    assert response.json()["table"] == "sales"
+    assert response.json()["title"] == "Продажи"
+
+
+def test_patch_keeps_title_after_restart(new_client) -> None:
+    body = {"table": "sales", "title": "Продажи", "datasource_id": "csv_1"}
+    created = new_client().post("/api/sessions", json=body).json()
+    response = new_client().patch(f"/api/sessions/{created['session_id']}", json={"table": "users"})
+    assert response.json()["title"] == "Продажи"
+    assert response.json()["created_at"] == created["created_at"]
+
+
+def test_patch_to_other_table_clears_datasource_id(client) -> None:
+    body = {"table": "sales", "datasource_id": "csv_1"}
+    session_id = client.post("/api/sessions", json=body).json()["session_id"]
+    same = client.patch(f"/api/sessions/{session_id}", json={"table": "sales"})
+    assert same.json()["datasource_id"] == "csv_1"
+    other = client.patch(f"/api/sessions/{session_id}", json={"table": "users"})
+    assert other.json()["datasource_id"] is None
+    assert client.get(f"/api/sessions/{session_id}").json()["datasource_id"] is None
+
+
+def test_list_sessions_recent_first_after_restart(new_client, clock) -> None:
+    client = new_client()
+    first = client.post("/api/sessions", json={"table": "sales"}).json()["session_id"]
+    second = client.post("/api/sessions", json={"table": "users"}).json()["session_id"]
+    client.patch(f"/api/sessions/{first}", json={"table": "users"})
+    response = new_client().get("/api/sessions")
+    assert response.status_code == 200
+    assert [s["session_id"] for s in response.json()] == [first, second]
+    assert response.json()[0]["table"] == "users"
+
+
+def test_list_sessions_is_limited(client, clock, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(sessions, "SESSION_LIST_LIMIT", 2)
+    ids = [
+        client.post("/api/sessions", json={"table": "sales"}).json()["session_id"] for _ in range(3)
+    ]
+    assert [s["session_id"] for s in client.get("/api/sessions").json()] == ids[:0:-1]
+
+
+def test_list_sessions_empty(client) -> None:
+    assert client.get("/api/sessions").json() == []
+
+
+def test_create_session_over_temp_view(client) -> None:
+    db = app.dependency_overrides[get_db]()
+    db.execute("CREATE TEMP VIEW pg_orders AS SELECT 1 AS order_id")
+    response = client.post("/api/sessions", json={"table": "pg_orders"})
+    assert response.status_code == 200
+    assert SessionMemory(response.json()["session_id"]).build_context("")["columns"] == ["order_id"]
+
+
+def test_tables_lists_user_tables_only(client) -> None:
+    db = app.dependency_overrides[get_db]()
+    db.execute("CREATE TEMP VIEW pg_orders AS SELECT 1 AS order_id")
+    db.save_step_result("sales", "SELECT * FROM sales")
+    ProfileMemory(db)
+    response = client.get("/api/datasources/tables")
+    assert response.status_code == 200
+    assert response.json() == ["pg_orders", "sales", "users"]
