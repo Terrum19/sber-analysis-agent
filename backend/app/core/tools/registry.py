@@ -5,6 +5,7 @@
 """
 
 from app.core.tools.base import BaseTool
+from app.core.tools.codegen import CodegenTool
 from app.core.tools.domain.avg_order_value import AverageOrderValueTool
 from app.core.tools.domain.conversion_funnel import ConversionFunnelTool
 from app.core.tools.domain.product_performance import ProductPerformanceTool
@@ -72,8 +73,14 @@ class ToolRegistry:
             self._hidden.add(tool.name)
 
     def get(self, name: str) -> BaseTool:
-        """Получить тул по имени (KeyError -> recovery/rephrase)."""
-        return self._tools[name]
+        """Получить тул по имени (KeyError -> recovery/rephrase).
+
+        Выключенный тул (enabled() = False) — как незарегистрированный.
+        """
+        tool = self._tools[name]
+        if not tool.enabled():
+            raise KeyError(name)
+        return tool
 
     def register_alias(self, alias: str, tool_name: str) -> None:
         """Register an additional planner-facing name for an existing tool."""
@@ -82,7 +89,11 @@ class ToolRegistry:
 
     def planner_tools(self) -> list[BaseTool]:
         """Тулы, которые видит планировщик."""
-        return [tool for name, tool in self._tools.items() if name not in self._hidden]
+        return [
+            tool
+            for name, tool in self._tools.items()
+            if name not in self._hidden and tool.enabled()
+        ]
 
     def describe(self) -> str:
         """Описания тулов для LLM (по одному на строку)."""
@@ -132,6 +143,7 @@ for _tool in (
     AverageOrderValueTool(),
     TrendAnalysisTool(),
     SeasonalDecomposeTool(),
+    CodegenTool(),  # виден, только если CODEGEN_ENABLED и песочница установлена
 ):
     tool_registry.register(_tool)
 

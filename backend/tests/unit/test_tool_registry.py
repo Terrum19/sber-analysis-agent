@@ -2,6 +2,8 @@
 
 import inspect
 
+import pytest
+
 from app.core.tools.registry import tool_registry
 
 HIDDEN_TOOLS = {"time_series", "correlation", "product_performance", "conversion_funnel"}
@@ -94,3 +96,29 @@ def test_registry_get_unknown_tool_is_explicit() -> None:
         assert exc.args == ("does_not_exist",)
     else:
         raise AssertionError("Unknown tool lookup must raise KeyError")
+
+
+def test_run_python_is_visible_only_with_sandbox_and_flag(monkeypatch) -> None:
+    from app.config import settings
+
+    for enabled, installed, visible in [
+        (True, True, True),
+        (True, False, False),
+        (False, True, False),
+    ]:
+        monkeypatch.setattr(settings, "codegen_enabled", enabled)
+        monkeypatch.setattr("app.core.tools.codegen.sandbox_available", lambda v=installed: v)
+        assert ("- run_python [" in tool_registry.describe()) is visible
+        if visible:
+            assert tool_registry.get("run_python").kind == "transform"
+        else:
+            with pytest.raises(KeyError):
+                tool_registry.get("run_python")
+
+
+def test_run_python_requires_a_detailed_purpose(codegen_available) -> None:
+    tool = tool_registry.get("run_python")
+    with pytest.raises(ValueError, match="at least 20"):
+        tool.parse_args(arguments={"purpose": "медиана"})
+    args = tool.parse_args(arguments={"purpose": "Медиана выручки по окну 7 дней"})
+    assert args.output == "table"

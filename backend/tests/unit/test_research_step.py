@@ -12,7 +12,6 @@ def test_research_step_minimal() -> None:
     assert step.step_id == 0
     assert step.tool is None
     assert step.columns == []
-    assert step.needs_llm_codegen is False
     assert step.purpose == ""
 
 
@@ -22,13 +21,11 @@ def test_research_step_full() -> None:
         step_id=1,
         tool="aggregate",
         columns=["category", "value"],
-        needs_llm_codegen=True,
         purpose="Сгруппировать и посчитать",
     )
     assert step.step_id == 1
     assert step.tool == "aggregate"
     assert step.columns == ["category", "value"]
-    assert step.needs_llm_codegen is True
     assert step.purpose == "Сгруппировать и посчитать"
 
 

@@ -217,13 +217,10 @@ async def test_disconnect_cancels_the_running_plan(db) -> None:
 
 
 def test_fixable_errors() -> None:
-    step = group_by("revenue")
-    assert fixable(step, ValueError("bad column"))
-    assert not fixable(step, NotImplementedError("unsupported"))
-    assert not fixable(step, SandboxError("crash"))
-    # Код кодогенерации исправляет сам раннер песочницы.
-    codegen = ResearchStep(needs_llm_codegen=True, purpose="медиана окна")
-    assert not fixable(codegen, ValueError("bad column"))
+    assert fixable(ValueError("bad column"))
+    assert not fixable(NotImplementedError("unsupported"))
+    # Код run_python уже исправлял сам раннер песочницы.
+    assert not fixable(SandboxError("crash"))
 
 
 def test_state_cache_persists_step_result() -> None:
