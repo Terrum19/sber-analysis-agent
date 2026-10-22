@@ -448,7 +448,7 @@ python scripts/run_profile_benchmark.py --max-seconds 10
   сразу после `connector.connect()` для каждой таблицы и сохраняет профиль в
   паспорт (таблицы схемы `_meta`, `ProfileMemory`, см. [memory.md](memory.md)).
   Так подключают источник `POST /api/datasources/*`, `scripts/load_hk_datasets.py`
-  и `backend/run_full_llm_cycle.py`. Упало профилирование — подключённые
+  и `scripts/run_full_llm_cycle.py`. Упало профилирование — подключённые
   таблицы откатываются (`connector.rollback`); таблицу, которую нельзя
   прочитать, коннектор может пропустить (`connector.skip`, у PostgreSQL —
   при `permission denied`).

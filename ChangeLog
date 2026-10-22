@@ -24,7 +24,13 @@
 	backend/tests/unit/test_ingest.py,
 	backend/tests/unit/test_connectors_postgres.py,
 	backend/tests/unit/test_datasources_api.py: Тесты.
-	* docs/data_connectors.md: Поле description, коды 413/422, откат.
+	* docs/data_connectors.md: Поле description, коды 413/422, откат;
+	путь к run_full_llm_cycle.py.
+	* scripts/run_full_llm_cycle.py: Перенесён из backend/.  Каталог
+	прогона по-прежнему backend/storage/runs/.
+	(bind_session): SessionMemory.set_table вместо удалённого
+	set_datasource; подмена SOURCE_TABLE оркестратора убрана: константы
+	больше нет, паспорт и подписи берутся из таблицы сессии.
 
 2026-10-22  thebulkapro  <saitbatalovbulat200@gmail.com>
 
