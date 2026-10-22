@@ -45,13 +45,11 @@ _MARKS = {
 def column_aliases(passport: dict) -> dict[str, str]:
     """Читаемые названия колонок из паспорта данных (ProfileMemory)."""
     titles: dict[str, str] = {}
-    for key in ("glossary", "aliases"):
+    for key in ("glossary", "titles"):
         mapping = passport.get(key)
         if not isinstance(mapping, dict):
             continue
         for column, alias in mapping.items():
-            if isinstance(alias, list | tuple):
-                alias = alias[0] if alias else ""
             label = alias.strip() if isinstance(alias, str) else ""
             if label:
                 titles[str(column)] = label[0].upper() + label[1:]

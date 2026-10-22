@@ -288,8 +288,8 @@ def test_to_json_value() -> None:
 def test_column_aliases_from_passport() -> None:
     passport = {
         "glossary": {"amount": "сумма", "blank": "  "},
-        "aliases": {"region": ["регион", "область"], "empty": [], "odd": 5},
-        "aliases_raw": "свободный текст",
+        "titles": {"region": "регион", "empty": "", "odd": 5, "absent": None},
+        "aliases": {"day": ["день"]},
     }
     assert column_aliases(passport) == {"amount": "Сумма", "region": "Регион"}
     assert column_aliases({"glossary": None}) == {}
