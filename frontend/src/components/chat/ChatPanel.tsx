@@ -15,9 +15,10 @@ import { useUiStore } from "@/store/uiStore";
 import { useOpenArtifact } from "@/hooks/useOpenArtifact";
 import Icon from "@/components/ui/Icon";
 import ClarificationCard from "@/components/chat/ClarificationCard";
+import StepProgress from "@/components/chat/StepProgress";
 import { useT } from "@/i18n/useT";
 import type { DashboardTile as DashboardTileType } from "@/types/dashboard";
-import { RECOVERY_SKIP_STEP } from "@/types/chat";
+import { RECOVERY_SKIP_STEP, applyProgress, type TurnProgress } from "@/types/chat";
 
 /** Плитка панели из события «chart»; id хранится в самом событии. */
 function chartTile(chartData: any, fallbackTitle: string): DashboardTileType {
@@ -53,6 +54,7 @@ export default function ChatPanel({ sessionId }: Props) {
   const addMessage = useSessionStore((s) => s.addMessage);
   const appendToLastMessage = useSessionStore((s) => s.appendToLastMessage);
   const updateLastMessage = useSessionStore((s) => s.updateLastMessage);
+  const updateMessage = useSessionStore((s) => s.updateMessage);
   const addTile = useSessionStore((s) => s.addTile);
   const registerSession = useSessionStore((s) => s.registerSession);
   const database = useSessionDatabase(sessionId);
@@ -137,6 +139,15 @@ export default function ChatPanel({ sessionId }: Props) {
     // Поток без done и без уточнения — оборван, это ошибка
     let streamFinished = false;
     let cancelled = false;
+    // Прогресс хода живёт в отдельном сообщении над ответом
+    let progress: TurnProgress | null = null;
+    const progressId = `msg-progress-${Date.now().toString(36)}`;
+    const finishProgress = () => {
+      if (progress && progress.finished_at === undefined) {
+        progress = { ...progress, finished_at: Date.now() };
+        updateMessage(progressId, { progress });
+      }
+    };
     const appendText = (text: string) => {
       if (answerStarted) {
         appendToLastMessage(text);
@@ -152,6 +163,16 @@ export default function ChatPanel({ sessionId }: Props) {
       (event) => {
         if (event.type === "done") {
           streamFinished = true;
+          finishProgress();
+        } else if (event.type === "progress") {
+          if (!progress) {
+            progress = applyProgress({ planning: false, steps: [], started_at: Date.now() }, event.data);
+            answerStarted = false;
+            addMessage({ id: progressId, role: "agent", content: "", progress });
+          } else {
+            progress = applyProgress(progress, event.data);
+            updateMessage(progressId, { progress });
+          }
         } else if (event.type === "clarification_needed") {
           // Бэкенд закрывает поток без done: ждёт recovery_response
           answerStarted = false;
@@ -212,6 +233,7 @@ export default function ChatPanel({ sessionId }: Props) {
         }
       },
       (error) => {
+        finishProgress();
         if (error) {
           streamHadError = true;
           setLastFailedQuestion(retryQuestion);
@@ -329,6 +351,8 @@ export default function ChatPanel({ sessionId }: Props) {
                     : "w-full text-graphite-200"
                 }`}
               >
+                {m.progress && <StepProgress progress={m.progress} />}
+
                 {/* Текст сообщения */}
                 {m.content && (
                   <div className={`whitespace-pre-wrap ${m.refusal ? "border-l-2 border-warn/60 pl-3 text-graphite-300" : ""}`}>
