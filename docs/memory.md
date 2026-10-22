@@ -146,3 +146,21 @@ LLM до конца запуска больше не вызывается, чт�
   транзакции), `delete`, `update_snapshot(tile_id, records)`.
   `DashboardGenerator.generate` снимает данные плиток с `result_table` и
   сохраняет дашборд. Старые JSON из `storage/dashboards/` не мигрируются.
+- **REST (`api/routes/dashboards.py`):**
+
+  | Метод | Путь | Ответ |
+  |---|---|---|
+  | GET | `/api/dashboards?session_id=` (необязателен) | `list[DashboardSummary]`, новые по `updated_at` первыми |
+  | GET | `/api/dashboards/{id}` | `DashboardOut` / 404 |
+  | POST | `/api/dashboards` | `DashboardOut`, 201 |
+  | PUT | `/api/dashboards/{id}` | `DashboardOut` / 404 |
+  | DELETE | `/api/dashboards/{id}` | 204 / 404 |
+  | POST | `/api/dashboards/{id}/recalculate` | `DashboardOut` / 404 |
+
+  `DashboardCreate {session_id, title, tiles}` — `title` обязателен;
+  `DashboardUpdate {title?, tiles?}` — `tiles` заменяют все плитки.
+  `recalculate` (`core/dashboards/recalculate.py`) перечитывает
+  `result_table` каждой плитки и пересобирает спеку тем же типом графика
+  (`usermeta.chart_type`), с прежними подписями колонок и заголовком;
+  если таблицы уже нет, снимок и спека остаются, а плитка приходит со
+  `stale: true`.  Флаг не хранится — он есть только в ответе пересчёта.

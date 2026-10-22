@@ -42,12 +42,12 @@ backend/
 │   │   │   ├── sessions.py     — CRUD сессий диалога
 │   │   │   ├── chat.py         — SSE-эндпоинт диалога (стрим текста/картинок/дашбордов)
 │   │   │   ├── datasources.py  — подключение CSV / PostgreSQL / ClickHouse
-│   │   │   ├── dashboards.py   — реестр дашбордов (list/get для повторного доступа)
+│   │   │   ├── dashboards.py   — REST дашбордов: список, CRUD, пересчёт плиток
 │   │   │   └── artifacts.py    — экспорт в Excel/PDF, скачивание
 │   │   └── schemas/            — Pydantic-контракты API (фронт <-> бэк)
 │   │       ├── chat.py         — ChatRequest, ChatEvent (text/chart/dashboard/error/done)
 │   │       ├── datasource.py   — DatasourceCreate/Out
-│   │       └── dashboard.py    — DashboardTile/Config
+│   │       └── dashboard.py    — DashboardOut/TileOut/Create/Update, DashboardSummary
 │   │
 │   ├── core/              — ЯДРО: агент, данные, тулы, память, визуализация
 │   │   ├── llm/
@@ -137,7 +137,8 @@ backend/
 │   │   ├── dashboards/     — генерация и хранение дашбордов (4-й уровень памяти)
 │   │   │   ├── models.py        — Dashboard, DashboardTile, DashboardSummary
 │   │   │   ├── store.py         — DashboardStore: дашборды и плитки в SQLite сессий
-│   │   │   └── generator.py     — собрать дашборд из плиток, снять данные, сохранить
+│   │   │   ├── generator.py     — собрать дашборд из плиток, снять данные, сохранить
+│   │   │   └── recalculate.py   — пересчёт плиток по temp-таблицам (stale без таблицы)
 │   │   │
 │   │   └── export/         — выгрузка инсайта в делимый файл
 │   │       ├── excel.py           — openpyxl: таблицы + графики -> .xlsx

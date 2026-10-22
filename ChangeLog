@@ -1,3 +1,23 @@
+2026-10-22  mb6ockatf  <smokenmirror@tutamail.com>
+
+	REST API дашбордов и пересчёт плиток (#47).
+	* backend/app/api/routes/dashboards.py: Эндпоинты GET (список,
+	session_id необязателен), GET по id, POST (201), PUT, DELETE (204) и
+	POST /{id}/recalculate.  На неизвестный id — 404 вместо пустого
+	объекта.
+	* backend/app/api/schemas/dashboard.py (DashboardTileOut, DashboardOut)
+	(DashboardCreate, DashboardUpdate): Новые схемы вместо неиспользуемых
+	DashboardTile и DashboardConfig; DashboardSummary берётся из модели.
+	* backend/app/core/dashboards/recalculate.py (recalculate): Новый
+	модуль.  Плитка с result_table перечитывает таблицу, пересобирает
+	спеку тем же типом графика с прежними подписями колонок и заголовком
+	и обновляет снимок.  Если таблицы нет, снимок остаётся, а плитка
+	помечается stale.
+	* backend/tests/unit/test_dashboards_api.py: Тесты всех эндпоинтов,
+	404 и пересчёта.
+	* docs/memory.md: Таблица эндпоинтов и пересчёт.
+	* docs/repo_structure.md: recalculate.py, схемы и маршруты дашбордов.
+
 2026-10-21  thebulkapro  <saitbatalovbulat200@gmail.com>
 
 	Таблица сессии вместо жёстко заданной raw.
