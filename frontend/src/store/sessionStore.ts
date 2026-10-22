@@ -9,7 +9,7 @@ import { create } from "zustand";
 import { persist, createJSONStorage } from "zustand/middleware";
 import type { DashboardTile } from "@/types/dashboard";
 import type { DashboardEvent, ChartEvent } from "@/types/chat";
-import type { Datasource } from "@/types/datasource";
+import type { Datasource, TableBrief } from "@/types/datasource";
 import { useCanvasStore } from "@/store/canvasStore";
 
 export interface ChatMessage {
@@ -37,6 +37,8 @@ export interface DatabaseFolder {
   tables: string[];
   /** Одно предложение о том, что за данные (profile_summary бэкенда). */
   description?: string;
+  /** Паспорта таблиц из ответа подключения (DatasourceOut.profiles, #96). */
+  profiles?: TableBrief[];
   sessions: SessionItem[];
   /** Демо-база без настоящего datasource на бэкенде. */
   demo?: boolean;
@@ -272,6 +274,7 @@ export const useSessionStore = create<SessionState>()(
           kind: datasource.kind,
           tables: datasource.tables,
           description: datasource.profile_summary,
+          profiles: datasource.profiles,
           sessions: [],
         };
         set((s) => ({
