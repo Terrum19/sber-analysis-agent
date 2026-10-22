@@ -2,7 +2,7 @@
 
 from typing import Any
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 # Ссылки на таблицы в плане: $prev — результат последнего transform-шага,
 # $source — исходная таблица источника, $step_N — результат шага N.
@@ -79,3 +79,11 @@ class ResearchPlan(BaseModel):
     dashboard_requested: bool = False
     # Шаг, чей результат идёт в ответ и на график (None — последний шаг).
     result_step: int | None = None
+
+    @field_validator("final_viz", "dashboard_requested", mode="before")
+    @classmethod
+    def _null_is_default(cls, value: Any, info) -> Any:
+        """LLM присылает null вместо значения по умолчанию: final_viz=null -> auto."""
+        if value is None:
+            return cls.model_fields[info.field_name].default
+        return value

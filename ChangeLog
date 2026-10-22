@@ -32,6 +32,11 @@
 	set_datasource; подмена SOURCE_TABLE оркестратора убрана: константы
 	больше нет, паспорт и подписи берутся из таблицы сессии.
 
+	* backend/app/models/research_step.py (ResearchPlan._null_is_default):
+	null в final_viz и dashboard_requested от LLM даёт значение по
+	умолчанию (auto, False).  Раньше такой план не проходил валидацию.
+	* backend/tests/unit/test_research_step.py: Тест.
+
 2026-10-22  thebulkapro  <saitbatalovbulat200@gmail.com>
 
 	Исправления API сессий по ревью #111.
