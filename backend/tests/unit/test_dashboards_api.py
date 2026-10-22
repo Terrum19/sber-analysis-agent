@@ -190,3 +190,34 @@ def test_recalculate_dashboard_deleted_meanwhile(db: DuckDBManager, tmp_path: Pa
     store.create(dashboard)
     assert recalculate(dashboard.id, db, store) is None
     assert store.get(dashboard.id) is None
+
+
+def test_recalculate_returns_to_the_requested_chart_type(
+    client: TestClient, db: DuckDBManager
+) -> None:
+    db.execute("CREATE TABLE temp_result_v2 AS SELECT 5 AS x")
+    spec = build_vega_spec(
+        "scatter", result_table="temp_result_v2", data=db.to_records("temp_result_v2")
+    )
+    assert spec["usermeta"]["chart_type"] == "histogram"
+    tile = {"title": "Связь", "spec": spec, "result_table": "temp_result_v2"}
+    created = create(client, tiles=[tile])
+    db.execute("CREATE OR REPLACE TABLE temp_result_v2 AS SELECT 5 AS x, 7 AS y")
+    rebuilt = client.post(f"/api/dashboards/{created['id']}/recalculate").json()["tiles"][0]["spec"]
+    assert rebuilt["usermeta"]["chart_type"] == "scatter"
+    assert rebuilt["usermeta"]["requested_type"] == "scatter"
+
+
+def test_recalculate_keeps_a_foreign_spec_and_refreshes_its_data(
+    client: TestClient, db: DuckDBManager
+) -> None:
+    spec = {"mark": "arc", "encoding": {"theta": {"field": "revenue"}}, "data": {"values": []}}
+    created = create(client, tiles=[{"title": "Доли", "spec": spec, "result_table": RESULT_TABLE}])
+    rebuilt = client.post(f"/api/dashboards/{created['id']}/recalculate").json()["tiles"][0]
+    assert rebuilt["spec"]["mark"] == "arc"
+    assert rebuilt["spec"]["encoding"] == spec["encoding"]
+    assert rebuilt["spec"]["data"]["values"] == [
+        {"region": "msk", "revenue": 10},
+        {"region": "spb", "revenue": 5},
+    ]
+    assert rebuilt["snapshot_data"] == rebuilt["spec"]["data"]["values"]

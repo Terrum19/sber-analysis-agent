@@ -14,7 +14,9 @@ class Recalculated:
 
 
 def rebuild_spec(tile: DashboardTile, records: list[dict]) -> dict:
-    usermeta = tile.spec.get("usermeta") or {}
+    usermeta = tile.spec.get("usermeta")
+    if not usermeta:
+        return {**tile.spec, "data": {"values": snapshot_records(records)}}
     titles = {
         column["field"]: column["title"]
         for column in usermeta.get("columns") or []
@@ -22,7 +24,7 @@ def rebuild_spec(tile: DashboardTile, records: list[dict]) -> dict:
     }
     title = tile.spec.get("title")
     return build_vega_spec(
-        usermeta.get("chart_type") or "bar",
+        usermeta.get("requested_type") or usermeta.get("chart_type") or "bar",
         result_table=tile.result_table,
         data=records,
         titles=titles,
