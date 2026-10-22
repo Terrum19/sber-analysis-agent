@@ -48,6 +48,12 @@ def store_upload(upload: UploadFile, target: Path, limit: int) -> None:
             output.write(chunk)
 
 
+@router.get("/tables", response_model=list[str])
+def list_tables(db: Annotated[DuckDBManager, Depends(get_db)]) -> list[str]:
+    """Таблицы и представления пользователя без temp_result_vN и служебных схем."""
+    return db.user_tables()
+
+
 def read_description(upload: UploadFile | None) -> str | None:
     """Текст документа-описания (README, словарь колонок) или None."""
     if upload is None:

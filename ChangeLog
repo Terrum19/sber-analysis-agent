@@ -1,3 +1,56 @@
+2026-10-22  thebulkapro  <saitbatalovbulat200@gmail.com>
+
+	Исправления API сессий по ревью #111.
+	* backend/app/core/data/duckdb_manager.py (DuckDBManager.columns):
+	Если имя есть и во временных представлениях, и в основной базе,
+	колонки берутся только из temp, как выбирает SELECT.  Раньше
+	колонки обоих объектов смешивались.
+	(user_tables): Новый метод: таблицы и представления пользователя без
+	temp_result_vN и служебных схем; раньше этот запрос жил в роуте.
+	* backend/app/core/memory/session_memory.py (list_sessions): Вместо
+	list_ids: метаданные сессий одним запросом через json_extract, без
+	чтения полного состояния каждой сессии.
+	(set_meta): Сохраняет состояние сразу.
+	(set_table): Та же таблица обновляет только колонки: шаги и
+	незавершённое уточнение больше не сбрасываются.
+	* backend/app/api/routes/sessions.py (list_sessions): Параметр
+	offset: сессии старше первых 30 тоже доступны.  Роуты сессий
+	синхронные (def): FastAPI выполняет их в пуле потоков, и обращения
+	к SQLite и DuckDB не блокируют event loop.
+	* backend/app/api/routes/datasources.py (list_tables): Использует
+	DuckDBManager.user_tables.
+	* backend/app/api/schemas/chat.py (SessionOut.created_at): datetime.
+	* backend/tests/unit/test_duckdb_manager.py,
+	backend/tests/unit/test_sessions_api.py: Тесты одноимённых таблицы и
+	представления, user_tables, PATCH на ту же таблицу, полей списка,
+	offset.
+	* docs/memory.md: list_sessions, user_tables.
+
+2026-10-21  thebulkapro  <saitbatalovbulat200@gmail.com>
+
+	Сессии переживают перезапуск приложения.
+	* backend/app/api/routes/sessions.py (_SESSIONS): Удалён.  Ответы
+	собираются из SessionMemory (session_out): после перезапуска GET
+	/api/sessions/{id} больше не отвечает 404 на живую сессию, а PATCH
+	не теряет title и datasource_id.
+	(list_sessions): Новый эндпоинт GET /api/sessions: до 30 сессий для
+	сайдбара, недавно изменённые первыми.
+	* backend/app/core/memory/session_memory.py (SessionMemory.set_meta):
+	Новый метод: title, datasource_id и created_at хранятся в состоянии
+	сессии в SQLite.  (list_ids): id сессий по updated_at.
+	(set_table): При смене таблицы datasource_id сбрасывается.
+	* backend/app/api/schemas/chat.py (SessionOut): Поле created_at.
+	* backend/app/api/routes/datasources.py (list_tables): Новый
+	эндпоинт GET /api/datasources/tables: таблицы и представления
+	пользователя без temp_result_vN и служебной схемы _meta.
+	* backend/app/core/data/duckdb_manager.py (DuckDBManager.columns):
+	Ищет и во временных представлениях, через которые подключён
+	PostgreSQL: сессия над таблицей PostgreSQL отвечала 404.  Таблицы
+	схемы _meta больше не находятся.
+	* backend/tests/unit/test_sessions_api.py: Сессия, созданная одним
+	экземпляром приложения, видна в другом; список, лимит, сброс
+	datasource_id, временные представления, список таблиц.
+	* docs/memory.md: Метаданные и список сессий.
 2026-10-22  mb6ockatf  <smokenmirror@tutamail.com>
 
 	Шаблоны дашбордов (#46).
