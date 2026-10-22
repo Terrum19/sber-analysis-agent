@@ -34,17 +34,19 @@ def test_sales_columns_match_sales_template() -> None:
     assert match(["order_date", "order_id", "product", "quantity", "price"]).id == "sales_quarterly"
 
 
-def test_passport_alias_replaces_column_name() -> None:
+def test_passport_title_replaces_column_name() -> None:
     names = ["Дата", "Номер заказа", "Наименование", "Штук", "Цена за шт"]
-    aliases = {
-        "Дата": ["дата операции"],
-        "Номер заказа": ["order_id"],
-        "Наименование": ["товар"],
-        "Штук": ["количество"],
-        "Цена за шт": ["price"],
+    titles = {
+        "Дата": "дата операции",
+        "Номер заказа": "order_id",
+        "Наименование": "товар",
+        "Штук": "количество",
+        "Цена за шт": "price",
     }
     assert match(names) is None
-    assert match(names, aliases).id == "sales_quarterly"
+    assert match(names, titles).id == "sales_quarterly"
+    untitled = {column: title for column, title in titles.items() if column != "Штук"}
+    assert match(names, untitled) is None
 
 
 def test_foreign_columns_match_nothing() -> None:

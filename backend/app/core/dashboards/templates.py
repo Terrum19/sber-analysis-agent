@@ -169,13 +169,10 @@ def normalize(name: str) -> str:
 def role_columns(
     template: DashboardTemplate,
     columns: list[str],
-    aliases: dict[str, list[str]] | None = None,
+    titles: dict[str, str] | None = None,
 ) -> dict[str, str] | None:
     names = {
-        column: {
-            normalize(column),
-            *(normalize(alias) for alias in (aliases or {}).get(column, [])),
-        }
+        column: {normalize(column), normalize((titles or {}).get(column) or column)}
         for column in columns
     }
     found = {}
@@ -188,12 +185,10 @@ def role_columns(
     return found
 
 
-def match(
-    columns: list[str], aliases: dict[str, list[str]] | None = None
-) -> DashboardTemplate | None:
+def match(columns: list[str], titles: dict[str, str] | None = None) -> DashboardTemplate | None:
     best = None
     for template in TEMPLATES:
-        if role_columns(template, columns, aliases) is None:
+        if role_columns(template, columns, titles) is None:
             continue
         if best is None or len(template.required_roles) > len(best.required_roles):
             best = template
