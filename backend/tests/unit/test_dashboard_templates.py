@@ -1,6 +1,18 @@
-import pytest
+from typing import get_args
 
-from app.core.dashboards.templates import TEMPLATES, match, role_columns
+import pytest
+from pydantic import ValidationError
+
+from app.core.dashboards import templates
+from app.core.dashboards.templates import (
+    TEMPLATES,
+    ChartType,
+    DashboardTemplate,
+    TemplateTile,
+    match,
+    normalize,
+    role_columns,
+)
 
 HK_HEADERS = {
     "01_Продажи.csv": "Код позиции;Код заказа;Номер позиции;Дата операции (МСК);Код покупателя;Уровень программы лояльности;Город;Регион;Федеральный округ;Канал продажи;Код магазина;Артикул;Категория товара;Товар;Количество, шт.;Цена до скидки за единицу, руб.;Скидка, %;Себестоимость единицы, руб.;Способ оплаты;Тип покупателя;Тип операции;Код исходной позиции",
@@ -97,3 +109,114 @@ def test_templates_are_well_formed() -> None:
         assert template.tiles
         for tile in template.tiles:
             assert tile.is_kpi == (tile.chart_type == "kpi")
+
+
+def template(template_id: str) -> DashboardTemplate:
+    return next(template for template in TEMPLATES if template.id == template_id)
+
+
+def test_variant_order_beats_column_order() -> None:
+    found = role_columns(template("sales_quarterly"), columns("01_Продажи.csv"))
+    assert found["product"] == "Товар"
+    assert found["date"] == "Дата операции (МСК)"
+    assert found["price"] == "Цена до скидки за единицу, руб."
+
+
+def test_later_variant_is_used_when_earlier_is_missing() -> None:
+    names = [name for name in columns("01_Продажи.csv") if name != "Товар"]
+    assert role_columns(template("sales_quarterly"), names)["product"] == "Артикул"
+
+
+def test_one_column_fills_one_role() -> None:
+    support = template("support_tickets")
+    names = ["ticket_id", "created_at", "status"]
+    assert role_columns(support, names, {"status": "closed_at"}) is None
+    assert match(names, {"status": "closed_at"}) is None
+
+
+def test_title_matching_another_columns_name() -> None:
+    support = template("support_tickets")
+    names = ["ticket_id", "created_at", "closed_at", "Статус обращения"]
+    titles = {"Статус обращения": "status", "closed_at": "status"}
+    assert role_columns(support, names, titles) == {
+        "ticket": "ticket_id",
+        "created": "created_at",
+        "closed": "closed_at",
+        "status": "Статус обращения",
+    }
+
+
+def test_assignment_backtracks_when_greedy_choice_blocks_a_role() -> None:
+    support = template("support_tickets")
+    names = ["ticket_id", "created_at", "opened", "status"]
+    titles = {"created_at": "closed_at", "opened": "created_at"}
+    assert role_columns(support, names, titles) == {
+        "ticket": "ticket_id",
+        "created": "opened",
+        "closed": "created_at",
+        "status": "status",
+    }
+
+
+def test_duplicates_after_normalization_take_the_first_column() -> None:
+    names = ["Date", "date", "order_id", "product", "quantity", "price"]
+    found = role_columns(template("sales_quarterly"), names)
+    assert found["date"] == "Date"
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        ("\ufeffOrder_Date ", "order date"),
+        ("order  date", "order date"),
+        ("Order__date", "order date"),
+        ("Счёт", "счет"),
+    ],
+)
+def test_normalize(raw: str, expected: str) -> None:
+    assert normalize(raw) == expected
+
+
+def test_matching_ignores_separators_and_yo() -> None:
+    assert match(["order date", "ORDER ID", "product", "qty", "unit price"]).id == "sales_quarterly"
+
+
+def test_empty_columns_match_nothing() -> None:
+    assert match([]) is None
+
+
+def test_equal_role_counts_keep_the_earlier_template(monkeypatch: pytest.MonkeyPatch) -> None:
+    tile = TemplateTile(title="Число", purpose="Число строк", chart_type="kpi", is_kpi=True)
+    first = DashboardTemplate(
+        id="first", name="Первый", required_roles={"key": ("id",)}, tiles=(tile,)
+    )
+    second = DashboardTemplate(
+        id="second", name="Второй", required_roles={"key": ("id",)}, tiles=(tile,)
+    )
+    monkeypatch.setattr(templates, "TEMPLATES", (first, second))
+    assert match(["id"]).id == "first"
+
+
+def test_chart_types_are_known() -> None:
+    from app.core.viz.vega_spec_builder import CHART_TYPES
+
+    assert set(get_args(ChartType)) <= {*CHART_TYPES, "kpi"}
+    with pytest.raises(ValidationError):
+        TemplateTile(title="Опечатка", purpose="—", chart_type="hsitogram")
+
+
+def test_kpi_flag_must_match_chart_type() -> None:
+    with pytest.raises(ValidationError):
+        TemplateTile(title="KPI", purpose="—", chart_type="kpi")
+    with pytest.raises(ValidationError):
+        TemplateTile(title="Столбцы", purpose="—", chart_type="bar", is_kpi=True)
+
+
+def test_registry_cannot_be_changed_through_match() -> None:
+    found = match(columns("04_Доставка.csv"))
+    with pytest.raises(ValidationError):
+        found.tiles[0].title = "Другое"
+    found.required_roles["extra"] = ("x",)
+    assert "extra" not in template("delivery").required_roles
+    with pytest.raises(ValidationError):
+        template("delivery").name = "Другое"

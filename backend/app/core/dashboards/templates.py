@@ -1,19 +1,36 @@
-from pydantic import BaseModel
+import re
+from typing import Literal, Self
+
+from pydantic import BaseModel, ConfigDict, model_validator
+
+ChartType = Literal["bar", "line", "area", "scatter", "histogram", "box", "heatmap", "table", "kpi"]
+
+_SEPARATORS = re.compile(r"[\s_]+")
 
 
 class TemplateTile(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
     title: str
     purpose: str
-    chart_type: str
+    chart_type: ChartType
     is_kpi: bool = False
     insight_needed: bool = False
 
+    @model_validator(mode="after")
+    def kpi_flag_matches_chart_type(self) -> Self:
+        if self.is_kpi != (self.chart_type == "kpi"):
+            raise ValueError("is_kpi должен совпадать с chart_type == 'kpi'")
+        return self
+
 
 class DashboardTemplate(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
     id: str
     name: str
-    required_roles: dict[str, list[str]]
-    tiles: list[TemplateTile]
+    required_roles: dict[str, tuple[str, ...]]
+    tiles: tuple[TemplateTile, ...]
 
 
 TEMPLATES: tuple[DashboardTemplate, ...] = (
@@ -21,30 +38,36 @@ TEMPLATES: tuple[DashboardTemplate, ...] = (
         id="sales_quarterly",
         name="Продажи по кварталам",
         required_roles={
-            "date": ["Дата операции (МСК)", "Дата операции", "order_date", "sale_date", "date"],
-            "order": ["Код заказа", "order_id", "Заказ"],
-            "product": ["Товар", "Артикул", "product", "product_name", "sku"],
-            "quantity": ["Количество, шт.", "Количество", "quantity", "qty"],
-            "price": ["Цена до скидки за единицу, руб.", "Цена", "price", "unit_price"],
+            "date": ("Дата операции (МСК)", "Дата операции", "order_date", "sale_date", "date"),
+            "order": ("Код заказа", "order_id", "Заказ"),
+            "product": ("Товар", "Артикул", "product", "product_name", "sku"),
+            "quantity": ("Количество, шт.", "Количество", "quantity", "qty"),
+            "price": ("Цена до скидки за единицу, руб.", "Цена", "price", "unit_price"),
         },
-        tiles=[
+        tiles=(
             TemplateTile(
                 title="Выручка по кварталам",
                 purpose=(
-                    "Выручка по кварталам даты операции: сумма количество × цена с учётом "
-                    "скидки, возвраты вычитаются"
+                    "Выручка по кварталам даты операции: сумма количество × цена; если есть "
+                    "колонка скидки — с учётом скидки, если есть тип операции — без возвратов"
                 ),
                 chart_type="bar",
                 insight_needed=True,
             ),
             TemplateTile(
                 title="Топ товаров по выручке",
-                purpose="10 товаров с наибольшей выручкой (количество × цена с учётом скидки)",
+                purpose=(
+                    "10 товаров с наибольшей выручкой (количество × цена, с учётом скидки, "
+                    "если есть колонка скидки)"
+                ),
                 chart_type="bar",
             ),
             TemplateTile(
                 title="Выручка",
-                purpose="Общая выручка за период: сумма количество × цена с учётом скидки",
+                purpose=(
+                    "Общая выручка за период: сумма количество × цена, с учётом скидки, "
+                    "если есть колонка скидки"
+                ),
                 chart_type="kpi",
                 is_kpi=True,
             ),
@@ -54,18 +77,18 @@ TEMPLATES: tuple[DashboardTemplate, ...] = (
                 chart_type="kpi",
                 is_kpi=True,
             ),
-        ],
+        ),
     ),
     DashboardTemplate(
         id="app_events",
         name="События приложения",
         required_roles={
-            "time": ["Время события (МСК)", "Время события", "event_time", "timestamp"],
-            "user": ["Код пользователя", "user_id"],
-            "session": ["Код сессии", "session_id"],
-            "event": ["Событие", "event", "event_name"],
+            "time": ("Время события (МСК)", "Время события", "event_time", "timestamp"),
+            "user": ("Код пользователя", "user_id"),
+            "session": ("Код сессии", "session_id"),
+            "event": ("Событие", "event", "event_name"),
         },
-        tiles=[
+        tiles=(
             TemplateTile(
                 title="DAU",
                 purpose="Число уникальных пользователей по дням времени события",
@@ -75,8 +98,9 @@ TEMPLATES: tuple[DashboardTemplate, ...] = (
             TemplateTile(
                 title="Воронка покупки",
                 purpose=(
-                    "Пользователи на шагах воронки по событиям: начало сессии, просмотр товара, "
-                    "добавление в корзину, начало оформления, заказ оплачен"
+                    "Число пользователей на шагах воронки покупки: шаги — значения колонки "
+                    "события по смыслу от начала сессии или просмотра товара до оплаты заказа, "
+                    "в этом порядке"
                 ),
                 chart_type="bar",
             ),
@@ -88,18 +112,18 @@ TEMPLATES: tuple[DashboardTemplate, ...] = (
                 ),
                 chart_type="heatmap",
             ),
-        ],
+        ),
     ),
     DashboardTemplate(
         id="support_tickets",
         name="Техподдержка",
         required_roles={
-            "ticket": ["Код обращения", "ticket_id", "Обращение"],
-            "created": ["Создано (МСК)", "Создано", "created_at"],
-            "closed": ["Закрыто (МСК)", "Закрыто", "closed_at", "resolved_at"],
-            "status": ["Статус", "status"],
+            "ticket": ("Код обращения", "ticket_id", "Обращение"),
+            "created": ("Создано (МСК)", "Создано", "created_at"),
+            "closed": ("Закрыто (МСК)", "Закрыто", "closed_at", "resolved_at"),
+            "status": ("Статус", "status"),
         },
-        tiles=[
+        tiles=(
             TemplateTile(
                 title="Обращения по статусам",
                 purpose="Число обращений в каждом статусе",
@@ -122,19 +146,19 @@ TEMPLATES: tuple[DashboardTemplate, ...] = (
                 chart_type="kpi",
                 is_kpi=True,
             ),
-        ],
+        ),
     ),
     DashboardTemplate(
         id="delivery",
         name="Доставка",
         required_roles={
-            "shipment": ["Код отправления", "shipment_id", "Отправление"],
-            "accepted": ["Принято (МСК)", "Принято", "accepted_at", "shipped_at"],
-            "promised": ["Обещанный срок (МСК)", "Обещанный срок", "promised_at", "due_at"],
-            "delivered": ["Доставлено (МСК)", "Доставлено", "delivered_at"],
-            "carrier": ["Перевозчик", "carrier"],
+            "shipment": ("Код отправления", "shipment_id", "Отправление"),
+            "accepted": ("Принято (МСК)", "Принято", "accepted_at", "shipped_at"),
+            "promised": ("Обещанный срок (МСК)", "Обещанный срок", "promised_at", "due_at"),
+            "delivered": ("Доставлено (МСК)", "Доставлено", "delivered_at"),
+            "carrier": ("Перевозчик", "carrier"),
         },
-        tiles=[
+        tiles=(
             TemplateTile(
                 title="Сроки доставки",
                 purpose="Распределение дней от приёма до вручения по доставленным отправлениям",
@@ -157,13 +181,29 @@ TEMPLATES: tuple[DashboardTemplate, ...] = (
                 purpose="Число принятых отправлений по неделям даты приёма",
                 chart_type="line",
             ),
-        ],
+        ),
     ),
 )
 
 
 def normalize(name: str) -> str:
-    return name.lstrip("﻿").strip().casefold()
+    text = name.lstrip("\ufeff").casefold().replace("ё", "е")
+    return _SEPARATORS.sub(" ", text).strip()
+
+
+def assign(
+    candidates: list[tuple[str, list[str]]], used: frozenset[str] = frozenset()
+) -> dict[str, str] | None:
+    if not candidates:
+        return {}
+    (role, columns), rest = candidates[0], candidates[1:]
+    for column in columns:
+        if column in used:
+            continue
+        found = assign(rest, used | {column})
+        if found is not None:
+            return {role: column, **found}
+    return None
 
 
 def role_columns(
@@ -175,14 +215,16 @@ def role_columns(
         column: {normalize(column), normalize((titles or {}).get(column) or column)}
         for column in columns
     }
-    found = {}
+    candidates = []
     for role, variants in template.required_roles.items():
-        wanted = {normalize(variant) for variant in variants}
-        column = next((column for column in columns if names[column] & wanted), None)
-        if column is None:
-            return None
-        found[role] = column
-    return found
+        ordered = []
+        for variant in variants:
+            wanted = normalize(variant)
+            ordered.extend(
+                column for column in columns if wanted in names[column] and column not in ordered
+            )
+        candidates.append((role, ordered))
+    return assign(candidates)
 
 
 def match(columns: list[str], titles: dict[str, str] | None = None) -> DashboardTemplate | None:
@@ -192,4 +234,4 @@ def match(columns: list[str], titles: dict[str, str] | None = None) -> Dashboard
             continue
         if best is None or len(template.required_roles) > len(best.required_roles):
             best = template
-    return best
+    return best.model_copy(deep=True) if best else None
