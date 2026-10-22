@@ -123,6 +123,9 @@ export default function ChatPanel({ sessionId }: Props) {
 
     let answerStarted = false;
     let streamHadError = false;
+    // Поток без done и без уточнения — оборван, это ошибка
+    let streamFinished = false;
+    let cancelled = false;
     const appendText = (text: string) => {
       if (answerStarted) {
         appendToLastMessage(text);
@@ -132,11 +135,13 @@ export default function ChatPanel({ sessionId }: Props) {
       }
     };
 
-    stopRef.current = streamChat(
+    const stop = streamChat(
       sessionId,
       q,
       (event) => {
-        if (event.type === "text") {
+        if (event.type === "done") {
+          streamFinished = true;
+        } else if (event.type === "text") {
           const raw = event as any;
           const content = event.data?.headline || event.data?.chunk || raw.headline || raw.chunk || "";
           if (content) appendText(content);
@@ -189,6 +194,9 @@ export default function ChatPanel({ sessionId }: Props) {
           streamHadError = true;
           setLastFailedQuestion(q);
           addMessage({ role: "agent", content: t("chat.connectionLost", { msg: error }), failed: true });
+        } else if (!streamFinished && !streamHadError && !cancelled) {
+          setLastFailedQuestion(q);
+          addMessage({ role: "agent", content: t("chat.streamIncomplete"), failed: true });
         } else if (!streamHadError) {
           setLastFailedQuestion(null);
         }
@@ -196,6 +204,10 @@ export default function ChatPanel({ sessionId }: Props) {
         setStreaming(false);
       },
     );
+    stopRef.current = () => {
+      cancelled = true;
+      stop();
+    };
   }
 
   function handleOpenDashboard(dashboardId: string) {
