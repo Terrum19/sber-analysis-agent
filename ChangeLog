@@ -1,5 +1,33 @@
 2026-10-22  mb6ockatf  <smokenmirror@tutamail.com>
 
+	События прогресса хода (S-01, #49).
+	* backend/app/core/agent/orchestrator.py (_progress_event)
+	(_step_event, _elapsed_ms): Новые функции: событие progress и время
+	шага в миллисекундах.  (_fixing_event): Через _step_event.
+	(AgentOrchestrator._research): planning started и planning finished
+	с total_steps вокруг планировщика.
+	(AgentOrchestrator._execute_plan): По каждому шагу step started,
+	затем step finished или step failed с elapsed_ms (failed — с текстом
+	ошибки).
+	(AgentOrchestrator.run): insight started перед инсайтом, chart
+	started перед графиком.
+	* backend/tests/unit/test_orchestrator_unit.py
+	(test_progress_events_precede_the_answer)
+	(test_failed_step_reports_progress)
+	(test_empty_plan_reports_zero_steps): Новые тесты: порядок и поля
+	событий.
+	* backend/tests/unit/test_recovery_and_cache.py (kinds, fixing):
+	События progress сравниваются как «этап:статус».
+	* backend/tests/unit/test_orchestrator_viz.py (collect): Без событий
+	progress.  (test_recovery_answers_the_original_question): Ответ на
+	уточнение идёт без planning.
+	* backend/tests/integration/test_memory_integration.py
+	(test_chart_view_change_uses_chart_of_current_table): Первым после
+	progress приходит text.
+	* backend/tests/contract/test_sse_serialization.py
+	(test_sse_progress_events): Новый тест: progress в SSE-стриме.
+	* docs/architecture.md (События стрима чата): Все события прогресса.
+
 	Сводка паспорта в ответе подключения (#96).
 	* backend/app/api/schemas/datasource.py (TableBrief): Новая схема:
 	строки, колонки, период по первой temporal-колонке, статус описания,
