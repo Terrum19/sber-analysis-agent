@@ -88,7 +88,7 @@ export default function DashboardsListPage() {
       await deleteDashboard(id);
       setDashboards((prev) => prev.filter((d) => d.id !== id));
     } catch (err: any) {
-      alert(t("registry.deleteError", { msg: err.message }));
+      alert(t("registry.deleteError", { msg: err?.detail || err?.message || String(err) }));
     }
   }
 

@@ -97,27 +97,34 @@ export default function Canvas({ sessionId }: Props) {
 
   // Пересчёт данных
   async function handleRecalculate() {
-    if (!dashboardId) {
-      // Имитируем локальный пересчёт для несохранённого дашборда
-      setIsRecalculating(true);
-      setTimeout(() => {
-        setIsRecalculating(false);
-        setLastSnapshotTime(new Date().toLocaleTimeString("ru-RU"));
-        setSaveStatus(tr("canvas.recalculated"));
-        setTimeout(() => setSaveStatus(null), 3000);
-      }, 600);
-      return;
-    }
-
     try {
       setIsRecalculating(true);
-      const updated = await recalculateDashboard(dashboardId);
+      let id = dashboardId;
+      if (!id) {
+        if (displayTiles.length === 0) {
+          setSaveStatus(tr("canvas.nothingToSave"));
+          setTimeout(() => setSaveStatus(null), 3000);
+          return;
+        }
+        const created = await createDashboard({
+          session_id: sessionId,
+          title: dashboardTitle,
+          tiles: displayTiles,
+        });
+        id = created.id;
+        useCanvasStore.getState().setDashboard(created.id, created.title, created.tiles, created.updated_at);
+      }
+      const updated = await recalculateDashboard(id);
+      if (updated && updated.tiles) {
+        setTiles(updated.tiles);
+      }
       setLastSnapshotTime(new Date().toLocaleTimeString("ru-RU"));
       setSaveStatus(tr("canvas.snapshotUpdated"));
       setTimeout(() => setSaveStatus(null), 3000);
-    } catch (err) {
-      setSaveStatus(tr("canvas.refreshError"));
-      setTimeout(() => setSaveStatus(null), 3000);
+    } catch (err: any) {
+      const msg = err?.detail || err?.message;
+      setSaveStatus(msg ? `${tr("canvas.refreshError")}: ${msg}` : tr("canvas.refreshError"));
+      setTimeout(() => setSaveStatus(null), 3500);
     } finally {
       setIsRecalculating(false);
     }
@@ -141,10 +148,16 @@ export default function Canvas({ sessionId }: Props) {
     try {
       setIsSaving(true);
       if (dashboardId) {
-        await updateDashboard(dashboardId, {
+        const updated = await updateDashboard(dashboardId, {
           title: dashboardTitle,
           tiles: displayTiles,
         });
+        if (updated && updated.tiles) {
+          setTiles(updated.tiles);
+        }
+        if (updated && updated.title) {
+          setDashboardTitle(updated.title);
+        }
         setSaveStatus(tr("canvas.savedServer"));
       } else {
         const created = await createDashboard({
@@ -158,85 +171,27 @@ export default function Canvas({ sessionId }: Props) {
       setIsEditing(false);
       setTimeout(() => setSaveStatus(null), 3500);
     } catch (err: any) {
-      setSaveStatus(tr("canvas.saveError", { msg: err.message || String(err) }));
+      setSaveStatus(tr("canvas.saveError", { msg: err?.detail || err?.message || String(err) }));
       setTimeout(() => setSaveStatus(null), 4000);
     } finally {
       setIsSaving(false);
     }
   }
 
-  function exportClientData(title: string, tileList: DashboardTileType[]) {
-    const bom = "\uFEFF";
-    let csv = `Дашборд:;${title}\nДата выгрузки:;${new Date().toLocaleString("ru-RU")}\n\n`;
-    csv += "№;Название плитки;Тип;Значение / Метрика;Инсайт;Таблица DuckDB\n";
-    tileList.forEach((t, i) => {
-      const isKpi = Boolean(t.is_kpi);
-      let val = "";
-      if (isKpi) {
-        val = t.snapshot_data?.value ?? "—";
-      } else if (t.spec?.data && typeof t.spec.data === "object" && "values" in t.spec.data) {
-        val = `Записей: ${(t.spec.data as any).values?.length || 0}`;
-      }
-      const cleanInsight = (t.insight || "").replace(/[\r\n]+/g, " ");
-      csv += `${i + 1};"${t.title.replace(/"/g, '""')}";${isKpi ? "KPI" : "График"};"${String(val).replace(/"/g, '""')}";"${cleanInsight.replace(/"/g, '""')}";${t.result_table || "—"}\n`;
-    });
-
-    tileList.forEach((t, i) => {
-      const rows = t.snapshot_data?.records || (t.spec?.data as any)?.values;
-      if (Array.isArray(rows) && rows.length > 0) {
-        csv += `\n\n--- Данные плитки ${i + 1}: ${t.title} ---\n`;
-        const cols = Object.keys(rows[0]);
-        csv += cols.map((c) => `"${c.replace(/"/g, '""')}"`).join(";") + "\n";
-        rows.slice(0, 300).forEach((r: any) => {
-          csv += cols.map((c) => `"${String(r[c] ?? "").replace(/"/g, '""')}"`).join(";") + "\n";
-        });
-      }
-    });
-
-    const blob = new Blob([bom + csv], { type: "text/csv;charset=utf-8" });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = `${title || "dashboard"}.csv`;
-    a.click();
-    URL.revokeObjectURL(url);
-  }
-
   async function handleExport(format: "xlsx" | "pdf") {
     setIsExporting(format);
     setExportMenuOpen(false);
     try {
-      if (format === "pdf") {
-        try {
-          const blob = await exportArtifact(sessionId, "pdf");
-          const url = URL.createObjectURL(blob);
-          const a = document.createElement("a");
-          a.href = url;
-          a.download = `${dashboardTitle || "dashboard"}.pdf`;
-          a.click();
-          URL.revokeObjectURL(url);
-          setSaveStatus(tr("canvas.pdfDone"));
-        } catch {
-          window.print();
-          setSaveStatus(tr("canvas.printOpened"));
-        }
-      } else {
-        try {
-          const blob = await exportArtifact(sessionId, "xlsx");
-          const url = URL.createObjectURL(blob);
-          const a = document.createElement("a");
-          a.href = url;
-          a.download = `${dashboardTitle || "dashboard"}.xlsx`;
-          a.click();
-          URL.revokeObjectURL(url);
-          setSaveStatus(tr("canvas.xlsxDone"));
-        } catch {
-          exportClientData(dashboardTitle, displayTiles);
-          setSaveStatus(tr("canvas.csvDone"));
-        }
-      }
+      const blob = await exportArtifact(sessionId, format);
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `${dashboardTitle || "dashboard"}.${format}`;
+      a.click();
+      URL.revokeObjectURL(url);
+      setSaveStatus(format === "pdf" ? tr("canvas.pdfDone") : tr("canvas.xlsxDone"));
     } catch (err: any) {
-      setSaveStatus(tr("canvas.exportError", { msg: err.message || String(err) }));
+      setSaveStatus(tr("canvas.exportError", { msg: err?.detail || err?.message || String(err) }));
     } finally {
       setIsExporting(null);
       setTimeout(() => setSaveStatus(null), 3500);
@@ -323,17 +278,28 @@ export default function Canvas({ sessionId }: Props) {
               disabled={isSaving}
               className="ml-1 flex items-center gap-1.5 rounded-md bg-graphite-100 px-2.5 py-1 text-[12px] font-medium text-graphite-950 hover:bg-graphite-50 transition disabled:opacity-50"
             >
-              <Icon name="save" size={14} />
+              <Icon name="save" size={14} className={isSaving ? "animate-spin" : ""} />
               {isSaving ? tr("canvas.saving") : tr("canvas.save")}
             </button>
           ) : (
-            <button
-              onClick={handleStartEdit}
-              className="flex h-7 w-7 items-center justify-center rounded-md text-graphite-400 hover:bg-graphite-800 hover:text-graphite-100 transition"
-              title={tr("canvas.edit")}
-            >
-              <Icon name="pencil" />
-            </button>
+            <div className="flex items-center gap-0.5">
+              <button
+                onClick={handleSave}
+                disabled={isSaving}
+                className="flex h-7 items-center gap-1 rounded-md px-2 text-graphite-300 hover:bg-graphite-800 hover:text-graphite-100 transition disabled:opacity-50 text-[12px]"
+                title={tr("canvas.save")}
+              >
+                <Icon name="save" size={13} className={isSaving ? "animate-spin" : ""} />
+                <span>{isSaving ? tr("canvas.saving") : tr("canvas.save")}</span>
+              </button>
+              <button
+                onClick={handleStartEdit}
+                className="flex h-7 w-7 items-center justify-center rounded-md text-graphite-400 hover:bg-graphite-800 hover:text-graphite-100 transition"
+                title={tr("canvas.edit")}
+              >
+                <Icon name="pencil" />
+              </button>
+            </div>
           )}
 
           <span className="mx-1 h-4 w-px bg-graphite-800" />

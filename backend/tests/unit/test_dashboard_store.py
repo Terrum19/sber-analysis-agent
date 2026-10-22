@@ -124,6 +124,24 @@ def test_update_snapshot(store: DashboardStore) -> None:
     assert store.update_snapshot("missing", records) is False
 
 
+def test_update_snapshot_nested_dict(store: DashboardStore) -> None:
+    dashboard = make_dashboard(tiles_count=1)
+    store.create(dashboard)
+    tile_id = dashboard.tiles[0].id
+    data = {
+        "value": Decimal("42.50"),
+        "records": [{"sub": dt.date(2026, 5, 1), "cnt": 10}],
+        "meta": {"label": "Тест"},
+    }
+    assert store.update_snapshot(tile_id, data) is True
+    tile = store.get(dashboard.id).tiles[0]
+    assert tile.snapshot_data == {
+        "value": 42.5,
+        "records": [{"sub": "2026-05-01", "cnt": 10}],
+        "meta": {"label": "Тест"},
+    }
+
+
 def test_data_survives_a_new_store_instance(store_path: str) -> None:
     dashboard = make_dashboard()
     DashboardStore(path=store_path).create(dashboard)

@@ -470,15 +470,37 @@ export default function LeftSidebar() {
             </div>
             <form onSubmit={handleDbConnect} className="space-y-3">
               <div>
-                <label className="block text-xs text-graphite-400 mb-1">{t("modal.dbms")}</label>
-                <select
-                  value={dbKind}
-                  onChange={(e) => setDbKind(e.target.value as DbKind)}
-                  className="w-full rounded-lg border border-graphite-700 bg-graphite-950 px-3 py-2 text-xs text-graphite-50"
-                >
-                  <option value="postgres">PostgreSQL</option>
-                  <option value="clickhouse">ClickHouse</option>
-                </select>
+                <label className="block text-xs text-graphite-400 mb-2">{t("modal.dbms")}</label>
+                <div className="flex items-center gap-4">
+                  <label className="flex items-center gap-2 cursor-pointer text-xs text-graphite-100">
+                    <input
+                      type="radio"
+                      name="dbKind"
+                      value="postgres"
+                      checked={dbKind === "postgres"}
+                      onChange={() => setDbKind("postgres")}
+                      className="accent-graphite-100"
+                    />
+                    <span>PostgreSQL</span>
+                  </label>
+                  <label
+                    className="flex items-center gap-2 cursor-not-allowed text-xs text-graphite-500"
+                    title={t("modal.comingSoon")}
+                  >
+                    <input
+                      type="radio"
+                      name="dbKind"
+                      value="clickhouse"
+                      disabled
+                      checked={false}
+                      className="accent-graphite-100 cursor-not-allowed opacity-50"
+                    />
+                    <span>ClickHouse</span>
+                    <span className="rounded bg-graphite-800 px-1.5 py-0.5 text-[10px] text-graphite-400 border border-graphite-700">
+                      {t("modal.comingSoon")}
+                    </span>
+                  </label>
+                </div>
               </div>
               <div>
                 <label className="block text-xs text-graphite-400 mb-1">{t("modal.dsn")}</label>

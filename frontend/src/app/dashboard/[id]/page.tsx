@@ -76,10 +76,12 @@ export default function DashboardPage({ params }: { params: { id: string } }) {
   async function handleRecalculate() {
     setRecalculating(true);
     try {
-      setConfig(await recalculateDashboard(params.id));
+      const updated = await recalculateDashboard(params.id);
+      setConfig(updated);
       flash(t("dashboard.recalculated"));
     } catch (err: any) {
-      flash(t("canvas.refreshError"), 4000);
+      const msg = err?.detail || err?.message;
+      flash(msg ? `${t("canvas.refreshError")}: ${msg}` : t("canvas.refreshError"), 4000);
     } finally {
       setRecalculating(false);
     }
@@ -89,11 +91,12 @@ export default function DashboardPage({ params }: { params: { id: string } }) {
     if (!config) return;
     setIsSaving(true);
     try {
-      setConfig(await updateDashboard(params.id, { title: config.title, tiles: config.tiles }));
+      const updated = await updateDashboard(params.id, { title: config.title, tiles: config.tiles });
+      setConfig(updated);
       setIsEditing(false);
       flash(t("dashboard.saved"));
     } catch (err: any) {
-      flash(t("canvas.saveError", { msg: err.message }), 4000);
+      flash(t("canvas.saveError", { msg: err?.detail || err?.message || String(err) }), 4000);
     } finally {
       setIsSaving(false);
     }
@@ -136,68 +139,21 @@ export default function DashboardPage({ params }: { params: { id: string } }) {
     setConfig({ ...config, tiles: updatedTiles });
   }
 
-  function exportClientData(title: string, tileList: DashboardTileType[]) {
-    const bom = "﻿";
-    let csv = `Дашборд:;${title}\nДата выгрузки:;${new Date().toLocaleString("ru-RU")}\n\n`;
-    csv += "№;Название плитки;Тип;Значение / Метрика;Инсайт;Таблица DuckDB\n";
-    tileList.forEach((tile, i) => {
-      const isKpi = isKpiTile(tile);
-      let val = "";
-      if (isKpi) {
-        val = tile.snapshot_data?.value ?? "—";
-      } else if (tile.spec?.data && typeof tile.spec.data === "object" && "values" in tile.spec.data) {
-        val = `Записей: ${(tile.spec.data as any).values?.length || 0}`;
-      }
-      const cleanInsight = (tile.insight || "").replace(/[\r\n]+/g, " ");
-      csv += `${i + 1};"${tile.title.replace(/"/g, '""')}";${isKpi ? "KPI" : "График"};"${String(val).replace(/"/g, '""')}";"${cleanInsight.replace(/"/g, '""')}";${tile.result_table || "—"}\n`;
-    });
-
-    tileList.forEach((tile, i) => {
-      const rows = tile.snapshot_data?.records || (tile.spec?.data as any)?.values;
-      if (Array.isArray(rows) && rows.length > 0) {
-        csv += `\n\n--- Данные плитки ${i + 1}: ${tile.title} ---\n`;
-        const cols = Object.keys(rows[0]);
-        csv += cols.map((c) => `"${c.replace(/"/g, '""')}"`).join(";") + "\n";
-        rows.slice(0, 300).forEach((r: any) => {
-          csv += cols.map((c) => `"${String(r[c] ?? "").replace(/"/g, '""')}"`).join(";") + "\n";
-        });
-      }
-    });
-
-    const blob = new Blob([bom + csv], { type: "text/csv;charset=utf-8" });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = `${title || "dashboard"}.csv`;
-    a.click();
-    URL.revokeObjectURL(url);
-  }
-
   async function handleExport(format: "xlsx" | "pdf") {
     if (!config) return;
     setIsExporting(format);
     setExportMenuOpen(false);
     try {
-      try {
-        const blob = await exportArtifact(config.session_id || params.id, format);
-        const url = URL.createObjectURL(blob);
-        const a = document.createElement("a");
-        a.href = url;
-        a.download = `${config.title || "dashboard"}.${format}`;
-        a.click();
-        URL.revokeObjectURL(url);
-        flash(format === "pdf" ? t("canvas.pdfDone") : t("canvas.xlsxDone"), 3500);
-      } catch {
-        if (format === "pdf") {
-          window.print();
-          flash(t("canvas.printOpened"), 3500);
-        } else {
-          exportClientData(config.title, config.tiles);
-          flash(t("canvas.csvDone"), 3500);
-        }
-      }
+      const blob = await exportArtifact(config.session_id || params.id, format);
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `${config.title || "dashboard"}.${format}`;
+      a.click();
+      URL.revokeObjectURL(url);
+      flash(format === "pdf" ? t("canvas.pdfDone") : t("canvas.xlsxDone"), 3500);
     } catch (err: any) {
-      flash(t("canvas.exportError", { msg: err.message || String(err) }), 3500);
+      flash(t("canvas.exportError", { msg: err?.detail || err?.message || String(err) }), 3500);
     } finally {
       setIsExporting(null);
     }
@@ -321,14 +277,20 @@ export default function DashboardPage({ params }: { params: { id: string } }) {
                   disabled={isSaving}
                   className="ml-1 flex h-8 items-center gap-1.5 rounded-lg bg-graphite-100 px-3 text-[12px] font-medium text-graphite-950 hover:bg-graphite-50 disabled:opacity-50"
                 >
-                  <Icon name="save" size={14} />
+                  <Icon name="save" size={14} className={isSaving ? "animate-spin" : ""} />
                   {isSaving ? t("canvas.saving") : t("canvas.save")}
                 </button>
               ) : (
-                <button onClick={() => setIsEditing(true)} className={iconButton}>
-                  <Icon name="pencil" />
-                  {t("canvas.edit")}
-                </button>
+                <div className="flex items-center gap-1">
+                  <button onClick={handleSave} disabled={isSaving} className={iconButton}>
+                    <Icon name="save" size={14} className={isSaving ? "animate-spin" : ""} />
+                    {isSaving ? t("canvas.saving") : t("canvas.save")}
+                  </button>
+                  <button onClick={() => setIsEditing(true)} className={iconButton}>
+                    <Icon name="pencil" />
+                    {t("canvas.edit")}
+                  </button>
+                </div>
               )}
             </div>
           </div>

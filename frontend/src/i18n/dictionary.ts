@@ -53,6 +53,7 @@ const ru = {
   "modal.schema": "Схема (опционально)",
   "modal.cancel": "Отмена",
   "modal.connect": "Подключить",
+  "modal.comingSoon": "Скоро",
   "common.close": "Закрыть",
 
   "header.welcome": "Приветствие",
@@ -271,6 +272,7 @@ const en: Record<MessageKey, string> = {
   "modal.schema": "Schema (optional)",
   "modal.cancel": "Cancel",
   "modal.connect": "Connect",
+  "modal.comingSoon": "Coming Soon",
   "common.close": "Close",
 
   "header.welcome": "Welcome",

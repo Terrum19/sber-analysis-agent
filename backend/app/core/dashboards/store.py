@@ -24,8 +24,12 @@ CREATE INDEX IF NOT EXISTS ix_dashboards_session ON dashboards(session_id);
 """
 
 
-def snapshot_records(records: list[dict]) -> list[dict]:
-    return [{key: to_json_value(value) for key, value in record.items()} for record in records]
+def snapshot_records(records: Any) -> Any:
+    if isinstance(records, list):
+        return [snapshot_records(item) for item in records]
+    if isinstance(records, dict):
+        return {key: snapshot_records(value) for key, value in records.items()}
+    return to_json_value(records)
 
 
 class DashboardStore:
@@ -141,7 +145,7 @@ class DashboardStore:
             cursor = connection.execute("DELETE FROM dashboards WHERE id = ?", (dashboard_id,))
         return cursor.rowcount > 0
 
-    def update_snapshot(self, tile_id: str, records: list[dict]) -> bool:
+    def update_snapshot(self, tile_id: str, records: list[dict] | dict | Any) -> bool:
         with self._transaction() as connection:
             cursor = connection.execute(
                 "UPDATE dashboard_tiles SET snapshot_json = ?, snapshot_at = ? WHERE id = ?",
