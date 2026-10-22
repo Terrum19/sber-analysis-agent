@@ -11,6 +11,7 @@ from app.core.agent.planner import StepPlanner
 from app.core.agent.step_executor import StepExecutor
 from app.core.data.duckdb_manager import DuckDBManager
 from app.core.llm.fake_client import FakeLLM
+from app.core.memory.session_memory import SessionMemory
 
 
 @pytest.fixture
@@ -33,6 +34,7 @@ def db():
 
 
 def test_orchestrator_cycle_time(db):
+    SessionMemory("bench").set_table("raw", db.columns("raw"))
     orch = AgentOrchestrator(
         planner=StepPlanner(llm=FakeLLM()),
         executor=StepExecutor(db=db),
