@@ -7,13 +7,14 @@
 from functools import lru_cache
 from pathlib import Path
 
-from pydantic import SecretStr
+from pydantic import SecretStr, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 _BACKEND_DIR = Path(__file__).resolve().parent.parent
+_REPO_ROOT = _BACKEND_DIR.parent
 # .env ищем не от текущей папки, а рядом с кодом: корень репозитория
 # (docker-compose) и backend/ — значения из backend/.env важнее.
-ENV_FILES = (_BACKEND_DIR.parent / ".env", _BACKEND_DIR / ".env")
+ENV_FILES = (_REPO_ROOT / ".env", _BACKEND_DIR / ".env")
 
 
 class Settings(BaseSettings):
@@ -50,6 +51,16 @@ class Settings(BaseSettings):
 
     enrich_description_max_chars: int = 200
     enrich_batch_size: int = 25
+    # Документ-описание таблицы длиннее порога обрезается перед отправкой в LLM.
+    enrich_document_max_chars: int = 20_000
+
+    @field_validator("storage_dir", "duckdb_path", "sqlite_path", "wasm_runtime_dir")
+    @classmethod
+    def _from_repo_root(cls, value: str) -> str:
+        """Относительный путь считаем от корня репозитория, а не от текущей папки."""
+        if not value or value == ":memory:" or Path(value).is_absolute():
+            return value
+        return str(_REPO_ROOT / value)
 
 
 @lru_cache

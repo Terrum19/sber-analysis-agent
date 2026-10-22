@@ -1,39 +1,32 @@
-"""Обработка ошибок: ретрай предыдущего шага с обратной связью.
+"""Обработка ошибок шага: исправление по тексту ошибки, затем вопрос пользователю.
 
-Стратегия: при сбое шага — повторить его с текстом ошибки в промпте
-(самоисправление), затем эскалация пользователю с просьбой уточнить.
+Повтор шага с теми же аргументами бесполезен: неверная колонка или тип
+упадут так же. Поэтому упавший шаг вместе с текстом ошибки и колонками
+входной таблицы отдаётся планировщику (StepPlanner.fix_step), и
+исправленный шаг выполняется заново — до STEP_FIX_ATTEMPTS раз. Не
+помогло — оркестратор просит пользователя уточнить (clarification_needed).
+
+Сетевые ошибки LLM здесь не повторяются: их уже повторяет LLMClient.
 """
 
-import asyncio
-import functools
-from collections.abc import Callable
-from typing import Any
+import duckdb
+
+from app.models.research_step import ResearchStep
+
+# Сколько раз исправить упавший шаг перед вопросом пользователю.
+STEP_FIX_ATTEMPTS = 2
+
+# Ошибки в аргументах шага: неверная колонка, тип, ссылка, выражение.
+FIXABLE_ERRORS = (ValueError, duckdb.Error)
 
 
-async def with_retry(fn: Callable[..., Any], *args: Any, attempts: int = 3, **kwargs: Any) -> Any:
-    """Выполнить fn с повторами и растущей паузой."""
-    last_exc: Exception | None = None
-    for attempt in range(attempts):
-        try:
-            return await fn(*args, **kwargs)
-        except NotImplementedError:
-            # Повтор не поможет — возможности просто нет.
-            raise
-        except Exception as exc:  # noqa: BLE001
-            last_exc = exc
-            if attempt < attempts - 1:
-                await asyncio.sleep(2**attempt)
-    raise last_exc  # type: ignore[misc]
+def fixable(step: ResearchStep, exc: Exception) -> bool:
+    """Можно ли исправить шаг по этой ошибке.
 
-
-def retryable(attempts: int = 3) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
-    """Декоратор: ретраи с экспоненциальной паузой."""
-
-    def decorator(fn: Callable[..., Any]) -> Callable[..., Any]:
-        @functools.wraps(fn)
-        async def wrapper(*args: Any, **kwargs: Any) -> Any:
-            return await with_retry(fn, *args, attempts=attempts, **kwargs)
-
-        return wrapper
-
-    return decorator
+    Шаг кодогенерации исправляет свой код сам (settings.codegen_attempts);
+    NotImplementedError и прочие сбои (песочница, баг тула) исправлением
+    аргументов не лечатся.
+    """
+    if step.needs_llm_codegen or not step.tool:
+        return False
+    return isinstance(exc, FIXABLE_ERRORS)

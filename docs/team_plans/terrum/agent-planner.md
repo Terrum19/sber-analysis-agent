@@ -166,6 +166,8 @@
 
 - `run_generated_code` бросает `NotImplementedError` вместо возврата копии входа.
 - `with_retry` не повторяет `NotImplementedError` (повтор бессмысленен).
+  Позже `with_retry` заменён исправлением шага планировщиком (#39);
+  `NotImplementedError` по-прежнему не исправляется (`recovery.fixable`).
 
 #### Фаза 7: Тесты ✅
 

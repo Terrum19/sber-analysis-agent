@@ -37,7 +37,7 @@
 | Этап архитектуры | Реализация | Соответствие |
 |---|---|---|
 | [1] Planner (LLM+Instructor) → ResearchPlan | `StepPlanner.plan` + Instructor + `semantic_select` | ✅ Полное |
-| [2] StepExecutor: тулы → temp_result_vN, сбой → recovery → уточнение | `StepExecutor`, `with_retry`, `ClarificationNeeded`, `pending_recovery` | ✅ Полное |
+| [2] StepExecutor: тулы → temp_result_vN, сбой → recovery → уточнение | `StepExecutor`, `StepPlanner.fix_step` (#39), `ClarificationNeeded`, `pending_recovery` | ✅ Полное |
 | [3] InsightGenerator → Insight | `InsightGenerator.generate` | ✅ Полное |
 | [4] chart_selector → vega_spec_builder; chart_morph без LLM | `chart_selector`, `vega_spec_builder`, `chart_morph`, `SessionMemory.last_chart` | ✅ Полное |
 | [5] DashboardGenerator → ArtifactRegistry | `DashboardGenerator`, `ArtifactRegistry` (+ роуты) | ✅ Полное |

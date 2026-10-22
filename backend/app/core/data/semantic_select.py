@@ -4,8 +4,8 @@
 (раздувание контекста). Берём топ-K релевантных колонок — модель дальше
 сама решает, что использовать (см. prompts/step_planner.py).
 
-Для отобранных колонок describe_columns собирает выжимку паспорта: тип,
-диапазон, частые значения. Контур замкнутый, поэтому значения из данных
+Для отобранных колонок describe_columns собирает выжимку паспорта: название,
+тип, описание, диапазон, частые значения. Контур замкнутый, поэтому значения из данных
 модели отдавать можно — так она видит, как реально записана категория
 («Электроника» / «електроника»), без отдельного шага разведки.
 """
@@ -92,13 +92,13 @@ def select_columns(
     columns: list[str],
     top_k: int | None = None,
     profile: TableProfile | None = None,
-    aliases: dict[str, list[str]] | None = None,
+    titles: dict[str, str] | None = None,
 ) -> list[str]:
-    """Топ-K колонок: совпадение слов вопроса с именем, алиасами и частыми
+    """Топ-K колонок: совпадение слов вопроса с именем, названием и частыми
     значениями категорий + бонус за тип.
 
-    aliases — человекочитаемые названия из обогащения паспорта: по ним русский
-    вопрос находит колонки с латинскими именами («выручка» -> revenue).
+    titles — человекочитаемые названия колонок из описания таблицы в паспорте:
+    по ним русский вопрос находит колонки с латинскими именами («выручка» -> revenue).
     """
     limit = top_k or settings.semantic_top_k
     question_tokens = tokenize(question)
@@ -113,7 +113,7 @@ def select_columns(
 
     def score(column: str) -> int:
         words = " ".join(
-            [column.replace("_", " "), *(aliases or {}).get(column, []), values.get(column, "")]
+            [column.replace("_", " "), (titles or {}).get(column, ""), values.get(column, "")]
         )
         matches = _matches(question_tokens, tokenize(words))
         bonus = KIND_WEIGHT if kinds.get(column) in wanted else 0
@@ -126,6 +126,7 @@ def describe_columns(
     columns: list[str],
     profile: TableProfile | None = None,
     descriptions: dict[str, str] | None = None,
+    titles: dict[str, str] | None = None,
 ) -> str:
     """Выжимка паспорта по колонкам для промпта: по строке на колонку."""
     stats = {column.name: column for column in profile.columns} if profile else {}
@@ -133,6 +134,8 @@ def describe_columns(
     for name in columns:
         column = stats.get(name)
         line = f"- {name}"
+        if (titles or {}).get(name):
+            line += f" «{titles[name]}»"
         if column is not None:
             line += f" [{column.kind}, {column.dtype}]"
         if (descriptions or {}).get(name):

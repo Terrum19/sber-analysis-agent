@@ -2,16 +2,16 @@ from pydantic import BaseModel, Field
 
 
 class ColumnEnrichment(BaseModel):
-    """Описание и алиасы колонки.
+    """Название и описание колонки из описания таблицы.
 
-    От LLM приходят только column, description и aliases; остальные поля
-    заполняет SchemaEnricher и хранит ProfileMemory (_meta.column_passport).
+    От LLM приходят только column, title и description (извлечены из
+    документа-описания); остальные поля заполняет SchemaEnricher и хранит
+    ProfileMemory (_meta.column_passport).
     """
 
     column: str
+    title: str | None = None
     description: str | None = None
-    aliases: list[str] = Field(default_factory=list)
-    description_original: str | None = None
     description_source: str | None = None
     fingerprint: str | None = None
 

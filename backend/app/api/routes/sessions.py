@@ -3,13 +3,14 @@
 Сессия — единица памяти (память уровня 1): session_id -> история
 текстового диалога + история ResearchStep (см. core/memory/session_memory.py).
 Сессия создаётся только с подключённой таблицей; сменить таблицу можно
-через PATCH, история каждой таблицы хранится отдельно.
+через PATCH, история каждой таблицы хранится отдельно. Источник правды —
+SQLite SessionMemory: сессии и их метаданные переживают перезапуск.
 """
 
 import uuid
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 
 from app.api.deps import get_db
 from app.api.schemas.chat import SessionCreate, SessionOut, SessionTable
@@ -18,8 +19,7 @@ from app.core.memory.session_memory import SessionMemory
 
 router = APIRouter()
 
-# Хранилище сессий (in-memory до подключения SessionMemory/SQLite).
-_SESSIONS: dict[str, SessionOut] = {}
+SESSION_LIST_LIMIT = 30
 
 
 def table_columns(db: DuckDBManager, table: str) -> list[str]:
@@ -30,26 +30,37 @@ def table_columns(db: DuckDBManager, table: str) -> list[str]:
     return columns
 
 
+def session_out(memory: SessionMemory) -> SessionOut:
+    return SessionOut(
+        session_id=memory.session_id,
+        table=memory.table,
+        datasource_id=memory.datasource_id,
+        title=memory.title,
+        created_at=memory.created_at,
+    )
+
+
+@router.get("", response_model=list[SessionOut])
+def list_sessions(offset: Annotated[int, Query(ge=0)] = 0) -> list[SessionOut]:
+    """Сессии для сайдбара, недавно изменённые первыми, по SESSION_LIST_LIMIT с offset."""
+    rows = SessionMemory.list_sessions(SESSION_LIST_LIMIT, offset)
+    return [SessionOut(**row) for row in rows]
+
+
 @router.post("", response_model=SessionOut)
-async def create_session(
+def create_session(
     payload: SessionCreate, db: Annotated[DuckDBManager, Depends(get_db)]
 ) -> SessionOut:
     """Создать новую сессию диалога над подключённой таблицей."""
     columns = table_columns(db, payload.table)
-    session_id = uuid.uuid4().hex
-    session = SessionOut(
-        session_id=session_id,
-        table=payload.table,
-        datasource_id=payload.datasource_id,
-        title=payload.title,
-    )
-    _SESSIONS[session_id] = session
-    SessionMemory(session_id, db).set_table(payload.table, columns)
-    return session
+    memory = SessionMemory(uuid.uuid4().hex, db)
+    memory.set_meta(payload.title, payload.datasource_id)
+    memory.set_table(payload.table, columns)
+    return session_out(memory)
 
 
 @router.patch("/{session_id}", response_model=SessionOut)
-async def set_session_table(
+def set_session_table(
     session_id: str, payload: SessionTable, db: Annotated[DuckDBManager, Depends(get_db)]
 ) -> SessionOut:
     """Переключить сессию на другую таблицу."""
@@ -57,20 +68,13 @@ async def set_session_table(
     if not memory.exists():
         raise HTTPException(status_code=404, detail="Сессия не найдена.")
     memory.set_table(payload.table, table_columns(db, payload.table))
-    session = _SESSIONS.get(session_id) or SessionOut(session_id=session_id)
-    session = session.model_copy(update={"table": payload.table})
-    _SESSIONS[session_id] = session
-    return session
+    return session_out(memory)
 
 
 @router.get("/{session_id}", response_model=SessionOut)
-async def get_session(session_id: str) -> SessionOut:
+def get_session(session_id: str) -> SessionOut:
     """Получить метаданные сессии."""
-    if session_id not in _SESSIONS:
-        memory = SessionMemory(session_id)
-        if memory.exists() and memory.table:
-            session = SessionOut(session_id=session_id, table=memory.table)
-            _SESSIONS[session_id] = session
-            return session
+    memory = SessionMemory(session_id)
+    if not memory.exists():
         raise HTTPException(status_code=404, detail="Сессия не найдена.")
-    return _SESSIONS[session_id]
+    return session_out(memory)
