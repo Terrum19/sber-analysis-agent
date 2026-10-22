@@ -7,10 +7,10 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app.api.deps import get_db
+from app.core.data import ingest
 from app.core.data.connectors.pg_dsn import parse_dsn
 from app.core.data.connectors.postgres import PostgresConnectionError, PostgresConnector
 from app.core.data.duckdb_manager import DuckDBManager
-from app.core.data.schema_enrichment import SchemaEnricher
 from app.core.memory.profile_memory import ProfileMemory
 from app.main import app
 
@@ -190,20 +190,19 @@ def test_api_attach_postgres(schema: str, db: DuckDBManager) -> None:
 
 class FakeLLM:
     def __init__(self) -> None:
-        self.calls: list[tuple[str, list[str]]] = []
+        self.calls: list[list[str]] = []
 
     async def complete_structured(self, system: str, prompt: str, schema):
-        kind = "compress" if prompt.startswith("Сожми") else "aliases"
         start = prompt.index("Колонки (JSON):\n") + len("Колонки (JSON):\n")
         columns = json.loads(prompt[start : prompt.index("\n\n", start)])
-        self.calls.append((kind, [column["column"] for column in columns]))
+        self.calls.append([column["column"] for column in columns])
         return schema.model_validate(
             {
                 "columns": [
                     {
                         "column": column["column"],
-                        "description": f"{kind}: {column['column']}",
-                        "aliases": [f"{column['column']} (алиас)"],
+                        "title": f"Название {column['column']}",
+                        "description": f"Документ: {column['column']}",
                     }
                     for column in columns
                 ]
@@ -227,26 +226,31 @@ async def test_column_comments_drive_enrichment(
         run_admin(admin, f"COMMENT ON COLUMN {name}.commented.status IS '{long}'")
         db.execute("CREATE TEMP VIEW commented AS SELECT 1 AS taken")
         connector = PostgresConnector(DSN, schema=name)
-        views = connector.connect(db)
+        with db.lock:
+            views = list(ingest.attach(connector, db))
         assert views == [f"{parse_dsn(DSN).params['dbname']}_commented"]
+        assert ProfileMemory(db).load_profile(views[0]).row_count == 2
         comments = connector.column_comments(db, views[0])
         assert comments == {"amount": short, "status": long}
 
         llm = FakeLLM()
-        rows = await SchemaEnricher(db, llm).enrich(views[0], comments=comments)
-        result = {row.column: row for row in rows}
+        described = await ingest.describe(connector, db, views, llm=llm)
+        result = {row.column: row for row in described[views[0]]}
+        assert llm.calls == []
         assert result["amount"].description == short
-        assert result["amount"].description_source == "source"
-        assert result["status"].description == "compress: status"
-        assert result["status"].description_original == long
-        assert result["status"].description_source == "source_compressed"
-        assert result["region"].description == "aliases: region"
-        assert result["region"].description_source == "generated"
-        assert llm.calls == [("compress", ["status"]), ("aliases", ["amount", "status", "region"])]
-        assert ProfileMemory(db).load_profile(views[0]).row_count == 2
+        assert result["status"].description == long
+        assert {result[name].description_source for name in ("amount", "status")} == {"source"}
+        assert result["region"].description is None
+
+        described = await ingest.describe(connector, db, views, "region — город", llm)
+        result = {row.column: row for row in described[views[0]]}
+        assert llm.calls == [["amount", "status", "region"]]
+        assert result["amount"].description == short
+        assert result["amount"].title == "Название amount"
+        assert result["region"].description == "Документ: region"
 
         again = FakeLLM()
-        await SchemaEnricher(db, again).enrich(views[0], comments=comments)
+        await ingest.describe(connector, db, views, "region — город", again)
         assert again.calls == []
     finally:
         run_admin(admin, f"DROP SCHEMA IF EXISTS {name} CASCADE")
