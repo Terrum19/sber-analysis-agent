@@ -4,6 +4,7 @@ import duckdb
 import pytest
 
 from app.core.data.connectors.clickhouse import (
+    ClickHouseConnectionError,
     ClickHouseConnector,
     ClickHouseExtensionUnavailableError,
     describe_failure,
@@ -49,11 +50,20 @@ def test_default_user_port_database() -> None:
         "clickhouse:///db",
         "just-a-host",
         "clickhouse://localhost:notaport/db",
+        "mysql://user:pw@localhost/db",
+        "http://localhost:8123/db",
     ],
 )
 def test_invalid_dsn_raises_value_error(raw: str) -> None:
     with pytest.raises(ValueError):
         parse_dsn(raw)
+
+
+def test_scrub_without_password_is_identity() -> None:
+    dsn = parse_dsn("clickhouse://analyst@ch.local/sales")
+    assert dsn.password is None
+    assert dsn.scrub("nothing to hide") == "nothing to hide"
+    assert dsn.masked() == "clickhouse://analyst@ch.local:9000/sales"
 
 
 def test_password_is_masked_in_repr_and_str() -> None:
@@ -93,6 +103,12 @@ def test_describe_failure_with_clickhouse_error_code() -> None:
     assert "учётные данные" in describe_failure("Generic error", error=DummyCHError(516))
     assert "Недостаточно прав" in describe_failure("Generic error", error=DummyCHError(497))
     assert "недоступен" in describe_failure("Generic error", error=DummyCHError(210))
+    assert "Не удалось подключиться к ClickHouse." in describe_failure(
+        "Generic error", error=DummyCHError(999)
+    )
+    assert "Не удалось подключиться к ClickHouse." in describe_failure(
+        "Generic error", error=Exception("no code")
+    )
 
 
 class FakeDuckDB:
@@ -125,16 +141,14 @@ class FakeDuckDB:
             return [{"column_name": name, "comment": text} for name, text in self.comments]
         if sql.startswith("SHOW TABLES FROM"):
             return [{"name": table} for table in self.tables]
-        if "duckdb_tables()" in sql:
-            return [{"name": name} for name in self.existing]
-        if "duckdb_views()" in sql:
+        if "contains(sql, $marker)" in sql:
+            if any(params and params["marker"] == f" {alias}." for alias in self.previous):
+                return [{"view_name": view} for view in self.stale_views]
+            return []
+        if "duckdb_tables()" in sql or "duckdb_views()" in sql:
             return [{"name": name} for name in self.existing]
         if "duckdb_databases()" in sql:
             return [{"database_name": alias} for alias in self.previous]
-        if "contains(sql, $marker)" in sql and any(
-            params and params["marker"] == f" {alias}." for alias in self.previous
-        ):
-            return [{"view_name": view} for view in self.stale_views]
         return []
 
     def index_of(self, prefix: str) -> int:
@@ -252,3 +266,108 @@ def test_factory_builds_clickhouse_with_schema() -> None:
     connector = build_connector("clickhouse", "clickhouse://localhost/db1", schema="db2")
     assert isinstance(connector, ClickHouseConnector)
     assert connector.dsn.database == "db2"
+
+
+def test_connector_repr() -> None:
+    connector = ClickHouseConnector(DSN)
+    assert repr(connector) == f"ClickHouseConnector(dsn={connector.dsn.masked()!r})"
+    assert "TopSecret" not in repr(connector)
+
+
+def test_empty_database_returns_empty_list_and_warns(caplog: pytest.LogCaptureFixture) -> None:
+    db = FakeDuckDB(tables=[])
+    connector = ClickHouseConnector(DSN)
+    with caplog.at_level(logging.WARNING):
+        assert connector.connect(db) == []
+    assert "нет таблиц" in caplog.text
+    assert f"DETACH DATABASE IF EXISTS {connector.alias}" in db.statements
+
+
+def test_name_collision_multi_suffix() -> None:
+    connector = ClickHouseConnector(DSN)
+    connector.alias = "ch_test"
+    taken = {"orders", "analytics_orders", "ch_test_orders", "ch_test_orders_2"}
+    view = connector.create_view(FakeDuckDB(), "orders", taken)
+    assert view == "ch_test_orders_3"
+
+
+def test_attach_failure_is_readable_and_secret_free(caplog: pytest.LogCaptureFixture) -> None:
+    error = duckdb.IOException(
+        "IO Error: Unable to connect: password authentication failed for user TopSecret"
+    )
+    db = FakeDuckDB(tables=["orders"], failing=[("ATTACH", error)])
+    with caplog.at_level(logging.WARNING), pytest.raises(ClickHouseConnectionError) as raised:
+        ClickHouseConnector(DSN).connect(db)
+    message = str(raised.value)
+    assert "учётные данные" in message
+    assert "TopSecret" not in message
+    assert "TopSecret" not in caplog.text
+    assert raised.value.__cause__ is None
+    assert raised.value.__suppress_context__
+
+
+def test_unreachable_server_message() -> None:
+    error = duckdb.IOException("Connection refused")
+    db = FakeDuckDB(failing=[("ATTACH", error)])
+    with pytest.raises(ClickHouseConnectionError, match="недоступен"):
+        ClickHouseConnector(DSN).connect(db)
+
+
+def test_extension_offline_install_is_tolerated() -> None:
+    db = FakeDuckDB(tables=["orders"], failing=[("INSTALL", duckdb.IOException("offline"))])
+    assert ClickHouseConnector(DSN).connect(db) == ["orders"]
+
+
+def test_failure_while_listing_tables_is_readable_and_releases_attachment() -> None:
+    error = duckdb.CatalogException("permission denied for database private")
+    db = FakeDuckDB(failing=[("SHOW TABLES FROM", error)])
+    connector = ClickHouseConnector(DSN)
+    with pytest.raises(ClickHouseConnectionError, match="Недостаточно прав"):
+        connector.connect(db)
+    assert f"DETACH DATABASE IF EXISTS {connector.alias}" in db.statements
+    assert f"DROP TEMPORARY SECRET IF EXISTS {connector.alias}_secret" in db.statements
+
+
+def test_failed_cleanup_does_not_mask_connection_error(caplog: pytest.LogCaptureFixture) -> None:
+    db = FakeDuckDB(
+        failing=[
+            ("ATTACH", duckdb.IOException("Connection refused")),
+            ("DETACH", duckdb.IOException("cleanup broke")),
+        ]
+    )
+    with (
+        caplog.at_level(logging.WARNING),
+        pytest.raises(ClickHouseConnectionError, match="недоступен"),
+    ):
+        ClickHouseConnector(DSN).connect(db)
+    assert "не удалось освободить" in caplog.text
+
+
+def test_column_comments_for_unknown_view_skip_the_source() -> None:
+    db = FakeDuckDB(tables=["orders"])
+    connector = ClickHouseConnector(DSN)
+    assert connector.column_comments(db, "orders") == {}
+    connector.connect(db)
+    issued = len(db.statements)
+    assert connector.column_comments(db, "not_from_clickhouse") == {}
+    assert len(db.statements) == issued
+
+
+def test_reconnect_forgets_previous_views() -> None:
+    connector = ClickHouseConnector(DSN)
+    connector.connect(FakeDuckDB(tables=["orders", "users"]))
+    connector.connect(FakeDuckDB(tables=["orders"]))
+    assert connector.sources == {"orders": "orders"}
+
+
+def test_column_comments_failure_is_logged_without_secrets(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    error = duckdb.IOException("connection lost for TopSecret")
+    db = FakeDuckDB(tables=["orders"], failing=[("SELECT column_name, comment FROM", error)])
+    connector = ClickHouseConnector(DSN)
+    connector.connect(db)
+    with caplog.at_level(logging.WARNING):
+        assert connector.column_comments(db, "orders") == {}
+    assert "комментарии колонок «orders»" in caplog.text
+    assert "TopSecret" not in caplog.text

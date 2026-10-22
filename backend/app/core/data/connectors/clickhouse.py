@@ -225,39 +225,32 @@ class ClickHouseConnector(BaseConnector):
         started = time.perf_counter()
         self.alias = f"{self.identity}_{secrets.token_hex(3)}"
         self.sources = {}
-        self.warnings = []
 
-        try:
-            self.load_extension(db)
-            self.attach(db)
-            tables = self.list_tables(db)
+        self.load_extension(db)
+        self.attach(db)
+        tables = self.list_tables(db)
 
-            for previous in self.previous_aliases(db):
-                self.release(db, previous)
+        for previous in self.previous_aliases(db):
+            self.release(db, previous)
 
-            if not tables:
-                logger.warning(
-                    "ClickHouse %s: в базе данных нет таблиц, подключать нечего", self.source
-                )
-                self.release(db, self.alias)
-                return []
+        if not tables:
+            logger.warning(
+                "ClickHouse %s: в базе данных нет таблиц, подключать нечего", self.source
+            )
+            self.release(db, self.alias)
+            return []
 
-            if len(tables) > self.max_tables:
-                logger.warning(
-                    "ClickHouse %s: в базе данных %d таблиц, подключены первые %d (DB_MAX_TABLES)",
-                    self.source,
-                    len(tables),
-                    self.max_tables,
-                )
-                tables = tables[: self.max_tables]
+        taken = self.existing_names(db)
+        if len(tables) > self.max_tables:
+            logger.warning(
+                "ClickHouse %s: в базе данных %d таблиц, подключены первые %d (DB_MAX_TABLES)",
+                self.source,
+                len(tables),
+                self.max_tables,
+            )
+            tables = tables[: self.max_tables]
 
-            taken = self.existing_names(db)
-            views = [self.create_view(db, table, taken) for table in tables]
-        except ClickHouseConnectionError:
-            raise
-        except duckdb.Error as error:
-            self.fail(db, error)
-
+        views = [self.create_view(db, table, taken) for table in tables]
         logger.info(
             "ClickHouse %s: подключено %d таблиц за %.2f с",
             self.source,
@@ -355,25 +348,9 @@ class ClickHouseConnector(BaseConnector):
 
     def release(self, db, alias: str) -> None:
         for view in self.views_of(db, alias):
-            try:
-                db.execute(f"DROP VIEW IF EXISTS temp.main.{quote_identifier(view)}")
-            except duckdb.Error as error:
-                logger.debug(
-                    "ClickHouse %s: не удалось удалить временное представление %s",
-                    self.source,
-                    view,
-                    exc_info=error,
-                )
-        try:
-            db.execute(f"DETACH DATABASE IF EXISTS {alias}")
-            db.execute(f"DROP TEMPORARY SECRET IF EXISTS {alias}_secret")
-        except duckdb.Error:
-            logger.debug(
-                "ClickHouse %s: не удалось отключить alias %s",
-                self.source,
-                alias,
-                exc_info=True,
-            )
+            db.execute(f"DROP VIEW IF EXISTS temp.main.{quote_identifier(view)}")
+        db.execute(f"DETACH DATABASE IF EXISTS {alias}")
+        db.execute(f"DROP TEMPORARY SECRET IF EXISTS {alias}_secret")
 
     def existing_names(self, db) -> set[str]:
         rows = db.query(
