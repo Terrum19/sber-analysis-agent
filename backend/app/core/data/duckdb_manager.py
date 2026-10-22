@@ -6,6 +6,7 @@
 """
 
 import threading
+import time
 from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
@@ -60,8 +61,11 @@ class DuckDBManager:
         Номер продолжает уже лежащие в файле таблицы: менеджер создаётся
         на каждый запрос, и счётчик с нуля перезаписал бы temp_result_v1,
         на который ссылается прошлый график этой или другой сессии.
+        Время создания пишется в ``_result_meta`` — по нему
+        ``cleanup_results`` удаляет устаревшие результаты.
         """
         with self.lock:
+            self._ensure_result_meta()
             self._step_counter = max(self._step_counter, self._last_step_number())
             while True:
                 self._step_counter += 1
@@ -73,17 +77,66 @@ class DuckDBManager:
                     if "already exists" not in str(exc):
                         raise
                     continue
+                self._con.execute(
+                    "INSERT OR REPLACE INTO _result_meta VALUES ($name, $created_at)",
+                    {"name": target, "created_at": time.time()},
+                )
                 return target
 
+    def _ensure_result_meta(self) -> None:
+        """Создать служебную таблицу времени создания результатов, если её нет."""
+        self._con.execute(
+            "CREATE TABLE IF NOT EXISTS _result_meta (name VARCHAR PRIMARY KEY, created_at DOUBLE)"
+        )
+
     def _last_step_number(self) -> int:
-        """Наибольший N среди temp_result_vN текущей базы (0, если их нет)."""
+        """Наибольший N среди temp_result_vN текущей базы и уже удалённых (0, если их нет).
+
+        Строки ``_result_meta`` удалённых таблиц остаются: номер не
+        используется повторно, и старая ссылка на temp_result_vN не
+        укажет на чужие данные.
+        """
         rows = self.query(
-            """SELECT max(TRY_CAST(substr(table_name, 14) AS BIGINT)) AS n
-            FROM information_schema.tables
-            WHERE table_catalog = current_database()
-              AND table_name LIKE 'temp\\_result\\_v%' ESCAPE '\\'"""
+            """SELECT max(TRY_CAST(substr(name, 14) AS BIGINT)) AS n FROM (
+                SELECT table_name AS name FROM information_schema.tables
+                WHERE table_catalog = current_database()
+                  AND table_name LIKE 'temp\\_result\\_v%' ESCAPE '\\'
+                UNION ALL SELECT name FROM _result_meta)"""
         )
         return rows[0]["n"] or 0
+
+    def cleanup_results(self, keep: set[str], older_than_s: int) -> list[str]:
+        """Удалить temp_result_vN старше older_than_s секунд, кроме keep; вернуть их имена.
+
+        Таблица без строки в ``_result_meta`` (создана до появления
+        учёта или параллельным запросом) получает текущее время и
+        живёт ещё полный срок.
+        """
+        with self.lock:
+            self._ensure_result_meta()
+            now = time.time()
+            rows = self.query(
+                """SELECT tables.table_name AS name, meta.created_at
+                FROM information_schema.tables AS tables
+                LEFT JOIN _result_meta AS meta ON meta.name = tables.table_name
+                WHERE tables.table_catalog = current_database()
+                  AND tables.table_schema = 'main'
+                  AND tables.table_name LIKE 'temp\\_result\\_v%' ESCAPE '\\'"""
+            )
+            dropped = []
+            for row in rows:
+                name = row["name"]
+                if row["created_at"] is None:
+                    self._con.execute(
+                        "INSERT OR REPLACE INTO _result_meta VALUES ($name, $created_at)",
+                        {"name": name, "created_at": now},
+                    )
+                    continue
+                if name in keep or now - row["created_at"] < older_than_s:
+                    continue
+                self._con.execute(f'DROP TABLE IF EXISTS "{name}"')
+                dropped.append(name)
+            return dropped
 
     def columns(self, table: str) -> list[str]:
         """Имена колонок таблицы или представления по порядку ([] — таблицы нет)."""
