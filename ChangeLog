@@ -1,3 +1,28 @@
+2026-10-22  mb6ockatf  <smokenmirror@tutamail.com>
+
+	Сводка паспорта в ответе подключения (#96).
+	* backend/app/api/schemas/datasource.py (TableBrief): Новая схема:
+	строки, колонки, период по первой temporal-колонке, статус описания,
+	summary и предупреждения загрузчика.
+	(DatasourceOut.profiles): Сводки подключённых таблиц.
+	* backend/app/api/routes/datasources.py (briefs): Помечает pending
+	таблицы с описанием и собирает сводки из профилей ingest.attach.
+	(describe_tables): Если перенос описания упал, pending становится
+	failed.
+	* backend/app/core/data/ingest.py (mark_pending): Новая функция: pending для таблиц с описанием, none
+	для остальных.
+	(describe): Ставит статус ready или failed.
+	* backend/app/core/memory/profile_memory.py (SCHEMA): Колонка
+	_meta.table_passport.description_status (ADD COLUMN IF NOT EXISTS).
+	(set_description_status, load_description_status): Новые методы.
+	* backend/app/core/data/connectors/base.py (BaseConnector.warnings):
+	Новый метод, по умолчанию пустой список.
+	* backend/app/core/data/connectors/csv.py (CSVReport.warnings)
+	(CSVConnector.warnings): Перекодировка, числа из текста, нестрогий
+	разбор и загрузка всех колонок текстом.
+	* backend/tests/unit/test_datasources_api.py: Тесты сводок и статусов.
+	* docs/data_connectors.md, docs/memory.md: Описание полей.
+
 2026-10-22  thebulkapro  <saitbatalovbulat200@gmail.com>
 
 	Исправления API сессий по ревью #111.

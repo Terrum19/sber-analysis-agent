@@ -11,11 +11,12 @@ from app.api.deps import get_db
 from app.api.routes import datasources
 from app.api.schemas.datasource import DatasourceCreate
 from app.config import settings
-from app.core.data import ingest
+from app.core.data import ingest, schema_enrichment
 from app.core.data.connectors.base import BaseConnector
 from app.core.data.duckdb_manager import DuckDBManager
 from app.core.memory.profile_memory import ProfileMemory
 from app.main import app
+from app.models.enrichment import ColumnEnrichment, EnrichmentBatch
 
 
 @pytest.fixture
@@ -269,3 +270,136 @@ def test_db_description_reaches_enricher(monkeypatch) -> None:
         db.close()
     [task] = background.tasks
     assert task.args == (connector, db, ["orders"], "orders — заказы")
+
+
+SALES = "Дата;Сумма\n2024-02-01;1 234,56\n2024-03-15;7,5\n".encode("cp1251")
+
+
+def test_csv_response_has_table_briefs(client, storage) -> None:
+    response = client.post("/api/datasources/csv", files=[("files", ("Продажи.csv", SALES))])
+    assert response.status_code == 200
+    [brief] = response.json()["profiles"]
+    assert brief["table"] == "prodazhi"
+    assert brief["rows"] == 2
+    assert brief["columns"] == 2
+    assert brief["period_from"] == "2024-02-01"
+    assert brief["period_to"] == "2024-03-15"
+    assert brief["description_status"] == "none"
+    assert brief["summary"] is None
+    assert brief["warnings"] == [
+        "Файл в кодировке cp1251 перекодирован в UTF-8.",
+        "Числа, записанные текстом, приведены к числам в колонках «Сумма».",
+    ]
+
+
+def test_csv_brief_without_dates_has_no_period(client, storage) -> None:
+    response = client.post("/api/datasources/csv", files=[("files", ("users.csv", b"id\n1\n"))])
+    [brief] = response.json()["profiles"]
+    assert (brief["period_from"], brief["period_to"], brief["warnings"]) == (None, None, [])
+
+
+class DocumentLLM:
+    def __init__(self, fail: bool = False) -> None:
+        self.fail = fail
+
+    async def complete_structured(self, system: str, user: str, schema):
+        if self.fail:
+            raise ValueError("невалидный JSON")
+        return EnrichmentBatch(
+            columns=[
+                ColumnEnrichment(column="day", title="День", description="дата заказа"),
+                ColumnEnrichment(column="amount", title="Сумма", description="сумма заказа"),
+            ]
+        )
+
+
+def attach_described(client, monkeypatch, llm: DocumentLLM):
+    monkeypatch.setattr(schema_enrichment, "LLMClient", lambda: llm)
+    return client.post(
+        "/api/datasources/csv",
+        files=[
+            ("files", ("orders.csv", b"day,amount\n2024-01-01,10\n")),
+            ("description", ("README.md", "amount — сумма заказа".encode())),
+        ],
+    )
+
+
+def test_described_csv_is_pending_then_ready(client, storage, monkeypatch) -> None:
+    response = attach_described(client, monkeypatch, DocumentLLM())
+    assert response.status_code == 200
+    assert response.json()["profiles"][0]["description_status"] == "pending"
+    db = app.dependency_overrides[get_db]()
+    assert ProfileMemory(db).load_description_status("orders") == "ready"
+
+
+def test_reattach_without_description_resets_status(client, storage, monkeypatch) -> None:
+    attach_described(client, monkeypatch, DocumentLLM())
+    response = client.post(
+        "/api/datasources/csv", files=[("files", ("orders.csv", b"day,amount\n2024-01-01,10\n"))]
+    )
+    assert response.json()["profiles"][0]["description_status"] == "none"
+
+
+def test_failed_llm_marks_description_failed(client, storage, monkeypatch) -> None:
+    response = attach_described(client, monkeypatch, DocumentLLM(fail=True))
+    assert response.status_code == 200
+    assert response.json()["profiles"][0]["description_status"] == "pending"
+    db = app.dependency_overrides[get_db]()
+    assert ProfileMemory(db).load_description_status("orders") == "failed"
+
+
+def test_crashed_describe_marks_pending_tables_failed(client, storage, monkeypatch) -> None:
+    async def broken(connector, db, tables, document=None, llm=None):
+        raise RuntimeError("LLM упала")
+
+    monkeypatch.setattr(ingest, "describe", broken)
+    response = client.post(
+        "/api/datasources/csv",
+        files=[("files", ("orders.csv", b"id\n1\n")), ("description", ("d.md", b"doc"))],
+    )
+    assert response.status_code == 200
+    db = app.dependency_overrides[get_db]()
+    assert ProfileMemory(db).load_description_status("orders") == "failed"
+
+
+async def test_describe_marks_table_failed_when_enricher_raises(monkeypatch) -> None:
+    class Exploding:
+        def __init__(self, db, llm) -> None:
+            pass
+
+        async def enrich(self, table, comments=None, document=None):
+            raise LookupError(table)
+
+    connector = RecordingConnector()
+    db = DuckDBManager(":memory:")
+    try:
+        ingest.attach(connector, db)
+        monkeypatch.setattr(ingest, "SchemaEnricher", Exploding)
+        with pytest.raises(LookupError):
+            await ingest.describe(connector, db, ["orders"], "doc")
+        assert ProfileMemory(db).load_description_status("orders") == "failed"
+    finally:
+        db.close()
+
+
+def test_db_response_marks_described_tables_pending(monkeypatch) -> None:
+    connector = RecordingConnector()
+    monkeypatch.setattr(datasources, "build_connector", lambda kind, dsn, schema: connector)
+    db = DuckDBManager(":memory:")
+    payload = DatasourceCreate(kind="postgres", dsn="host=x", description="orders — заказы")
+    try:
+        result = datasources.attach_db(payload, db, BackgroundTasks())
+    finally:
+        db.close()
+    [brief] = result.profiles
+    assert (brief.table, brief.rows, brief.description_status) == ("orders", 1, "pending")
+
+
+def test_unknown_description_status_is_rejected() -> None:
+    db = DuckDBManager(":memory:")
+    try:
+        with pytest.raises(ValueError, match="статус"):
+            ProfileMemory(db).set_description_status("orders", "done")
+        assert ProfileMemory(db).load_description_status("orders") == "none"
+    finally:
+        db.close()
