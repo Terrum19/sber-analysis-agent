@@ -43,6 +43,23 @@ def attach(connector: BaseConnector, db) -> dict[str, TableProfile]:
     return profiles
 
 
+def restore(connector: BaseConnector, db) -> list[str]:
+    """Переподключить сохранённый источник после рестарта. Вызывать под db.lock.
+
+    Таблица с паспортом не профилируется заново, если колонки представления
+    совпадают с колонками паспорта; иначе (схема в источнике изменилась или
+    паспорта нет) профиль пересчитывается.
+    """
+    tables = connector.connect(db)
+    memory = ProfileMemory(db)
+    for table in tables:
+        profile = memory.load_profile(table)
+        if profile is not None and [column.name for column in profile.columns] == db.columns(table):
+            continue
+        memory.save_profile(profile_table(db, table, approx=settings.profile_approx_quantile))
+    return tables
+
+
 async def describe(
     connector: BaseConnector,
     db,

@@ -86,10 +86,24 @@ class DuckDBManager:
         return rows[0]["n"] or 0
 
     def columns(self, table: str) -> list[str]:
-        """Имена колонок таблицы или представления по порядку ([] — таблицы нет)."""
+        """Имена колонок таблицы или представления по порядку ([] — таблицы нет).
+
+        Ищет и во временных представлениях (через них подключён PostgreSQL),
+        но не в служебных схемах вроде ``_meta``. Если имя есть и в ``temp``,
+        и в основной базе, колонки берутся из ``temp`` — его выберет и
+        ``SELECT * FROM <имя>``.
+        """
         rows = self.query(
-            """SELECT column_name FROM information_schema.columns
-            WHERE table_catalog = current_database() AND table_name = $table
+            """WITH found AS (
+                SELECT table_catalog, column_name, ordinal_position
+                FROM information_schema.columns
+                WHERE table_catalog IN ('temp', current_database())
+                  AND table_schema = 'main' AND table_name = $table
+            )
+            SELECT column_name FROM found
+            WHERE table_catalog = (
+                SELECT table_catalog FROM found ORDER BY table_catalog <> 'temp' LIMIT 1
+            )
             ORDER BY ordinal_position""",
             {"table": table},
         )

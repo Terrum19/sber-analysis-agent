@@ -45,6 +45,7 @@ class Settings(BaseSettings):
     semantic_top_k: int = 5
 
     postgres_max_tables: int = 50
+    postgres_restore_timeout_s: int = 60
 
     profile_approx_quantile: bool = True
     profile_approx_min_rows: int = 100_000
