@@ -26,10 +26,45 @@
 | `box` | boxplot | категория (или одна общая коробка) | первая метрика | |
 | `heatmap` | rect | первая категория | вторая категория | color — сумма метрики или count |
 | `table` | text | колонка (через `fold`) | номер строки | text — значение |
+| `kpi` | `{type: text, fontSize: 48}` | — | — | text — первая метрика первой строки |
 
 В каждом виде заполнен `tooltip`. Если данных не хватает (например, `scatter`
 с одной числовой колонкой), строится ближайший подходящий вид: scatter/box/heatmap
--> bar, bar без категорий -> histogram, без колонок вовсе -> пустая таблица.
+-> bar, bar без категорий -> histogram, kpi без чисел -> table, без колонок
+вовсе -> пустая таблица.
+
+**KPI.** Одно крупное число. В `data.values` лежит весь результат, а
+`transform` оставляет только первую строку:
+
+```json
+{"mark": {"type": "text", "fontSize": 48},
+ "transform": [{"window": [{"op": "row_number", "as": "_row"}]},
+               {"filter": "datum._row == 1"}],
+ "encoding": {"text": {"field": "total", "type": "quantitative", "title": "Выручка"},
+              "tooltip": [{"field": "total", "type": "quantitative", "title": "Выручка"}]},
+ "title": "Выручка за квартал"}
+```
+
+Подпись плитки — `title` спеки. Метрика — первая числовая колонка, её
+подпись — из `titles`. Из KPI морфинг ведёт в `bar` и `table`.
+
+## Выбор вида — `core/viz/chart_selector.py`
+
+`select_chart(question, result_table, requested="auto", records=None)`:
+явный `requested` возвращается как есть; если `records` — одна строка с
+одной числовой колонкой, вид — `kpi`; иначе эвристики по словам вопроса
+(«распределение» -> histogram, «динамика»/«по месяцам» -> line,
+«сравни» -> bar, «связь»/«корреляция» -> scatter, по умолчанию bar).
+Оркестратор пока не передаёт `records`, поэтому `kpi` выбирается только
+явно (тип плитки в плане дашборда, B-03/B-04).
+
+## Событие `dashboard` — `api/schemas/chat.py`
+
+`DashboardPayload {dashboard_id, title, tiles: DashboardTileOut[]}`.
+`DashboardPayload.from_dashboard(dashboard)` копирует плитки без
+`snapshot_data` (в SSE оно `null`): данные уже лежат в
+`spec.data.values`. Полный дашборд со снимками отдаёт
+`GET /api/dashboards/{id}`.
 
 `usermeta` (стандартное поле Vega-Lite для метаданных):
 

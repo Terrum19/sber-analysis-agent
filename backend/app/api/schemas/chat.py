@@ -1,8 +1,11 @@
 """Pydantic-схемы API диалога (контракт фронтенд <-> бэкенд)."""
 
-from typing import Any, Literal
+from typing import Any, Literal, Self
 
 from pydantic import BaseModel, Field
+
+from app.api.schemas.dashboard import DashboardTileOut
+from app.core.dashboards.models import Dashboard
 
 
 class SessionCreate(BaseModel):
@@ -40,7 +43,18 @@ class ChartPayload(BaseModel):
 class DashboardPayload(BaseModel):
     dashboard_id: str
     title: str
-    tiles: list[dict[str, Any]] = Field(default_factory=list)
+    tiles: list[DashboardTileOut] = Field(default_factory=list)
+
+    @classmethod
+    def from_dashboard(cls, dashboard: Dashboard) -> Self:
+        return cls(
+            dashboard_id=dashboard.id,
+            title=dashboard.title,
+            tiles=[
+                DashboardTileOut(**tile.model_dump(exclude={"snapshot_data"}))
+                for tile in dashboard.tiles
+            ],
+        )
 
 
 class ProgressPayload(BaseModel):
