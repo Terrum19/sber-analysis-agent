@@ -3,7 +3,7 @@
 	Очистка устаревших temp_result_vN (#55).
 	* backend/app/core/data/duckdb_manager.py
 	(DuckDBManager._ensure_result_meta): Новый метод: служебная таблица
-	_result_meta(name, created_at), создаётся при первом результате.
+	_meta.result_meta(name, created_at), создаётся при первом результате.
 	(save_step_result): Записывает время создания результата.
 	(_last_step_number): Учитывает и удалённые результаты: номера не
 	используются повторно.

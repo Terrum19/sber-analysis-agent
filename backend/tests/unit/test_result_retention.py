@@ -47,7 +47,9 @@ def backdate_session(session_id: str, seconds: float) -> None:
 
 
 def age_all(db: DuckDBManager, seconds: float) -> None:
-    db.execute("UPDATE _result_meta SET created_at = created_at - $seconds", {"seconds": seconds})
+    db.execute(
+        "UPDATE _meta.result_meta SET created_at = created_at - $seconds", {"seconds": seconds}
+    )
 
 
 def result_tables(db: DuckDBManager) -> set[str]:

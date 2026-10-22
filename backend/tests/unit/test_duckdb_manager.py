@@ -63,16 +63,27 @@ def result_tables(db) -> set[str]:
 
 def age(db, name: str, seconds: float) -> None:
     db.execute(
-        "UPDATE _result_meta SET created_at = created_at - $seconds WHERE name = $name",
+        "UPDATE _meta.result_meta SET created_at = created_at - $seconds WHERE name = $name",
         {"seconds": seconds, "name": name},
     )
 
 
 def test_save_step_result_records_creation_time(db):
     name = db.save_step_result("source", "SELECT 1 AS a")
-    rows = db.query("SELECT created_at FROM _result_meta WHERE name = $name", {"name": name})
+    rows = db.query("SELECT created_at FROM _meta.result_meta WHERE name = $name", {"name": name})
     assert len(rows) == 1
     assert rows[0]["created_at"] > 0
+
+
+def test_result_meta_stays_out_of_user_tables(db):
+    db.save_step_result("source", "SELECT 1 AS a")
+    db.cleanup_results(keep=set(), older_than_s=3600)
+    rows = db.query(
+        "SELECT schema_name, table_name FROM duckdb_tables() WHERE table_name = 'result_meta'"
+    )
+    assert rows == [{"schema_name": "_meta", "table_name": "result_meta"}]
+    main_tables = db.query("SELECT table_name FROM duckdb_tables() WHERE schema_name = 'main'")
+    assert all(row["table_name"].startswith("temp_result_v") for row in main_tables)
 
 
 def test_cleanup_drops_old_results_but_keeps_fresh_and_kept(db):

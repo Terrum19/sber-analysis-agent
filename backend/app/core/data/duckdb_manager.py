@@ -61,7 +61,7 @@ class DuckDBManager:
         Номер продолжает уже лежащие в файле таблицы: менеджер создаётся
         на каждый запрос, и счётчик с нуля перезаписал бы temp_result_v1,
         на который ссылается прошлый график этой или другой сессии.
-        Время создания пишется в ``_result_meta`` — по нему
+        Время создания пишется в ``_meta.result_meta`` — по нему
         ``cleanup_results`` удаляет устаревшие результаты.
         """
         with self.lock:
@@ -78,21 +78,23 @@ class DuckDBManager:
                         raise
                     continue
                 self._con.execute(
-                    "INSERT OR REPLACE INTO _result_meta VALUES ($name, $created_at)",
+                    "INSERT OR REPLACE INTO _meta.result_meta VALUES ($name, $created_at)",
                     {"name": target, "created_at": time.time()},
                 )
                 return target
 
     def _ensure_result_meta(self) -> None:
-        """Создать служебную таблицу времени создания результатов, если её нет."""
+        """Создать служебную таблицу времени создания результатов в схеме _meta, если её нет."""
+        self._con.execute("CREATE SCHEMA IF NOT EXISTS _meta")
         self._con.execute(
-            "CREATE TABLE IF NOT EXISTS _result_meta (name VARCHAR PRIMARY KEY, created_at DOUBLE)"
+            "CREATE TABLE IF NOT EXISTS _meta.result_meta"
+            " (name VARCHAR PRIMARY KEY, created_at DOUBLE)"
         )
 
     def _last_step_number(self) -> int:
         """Наибольший N среди temp_result_vN текущей базы и уже удалённых (0, если их нет).
 
-        Строки ``_result_meta`` удалённых таблиц остаются: номер не
+        Строки ``_meta.result_meta`` удалённых таблиц остаются: номер не
         используется повторно, и старая ссылка на temp_result_vN не
         укажет на чужие данные.
         """
@@ -101,14 +103,14 @@ class DuckDBManager:
                 SELECT table_name AS name FROM information_schema.tables
                 WHERE table_catalog = current_database()
                   AND table_name LIKE 'temp\\_result\\_v%' ESCAPE '\\'
-                UNION ALL SELECT name FROM _result_meta)"""
+                UNION ALL SELECT name FROM _meta.result_meta)"""
         )
         return rows[0]["n"] or 0
 
     def cleanup_results(self, keep: set[str], older_than_s: int) -> list[str]:
         """Удалить temp_result_vN старше older_than_s секунд, кроме keep; вернуть их имена.
 
-        Таблица без строки в ``_result_meta`` (создана до появления
+        Таблица без строки в ``_meta.result_meta`` (создана до появления
         учёта или параллельным запросом) получает текущее время и
         живёт ещё полный срок.
         """
@@ -118,7 +120,7 @@ class DuckDBManager:
             rows = self.query(
                 """SELECT tables.table_name AS name, meta.created_at
                 FROM information_schema.tables AS tables
-                LEFT JOIN _result_meta AS meta ON meta.name = tables.table_name
+                LEFT JOIN _meta.result_meta AS meta ON meta.name = tables.table_name
                 WHERE tables.table_catalog = current_database()
                   AND tables.table_schema = 'main'
                   AND tables.table_name LIKE 'temp\\_result\\_v%' ESCAPE '\\'"""
@@ -128,7 +130,7 @@ class DuckDBManager:
                 name = row["name"]
                 if row["created_at"] is None:
                     self._con.execute(
-                        "INSERT OR REPLACE INTO _result_meta VALUES ($name, $created_at)",
+                        "INSERT OR REPLACE INTO _meta.result_meta VALUES ($name, $created_at)",
                         {"name": name, "created_at": now},
                     )
                     continue
