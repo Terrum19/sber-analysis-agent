@@ -57,7 +57,6 @@ def test_record_step_and_answer(memory):
         step_id=0,
         tool="aggregate",
         columns=["category"],
-        needs_llm_codegen=False,
         purpose="Тест шага",
     )
     memory.record_step(step, "temp_result_v1")

@@ -40,7 +40,9 @@ class Settings(BaseSettings):
     wasm_max_parallel: int = 1
     wasm_node_bin: str = "node"
     wasm_runtime_dir: str = ""
+    codegen_enabled: bool = True
     codegen_attempts: int = 2
+    codegen_max_rows: int = 200_000
     agent_max_steps: int = 12
     semantic_top_k: int = 5
 

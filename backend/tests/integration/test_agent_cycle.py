@@ -75,7 +75,6 @@ def test_agent_cycle_with_dashboard_request(db):
                         step_id=0,
                         tool="aggregate",
                         columns=["category"],
-                        needs_llm_codegen=False,
                         purpose="Агрегация",
                     )
                 ],
@@ -102,3 +101,57 @@ def test_agent_cycle_with_dashboard_request(db):
     types = [e["type"] for e in events]
     assert "dashboard" in types
     assert "done" in types
+
+
+def test_agent_cycle_with_run_python(db, monkeypatch, codegen_available):
+    """План с run_python: LLM пишет код, песочница отдаёт result.csv -> инсайт."""
+    from app.core.sandbox.wasm_runtime import WASMSandbox
+    from app.models.research_step import ResearchPlan, ResearchStep
+
+    purpose = "Медиана revenue по скользящему окну 2 месяца с весами по категориям"
+
+    class CodegenPlanner:
+        async def plan(self, question, context):
+            return ResearchPlan(
+                steps=[ResearchStep(step_id=0, tool="run_python", arguments={"purpose": purpose})],
+                final_viz="table",
+            )
+
+    class CodeLLM:
+        def __init__(self):
+            self.prompts = []
+
+        async def complete(self, system, user, **kwargs):
+            self.prompts.append(user)
+            return "```python\nresult = df\n```"
+
+    def fake_run(self, code, workdir):
+        assert (workdir / "input.csv").read_text().startswith("category,revenue,date")
+        (workdir / "result.csv").write_text("category,weighted_median\nЭлектроника,125000\n")
+        return {"ok": True, "stdout": ""}
+
+    monkeypatch.setattr(WASMSandbox, "run", fake_run)
+    SessionMemory("codegen-test").set_table("raw", db.columns("raw"))
+    llm = CodeLLM()
+    orch = AgentOrchestrator(
+        planner=CodegenPlanner(),
+        executor=StepExecutor(db=db, llm=llm),
+        insight_gen=InsightGenerator(llm=FakeLLM(), db=db),
+        db=db,
+    )
+
+    events = []
+
+    async def _collect():
+        async for event in orch.run(ChatRequest(session_id="codegen-test", question="Медиана")):
+            events.append(event)
+
+    asyncio.run(_collect())
+
+    types = [e["type"] for e in events]
+    assert "clarification_needed" not in types
+    assert "text" in types
+    assert "done" in types
+    assert purpose in llm.prompts[0]
+    rows = db.query("SELECT * FROM temp_result_v1")
+    assert rows == [{"category": "Электроника", "weighted_median": 125000}]

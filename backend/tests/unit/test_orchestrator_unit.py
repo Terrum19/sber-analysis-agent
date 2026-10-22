@@ -40,7 +40,6 @@ class FakePlanner:
                     step_id=0,
                     tool="aggregate",
                     columns=["category"],
-                    needs_llm_codegen=False,
                     purpose="Мок шаг",
                 )
             ],
