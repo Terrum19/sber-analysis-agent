@@ -2,18 +2,24 @@
 
 Ключевое требование: подключение БЕЗ предобработки — сырые данные
 грузятся в DuckDB, вся трансформация внутри платформы (см. core/data/).
+Сразу после подключения таблицы профилируются (ingest.attach); если к
+источнику есть описание — комментарии колонок или приложенный документ, —
+названия и описания колонок переносятся в паспорт в фоне (ingest.describe).
 """
 
+import logging
 import shutil
 from pathlib import Path
 from typing import Annotated
 from uuid import uuid4
 
-from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
+from fastapi import APIRouter, BackgroundTasks, Depends, File, HTTPException, UploadFile
 
 from app.api.deps import get_db
 from app.api.schemas.datasource import DatasourceCreate, DatasourceOut
 from app.config import settings
+from app.core.data import ingest
+from app.core.data.connectors.base import BaseConnector
 from app.core.data.connectors.csv import CSVConnector, CSVLoadError, table_name
 from app.core.data.connectors.factory import build_connector
 from app.core.data.connectors.postgres import (
@@ -22,9 +28,11 @@ from app.core.data.connectors.postgres import (
 )
 from app.core.data.duckdb_manager import DuckDBManager
 
+logger = logging.getLogger(__name__)
 router = APIRouter()
 
 UPLOAD_CHUNK = 1 << 20
+DESCRIPTION_MAX_BYTES = 1 << 20
 
 
 def store_upload(upload: UploadFile, target: Path, limit: int) -> None:
@@ -46,10 +54,37 @@ def list_tables(db: Annotated[DuckDBManager, Depends(get_db)]) -> list[str]:
     return db.user_tables()
 
 
+def read_description(upload: UploadFile | None) -> str | None:
+    """Текст документа-описания (README, словарь колонок) или None."""
+    if upload is None:
+        return None
+    data = upload.file.read(DESCRIPTION_MAX_BYTES + 1)
+    if len(data) > DESCRIPTION_MAX_BYTES:
+        raise HTTPException(
+            status_code=413,
+            detail=f"Описание «{upload.filename}» больше {DESCRIPTION_MAX_BYTES >> 20} МБ.",
+        )
+    return data.decode("utf-8-sig", errors="replace")
+
+
+async def describe_tables(
+    connector: BaseConnector, db: DuckDBManager, tables: list[str], document: str | None
+) -> None:
+    """Фоновый перенос описания в паспорт: сбой не затрагивает подключение."""
+    try:
+        await ingest.describe(connector, db, tables, document)
+    except Exception:
+        logger.exception("Описание таблиц %s не перенесено в паспорт", tables)
+
+
 @router.post("/csv", response_model=DatasourceOut)
 def attach_csv(
-    files: Annotated[list[UploadFile], File()], db: Annotated[DuckDBManager, Depends(get_db)]
+    files: Annotated[list[UploadFile], File()],
+    db: Annotated[DuckDBManager, Depends(get_db)],
+    background: BackgroundTasks,
+    description: Annotated[UploadFile | None, File()] = None,
 ) -> DatasourceOut:
+    document = read_description(description)
     datasource_id = f"csv_{uuid4().hex[:10]}"
     folder = Path(settings.storage_dir, "uploads", datasource_id).resolve()
     folder.mkdir(parents=True, exist_ok=True)
@@ -68,24 +103,27 @@ def attach_csv(
             paths[name] = str(target)
         connector = CSVConnector(paths)
         with db.lock:
-            tables = connector.connect(db)
+            tables = list(ingest.attach(connector, db))
     except CSVLoadError as error:
         shutil.rmtree(folder, ignore_errors=True)
         raise HTTPException(status_code=400, detail=str(error)) from None
     except BaseException:
         shutil.rmtree(folder, ignore_errors=True)
         raise
+    background.add_task(describe_tables, connector, db, tables, document)
     return DatasourceOut(datasource_id=datasource_id, kind="csv", tables=tables)
 
 
 @router.post("/db", response_model=DatasourceOut)
 def attach_db(
-    payload: DatasourceCreate, db: Annotated[DuckDBManager, Depends(get_db)]
+    payload: DatasourceCreate,
+    db: Annotated[DuckDBManager, Depends(get_db)],
+    background: BackgroundTasks,
 ) -> DatasourceOut:
     try:
         connector = build_connector(payload.kind, payload.dsn, payload.db_schema)
         with db.lock:
-            tables = connector.connect(db)
+            tables = list(ingest.attach(connector, db))
     except ValueError as error:
         raise HTTPException(status_code=400, detail=str(error)) from None
     except PostgresConnectionError as error:
@@ -96,5 +134,6 @@ def attach_db(
         raise HTTPException(
             status_code=501, detail=f"Коннектор «{payload.kind}» пока не реализован."
         ) from None
+    background.add_task(describe_tables, connector, db, tables, payload.description)
     datasource_id = getattr(connector, "identity", f"{payload.kind}_{uuid4().hex[:10]}")
     return DatasourceOut(datasource_id=datasource_id, kind=payload.kind, tables=tables)

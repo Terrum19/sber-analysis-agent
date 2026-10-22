@@ -1,7 +1,7 @@
 """Память уровня 3: метапамять — паспорт данных и глоссарий.
 
-Хранит сгенерированные при подключении метаданные: структуру таблиц,
-статистику, описания и человекочитаемые алиасы колонок, бизнес-словарь.
+Хранит построенные при подключении метаданные: структуру таблиц,
+статистику, названия и описания колонок из описания таблицы, бизнес-словарь.
 Избавляет от сканирования источника заново на каждый вопрос — паспорт
 всегда в контексте агента. Лежит в постоянных таблицах схемы `_meta`
 файла DuckDB (DUCKDB_PATH) и переживает перезапуск приложения.
@@ -59,14 +59,16 @@ SCHEMA = (
         identifier_by        VARCHAR,
         lower_fence          DOUBLE,
         upper_fence          DOUBLE,
+        title                VARCHAR,
         description          VARCHAR,
-        description_original VARCHAR,
         description_source   VARCHAR,
-        aliases              VARCHAR[] NOT NULL DEFAULT [],
         fingerprint          VARCHAR,
         enriched_at          TIMESTAMPTZ,
         PRIMARY KEY (table_name, column_name)
     )""",
+    # Паспорта, созданные до появления названий колонок (aliases и
+    # description_original в них остаются и больше не читаются).
+    "ALTER TABLE _meta.column_passport ADD COLUMN IF NOT EXISTS title VARCHAR",
 )
 
 SAVE_TABLE = """INSERT INTO _meta.table_passport
@@ -91,10 +93,9 @@ DROP_COLUMNS = """DELETE FROM _meta.column_passport
     WHERE table_name = $table AND NOT list_contains($columns, column_name)"""
 
 SAVE_ENRICHMENT = """UPDATE _meta.column_passport SET
+        title = $title,
         description = $description,
-        description_original = $description_original,
         description_source = $description_source,
-        aliases = $aliases::VARCHAR[],
         fingerprint = $fingerprint,
         enriched_at = now()
     WHERE table_name = $table AND column_name = $column"""
@@ -108,8 +109,7 @@ LOAD_COLUMNS = (
     "WHERE table_name = $table ORDER BY position"
 )
 
-LOAD_ENRICHMENT = """SELECT column_name, description, aliases, description_original,
-        description_source, fingerprint
+LOAD_ENRICHMENT = """SELECT column_name, title, description, description_source, fingerprint
     FROM _meta.column_passport WHERE table_name = $table ORDER BY position"""
 
 
@@ -167,7 +167,7 @@ class ProfileMemory:
         return json.loads(rows[0]["glossary"])
 
     def save_enrichment(self, table: str, rows: list[ColumnEnrichment]) -> None:
-        """Сохранить описания и алиасы колонок (статистику не трогает)."""
+        """Сохранить названия и описания колонок (статистику не трогает)."""
         with self.db.transaction():
             for row in rows:
                 self.db.execute(
@@ -175,10 +175,9 @@ class ProfileMemory:
                     {
                         "table": table,
                         "column": row.column,
+                        "title": row.title,
                         "description": row.description,
-                        "description_original": row.description_original,
                         "description_source": row.description_source,
-                        "aliases": row.aliases,
                         "fingerprint": row.fingerprint,
                     },
                 )
@@ -188,14 +187,13 @@ class ProfileMemory:
             )
 
     def load_enrichment(self, table: str) -> list[ColumnEnrichment]:
-        """Описания и алиасы колонок в порядке колонок таблицы."""
+        """Названия и описания колонок в порядке колонок таблицы."""
         rows = self.db.query(LOAD_ENRICHMENT, {"table": table})
         return [
             ColumnEnrichment(
                 column=row["column_name"],
+                title=row["title"],
                 description=row["description"],
-                aliases=row["aliases"],
-                description_original=row["description_original"],
                 description_source=row["description_source"],
                 fingerprint=row["fingerprint"],
             )
