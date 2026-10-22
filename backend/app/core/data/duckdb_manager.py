@@ -89,16 +89,45 @@ class DuckDBManager:
         """Имена колонок таблицы или представления по порядку ([] — таблицы нет).
 
         Ищет и во временных представлениях (через них подключён PostgreSQL),
-        но не в служебных схемах вроде ``_meta``.
+        но не в служебных схемах вроде ``_meta``. Если имя есть и в ``temp``,
+        и в основной базе, колонки берутся из ``temp`` — его выберет и
+        ``SELECT * FROM <имя>``.
         """
         rows = self.query(
-            """SELECT column_name FROM information_schema.columns
-            WHERE table_catalog IN ('temp', current_database())
-              AND table_schema = 'main' AND table_name = $table
+            """WITH found AS (
+                SELECT table_catalog, column_name, ordinal_position
+                FROM information_schema.columns
+                WHERE table_catalog IN ('temp', current_database())
+                  AND table_schema = 'main' AND table_name = $table
+            )
+            SELECT column_name FROM found
+            WHERE table_catalog = (
+                SELECT table_catalog FROM found ORDER BY table_catalog <> 'temp' LIMIT 1
+            )
             ORDER BY ordinal_position""",
             {"table": table},
         )
         return [row["column_name"] for row in rows]
+
+    def user_tables(self) -> list[str]:
+        """Таблицы и представления пользователя по алфавиту.
+
+        Без результатов шагов ``temp_result_vN`` и служебных схем вроде ``_meta``;
+        временные представления (PostgreSQL) входят.
+        """
+        rows = self.query(
+            """SELECT table_name AS name FROM duckdb_tables()
+            WHERE schema_name = 'main' AND database_name IN ('temp', current_database())
+            UNION
+            SELECT view_name FROM duckdb_views()
+            WHERE NOT internal AND schema_name = 'main'
+              AND database_name IN ('temp', current_database())
+            EXCEPT
+            SELECT table_name FROM duckdb_tables()
+            WHERE table_name LIKE 'temp\\_result\\_v%' ESCAPE '\\'
+            ORDER BY name"""
+        )
+        return [row["name"] for row in rows]
 
     def to_records(self, table: str, limit: int = 100) -> list[dict]:
         """Выгрузить temp-таблицу в список словарей (для LLM/инсайта)."""

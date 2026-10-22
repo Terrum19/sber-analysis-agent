@@ -4,7 +4,6 @@
 грузятся в DuckDB, вся трансформация внутри платформы (см. core/data/).
 """
 
-import re
 import shutil
 from pathlib import Path
 from typing import Annotated
@@ -26,7 +25,6 @@ from app.core.data.duckdb_manager import DuckDBManager
 router = APIRouter()
 
 UPLOAD_CHUNK = 1 << 20
-STEP_RESULT = re.compile(r"temp_result_v\d+")
 
 
 def store_upload(upload: UploadFile, target: Path, limit: int) -> None:
@@ -45,15 +43,7 @@ def store_upload(upload: UploadFile, target: Path, limit: int) -> None:
 @router.get("/tables", response_model=list[str])
 def list_tables(db: Annotated[DuckDBManager, Depends(get_db)]) -> list[str]:
     """Таблицы и представления пользователя без temp_result_vN и служебных схем."""
-    rows = db.query(
-        "SELECT table_name AS name FROM duckdb_tables() "
-        "WHERE schema_name = 'main' AND database_name IN ('temp', current_database()) "
-        "UNION SELECT view_name FROM duckdb_views() "
-        "WHERE NOT internal AND schema_name = 'main' "
-        "AND database_name IN ('temp', current_database()) "
-        "ORDER BY name"
-    )
-    return [row["name"] for row in rows if not STEP_RESULT.fullmatch(row["name"])]
+    return db.user_tables()
 
 
 @router.post("/csv", response_model=DatasourceOut)

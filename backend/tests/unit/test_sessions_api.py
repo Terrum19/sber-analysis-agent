@@ -98,8 +98,6 @@ def test_session_survives_new_app(new_client) -> None:
     response = new_client().get(f"/api/sessions/{created['session_id']}")
     assert response.status_code == 200
     assert response.json() == created
-    assert response.json()["table"] == "sales"
-    assert response.json()["title"] == "Продажи"
 
 
 def test_patch_keeps_title_after_restart(new_client) -> None:
@@ -136,7 +134,7 @@ def test_list_sessions_is_limited(client, clock, monkeypatch: pytest.MonkeyPatch
     ids = [
         client.post("/api/sessions", json={"table": "sales"}).json()["session_id"] for _ in range(3)
     ]
-    assert [s["session_id"] for s in client.get("/api/sessions").json()] == ids[:0:-1]
+    assert [s["session_id"] for s in client.get("/api/sessions").json()] == [ids[2], ids[1]]
 
 
 def test_list_sessions_empty(client) -> None:
@@ -159,3 +157,26 @@ def test_tables_lists_user_tables_only(client) -> None:
     response = client.get("/api/datasources/tables")
     assert response.status_code == 200
     assert response.json() == ["pg_orders", "sales", "users"]
+
+
+def test_patch_same_table_keeps_pending_recovery(client) -> None:
+    session_id = client.post("/api/sessions", json={"table": "sales"}).json()["session_id"]
+    SessionMemory(session_id).set_pending_recovery({"step_id": 1})
+    client.patch(f"/api/sessions/{session_id}", json={"table": "sales"})
+    assert SessionMemory(session_id).get_pending_recovery() == {"step_id": 1}
+
+
+def test_list_sessions_returns_same_fields_as_get(client) -> None:
+    body = {"table": "sales", "title": "Продажи", "datasource_id": "csv_1"}
+    created = client.post("/api/sessions", json=body).json()
+    assert client.get("/api/sessions").json() == [created]
+
+
+def test_list_sessions_offset_reaches_older(client, clock, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(sessions, "SESSION_LIST_LIMIT", 2)
+    ids = [
+        client.post("/api/sessions", json={"table": "sales"}).json()["session_id"] for _ in range(3)
+    ]
+    page = client.get("/api/sessions", params={"offset": 2}).json()
+    assert [s["session_id"] for s in page] == [ids[0]]
+    assert client.get("/api/sessions", params={"offset": -1}).status_code == 422

@@ -10,7 +10,7 @@ SQLite SessionMemory: сессии и их метаданные пережива
 import uuid
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 
 from app.api.deps import get_db
 from app.api.schemas.chat import SessionCreate, SessionOut, SessionTable
@@ -41,13 +41,14 @@ def session_out(memory: SessionMemory) -> SessionOut:
 
 
 @router.get("", response_model=list[SessionOut])
-async def list_sessions() -> list[SessionOut]:
-    """Последние сессии для сайдбара, недавно изменённые первыми."""
-    return [session_out(SessionMemory(i)) for i in SessionMemory.list_ids(SESSION_LIST_LIMIT)]
+def list_sessions(offset: Annotated[int, Query(ge=0)] = 0) -> list[SessionOut]:
+    """Сессии для сайдбара, недавно изменённые первыми, по SESSION_LIST_LIMIT с offset."""
+    rows = SessionMemory.list_sessions(SESSION_LIST_LIMIT, offset)
+    return [SessionOut(**row) for row in rows]
 
 
 @router.post("", response_model=SessionOut)
-async def create_session(
+def create_session(
     payload: SessionCreate, db: Annotated[DuckDBManager, Depends(get_db)]
 ) -> SessionOut:
     """Создать новую сессию диалога над подключённой таблицей."""
@@ -59,7 +60,7 @@ async def create_session(
 
 
 @router.patch("/{session_id}", response_model=SessionOut)
-async def set_session_table(
+def set_session_table(
     session_id: str, payload: SessionTable, db: Annotated[DuckDBManager, Depends(get_db)]
 ) -> SessionOut:
     """Переключить сессию на другую таблицу."""
@@ -71,7 +72,7 @@ async def set_session_table(
 
 
 @router.get("/{session_id}", response_model=SessionOut)
-async def get_session(session_id: str) -> SessionOut:
+def get_session(session_id: str) -> SessionOut:
     """Получить метаданные сессии."""
     memory = SessionMemory(session_id)
     if not memory.exists():

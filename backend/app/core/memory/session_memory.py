@@ -49,18 +49,31 @@ class SessionMemory:
         self.db = db
         self._state = self._load()
 
-    @classmethod
-    def list_ids(cls, limit: int) -> list[str]:
-        """id сохранённых сессий, недавно изменённые первыми."""
+    @staticmethod
+    def list_sessions(limit: int, offset: int = 0) -> list[dict]:
+        """Метаданные сохранённых сессий одним запросом, недавно изменённые первыми.
+
+        Состояние целиком (с историей сообщений) не читается.
+        """
         conn = _connect(Path(settings.sqlite_path))
+        conn.row_factory = sqlite3.Row
         try:
             rows = conn.execute(
-                "SELECT session_id FROM session_state ORDER BY updated_at DESC LIMIT ?",
-                (limit,),
+                """
+                SELECT session_id,
+                       json_extract(state, '$.datasource') AS "table",
+                       json_extract(state, '$.datasource_id') AS datasource_id,
+                       json_extract(state, '$.title') AS title,
+                       json_extract(state, '$.created_at') AS created_at
+                FROM session_state
+                ORDER BY updated_at DESC
+                LIMIT ? OFFSET ?
+                """,
+                (limit, offset),
             ).fetchall()
         finally:
             conn.close()
-        return [row[0] for row in rows]
+        return [dict(row) for row in rows]
 
     def _connect(self) -> sqlite3.Connection:
         return _connect(self._db_path)
@@ -133,13 +146,11 @@ class SessionMemory:
         return self._state.get("created_at")
 
     def set_meta(self, title: str | None, datasource_id: str | None) -> None:
-        """Запомнить название и источник сессии; время создания ставится один раз.
-
-        Не сохраняет состояние: сохранит следующий ``set_table``.
-        """
+        """Запомнить название и источник сессии; время создания ставится один раз."""
         self._state["title"] = title
         self._state["datasource_id"] = datasource_id
         self._state.setdefault("created_at", datetime.now(UTC).isoformat())
+        self._persist()
 
     def set_table(self, table: str, columns: list[str]) -> None:
         """Привязать сессию к таблице и её колонкам.
@@ -148,9 +159,14 @@ class SessionMemory:
         и при возврате к ней снова доступны. Шаги и незавершённое уточнение
         относятся к плану по прошлой таблице и сбрасываются. При смене
         таблицы сбрасывается и ``datasource_id``: новая таблица может быть
-        из другого источника.
+        из другого источника. Та же таблица обновляет только колонки: шаги
+        и незавершённое уточнение остаются.
         """
-        if self.table is not None and table != self.table:
+        if table == self.table:
+            self._state["columns"] = list(columns)
+            self._persist()
+            return
+        if self.table is not None:
             self._state["datasource_id"] = None
         self._state["datasource"] = table
         self._state["columns"] = list(columns)
