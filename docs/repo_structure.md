@@ -56,8 +56,7 @@ backend/
 │   │   │   └── prompts/             — ВСЕ промпты системы, по файлу на задачу
 │   │   │       ├── system_analyst.py   — системный промпт: «ты аналитик + тулы»
 │   │   │       ├── schema_describe.py  — «что передо мной за данные» (сценарий №1)
-│   │   │       ├── alias_gen.py        — до 4 алиасов (+ недостающие описания) пачкой, ответ JSON
-│   │   │       ├── description_compress.py — сжатие длинных описаний колонок из источника
+│   │   │       ├── column_extract.py   — названия и описания колонок из документа-описания, ответ JSON
 │   │   │       ├── step_planner.py     — вопрос -> список ResearchStep
 │   │   │       ├── insight_summary.py  — результат -> вывод на бизнес-языке
 │   │   │       └── chart_selector.py   — выбор типа визуализации
@@ -79,8 +78,9 @@ backend/
 │   │   │   │   ├── pg_dsn.py          — разбор/проверка DSN PostgreSQL, маскирование пароля
 │   │   │   │   ├── postgres.py        — PostgreSQL -> DuckDB через postgres_scanner (готов)
 │   │   │   │   └── clickhouse.py      — ClickHouse -> DuckDB (TODO)
+│   │   │   ├── ingest.py          — подключение: connect -> профиль -> описание таблицы в паспорт
 │   │   │   ├── profiling.py       — метрики: NaN%, min/max, медиана, квартили, std
-│   │   │   ├── schema_enrichment.py — описания + алиасы колонок (+ бизнес-словарь) -> паспорт
+│   │   │   ├── schema_enrichment.py — названия и описания колонок из описания таблицы -> паспорт
 │   │   │   └── semantic_select.py — топ-5 колонок под запрос (семант. сходство)
 │   │   │
 │   │   ├── tools/          — РЕЕСТР ТУЛОВ (расширяемый; оркестратор не меняется)
@@ -127,7 +127,7 @@ backend/
 │   │   ├── memory/         — 4 уровня памяти (см. docs/memory.md)
 │   │   │   ├── session_memory.py    — (1) диалог + шаги, sliding window, SQLite
 │   │   │   ├── state_cache.py       — (2) результаты в temp-таблицах DuckDB
-│   │   │   └── profile_memory.py    — (3) «паспорт данных»: профиль/описания/алиасы (DuckDB _meta)
+│   │   │   └── profile_memory.py    — (3) «паспорт данных»: профиль/названия/описания (DuckDB _meta)
 │   │   │
 │   │   ├── viz/            — визуализация
 │   │   │   ├── chart_selector.py    — какой график под вопрос
@@ -137,6 +137,7 @@ backend/
 │   │   ├── dashboards/     — генерация и хранение дашбордов (4-й уровень памяти)
 │   │   │   ├── models.py        — Dashboard, DashboardTile, DashboardSummary
 │   │   │   ├── store.py         — DashboardStore: дашборды и плитки в SQLite сессий
+│   │   │   ├── templates.py     — шаблоны дашбордов по ролям колонок, match(columns)
 │   │   │   ├── generator.py     — собрать дашборд из плиток, снять данные, сохранить
 │   │   │   └── recalculate.py   — пересчёт плиток по temp-таблицам (stale без таблицы)
 │   │   │
@@ -147,7 +148,7 @@ backend/
 │   ├── models/            — доменные Pydantic-модели (контракты конвейера)
 │   │   ├── research_step.py   — ResearchStep: тул, колонки, parameters, флаг LLM-кодген
 │   │   ├── insight.py         — Insight: headline, details, limits
-│   │   ├── enrichment.py      — ColumnEnrichment/EnrichmentBatch: описания и алиасы колонок
+│   │   ├── enrichment.py      — ColumnEnrichment/EnrichmentBatch: названия и описания колонок
 │   │   └── datasource.py      — Datasource: тип, путь/DSN, таблицы
 │   │
 │   └── workers/           — опц.: фоновые задачи (тяжёлые отчёты, экспорт)
@@ -232,7 +233,7 @@ scripts/
   файлом и регистрируется в `registry.py`, оркестратор (`orchestrator.py`) не
   меняется. Тул-отчёт (`transforms_data = False`) не меняет рабочую таблицу:
   следующий шаг получает те же данные.
-- **`core/llm/prompts/` по файлам** — промпт алиасов, планировщика шагов и инсайта
+- **`core/llm/prompts/` по файлам** — промпт описания колонок, планировщика шагов и инсайта
   версионируется и тестируется независимо от кода.
 - **`parser.py` отдельным модулем** — robust-парсинг вывода LLM вынесен из
   планировщика, чтобы стратегии парсинга менялись/тестировались изолированно.

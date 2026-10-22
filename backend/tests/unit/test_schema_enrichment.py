@@ -8,17 +8,14 @@ import pytest
 
 from app.config import settings
 from app.core.data.duckdb_manager import DuckDBManager
-from app.core.data.schema_enrichment import (
-    ALIAS_MAX_CHARS,
-    SchemaEnricher,
-    clean_aliases,
-    description_source,
-)
+from app.core.data.profiling import profile_table
+from app.core.data.schema_enrichment import TITLE_MAX_CHARS, SchemaEnricher, source_comment
 from app.core.llm.client import LLMClient
 from app.core.memory.profile_memory import ProfileMemory
 
 SHORT = "Сумма заказа в рублях с НДС"
 LONG = "Код статуса заказа: 1 — новый, 2 — оплачен, 3 — отгружен. " * 5
+DOCUMENT = "## Заказы\n- amount — сумма заказа\n- status — статус заказа\n- day — дата заказа"
 MARKER = "Колонки (JSON):\n"
 
 
@@ -27,20 +24,13 @@ def requested(prompt: str) -> list[dict]:
     return json.loads(prompt[start : prompt.index("\n\n", start)])
 
 
-def auto_answer(kind: str, columns: list[dict]) -> dict:
-    if kind == "compress":
-        return {
-            "columns": [
-                {"column": column["column"], "description": f"Сжато: {column['column']}"}
-                for column in columns
-            ]
-        }
+def auto_answer(columns: list[dict]) -> dict:
     return {
         "columns": [
             {
                 "column": column["column"],
+                "title": f"Название {column['column']}",
                 "description": f"Описание {column['column']}",
-                "aliases": [f"{column['column']} алиас"],
             }
             for column in columns
         ]
@@ -52,27 +42,28 @@ class FakeLLM:
 
     def __init__(self, answer=auto_answer) -> None:
         self.answer = answer
-        self.calls: list[tuple[str, list[dict]]] = []
+        self.calls: list[list[dict]] = []
         self.prompts: list[str] = []
 
     async def complete_structured(self, system: str, user: str, schema):
-        kind = "compress" if user.startswith("Сожми") else "aliases"
         columns = requested(user)
-        self.calls.append((kind, columns))
+        self.calls.append(columns)
         self.prompts.append(user)
-        result = self.answer(kind, columns)
+        result = self.answer(columns)
         if isinstance(result, Exception):
             raise result
         return schema.model_validate(result)
 
-    def columns(self, kind: str) -> list[list[str]]:
-        return [
-            [column["column"] for column in columns] for name, columns in self.calls if name == kind
-        ]
+    def columns(self) -> list[list[str]]:
+        return [[column["column"] for column in columns] for columns in self.calls]
 
 
 def unavailable() -> openai.APIConnectionError:
     return openai.APIConnectionError(request=httpx.Request("POST", "http://llm.local/v1"))
+
+
+def profiled(db, table: str) -> None:
+    ProfileMemory(db).save_profile(profile_table(db, table))
 
 
 @pytest.fixture
@@ -83,6 +74,7 @@ def db():
         "(10.5, 1, 'msk', DATE '2024-01-05'), (20.0, 2, 'spb', DATE '2024-02-05'), "
         "(5.25, 3, 'msk', DATE '2024-03-05')) AS rows(amount, status, region, day)"
     )
+    profiled(manager, "orders")
     yield manager
     manager.close()
 
@@ -94,182 +86,155 @@ def by_column(rows) -> dict:
 @pytest.mark.parametrize(
     ("comment", "expected"),
     [
-        (None, "generated"),
-        ("", "generated"),
-        ("   ", "generated"),
-        ("\n\t", "generated"),
-        ("Amount", "generated"),
-        (" amount ", "generated"),
-        ("x", "source"),
-        ("x" * 200, "source"),
-        ("x" * 201, "source_compressed"),
-        (" " + "x" * 199 + " ", "source_compressed"),
+        (None, None),
+        ("", None),
+        ("   ", None),
+        ("\n\t", None),
+        ("Amount", None),
+        (" amount ", None),
+        ("x", "x"),
+        (LONG, LONG),
     ],
 )
-def test_description_source(comment, expected) -> None:
-    assert description_source("amount", comment) == expected
+def test_source_comment(comment, expected) -> None:
+    assert source_comment("amount", comment) == expected
 
 
-def test_description_limit_follows_settings(monkeypatch) -> None:
-    monkeypatch.setattr(settings, "enrich_description_max_chars", 10)
-    assert description_source("amount", "x" * 10) == "source"
-    assert description_source("amount", "x" * 11) == "source_compressed"
+async def test_without_description_nothing_happens(db) -> None:
+    llm = FakeLLM()
+    rows = await SchemaEnricher(db, llm).enrich("orders", comments={"region": "  "})
+    assert llm.calls == []
+    assert [row.column for row in rows] == ["amount", "status", "region", "day"]
+    assert all(
+        row.title is None and row.description is None and row.fingerprint is None for row in rows
+    )
+    [passport] = db.query("SELECT enriched_at FROM _meta.table_passport")
+    assert passport["enriched_at"] is None
 
 
-def test_clean_aliases() -> None:
-    aliases = [
-        " Сумма ",
-        "сумма",
-        "AMOUNT",
-        "",
-        "   ",
-        "x" * (ALIAS_MAX_CHARS + 1),
-        "y" * ALIAS_MAX_CHARS,
-        "Выручка",
-        "Оборот",
-        "Деньги",
-        "Чек",
-    ]
-    assert clean_aliases("amount", aliases) == ["Сумма", "y" * ALIAS_MAX_CHARS, "Выручка", "Оборот"]
-
-
-async def test_enrich_picks_description_source_and_saves_to_meta(db) -> None:
+async def test_comments_are_saved_as_is_without_llm(db) -> None:
     llm = FakeLLM()
     comments = {"amount": SHORT, "status": LONG, "region": "  ", "day": "Day"}
-    rows = await SchemaEnricher(db, llm).enrich("orders", comments=comments)
-    result = by_column(rows)
-    assert list(result) == ["amount", "status", "region", "day"]
-
-    amount = result["amount"]
-    assert amount.description == SHORT
-    assert amount.description_source == "source"
-    assert amount.description_original == SHORT
-
-    status = result["status"]
-    assert status.description == "Сжато: status"
-    assert status.description_source == "source_compressed"
-    assert status.description_original == LONG
-
+    rows = by_column(await SchemaEnricher(db, llm).enrich("orders", comments=comments))
+    assert llm.calls == []
+    assert rows["amount"].description == SHORT
+    assert rows["status"].description == LONG
+    assert {rows[name].description_source for name in ("amount", "status")} == {"source"}
     for name in ("region", "day"):
-        assert result[name].description == f"Описание {name}"
-        assert result[name].description_source == "generated"
-    assert all(row.aliases == [f"{row.column} алиас"] and row.fingerprint for row in rows)
-
-    assert llm.columns("compress") == [["status"]]
-    assert llm.columns("aliases") == [["amount", "status", "region", "day"]]
-    sent = {item["column"]: item for item in llm.calls[1][1]}
-    assert sent["amount"]["description"] == SHORT
-    assert sent["status"]["description"] == "Сжато: status"
-    assert sent["region"]["description"] is None
-    assert sent["region"]["top_values"] == ["msk", "spb"]
-    assert sent["day"]["min"] == "2024-01-05"
-
-    assert ProfileMemory(db).load_enrichment("orders") == rows
-    assert ProfileMemory(db).load_profile("orders").row_count == 3
+        assert rows[name].description is None
+        assert rows[name].description_source == "none"
+    assert all(row.title is None and row.fingerprint for row in rows.values())
+    assert by_column(ProfileMemory(db).load_enrichment("orders")) == rows
 
 
-async def test_short_description_is_kept_verbatim(db) -> None:
-    padded = "  " + "Сумма, ₽ " * 22
-    assert len(padded) <= 200
+async def test_document_gives_titles_and_descriptions(db) -> None:
+    llm = FakeLLM()
+    rows = by_column(await SchemaEnricher(db, llm).enrich("orders", document=DOCUMENT))
+    assert llm.columns() == [["amount", "status", "region", "day"]]
+    assert DOCUMENT in llm.prompts[0]
+    assert llm.calls[0][0] == {"column": "amount", "type": "DECIMAL(4,2)", "comment": None}
+    for name, row in rows.items():
+        assert row.title == f"Название {name}"
+        assert row.description == f"Описание {name}"
+        assert row.description_source == "document"
+        assert row.fingerprint
+    assert by_column(ProfileMemory(db).load_enrichment("orders")) == rows
 
-    def answer(kind, columns):
-        reply = auto_answer(kind, columns)
-        for column in reply["columns"]:
-            column["description"] = "LLM переписала описание"
+
+async def test_comment_wins_over_document(db) -> None:
+    llm = FakeLLM()
+    rows = by_column(
+        await SchemaEnricher(db, llm).enrich("orders", {"amount": SHORT}, document=DOCUMENT)
+    )
+    assert llm.calls[0][0]["comment"] == SHORT
+    assert rows["amount"].description == SHORT
+    assert rows["amount"].description_source == "source"
+    assert rows["amount"].title == "Название amount"
+    assert rows["status"].description_source == "document"
+
+
+async def test_column_missing_in_document_stays_empty(db) -> None:
+    def answer(columns):
+        reply = auto_answer(columns)
+        for item in reply["columns"]:
+            if item["column"] == "region":
+                item["title"] = item["description"] = None
         return reply
 
     llm = FakeLLM(answer)
-    rows = await SchemaEnricher(db, llm).enrich("orders", comments={"amount": padded})
-    amount = by_column(rows)["amount"]
-    assert amount.description == padded
-    assert amount.description_source == "source"
-    assert llm.columns("compress") == []
+    rows = by_column(await SchemaEnricher(db, llm).enrich("orders", document=DOCUMENT))
+    region = rows["region"]
+    assert region.title is None and region.description is None
+    assert region.description_source == "none"
+    assert region.fingerprint
+    llm = FakeLLM()
+    await SchemaEnricher(db, llm).enrich("orders", document=DOCUMENT)
+    assert llm.calls == []
 
 
-async def test_aliases_are_validated(db) -> None:
-    def answer(kind, columns):
+async def test_bad_values_are_rejected(db, caplog) -> None:
+    def answer(columns):
         return {
             "columns": [
-                {
-                    "column": "amount",
-                    "description": None,
-                    "aliases": [
-                        "Сумма",
-                        "сумма",
-                        "Amount",
-                        "x" * 41,
-                        "Выручка",
-                        "Оборот",
-                        "Чек",
-                        "Ещё",
-                    ],
-                },
-                {"column": "amount", "aliases": ["Дубль ответа"]},
-                {"column": "ghost", "aliases": ["Призрак"]},
-                {"column": "status", "description": "Статус заказа", "aliases": []},
-                {"column": "region", "description": "Регион", "aliases": ["Город"]},
-                {"column": "day", "description": "День", "aliases": ["Дата"]},
+                {"column": "amount", "title": "x" * (TITLE_MAX_CHARS + 1), "description": "  "},
+                {"column": "status", "title": "STATUS", "description": "z" * 201},
+                {"column": "region", "title": "  ", "description": "Регион"},
+                {"column": "day", "title": " День ", "description": " Дата заказа "},
             ]
         }
 
-    rows = by_column(await SchemaEnricher(db, FakeLLM(answer)).enrich("orders", {"amount": SHORT}))
-    assert rows["amount"].aliases == ["Сумма", "Выручка", "Оборот", "Чек"]
-    assert rows["amount"].description == SHORT
-    assert rows["status"].aliases == []
-    assert rows["status"].fingerprint
-    assert all(len(row.aliases) <= 4 for row in rows.values())
+    with caplog.at_level(logging.WARNING):
+        rows = by_column(await SchemaEnricher(db, FakeLLM(answer)).enrich("orders", None, "doc"))
+    assert rows["amount"].title is None and rows["amount"].description is None
+    assert rows["status"].title is None and rows["status"].description is None
+    assert rows["region"].title is None and rows["region"].description == "Регион"
+    assert rows["day"].title == "День" and rows["day"].description == "Дата заказа"
+    assert "негодное название колонки «amount»" in caplog.text
+    assert "описание колонки «status» длиннее 200" in caplog.text
+
+
+async def test_unrequested_and_duplicate_answers_are_ignored(db, caplog) -> None:
+    def answer(columns):
+        reply = auto_answer(columns)
+        reply["columns"] += [
+            {"column": "amount", "title": "Дубль"},
+            {"column": "ghost", "title": "Призрак"},
+        ]
+        return reply
+
+    with caplog.at_level(logging.WARNING):
+        rows = by_column(await SchemaEnricher(db, FakeLLM(answer)).enrich("orders", None, "doc"))
+    assert rows["amount"].title == "Название amount"
     assert "ghost" not in rows
+    assert "незапрошенную колонку «ghost»" in caplog.text
 
 
-async def test_compressed_description_too_long_falls_back(db) -> None:
-    def answer(kind, columns):
-        reply = auto_answer(kind, columns)
-        if kind == "compress":
-            reply["columns"][0]["description"] = "y" * 201
-        return reply
+async def test_profile_is_required_and_not_recomputed(db) -> None:
+    db.execute("CREATE TABLE fresh AS SELECT 1 AS id")
+    with pytest.raises(LookupError):
+        await SchemaEnricher(db, FakeLLM()).enrich("fresh", document=DOCUMENT)
 
-    llm = FakeLLM(answer)
-    rows = by_column(await SchemaEnricher(db, llm).enrich("orders", {"status": LONG}))
-    status = rows["status"]
-    assert status.description == LONG
-    assert status.description_source == "source"
-    assert status.aliases == []
-    assert status.fingerprint is None
-    assert llm.columns("aliases") == [["amount", "region", "day"]]
-
-
-async def test_generated_description_must_be_short_and_non_empty(db) -> None:
-    def answer(kind, columns):
-        reply = auto_answer(kind, columns)
-        reply["columns"][0]["description"] = "  "
-        reply["columns"][1]["description"] = "z" * 201
-        return reply
-
-    rows = by_column(await SchemaEnricher(db, FakeLLM(answer)).enrich("orders"))
-    for name in ("amount", "status"):
-        assert rows[name].description is None
-        assert rows[name].description_source == "none"
-        assert rows[name].aliases == []
-        assert rows[name].fingerprint is None
-    assert rows["region"].description_source == "generated"
+    db.execute("INSERT INTO orders VALUES (7.0, 1, 'kzn', DATE '2024-04-05')")
+    await SchemaEnricher(db, FakeLLM()).enrich("orders", document=DOCUMENT)
+    assert ProfileMemory(db).load_profile("orders").row_count == 3
 
 
 async def test_invalid_batch_does_not_stop_other_batches(db, monkeypatch, caplog) -> None:
     monkeypatch.setattr(settings, "enrich_batch_size", 2)
     replies = iter([ValueError("not json"), None])
 
-    def answer(kind, columns):
-        return next(replies) or auto_answer(kind, columns)
+    def answer(columns):
+        return next(replies) or auto_answer(columns)
 
     llm = FakeLLM(answer)
     with caplog.at_level(logging.WARNING):
-        rows = by_column(await SchemaEnricher(db, llm).enrich("orders", {"amount": SHORT}))
-    assert llm.columns("aliases") == [["amount", "status"], ["region", "day"]]
+        rows = by_column(await SchemaEnricher(db, llm).enrich("orders", {"amount": SHORT}, "doc"))
+    assert llm.columns() == [["amount", "status"], ["region", "day"]]
     assert rows["amount"].description == SHORT
     assert rows["amount"].description_source == "source"
-    assert rows["amount"].aliases == []
+    assert rows["amount"].title is None and rows["amount"].fingerprint is None
     assert rows["status"].description_source == "none"
-    assert rows["region"].aliases == ["region алиас"]
+    assert rows["region"].title == "Название region"
     assert "Невалидный ответ LLM" in caplog.text
 
 
@@ -277,190 +242,109 @@ async def test_unexpected_llm_error_fails_only_its_batch(db, monkeypatch, caplog
     monkeypatch.setattr(settings, "enrich_batch_size", 2)
     replies = iter([IndexError("list index out of range"), None])
 
-    def answer(kind, columns):
-        return next(replies) or auto_answer(kind, columns)
+    def answer(columns):
+        return next(replies) or auto_answer(columns)
 
-    llm = FakeLLM(answer)
     with caplog.at_level(logging.WARNING):
-        rows = by_column(await SchemaEnricher(db, llm).enrich("orders"))
-    assert llm.columns("aliases") == [["amount", "status"], ["region", "day"]]
+        rows = by_column(await SchemaEnricher(db, FakeLLM(answer)).enrich("orders", None, "doc"))
     assert rows["amount"].description_source == "none"
     assert rows["amount"].fingerprint is None
-    assert rows["region"].description_source == "generated"
+    assert rows["region"].description_source == "document"
     [record] = [r for r in caplog.records if "Неожиданная ошибка LLM" in r.message]
     assert record.exc_info[0] is IndexError
 
 
 async def test_cancellation_is_not_swallowed(db) -> None:
-    def cancel(kind, columns):
+    def cancel(columns):
         raise asyncio.CancelledError
 
     with pytest.raises(asyncio.CancelledError):
-        await SchemaEnricher(db, FakeLLM(cancel)).enrich("orders")
+        await SchemaEnricher(db, FakeLLM(cancel)).enrich("orders", document=DOCUMENT)
 
 
 async def test_schema_mismatch_is_a_failure(db) -> None:
-    def answer(kind, columns):
-        return {"columns": [{"column": "amount", "aliases": "не список"}]}
+    def answer(columns):
+        return {"columns": [{"column": "amount", "title": ["не строка"]}]}
 
-    rows = await SchemaEnricher(db, FakeLLM(answer)).enrich("orders")
-    assert all(row.description_source == "none" and row.aliases == [] for row in rows)
+    rows = await SchemaEnricher(db, FakeLLM(answer)).enrich("orders", document=DOCUMENT)
+    assert all(row.description_source == "none" and row.fingerprint is None for row in rows)
 
 
 async def test_missing_column_in_answer_fails_only_that_column(db, caplog) -> None:
-    def answer(kind, columns):
-        reply = auto_answer(kind, columns)
+    def answer(columns):
+        reply = auto_answer(columns)
         reply["columns"] = [item for item in reply["columns"] if item["column"] != "region"]
         return reply
 
     with caplog.at_level(logging.WARNING):
-        rows = by_column(await SchemaEnricher(db, FakeLLM(answer)).enrich("orders"))
-    assert rows["region"].description_source == "none"
+        rows = by_column(await SchemaEnricher(db, FakeLLM(answer)).enrich("orders", None, "doc"))
     assert rows["region"].fingerprint is None
-    assert rows["day"].description_source == "generated"
+    assert rows["day"].description_source == "document"
     assert "не вернула колонки ['region']" in caplog.text
 
 
 async def test_unavailable_llm_is_not_called_again(db, monkeypatch, caplog) -> None:
     monkeypatch.setattr(settings, "enrich_batch_size", 1)
-    llm = FakeLLM(lambda kind, columns: unavailable())
+    llm = FakeLLM(lambda columns: unavailable())
     with caplog.at_level(logging.WARNING):
         rows = by_column(
-            await SchemaEnricher(db, llm).enrich("orders", {"amount": SHORT, "status": LONG})
+            await SchemaEnricher(db, llm).enrich("orders", {"amount": SHORT}, DOCUMENT)
         )
     assert len(llm.calls) == 1
     assert rows["amount"].description == SHORT
-    assert rows["status"].description == LONG
-    assert rows["status"].description_source == "source"
     assert rows["region"].description is None
-    assert all(row.aliases == [] and row.fingerprint is None for row in rows.values())
+    assert all(row.title is None and row.fingerprint is None for row in rows.values())
     assert "LLM недоступна" in caplog.text
-    assert ProfileMemory(db).load_profile("orders").row_count == 3
 
 
 async def test_next_run_after_failure_retries(db) -> None:
-    await SchemaEnricher(db, FakeLLM(lambda kind, columns: unavailable())).enrich("orders")
+    await SchemaEnricher(db, FakeLLM(lambda columns: unavailable())).enrich("orders", None, "doc")
     llm = FakeLLM()
     enricher = SchemaEnricher(db, llm)
-    rows = await enricher.enrich("orders")
-    assert llm.columns("aliases") == [["amount", "status", "region", "day"]]
-    assert all(row.description_source == "generated" for row in rows)
+    rows = await enricher.enrich("orders", document="doc")
+    assert llm.columns() == [["amount", "status", "region", "day"]]
+    assert all(row.description_source == "document" for row in rows)
     assert enricher.llm_available
 
 
-async def test_batches(db, monkeypatch) -> None:
-    monkeypatch.setattr(settings, "enrich_batch_size", 2)
-    db.execute("ALTER TABLE orders ADD COLUMN channel VARCHAR DEFAULT 'web'")
+async def test_repeated_enrich_skips_llm(db) -> None:
+    first = await SchemaEnricher(db, FakeLLM()).enrich("orders", {"amount": SHORT}, DOCUMENT)
     llm = FakeLLM()
-    comments = {"amount": LONG, "status": LONG, "region": LONG}
-    await SchemaEnricher(db, llm).enrich("orders", comments)
-    assert llm.columns("compress") == [["amount", "status"], ["region"]]
-    assert llm.columns("aliases") == [["amount", "status"], ["region", "day"], ["channel"]]
-
-
-async def test_repeated_enrich_skips_llm_and_refreshes_stats(db) -> None:
-    comments = {"amount": SHORT, "status": LONG}
-    glossary = {"чек": "заказ"}
-    first = await SchemaEnricher(db, FakeLLM()).enrich("orders", comments, glossary)
-    db.execute("INSERT INTO orders VALUES (7.0, 1, 'kzn', DATE '2024-04-05')")
-    llm = FakeLLM()
-    second = await SchemaEnricher(db, llm).enrich("orders", comments)
+    second = await SchemaEnricher(db, llm).enrich("orders", {"amount": SHORT}, DOCUMENT)
     assert llm.calls == []
     assert second == first
-    assert ProfileMemory(db).load_profile("orders").row_count == 4
 
 
 async def test_only_changed_columns_are_reprocessed(db) -> None:
-    comments = {"amount": SHORT, "status": LONG}
-    first = by_column(await SchemaEnricher(db, FakeLLM()).enrich("orders", comments))
+    comments = {"amount": SHORT}
+    first = by_column(await SchemaEnricher(db, FakeLLM()).enrich("orders", comments, DOCUMENT))
 
     db.execute("ALTER TABLE orders ALTER status TYPE BIGINT")
+    profiled(db, "orders")
     llm = FakeLLM()
-    rows = by_column(await SchemaEnricher(db, llm).enrich("orders", comments))
-    assert llm.columns("compress") == [["status"]]
-    assert llm.columns("aliases") == [["status"]]
+    rows = by_column(await SchemaEnricher(db, llm).enrich("orders", comments, DOCUMENT))
+    assert llm.columns() == [["status"]]
     assert rows["amount"] == first["amount"]
 
     llm = FakeLLM()
-    changed = comments | {"amount": "Сумма без НДС"}
-    rows = by_column(await SchemaEnricher(db, llm).enrich("orders", changed))
-    assert llm.columns("compress") == []
-    assert llm.columns("aliases") == [["amount"]]
+    rows = by_column(
+        await SchemaEnricher(db, llm).enrich("orders", {"amount": "Сумма без НДС"}, DOCUMENT)
+    )
+    assert llm.columns() == [["amount"]]
     assert rows["amount"].description == "Сумма без НДС"
 
-    db.execute("ALTER TABLE orders DROP COLUMN region")
     llm = FakeLLM()
-    rows = await SchemaEnricher(db, llm).enrich("orders", changed)
-    assert llm.calls == []
-    assert [row.column for row in rows] == ["amount", "status", "day"]
-    stored = db.query("SELECT column_name FROM _meta.column_passport ORDER BY position")
-    assert [row["column_name"] for row in stored] == ["amount", "status", "day"]
+    await SchemaEnricher(db, llm).enrich("orders", {"amount": "Сумма без НДС"}, DOCUMENT + "!")
+    assert llm.columns() == [["amount", "status", "region", "day"]]
 
 
-async def test_new_column_is_processed_alone(db) -> None:
-    first = by_column(await SchemaEnricher(db, FakeLLM()).enrich("orders"))
-    db.execute("ALTER TABLE orders ADD COLUMN channel VARCHAR DEFAULT 'web'")
+async def test_long_document_is_trimmed(db, monkeypatch, caplog) -> None:
+    monkeypatch.setattr(settings, "enrich_document_max_chars", 10)
     llm = FakeLLM()
-    rows = by_column(await SchemaEnricher(db, llm).enrich("orders"))
-    assert llm.columns("aliases") == [["channel"]]
-    assert rows["channel"].description == "Описание channel"
-    assert rows["channel"].description_source == "generated"
-    assert {name: rows[name] for name in first} == first
-
-
-async def test_restart_after_crash_reprocesses_unfinished_columns(db) -> None:
-    first = by_column(await SchemaEnricher(db, FakeLLM()).enrich("orders", {"amount": SHORT}))
-    db.execute("ALTER TABLE orders ALTER status TYPE BIGINT")
-    db.execute("ALTER TABLE orders ADD COLUMN channel VARCHAR DEFAULT 'web'")
-
-    class Crash(BaseException):
-        """Падение процесса посреди ответа LLM: save_enrichment не выполнится."""
-
-    def crash(kind, columns):
-        raise Crash
-
-    with pytest.raises(Crash):
-        await SchemaEnricher(db, FakeLLM(crash)).enrich("orders", {"amount": SHORT})
-
-    memory = ProfileMemory(db)
-    assert memory.load_profile("orders").column("status").dtype == "BIGINT"
-    saved = by_column(memory.load_enrichment("orders"))
-    assert saved["status"] == first["status"]
-    assert saved["channel"].fingerprint is None
-    assert saved["channel"].description_source is None
-
-    llm = FakeLLM()
-    rows = by_column(await SchemaEnricher(db, llm).enrich("orders", {"amount": SHORT}))
-    assert llm.columns("aliases") == [["status", "channel"]]
-    assert rows["amount"] == first["amount"]
-    assert rows["channel"].description_source == "generated"
-    assert rows["status"].fingerprint != first["status"].fingerprint
-
-
-async def test_glossary_change_reprocesses_and_reaches_prompt(db) -> None:
-    await SchemaEnricher(db, FakeLLM()).enrich("orders", glossary={"чек": "заказ"})
-    llm = FakeLLM()
-    await SchemaEnricher(db, llm).enrich("orders", glossary={"чек": "заказ", "выручка": "amount"})
-    assert llm.columns("aliases") == [["amount", "status", "region", "day"]]
-    assert '"выручка": "amount"' in llm.prompts[0]
-    assert ProfileMemory(db).load_glossary("orders") == {"чек": "заказ", "выручка": "amount"}
-
-
-async def test_long_values_are_trimmed_in_prompt(db) -> None:
-    db.execute("CREATE TABLE notes AS SELECT repeat('й', 500) || i AS body FROM range(10) t(i)")
-    llm = FakeLLM()
-    await SchemaEnricher(db, llm).enrich("notes")
-    sent = llm.calls[0][1][0]
-    assert len(sent["top_values"]) == 5
-    assert all(len(value) == 60 for value in sent["top_values"])
-    assert len(sent["min"]) == 60
-
-
-async def test_empty_table(db) -> None:
-    db.execute("CREATE TABLE nothing (amount DOUBLE, day DATE)")
-    rows = await SchemaEnricher(db, FakeLLM()).enrich("nothing")
-    assert [row.description_source for row in rows] == ["generated", "generated"]
-    assert ProfileMemory(db).load_profile("nothing").row_count == 0
+    with caplog.at_level(logging.WARNING):
+        await SchemaEnricher(db, llm).enrich("orders", document="0123456789ABCDEF")
+    assert "<<<\n0123456789\n>>>" in llm.prompts[0]
+    assert "обрезан" in caplog.text
 
 
 def test_default_llm_client(db) -> None:

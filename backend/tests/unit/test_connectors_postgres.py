@@ -395,9 +395,11 @@ def test_column_comments_are_read_from_source_table() -> None:
         "note": "Комментарий",
     }
     sql = db.statements[-1]
-    assert sql.startswith(f"SELECT column_name, comment FROM postgres_query('{connector.alias}', ")
+    # Только SELECT * без внешнего WHERE: DuckDB 2.0 путает колонки postgres_query
+    # при проекции и фильтре снаружи, поэтому фильтр — внутри запроса PostgreSQL.
+    assert sql.startswith(f"SELECT * FROM postgres_query('{connector.alias}', ")
     assert "n.nspname = ''O''''Hara'' AND c.relname = ''events''" in sql
-    assert sql.endswith("WHERE comment IS NOT NULL")
+    assert sql.endswith("col_description(a.attrelid, a.attnum) IS NOT NULL')")
     connector.column_comments(db, "it's")
     assert "c.relname = ''it''''s''" in db.statements[-1]
 
@@ -423,7 +425,7 @@ def test_column_comments_failure_is_logged_without_secrets(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
     error = duckdb.IOException("connection lost for TopSecret")
-    db = FakeDuckDB(tables=["orders"], failing=[("SELECT column_name, comment", error)])
+    db = FakeDuckDB(tables=["orders"], failing=[("SELECT * FROM postgres_query(", error)])
     connector = PostgresConnector(DSN)
     connector.connect(db)
     with caplog.at_level(logging.WARNING):

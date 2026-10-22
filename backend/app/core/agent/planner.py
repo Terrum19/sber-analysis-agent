@@ -34,12 +34,14 @@ class StepPlanner:
         if profile is not None:
             # Отбираем топ-5 релевантных колонок (семантический отбор, docs/architecture.md)
             columns = select_columns(
-                question, columns, profile=profile, aliases=context.get("aliases")
+                question, columns, profile=profile, titles=context.get("titles")
             )
         start = int(context.get("next_step_id", 0))
         prompt = STEP_PLANNER.format(
             tools=tools,
-            columns=describe_columns(columns, profile, context.get("descriptions")),
+            columns=describe_columns(
+                columns, profile, context.get("descriptions"), context.get("titles")
+            ),
             context=context.get("summary", ""),
             executed=context.get("executed", "нет"),
             next_step_id=start,
