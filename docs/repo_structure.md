@@ -11,10 +11,10 @@
 sberAnalyticalAgent/
 ├── README.md              — что это, как поднять локально (одна команда)
 ├── CONTRIBUTING.md        — конвенции: как добавить тул, коннектор, промпт
-├── Makefile               — make install / seed / hk-data / dev / up / test / lint
+├── Makefile               — make install / seed / hk-data / dev / up / up-gpu / test / lint
 ├── .env.example           — пример конфигурации (LLM endpoint, пути, лимиты)
 ├── .gitignore             — рантайм (storage/), веса (models/), data/hk_datasets/, node_modules
-├── docker-compose.yml     — backend + frontend (LLM — отдельно на хосте)
+├── docker-compose.yml     — backend + frontend + Ollama (профиль cpu или gpu)
 ├── backend/               — FastAPI + Python: весь интеллект системы
 ├── frontend/              — Next.js + React: чат и канвас
 ├── infra/                 — обвязка запуска (не в корне, чтобы корень был чистым)
@@ -199,6 +199,7 @@ frontend/
 infra/
 ├── local-dev.sh        — подъём backend + frontend локально (замкнутый контур)
 ├── nginx.conf         — опц.: раздача фронта + прокси API (SSE без буферизации)
+├── ollama/entrypoint.sh — Ollama в compose: сервер + скачивание LLM_MODEL при первом запуске
 └── vllm/serve.sh      — запуск Qwen через vLLM (GPU); для CPU/NPU — Ollama
 
 docs/

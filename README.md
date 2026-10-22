@@ -36,7 +36,17 @@ bash infra/local-dev.sh
 # backend: http://localhost:8000  frontend: http://localhost:3000
 ```
 
-Или одной командой: `make up` (см. Makefile).
+Или одной командой в Docker — Ollama с моделью поднимается вместе с платформой:
+
+```bash
+cp .env.example .env
+make up        # Ollama на CPU, модель LLM_MODEL
+make up-gpu    # или Ollama на GPU NVIDIA (нужен NVIDIA Container Toolkit), модель LLM_MODEL_GPU
+make down
+```
+
+Первый запуск скачивает модель в том `ollama-models` (несколько минут, несколько ГБ);
+backend ждёт, пока Ollama не станет healthy. Дальше модель берётся из тома.
 
 ## Структура репозитория
 
