@@ -8,6 +8,7 @@ export interface Datasource {
   kind: "csv" | DbKind;
   tables: string[];
   profile_summary?: string;
+  warnings?: string[];
 }
 
 export interface DatasourceDbRequest {

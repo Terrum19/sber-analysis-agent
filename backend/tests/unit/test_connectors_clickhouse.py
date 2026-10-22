@@ -1,0 +1,254 @@
+import logging
+
+import duckdb
+import pytest
+
+from app.core.data.connectors.clickhouse import (
+    ClickHouseConnector,
+    ClickHouseExtensionUnavailableError,
+    describe_failure,
+    parse_dsn,
+    quote_identifier,
+    quote_literal,
+)
+from app.core.data.connectors.factory import build_connector
+
+
+def test_uri_dsn_is_parsed_and_password_kept_apart() -> None:
+    dsn = parse_dsn("clickhouse://analyst:s3cr%40t@db.local:9000/analytics")
+    assert dsn.password == "s3cr@t"
+    assert dsn.host == "db.local"
+    assert dsn.port == 9000
+    assert dsn.user == "analyst"
+    assert dsn.database == "analytics"
+    assert not dsn.secure
+    assert "s3cr" not in dsn.connection_string()
+
+
+def test_clickhouses_scheme_sets_secure_and_default_port() -> None:
+    dsn = parse_dsn("clickhouses://ch.prod/bi")
+    assert dsn.secure
+    assert dsn.port == 9440
+    assert dsn.database == "bi"
+
+
+def test_default_user_port_database() -> None:
+    dsn = parse_dsn("clickhouse://localhost")
+    assert dsn.user == "default"
+    assert dsn.port == 9000
+    assert dsn.database == "default"
+    assert dsn.password is None
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        "",
+        "   ",
+        "clickhouse://",
+        "clickhouse:///db",
+        "just-a-host",
+        "clickhouse://localhost:notaport/db",
+    ],
+)
+def test_invalid_dsn_raises_value_error(raw: str) -> None:
+    with pytest.raises(ValueError):
+        parse_dsn(raw)
+
+
+def test_password_is_masked_in_repr_and_str() -> None:
+    dsn = parse_dsn("clickhouse://analyst:TopSecret@ch.local:9000/sales")
+    assert "TopSecret" not in repr(dsn)
+    assert "TopSecret" not in str(dsn)
+    assert dsn.scrub("error with TopSecret in trace") == "error with *** in trace"
+
+
+def test_quoting_helpers() -> None:
+    assert quote_identifier('my"table') == '"my""table"'
+    assert quote_literal("it's a test") == "'it''s a test'"
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        ("Password authentication failed for user sber", "учётные данные"),
+        ("HTTP 401 Unauthorized", "учётные данные"),
+        ("nodename nor servname provided, or not known", "Не удалось найти хост"),
+        ("Connection refused", "недоступен"),
+        ("Database missing_db doesn't exist", "не существует"),
+        ("Access denied for user", "Недостаточно прав"),
+        ("Something completely unexpected", "Не удалось подключиться к ClickHouse."),
+    ],
+)
+def test_describe_failure(text: str, expected: str) -> None:
+    assert expected in describe_failure(text)
+
+
+def test_describe_failure_with_clickhouse_error_code() -> None:
+    class DummyCHError(Exception):
+        def __init__(self, code: int):
+            self.code = code
+
+    assert "не существует" in describe_failure("Generic error", error=DummyCHError(81))
+    assert "учётные данные" in describe_failure("Generic error", error=DummyCHError(516))
+    assert "Недостаточно прав" in describe_failure("Generic error", error=DummyCHError(497))
+    assert "недоступен" in describe_failure("Generic error", error=DummyCHError(210))
+
+
+class FakeDuckDB:
+    def __init__(
+        self, tables=(), comments=(), failing=(), previous=(), stale_views=(), existing=()
+    ) -> None:
+        self.tables = list(tables)
+        self.comments = list(comments)
+        self.failing = failing
+        self.previous = list(previous)
+        self.stale_views = list(stale_views)
+        self.existing = list(existing)
+        self.statements: list[str] = []
+        self.params: list[dict | None] = []
+
+    def execute(self, sql: str, params: dict | None = None) -> None:
+        self.statements.append(sql)
+        self.params.append(params)
+        for prefix, error in self.failing:
+            if sql.startswith(prefix):
+                raise error
+
+    def query(self, sql: str, params: dict | None = None) -> list[dict]:
+        self.statements.append(sql)
+        self.params.append(params)
+        for prefix, error in self.failing:
+            if sql.startswith(prefix):
+                raise error
+        if "clickhouse_query(" in sql:
+            return [{"column_name": name, "comment": text} for name, text in self.comments]
+        if sql.startswith("SHOW TABLES FROM"):
+            return [{"name": table} for table in self.tables]
+        if "duckdb_tables()" in sql:
+            return [{"name": name} for name in self.existing]
+        if "duckdb_views()" in sql:
+            return [{"name": name} for name in self.existing]
+        if "duckdb_databases()" in sql:
+            return [{"database_name": alias} for alias in self.previous]
+        if "contains(sql, $marker)" in sql and any(
+            params and params["marker"] == f" {alias}." for alias in self.previous
+        ):
+            return [{"view_name": view} for view in self.stale_views]
+        return []
+
+    def index_of(self, prefix: str) -> int:
+        return next(
+            position
+            for position, statement in enumerate(self.statements)
+            if statement.startswith(prefix)
+        )
+
+
+DSN = "clickhouse://analyst:TopSecret@ch.local:9000/analytics"
+
+
+def test_connect_runs_install_load_attach_in_order_and_creates_views() -> None:
+    db = FakeDuckDB(tables=["orders", "users"])
+    connector = ClickHouseConnector(DSN)
+    assert connector.connect(db) == ["orders", "users"]
+
+    install = db.index_of("INSTALL clickhouse_scanner FROM community")
+    load = db.index_of("LOAD clickhouse_scanner")
+    attach = db.index_of("ATTACH ")
+    assert install < load < attach
+    assert db.statements[attach] == (
+        "ATTACH 'host=ch.local port=9000 user=analyst dbname=analytics' "
+        f"AS {connector.alias} (TYPE clickhouse, READ_ONLY, SECRET {connector.alias}_secret)"
+    )
+    assert (
+        f'CREATE OR REPLACE TEMP VIEW "orders" AS SELECT * FROM {connector.alias}."analytics"."orders"'
+        in db.statements
+    )
+    assert (
+        f'CREATE OR REPLACE TEMP VIEW "users" AS SELECT * FROM {connector.alias}."analytics"."users"'
+        in db.statements
+    )
+
+
+def test_password_goes_only_to_the_secret() -> None:
+    db = FakeDuckDB(tables=["orders"])
+    ClickHouseConnector(DSN).connect(db)
+    assert not any("TopSecret" in statement for statement in db.statements)
+    assert db.params[db.index_of("CREATE OR REPLACE TEMPORARY SECRET")] == {"password": "TopSecret"}
+
+
+def test_no_secret_without_password() -> None:
+    db = FakeDuckDB(tables=["orders"])
+    ClickHouseConnector("clickhouse://analyst@ch.local:9000/analytics").connect(db)
+    assert not any(
+        "SECRET" in statement for statement in db.statements if statement.startswith("ATTACH")
+    )
+    assert not any(
+        statement.startswith("CREATE OR REPLACE TEMPORARY SECRET") for statement in db.statements
+    )
+
+
+def test_missing_extension_raises_extension_unavailable_error() -> None:
+    db = FakeDuckDB(failing=[("LOAD clickhouse_scanner", duckdb.Error("Extension not found"))])
+    connector = ClickHouseConnector(DSN)
+    with pytest.raises(ClickHouseExtensionUnavailableError, match="недоступно"):
+        connector.connect(db)
+
+
+def test_max_tables_limits_tables(caplog: pytest.LogCaptureFixture) -> None:
+    db = FakeDuckDB(tables=["t1", "t2", "t3"])
+    with caplog.at_level(logging.WARNING):
+        views = ClickHouseConnector(DSN, max_tables=2).connect(db)
+    assert views == ["t1", "t2"]
+    assert "DB_MAX_TABLES" in caplog.text
+
+
+def test_name_collision_gets_prefixed() -> None:
+    db = FakeDuckDB(tables=["users"], existing=["users"])
+    connector = ClickHouseConnector(DSN)
+    views = connector.connect(db)
+    assert views == ["analytics_users"]
+
+
+def test_column_comments_are_read_via_clickhouse_query() -> None:
+    db = FakeDuckDB(tables=["orders"], comments=[("id", "Код заказа"), ("amount", "Сумма")])
+    connector = ClickHouseConnector(DSN)
+    views = connector.connect(db)
+    assert views == ["orders"]
+    comments = connector.column_comments(db, "orders")
+    assert comments == {"id": "Код заказа", "amount": "Сумма"}
+    assert any("clickhouse_query(" in stmt for stmt in db.statements)
+
+
+def test_reconnect_cleans_views_and_databases() -> None:
+    first_db = FakeDuckDB(tables=["orders"])
+    first = ClickHouseConnector(DSN)
+    first.connect(first_db)
+    first_alias = first.alias
+
+    second_db = FakeDuckDB(tables=["orders"], previous=[first_alias], stale_views=["orders"])
+    second = ClickHouseConnector(DSN)
+    second.connect(second_db)
+
+    assert f"DETACH DATABASE IF EXISTS {first_alias}" in second_db.statements
+    assert f"DROP TEMPORARY SECRET IF EXISTS {first_alias}_secret" in second_db.statements
+
+
+def test_invalid_limits_raise_value_error() -> None:
+    with pytest.raises(ValueError, match="Лимит таблиц"):
+        ClickHouseConnector("clickhouse://localhost", max_tables=0)
+
+
+def test_table_discovery_uses_clickhouse_catalog_command() -> None:
+    db = FakeDuckDB(tables=["orders"])
+    connector = ClickHouseConnector(DSN)
+    connector.connect(db)
+    assert f"SHOW TABLES FROM {connector.alias}" in db.statements
+    assert not any("information_schema.tables" in statement for statement in db.statements)
+
+
+def test_factory_builds_clickhouse_with_schema() -> None:
+    connector = build_connector("clickhouse", "clickhouse://localhost/db1", schema="db2")
+    assert isinstance(connector, ClickHouseConnector)
+    assert connector.dsn.database == "db2"

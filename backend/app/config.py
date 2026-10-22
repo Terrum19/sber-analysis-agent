@@ -43,7 +43,8 @@ class Settings(BaseSettings):
     agent_max_steps: int = 12
     semantic_top_k: int = 5
 
-    postgres_max_tables: int = 50
+    db_max_tables: int = 50
+    postgres_max_tables: int = 50  # обратная совместимость
 
     profile_approx_quantile: bool = True
     profile_approx_min_rows: int = 100_000

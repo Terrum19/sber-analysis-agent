@@ -6,16 +6,20 @@ import urllib.parse
 import urllib.request
 
 import pytest
+from fastapi.testclient import TestClient
 
+from app.api.deps import get_db
 from app.core.data.connectors.clickhouse import ClickHouseConnector
 from app.core.data.duckdb_manager import DuckDBManager
+from app.main import app
 
-DSN = os.environ.get("TEST_CLICKHOUSE_DSN", "clickhouse://sber:sber@localhost:8123/sber_demo")
+DSN = os.environ.get("TEST_CLICKHOUSE_DSN", "clickhouse://sber:sber@localhost:9000/sber_demo")
 
 
 def clickhouse_http(sql: str) -> str:
     parts = urllib.parse.urlsplit(DSN)
-    url = f"http://{parts.hostname}:{parts.port or 8123}/"
+    http_port = 8123 if parts.port == 9000 else (parts.port or 8123)
+    url = f"http://{parts.hostname}:{http_port}/"
     request = urllib.request.Request(url, data=sql.encode(), method="POST")
     credentials = f"{parts.username or 'default'}:{parts.password or ''}"
     request.add_header("Authorization", "Basic " + base64.b64encode(credentials.encode()).decode())
@@ -44,10 +48,72 @@ def db():
     manager.close()
 
 
-def test_clickhouse_tables_become_views(table: str, db: DuckDBManager) -> None:
-    try:
-        views = ClickHouseConnector(DSN).connect(db)
-    except NotImplementedError:
-        pytest.skip("ClickHouseConnector ещё не реализован (round-2)")
+def test_clickhouse_tables_become_views_and_lazy(table: str, db: DuckDBManager) -> None:
+    views = ClickHouseConnector(DSN).connect(db)
+
     assert table in views
+    view_rows = db.query(
+        "SELECT view_name, sql FROM duckdb_views() WHERE temporary AND view_name = $name",
+        {"name": table},
+    )
+    assert len(view_rows) == 1
+    assert "AS SELECT * FROM" in view_rows[0]["sql"]
+
+    local_tables = db.query(
+        "SELECT database_name, schema_name FROM duckdb_tables() WHERE table_name = $name",
+        {"name": table},
+    )
+    assert all(
+        row["database_name"] != "temp" or row["schema_name"] != "main" for row in local_tables
+    )
+
     assert db.query(f"SELECT COUNT(*) AS total FROM {table}") == [{"total": 3}]
+
+
+def test_clickhouse_filtered_query_uses_remote_scan(table: str, db: DuckDBManager) -> None:
+    views = ClickHouseConnector(DSN).connect(db)
+    assert table in views
+
+    rows = db.query(f"SELECT id, amount FROM {table} WHERE amount > 15")
+    assert rows == [{"id": 2, "amount": 20.0}]
+
+    explain_rows = db.query(f"EXPLAIN SELECT id, amount FROM {table} WHERE amount > 15")
+    plan_text = " ".join(str(val) for r in explain_rows for val in r.values()).lower()
+    assert "scan" in plan_text or table.lower() in plan_text
+
+
+def test_api_attach_clickhouse(table: str, db: DuckDBManager) -> None:
+    app.dependency_overrides[get_db] = lambda: db
+    try:
+        response = TestClient(app).post(
+            "/api/datasources/db", json={"kind": "clickhouse", "dsn": DSN}
+        )
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["kind"] == "clickhouse"
+    assert table in body["tables"]
+    assert body["datasource_id"].startswith("ch_")
+    assert db.query(f"SELECT COUNT(*) AS total FROM {table}") == [{"total": 3}]
+
+
+def test_clickhouse_column_comments(db: DuckDBManager) -> None:
+    try:
+        clickhouse_http("SELECT 1")
+    except (urllib.error.URLError, OSError) as error:
+        pytest.skip(f"ClickHouse недоступен ({type(error).__name__})")
+    database = urllib.parse.urlsplit(DSN).path.lstrip("/") or "default"
+    name = f"it_comments_{secrets.token_hex(4)}"
+    clickhouse_http(
+        f"CREATE TABLE {database}.{name} (id UInt32 COMMENT 'Код заказа', amount Float64 COMMENT 'Сумма') ENGINE = Memory"
+    )
+    try:
+        connector = ClickHouseConnector(DSN)
+        views = connector.connect(db)
+        assert name in views
+        comments = connector.column_comments(db, name)
+        assert comments == {"id": "Код заказа", "amount": "Сумма"}
+    finally:
+        clickhouse_http(f"DROP TABLE IF EXISTS {database}.{name}")

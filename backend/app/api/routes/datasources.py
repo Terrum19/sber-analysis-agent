@@ -14,6 +14,10 @@ from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
 from app.api.deps import get_db
 from app.api.schemas.datasource import DatasourceCreate, DatasourceOut
 from app.config import settings
+from app.core.data.connectors.clickhouse import (
+    ClickHouseConnectionError,
+    ClickHouseExtensionUnavailableError,
+)
 from app.core.data.connectors.csv import CSVConnector, CSVLoadError, table_name
 from app.core.data.connectors.factory import build_connector
 from app.core.data.connectors.postgres import (
@@ -82,13 +86,16 @@ def attach_db(
             tables = connector.connect(db)
     except ValueError as error:
         raise HTTPException(status_code=400, detail=str(error)) from None
-    except PostgresConnectionError as error:
+    except (PostgresConnectionError, ClickHouseConnectionError) as error:
         raise HTTPException(status_code=502, detail=str(error)) from None
-    except PostgresExtensionUnavailableError as error:
+    except (PostgresExtensionUnavailableError, ClickHouseExtensionUnavailableError) as error:
         raise HTTPException(status_code=503, detail=str(error)) from None
     except NotImplementedError:
         raise HTTPException(
             status_code=501, detail=f"Коннектор «{payload.kind}» пока не реализован."
         ) from None
     datasource_id = getattr(connector, "identity", f"{payload.kind}_{uuid4().hex[:10]}")
-    return DatasourceOut(datasource_id=datasource_id, kind=payload.kind, tables=tables)
+    warnings = getattr(connector, "warnings", [])
+    return DatasourceOut(
+        datasource_id=datasource_id, kind=payload.kind, tables=tables, warnings=warnings
+    )
