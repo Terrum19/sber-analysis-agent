@@ -17,6 +17,8 @@ dependencies = [
     "numpy>=1.26",
     "scipy>=1.12",
     "pytz>=2024.1",        # DuckDB отдаёт TIMESTAMPTZ в Python через pytz; pandas 3 его не тянет
+    "reportlab>=4.2",      # экспорт PDF
+    "vl-convert-python>=1.6.0",  # рендеринг Vega-Lite графиков в PNG
 ]
 
 [project.optional-dependencies]
@@ -26,6 +28,7 @@ dev = [
     "httpx2>=2.0",
     "coverage>=7.5",
     "ruff>=0.5",
+    "pypdf>=4.3.0",
 ]
 
 [build-system]

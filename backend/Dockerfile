@@ -10,6 +10,9 @@ RUN ln -s ../lib/node_modules/npm/bin/npm-cli.js /usr/local/bin/npm
 
 WORKDIR /app
 
+# Шрифты для кириллического PDF-экспорта (ReportLab)
+RUN apt-get update && apt-get install -y --no-install-recommends fonts-dejavu-core && rm -rf /var/lib/apt/lists/*
+
 # Зависимости и расширения DuckDB скачиваются на сборке, чтобы в рантайме
 # контейнеру не нужна сеть и рестарт не тратил время на INSTALL.
 COPY requirements.txt .
