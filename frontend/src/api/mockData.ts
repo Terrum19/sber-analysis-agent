@@ -8,7 +8,7 @@
  */
 import type { DashboardConfig, DashboardListItem, DashboardTile } from "@/types/dashboard";
 import type { ChatStreamEvent } from "@/types/chat";
-import type { Datasource, SessionResponse } from "@/types/datasource";
+import type { Datasource, SessionResponse, TableBrief } from "@/types/datasource";
 
 const STORAGE_KEY = "sber_mock_dashboards_db";
 
@@ -232,21 +232,69 @@ export function mockRecalculateDashboard(id: string): DashboardConfig {
 }
 
 export function mockAttachCsv(files: File[]): Datasource {
+  const tables = files.map((f) => f.name.replace(/\.[^/.]+$/, ""));
+  const profiles: TableBrief[] = tables.map((t) => ({
+    table: t,
+    rows: 1500,
+    columns: 6,
+    period_from: "2024-01-01",
+    period_to: "2024-06-30",
+    description_status: "ready",
+    summary: `Сводка демонстрационного датасета ${t}`,
+    warnings: [],
+  }));
   return {
     datasource_id: `csv-${Date.now()}`,
     kind: "csv",
-    tables: files.map((f) => f.name.replace(/\.[^/.]+$/, "")),
+    tables,
+    profiles,
     profile_summary: `DuckDB CSV: ${files.length} файл(ов) загружено`,
   };
 }
 
 export function mockAttachDb(kind: "postgres" | "clickhouse", dsn: string): Datasource {
+  const tables = ["sales_orders", "regional_revenue", "customer_segments", "products"];
+  const profiles: TableBrief[] = tables.map((t) => ({
+    table: t,
+    rows: 5000,
+    columns: 8,
+    period_from: "2023-01-01",
+    period_to: "2024-12-31",
+    description_status: "ready",
+    summary: `Сводка таблицы ${t}`,
+    warnings: [],
+  }));
   return {
     datasource_id: `db-${Date.now()}`,
     kind,
-    tables: ["sales_orders", "regional_revenue", "customer_segments", "products"],
+    tables,
+    profiles,
     profile_summary: `${kind.toUpperCase()} (${dsn.split("@")[1] || "подключено"}): 4 таблицы`,
   };
+}
+
+export function mockListTables(): string[] {
+  return ["sales_orders", "regional_revenue", "customer_segments", "products"];
+}
+
+export function mockListSessions(offset = 0): SessionResponse[] {
+  if (offset > 0) return [];
+  return [
+    {
+      session_id: "demo-sales",
+      table: "sales_orders",
+      datasource_id: "demo-ds-1",
+      title: "Анализ выручки и регионов (Демо)",
+      created_at: new Date(Date.now() - 7200000).toISOString(),
+    },
+    {
+      session_id: "demo-kpi",
+      table: "regional_revenue",
+      datasource_id: "demo-ds-1",
+      title: "Операционные KPI (Демо)",
+      created_at: new Date(Date.now() - 3600000).toISOString(),
+    },
+  ];
 }
 
 export function mockCreateSession(table: string, datasourceId?: string, title?: string): SessionResponse {
