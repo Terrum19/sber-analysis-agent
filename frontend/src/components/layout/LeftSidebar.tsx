@@ -11,11 +11,12 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { useParams, useRouter } from "next/navigation";
-import { attachCsv, attachDb, listSessions, SESSIONS_PAGE } from "@/api/client";
+import { attachDb, listSessions, SESSIONS_PAGE } from "@/api/client";
 import { useSessionStore, type DatabaseFolder, type SessionItem } from "@/store/sessionStore";
 import { useArtifactStore } from "@/store/artifactStore";
 import { useUiStore } from "@/store/uiStore";
 import { useStartSession } from "@/hooks/useStartSession";
+import { useCsvUpload } from "@/hooks/useCsvUpload";
 import { useT } from "@/i18n/useT";
 import { describeDatabase } from "@/lib/describeDatabase";
 import Icon, { type IconName } from "@/components/ui/Icon";
@@ -42,8 +43,9 @@ function SidebarAction({
   disabled?: boolean;
   title?: string;
 }) {
-  const className =
-    "flex w-full items-center gap-2.5 rounded-lg px-2.5 py-1.5 text-[13px] text-graphite-300 hover:bg-graphite-900 hover:text-graphite-100 transition disabled:opacity-50";
+  const className = `flex w-full items-center gap-2.5 rounded-lg px-2.5 py-1.5 text-[13px] text-graphite-300 hover:bg-graphite-900 hover:text-graphite-100 transition disabled:opacity-50 ${
+    disabled ? "pointer-events-none opacity-50 cursor-not-allowed" : ""
+  }`;
   const content = (
     <>
       <Icon name={icon} className="shrink-0 text-graphite-400" />
@@ -51,7 +53,14 @@ function SidebarAction({
     </>
   );
   return href ? (
-    <Link href={href} className={className}>
+    <Link
+      href={disabled ? "#" : href}
+      className={className}
+      title={title}
+      onClick={(e) => {
+        if (disabled) e.preventDefault();
+      }}
+    >
       {content}
     </Link>
   ) : (
@@ -82,6 +91,8 @@ function DatabaseRow({
 
   const startSession = useStartSession();
   const isCurrent = useSessionStore((s) => (currentSessionId ? s.sessionDatabase[currentSessionId] === database.id : false));
+  const activeStreamingSessionId = useSessionStore((s) => s.activeStreamingSessionId);
+  const isGenerating = Boolean(activeStreamingSessionId);
   const description = describeDatabase(database, t);
 
   const [menuAnchor, setMenuAnchor] = useState<
@@ -116,10 +127,16 @@ function DatabaseRow({
         </button>
         <button
           type="button"
-          onClick={() => hasTables && startSession(database)}
-          disabled={!hasTables}
+          onClick={() => !isGenerating && hasTables && startSession(database)}
+          disabled={!hasTables || isGenerating}
           className="flex min-w-0 flex-1 items-start gap-2 py-1.5 text-left text-[13px] disabled:opacity-50 disabled:cursor-not-allowed"
-          title={!hasTables ? t("welcome.noDataToStart") : `${t("sidebar.openNewSession", { title: database.title })}\n${description}`}
+          title={
+            isGenerating
+              ? t("chat.cannotSwitchWhileGenerating")
+              : !hasTables
+              ? t("welcome.noDataToStart")
+              : `${t("sidebar.openNewSession", { title: database.title })}\n${description}`
+          }
         >
           <Icon name={collapsed ? "folder" : "folderOpen"} className="mt-0.5 shrink-0 text-graphite-400" />
           <span className="min-w-0">
@@ -139,26 +156,34 @@ function DatabaseRow({
         </button>
         <button
           type="button"
-          onClick={() => hasTables && startSession(database)}
-          disabled={!hasTables}
+          onClick={() => !isGenerating && hasTables && startSession(database)}
+          disabled={!hasTables || isGenerating}
           className="mt-0.5 flex h-6 w-6 shrink-0 items-center justify-center self-start rounded-md text-graphite-500 hover:bg-graphite-800 hover:text-graphite-100 disabled:opacity-30 disabled:cursor-not-allowed"
-          title={!hasTables ? t("welcome.noDataToStart") : t("sidebar.newSession")}
+          title={
+            isGenerating
+              ? t("chat.cannotSwitchWhileGenerating")
+              : !hasTables
+              ? t("welcome.noDataToStart")
+              : t("sidebar.newSession")
+          }
         >
           <Icon name="plus" size={14} />
         </button>
         <button
           type="button"
+          disabled={isGenerating}
           onClick={(e) => {
+            if (isGenerating) return;
             e.stopPropagation();
             const rect = e.currentTarget.getBoundingClientRect();
             setMenuAnchor((prev) => (prev?.type === "db" ? null : { type: "db", rect }));
           }}
-          className={`mt-0.5 flex h-6 w-6 shrink-0 items-center justify-center self-start rounded-md transition ${
+          className={`mt-0.5 flex h-6 w-6 shrink-0 items-center justify-center self-start rounded-md transition disabled:opacity-30 disabled:cursor-not-allowed ${
             menuAnchor?.type === "db"
               ? "bg-graphite-800 text-graphite-100 opacity-100"
               : "text-graphite-500 hover:bg-graphite-800 hover:text-graphite-100 opacity-0 group-hover:opacity-100 focus:opacity-100"
           }`}
-          title={t("sidebar.moreActions")}
+          title={isGenerating ? t("chat.cannotSwitchWhileGenerating") : t("sidebar.moreActions")}
         >
           <Icon name="moreHorizontal" size={14} />
         </button>
@@ -171,6 +196,7 @@ function DatabaseRow({
           ) : (
             sortedSessions.map((s) => {
               const isActive = s.id === currentSessionId;
+              const isLocked = isGenerating && !isActive;
               const isSessionMenuOpen = menuAnchor?.type === "session" && menuAnchor.session.id === s.id;
               return (
                 <div
@@ -178,12 +204,23 @@ function DatabaseRow({
                   className={`group/session flex items-center justify-between rounded-lg pr-1 transition ${
                     isActive
                       ? "bg-graphite-800 text-graphite-50"
+                      : isLocked
+                      ? "text-graphite-500 opacity-40 cursor-not-allowed"
                       : "text-graphite-400 hover:bg-graphite-900 hover:text-graphite-200"
                   }`}
                 >
                   <Link
-                    href={`/session/${s.id}`}
-                    className="flex min-w-0 flex-1 items-center gap-1.5 px-2 py-1.5 text-[12.5px]"
+                    href={isLocked ? "#" : `/session/${s.id}`}
+                    onClick={(e) => {
+                      if (isLocked) {
+                        e.preventDefault();
+                        e.stopPropagation();
+                      }
+                    }}
+                    title={isLocked ? t("chat.cannotSwitchWhileGenerating") : undefined}
+                    className={`flex min-w-0 flex-1 items-center gap-1.5 px-2 py-1.5 text-[12.5px] ${
+                      isLocked ? "pointer-events-none cursor-not-allowed" : ""
+                    }`}
                   >
                     <span className="truncate">{s.title}</span>
                     {s.pinned && (
@@ -197,7 +234,9 @@ function DatabaseRow({
                   </Link>
                   <button
                     type="button"
+                    disabled={isGenerating}
                     onClick={(e) => {
+                      if (isGenerating) return;
                       e.stopPropagation();
                       e.preventDefault();
                       const rect = e.currentTarget.getBoundingClientRect();
@@ -207,12 +246,12 @@ function DatabaseRow({
                           : { type: "session", session: s, rect },
                       );
                     }}
-                    className={`flex h-5 w-5 shrink-0 items-center justify-center rounded transition ${
+                    className={`flex h-5 w-5 shrink-0 items-center justify-center rounded transition disabled:opacity-0 disabled:cursor-not-allowed ${
                       isSessionMenuOpen
                         ? "bg-graphite-700 text-graphite-100 opacity-100"
                         : "text-graphite-500 hover:bg-graphite-800 hover:text-graphite-100 opacity-0 group-hover/session:opacity-100 focus:opacity-100"
                     }`}
-                    title={t("sidebar.moreActions")}
+                    title={isGenerating ? t("chat.cannotSwitchWhileGenerating") : t("sidebar.moreActions")}
                   >
                     <Icon name="moreHorizontal" size={13} />
                   </button>
@@ -307,11 +346,12 @@ export default function LeftSidebar() {
   const addDatabase = useSessionStore((s) => s.addDatabase);
   const deleteDatabase = useSessionStore((s) => s.deleteDatabase);
   const deleteSession = useSessionStore((s) => s.deleteSession);
+  const activeStreamingSessionId = useSessionStore((s) => s.activeStreamingSessionId);
+  const isGenerating = Boolean(activeStreamingSessionId);
   const startSession = useStartSession();
 
   const dbModalOpen = useUiStore((s) => s.dbModalOpen);
   const setDbModalOpen = useUiStore((s) => s.setDbModalOpen);
-  const csvPickRequest = useUiStore((s) => s.csvPickRequest);
 
   const sortedDatabases = useMemo(() => {
     return [...databases].sort((a, b) => {
@@ -349,18 +389,23 @@ export default function LeftSidebar() {
     }
   }
 
-  const fileInputRef = useRef<HTMLInputElement>(null);
+  const {
+    fileInputRef,
+    isBusy: isCsvBusy,
+    errorMsg: csvErrorMsg,
+    handleCsvUpload,
+    openFilePicker,
+  } = useCsvUpload();
+
   const [dbKind, setDbKind] = useState<DbKind>("postgres");
   const [dsn, setDsn] = useState("");
   const [schema, setSchema] = useState("");
   const [dbDescription, setDbDescription] = useState("");
-  const [isBusy, setIsBusy] = useState(false);
-  const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  const [isDbBusy, setIsDbBusy] = useState(false);
+  const [dbErrorMsg, setDbErrorMsg] = useState<string | null>(null);
 
-  // Экран приветствия просит открыть выбор файлов
-  useEffect(() => {
-    if (csvPickRequest > 0) fileInputRef.current?.click();
-  }, [csvPickRequest]);
+  const isBusy = isCsvBusy || isDbBusy;
+  const errorMsg = csvErrorMsg || dbErrorMsg;
 
   // Синхронизация сессий с бэкендом на старте страницы
   useEffect(() => {
@@ -389,34 +434,12 @@ export default function LeftSidebar() {
     };
   }, []);
 
-  async function handleCsvUpload(e: React.ChangeEvent<HTMLInputElement>) {
-    const picked = Array.from(e.target.files ?? []);
-    e.target.value = "";
-    // Не-CSV файл среди выбранных — документ-описание данных (multipart-поле description)
-    const files = picked.filter((f) => /\.csv$/i.test(f.name));
-    const description = picked.find((f) => !/\.csv$/i.test(f.name)) ?? null;
-    if (!files.length) return;
-
-    setIsBusy(true);
-    setErrorMsg(null);
-    try {
-      const ds = await attachCsv(files, description);
-      const title = files.map((f) => f.name.replace(/\.csv$/i, "")).join(", ");
-      const folder = addDatabase(ds, title);
-      await startSession(folder);
-    } catch (err: any) {
-      setErrorMsg(err.message || t("sidebar.csvError"));
-    } finally {
-      setIsBusy(false);
-    }
-  }
-
   async function handleDbConnect(e: React.FormEvent) {
     e.preventDefault();
     if (!dsn.trim()) return;
 
-    setIsBusy(true);
-    setErrorMsg(null);
+    setIsDbBusy(true);
+    setDbErrorMsg(null);
     try {
       const ds = await attachDb({
         kind: dbKind,
@@ -433,16 +456,25 @@ export default function LeftSidebar() {
       setDbDescription("");
       await startSession(folder);
     } catch (err: any) {
-      setErrorMsg(err.message || t("sidebar.dbError"));
+      setDbErrorMsg(err.message || t("sidebar.dbError"));
     } finally {
-      setIsBusy(false);
+      setIsDbBusy(false);
     }
   }
 
   return (
     <aside className="flex h-full w-full flex-col bg-graphite-950 text-graphite-300 select-none">
       {/* Логотип */}
-      <Link href="/" className="flex h-12 shrink-0 items-center gap-2 px-4 text-sm font-semibold text-graphite-100">
+      <Link
+        href={isGenerating ? "#" : "/"}
+        onClick={(e) => {
+          if (isGenerating) e.preventDefault();
+        }}
+        title={isGenerating ? t("chat.cannotSwitchWhileGenerating") : undefined}
+        className={`flex h-12 shrink-0 items-center gap-2 px-4 text-sm font-semibold text-graphite-100 ${
+          isGenerating ? "cursor-not-allowed opacity-50" : ""
+        }`}
+      >
         <span className="flex h-6 w-6 items-center justify-center rounded-md bg-graphite-700 text-xs font-bold text-graphite-50">
           S
         </span>
@@ -462,20 +494,27 @@ export default function LeftSidebar() {
         <SidebarAction
           icon="upload"
           label={t("sidebar.uploadCsv")}
-          title={t("sidebar.csvHint")}
-          onClick={() => fileInputRef.current?.click()}
-          disabled={isBusy}
+          title={isGenerating ? t("chat.cannotSwitchWhileGenerating") : t("sidebar.csvHint")}
+          onClick={openFilePicker}
+          disabled={isBusy || isGenerating}
         />
         <SidebarAction
           icon="database"
           label={t("sidebar.connectDb")}
+          title={isGenerating ? t("chat.cannotSwitchWhileGenerating") : undefined}
           onClick={() => {
-            setErrorMsg(null);
+            setDbErrorMsg(null);
             setDbModalOpen(true);
           }}
-          disabled={isBusy}
+          disabled={isBusy || isGenerating}
         />
-        <SidebarAction icon="layout" label={t("sidebar.allDashboards")} href="/dashboards" />
+        <SidebarAction
+          icon="layout"
+          label={t("sidebar.allDashboards")}
+          href="/dashboards"
+          title={isGenerating ? t("chat.cannotSwitchWhileGenerating") : undefined}
+          disabled={isGenerating}
+        />
         {isBusy && <p className="px-2.5 pt-1 text-[11px] text-graphite-400 animate-pulse">{t("sidebar.processing")}</p>}
         {errorMsg && !dbModalOpen && <p className="px-2.5 pt-1 text-[11px] leading-tight text-bad">{errorMsg}</p>}
       </div>
@@ -586,8 +625,8 @@ export default function LeftSidebar() {
                   className="w-full resize-y rounded-lg border border-graphite-700 bg-graphite-950 px-3 py-2 text-xs text-graphite-50 placeholder-graphite-500 outline-none focus:border-graphite-400"
                 />
               </div>
-              {errorMsg && (
-                <div className="rounded-lg border border-bad/30 bg-bad/10 p-2 text-xs text-bad">{errorMsg}</div>
+              {dbErrorMsg && (
+                <div className="rounded-lg border border-bad/30 bg-bad/10 p-2 text-xs text-bad">{dbErrorMsg}</div>
               )}
               <div className="flex justify-end gap-2 pt-2 border-t border-graphite-800">
                 <button

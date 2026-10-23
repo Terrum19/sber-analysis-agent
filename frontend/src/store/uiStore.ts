@@ -51,7 +51,6 @@ interface UiState {
   locale: Locale;
   dbModalOpen: boolean;
   tableModalTarget: DatabaseFolder | null;
-  csvPickRequest: number;
   canvasOpen: boolean;
   tabs: WorkspaceTab[];
   sidebarWidth: number;
@@ -62,7 +61,6 @@ interface UiState {
   setLocale: (locale: Locale) => void;
   setDbModalOpen: (open: boolean) => void;
   setTableModalTarget: (target: DatabaseFolder | null) => void;
-  requestCsvPick: () => void;
   setCanvasOpen: (open: boolean) => void;
   setSidebarWidth: (px: number) => void;
   setPanelWidth: (px: number) => void;
@@ -83,7 +81,6 @@ export const useUiStore = create<UiState>()(
       locale: "ru",
       dbModalOpen: false,
       tableModalTarget: null,
-      csvPickRequest: 0,
       canvasOpen: true,
       tabs: [{ kind: "welcome" }],
       sidebarWidth: SIDEBAR_WIDTH.initial,
@@ -97,7 +94,6 @@ export const useUiStore = create<UiState>()(
       setLocale: (locale) => set({ locale }),
       setDbModalOpen: (dbModalOpen) => set({ dbModalOpen }),
       setTableModalTarget: (tableModalTarget) => set({ tableModalTarget }),
-      requestCsvPick: () => set((s) => ({ csvPickRequest: s.csvPickRequest + 1 })),
       setCanvasOpen: (canvasOpen) => set({ canvasOpen }),
       setSidebarWidth: (px) => set({ sidebarWidth: clamp(Math.round(px), SIDEBAR_WIDTH.min, SIDEBAR_WIDTH.max) }),
       setPanelWidth: (px) => set({ panelWidth: clamp(Math.round(px), PANEL_WIDTH.min, PANEL_WIDTH.max) }),

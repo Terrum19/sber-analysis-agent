@@ -63,6 +63,10 @@ function Tab({
   const closeTab = useUiStore((s) => s.closeTab);
   const title = useTabTitle(tab);
   const ref = useRef<HTMLAnchorElement>(null);
+  const activeStreamingSessionId = useSessionStore((s) => s.activeStreamingSessionId);
+  const isGenerating = Boolean(activeStreamingSessionId);
+  const isLocked = isGenerating && !active;
+
   const databaseTitle = useSessionStore((s) => {
     if (tab.kind !== "session") return undefined;
     const dbId = s.sessionDatabase[tab.id];
@@ -80,35 +84,49 @@ function Tab({
   function handleClose(e: React.MouseEvent) {
     e.preventDefault();
     e.stopPropagation();
+    if (isGenerating) return;
     const next = closeTab(tab);
     if (active) router.push(next ? tabHref(next) : "/");
   }
 
+  const tooltipTitle = isLocked
+    ? t("chat.cannotSwitchWhileGenerating")
+    : databaseTitle
+    ? `${databaseTitle} / ${title}${activeTable ? ` (${activeTable})` : ""}`
+    : activeTable
+    ? `${title} (${activeTable})`
+    : title;
+
   return (
     <Link
       ref={ref}
-      href={tabHref(tab)}
-      draggable
+      href={isLocked ? "#" : tabHref(tab)}
+      onClick={(e) => {
+        if (isLocked) {
+          e.preventDefault();
+        }
+      }}
+      draggable={!isGenerating}
       onDragStart={(e) => {
+        if (isGenerating) {
+          e.preventDefault();
+          return;
+        }
         e.dataTransfer.effectAllowed = "move";
         e.dataTransfer.setData("text/plain", tabKey(tab));
         onDragStart();
       }}
-      onDragEnter={onDragEnter}
-      onDragOver={(e) => e.preventDefault()}
+      onDragEnter={() => !isGenerating && onDragEnter()}
+      onDragOver={(e) => !isGenerating && e.preventDefault()}
       onDrop={(e) => e.preventDefault()}
       onDragEnd={onDragEnd}
       onAuxClick={(e) => e.button === 1 && handleClose(e)}
-      title={
-        databaseTitle
-          ? `${databaseTitle} / ${title}${activeTable ? ` (${activeTable})` : ""}`
-          : activeTable
-          ? `${title} (${activeTable})`
-          : title
-      }
+      title={tooltipTitle}
       className={`group relative flex h-full max-w-[220px] shrink-0 items-center gap-2 border-r border-graphite-800 pl-3 pr-1.5 text-[12.5px] transition ${
         active
           ? "bg-graphite-900 text-graphite-50"
+          : isLocked
+          ? "bg-graphite-950 text-graphite-500 opacity-40 cursor-not-allowed pointer-events-none"
           : "bg-graphite-950 text-graphite-400 hover:bg-graphite-900/60 hover:text-graphite-200"
       } ${dragging ? "opacity-40" : ""}`}
     >
@@ -126,11 +144,12 @@ function Tab({
       )}
       <button
         type="button"
+        disabled={isGenerating}
         onClick={handleClose}
-        className={`flex h-5 w-5 shrink-0 items-center justify-center rounded text-graphite-500 hover:bg-graphite-800 hover:text-graphite-100 ${
-          active ? "opacity-100" : "opacity-0 group-hover:opacity-100"
+        className={`flex h-5 w-5 shrink-0 items-center justify-center rounded text-graphite-500 hover:bg-graphite-800 hover:text-graphite-100 disabled:opacity-0 disabled:cursor-not-allowed ${
+          active && !isGenerating ? "opacity-100" : "opacity-0 group-hover:opacity-100"
         }`}
-        title={t("tabs.close")}
+        title={isGenerating ? t("chat.cannotSwitchWhileGenerating") : t("tabs.close")}
       >
         <Icon name="x" size={12} />
       </button>

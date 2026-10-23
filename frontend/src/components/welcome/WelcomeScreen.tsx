@@ -11,6 +11,7 @@ import { useRouter } from "next/navigation";
 import { useSessionStore } from "@/store/sessionStore";
 import { useUiStore } from "@/store/uiStore";
 import { useStartSession } from "@/hooks/useStartSession";
+import { useCsvUpload } from "@/hooks/useCsvUpload";
 import { sessionsLabel, useT } from "@/i18n/useT";
 import type { MessageKey } from "@/i18n/dictionary";
 import Icon, { type IconName } from "@/components/ui/Icon";
@@ -43,9 +44,9 @@ export default function WelcomeScreen() {
   const router = useRouter();
   const locale = useUiStore((s) => s.locale);
   const databases = useSessionStore((s) => s.databases);
-  const requestCsvPick = useUiStore((s) => s.requestCsvPick);
   const setDbModalOpen = useUiStore((s) => s.setDbModalOpen);
   const startSession = useStartSession();
+  const { fileInputRef, isBusy, errorMsg, handleCsvUpload, openFilePicker } = useCsvUpload();
   const [tutorialOpen, setTutorialOpen] = useState(false);
   const [activeStep, setActiveStep] = useState(0);
 
@@ -64,6 +65,14 @@ export default function WelcomeScreen() {
             <section>
               <h2 className="mb-3 text-[15px] font-medium text-graphite-100">{t("welcome.start")}</h2>
               <div className="flex flex-col items-start gap-0.5">
+                <input
+                  ref={fileInputRef}
+                  type="file"
+                  accept=".csv,text/csv,.md,.txt"
+                  multiple
+                  hidden
+                  onChange={handleCsvUpload}
+                />
                 <button
                   type="button"
                   disabled={!hasValidData}
@@ -81,9 +90,13 @@ export default function WelcomeScreen() {
                     </span>
                   )}
                 </button>
-                <StartLink icon="upload" label={t("welcome.uploadCsv")} onClick={requestCsvPick} />
+                <StartLink icon="upload" label={t("welcome.uploadCsv")} onClick={openFilePicker} />
                 <StartLink icon="database" label={t("welcome.connectDb")} onClick={() => setDbModalOpen(true)} />
                 <StartLink icon="layout" label={t("welcome.openRegistry")} onClick={() => router.push("/dashboards")} />
+                {isBusy && (
+                  <p className="pt-1 text-[11px] text-graphite-400 animate-pulse">{t("sidebar.processing")}</p>
+                )}
+                {errorMsg && <p className="pt-1 text-[11px] leading-tight text-bad">{errorMsg}</p>}
               </div>
             </section>
 

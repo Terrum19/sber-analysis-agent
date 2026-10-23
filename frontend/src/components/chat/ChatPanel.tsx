@@ -57,6 +57,7 @@ export default function ChatPanel({ sessionId }: Props) {
   const updateMessage = useSessionStore((s) => s.updateMessage);
   const addTile = useSessionStore((s) => s.addTile);
   const registerSession = useSessionStore((s) => s.registerSession);
+  const setStreamingSessionId = useSessionStore((s) => s.setStreamingSessionId);
   const database = useSessionDatabase(sessionId);
   const sessionTitle = database?.sessions.find((x) => x.id === sessionId)?.title;
 
@@ -129,8 +130,21 @@ export default function ChatPanel({ sessionId }: Props) {
   const stopRef = useRef<(() => void) | null>(null);
 
   useEffect(() => {
-    return () => stopRef.current?.();
-  }, []);
+    return () => {
+      stopRef.current?.();
+      setStreamingSessionId(null);
+    };
+  }, [setStreamingSessionId]);
+
+  useEffect(() => {
+    if (!streaming) return;
+    const handleBeforeUnload = (e: BeforeUnloadEvent) => {
+      e.preventDefault();
+      e.returnValue = "";
+    };
+    window.addEventListener("beforeunload", handleBeforeUnload);
+    return () => window.removeEventListener("beforeunload", handleBeforeUnload);
+  }, [streaming]);
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -158,6 +172,7 @@ export default function ChatPanel({ sessionId }: Props) {
     registerSession(sessionId, q.length > 48 ? `${q.slice(0, 47)}…` : q);
     if (!textToSend) setInput("");
     setStreaming(true);
+    setStreamingSessionId(sessionId);
 
     let answerStarted = false;
     let streamHadError = false;
@@ -271,12 +286,14 @@ export default function ChatPanel({ sessionId }: Props) {
         }
         stopRef.current = null;
         setStreaming(false);
+        setStreamingSessionId(null);
       },
       recoveryResponse,
     );
     stopRef.current = () => {
       cancelled = true;
       stop();
+      setStreamingSessionId(null);
     };
   }
 

@@ -80,6 +80,9 @@ interface SessionState {
   sessionCache: Record<string, SessionSnapshot>;
   /** Кеш сообщений и плиток сессии, изолированный по таблицам. */
   sessionTableCache: Record<string, Record<string, SessionTableSnapshot>>;
+  /** ID сессии, в которой прямо сейчас генерируется ответ агента. */
+  activeStreamingSessionId: string | null;
+  setStreamingSessionId: (sessionId: string | null) => void;
 
   setSession: (id: string) => void;
   addMessage: (msg: ChatMessage) => void;
@@ -124,6 +127,9 @@ export const useSessionStore = create<SessionState>()(
       sessionActiveTable: {},
       sessionCache: {},
       sessionTableCache: {},
+      activeStreamingSessionId: null,
+
+      setStreamingSessionId: (sessionId) => set({ activeStreamingSessionId: sessionId }),
 
       setSession: (id) =>
         set((s) => {
@@ -291,6 +297,7 @@ export const useSessionStore = create<SessionState>()(
           tiles: [],
           selectedTile: null,
           datasource: null,
+          activeStreamingSessionId: null,
         }),
 
       addDatabase: (datasource, title) => {
@@ -339,6 +346,7 @@ export const useSessionStore = create<SessionState>()(
             delete nextTableCache[sid];
           }
           const isActiveDeleted = s.sessionId ? sessionIds.includes(s.sessionId) : false;
+          const isStreamingDeleted = s.activeStreamingSessionId ? sessionIds.includes(s.activeStreamingSessionId) : false;
           const isDatasourceDeleted = s.datasource?.datasource_id === databaseId;
           return {
             databases: nextDatabases,
@@ -348,6 +356,7 @@ export const useSessionStore = create<SessionState>()(
             sessionActiveTable: nextActiveTable,
             sessionTableCache: nextTableCache,
             ...(isActiveDeleted ? { sessionId: null, messages: [], tiles: [], selectedTile: null } : {}),
+            ...(isStreamingDeleted ? { activeStreamingSessionId: null } : {}),
             ...(isDatasourceDeleted ? { datasource: null, datasourceTitle: null } : {}),
           };
         });
@@ -448,6 +457,7 @@ export const useSessionStore = create<SessionState>()(
           const nextTableCache = { ...s.sessionTableCache };
           delete nextTableCache[sessionId];
           const isActiveDeleted = s.sessionId === sessionId;
+          const isStreamingDeleted = s.activeStreamingSessionId === sessionId;
           return {
             databases: nextDatabases,
             sessionDatabase: nextSessionDb,
@@ -455,6 +465,7 @@ export const useSessionStore = create<SessionState>()(
             sessionActiveTable: nextActiveTable,
             sessionTableCache: nextTableCache,
             ...(isActiveDeleted ? { sessionId: null, messages: [], tiles: [], selectedTile: null } : {}),
+            ...(isStreamingDeleted ? { activeStreamingSessionId: null } : {}),
           };
         }),
       mergeSessions: (remoteSessions: SessionResponse[]) =>
