@@ -76,7 +76,7 @@ class PostgresConnector(BaseConnector):
     def __init__(self, dsn: str, schema: str | None = None, max_tables: int | None = None) -> None:
         self.dsn = parse_dsn(dsn)
         self.schema = (schema or "").strip() or DEFAULT_SCHEMA
-        self.max_tables = settings.postgres_max_tables if max_tables is None else max_tables
+        self.max_tables = settings.db_max_tables if max_tables is None else max_tables
         if self.max_tables < 1:
             raise ValueError("Лимит таблиц PostgreSQL должен быть положительным числом.")
         digest = hashlib.sha256(f"{self.dsn.masked()}|{self.schema}".encode()).hexdigest()[:10]
@@ -107,7 +107,7 @@ class PostgresConnector(BaseConnector):
         taken = self.existing_names(db)
         if len(tables) > self.max_tables:
             logger.warning(
-                "PostgreSQL %s: в схеме %d таблиц, подключены первые %d (POSTGRES_MAX_TABLES)",
+                "PostgreSQL %s: в схеме %d таблиц, подключены первые %d (DB_MAX_TABLES)",
                 self.source,
                 len(tables),
                 self.max_tables,
@@ -254,6 +254,29 @@ class PostgresConnector(BaseConnector):
             )
             return {}
         return {row["column_name"]: row["comment"] for row in rows}
+
+    def skip(self, db, table: str, error: Exception) -> bool:
+        """Таблицу без прав на SELECT пропустить, остальные ошибки — нет."""
+        detail = self.dsn.scrub(str(error))
+        if "permission denied" not in detail.lower():
+            return False
+        logger.warning(
+            "PostgreSQL %s: нет прав на чтение таблицы «%s», она не подключена: %s",
+            self.source,
+            self.sources.get(table, table),
+            detail,
+        )
+        db.execute(f"DROP VIEW IF EXISTS temp.main.{quote_identifier(table)}")
+        self.sources.pop(table, None)
+        return True
+
+    def rollback(self, db) -> None:
+        """Сбой профиля: снять представления и подключение этого connect()."""
+        self.release(db, self.alias)
+        self.sources = {}
+
+    def scrub(self, text: str) -> str:
+        return self.dsn.scrub(text)
 
     def fail(self, db, error: Exception) -> NoReturn:
         detail = self.dsn.scrub(str(error))
