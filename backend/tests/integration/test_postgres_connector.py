@@ -1,3 +1,4 @@
+import asyncio
 import json
 import os
 import secrets
@@ -7,10 +8,11 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app.api.deps import get_db
-from app.core.data import ingest
+from app.core.data import ingest, restore
 from app.core.data.connectors.pg_dsn import parse_dsn
 from app.core.data.connectors.postgres import PostgresConnectionError, PostgresConnector
 from app.core.data.duckdb_manager import DuckDBManager
+from app.core.memory.datasource_store import DatasourceStore
 from app.core.memory.profile_memory import ProfileMemory
 from app.main import app
 
@@ -168,6 +170,55 @@ def test_no_dangling_views_after_restart(schema: str, tmp_path) -> None:
         assert leftovers == []
         assert PostgresConnector(DSN, schema=schema).connect(second)
         assert second.query("SELECT COUNT(*) AS total FROM orders") == [{"total": 3}]
+    finally:
+        second.close()
+
+
+def test_saved_source_is_restored_after_restart(
+    schema: str, tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = str(tmp_path / "storage" / "main.duckdb")
+    first = DuckDBManager(path)
+    app.dependency_overrides[get_db] = lambda: first
+    try:
+        response = TestClient(app).post(
+            "/api/datasources/db", json={"kind": "postgres", "dsn": DSN, "schema": schema}
+        )
+    finally:
+        app.dependency_overrides.clear()
+        first.close()
+    assert response.status_code == 200
+    identity = response.json()["datasource_id"]
+    views = response.json()["tables"]
+    stored = DatasourceStore().get(identity)
+    password = parse_dsn(DSN).password
+    # Сравнение целиком: пароль может совпадать с частью имени базы (sber / sber_demo).
+    assert stored.dsn == parse_dsn(DSN).masked()
+    if password:
+        monkeypatch.setenv(f"POSTGRES_PASSWORD__{identity}", password)
+
+    second = DuckDBManager(path)
+    try:
+        memory = ProfileMemory(second)
+        profiled_at = memory.load_profile("orders").profiled_at
+        assert second.columns("orders") == []
+        assert asyncio.run(restore.restore_saved_sources(second)) == [identity]
+        assert sorted(PostgresConnector(DSN, schema=schema).existing_names(second)) == sorted(
+            view.lower() for view in views
+        )
+        assert second.query("SELECT COUNT(*) AS total FROM orders") == [{"total": 3}]
+        assert second.columns("orders") == ["id", "amount", "created_at"]
+        assert memory.load_profile("orders").profiled_at == profiled_at
+
+        app.dependency_overrides[get_db] = lambda: second
+        try:
+            assert TestClient(app).delete(f"/api/datasources/{identity}").status_code == 204
+        finally:
+            app.dependency_overrides.clear()
+        assert second.columns("orders") == []
+        assert memory.load_profile("orders") is None
+        assert DatasourceStore().get(identity) is None
+        assert asyncio.run(restore.restore_saved_sources(second)) == []
     finally:
         second.close()
 
