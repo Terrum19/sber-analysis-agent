@@ -151,8 +151,8 @@ def validate_plan(plan: ResearchPlan, known_steps: int = 0) -> list[str]:
 
 def _validate_step(step: ResearchStep, seen: set[int]) -> list[str]:
     prefix = f"шаг {step.step_id}"
-    if step.needs_llm_codegen or not step.tool:
-        return [f"{prefix}: не указан инструмент (кодогенерация не поддерживается)"]
+    if not step.tool:
+        return [f"{prefix}: не указан инструмент"]
     try:
         tool = tool_registry.get(step.tool)
     except KeyError:

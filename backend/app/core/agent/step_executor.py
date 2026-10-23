@@ -13,7 +13,7 @@ from typing import Any
 from app.core.data.duckdb_manager import DuckDBManager
 from app.core.llm.client import LLMClient
 from app.core.sandbox.wasm_runtime import WASMSandbox
-from app.core.tools.base import ToolKind
+from app.core.tools.base import ToolContext, ToolKind
 from app.core.tools.registry import tool_registry
 from app.models.research_step import PREVIOUS, SOURCE, ResearchStep
 
@@ -24,8 +24,6 @@ _STEP_REF = re.compile(r"^\$step_(\d+)$")
 
 def tool_kind(step: ResearchStep) -> ToolKind:
     """Вид шага: transform продолжает конвейер, analysis/lookup — нет."""
-    if step.needs_llm_codegen or not step.tool:
-        return "transform"
     try:
         return tool_registry.get(step.tool).kind
     except KeyError:
@@ -42,8 +40,7 @@ class StepExecutor:
         sandbox: WASMSandbox | None = None,
     ) -> None:
         self.db = db or DuckDBManager()
-        self.llm = llm
-        self.sandbox = sandbox
+        self.context = ToolContext(llm=llm, sandbox=sandbox)
 
     async def execute(
         self,
@@ -75,11 +72,6 @@ class StepExecutor:
             logger.error(msg)
             raise ValueError(msg)
 
-        if step.needs_llm_codegen or not step.tool:
-            from app.core.sandbox.codegen_runner import run_generated_code
-
-            return await run_generated_code(step, table, self.db, self.llm, self.sandbox)
-
         logger.info(
             ">>> StepExecutor.execute() шаг purpose=%r tool=%s args=%s columns=%s input_table=%s",
             step.purpose,
@@ -88,6 +80,8 @@ class StepExecutor:
             step.columns,
             table,
         )
+        if not step.tool:
+            raise ValueError("Не указан инструмент шага")
         try:
             tool = tool_registry.get(step.tool)
         except KeyError:
@@ -95,8 +89,12 @@ class StepExecutor:
             logger.error(msg)
             raise ValueError(msg)
 
-        result = tool.run(
-            self.db, table, resolve.value(step.columns), **resolve.value(step.arguments)
+        result = await tool.arun(
+            self.context,
+            self.db,
+            table,
+            resolve.value(step.columns),
+            **resolve.value(step.arguments),
         )
         logger.info("<<< StepExecutor.execute() УСПЕШНО result_table=%s", result)
         return result

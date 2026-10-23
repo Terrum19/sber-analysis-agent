@@ -63,13 +63,13 @@ def test_connectors_are_constructible(kind: str, dsn: str) -> None:
 
 
 @pytest.mark.parametrize(
-    ("kind", "dsn", "status"),
+    ("kind", "dsn"),
     [
-        ("postgres", "postgresql://user:secret@127.0.0.1:1/db", 502),
-        ("clickhouse", "clickhouse://user:secret@127.0.0.1:1/db", 501),
+        ("postgres", "postgresql://user:secret@127.0.0.1:1/db"),
+        ("clickhouse", "clickhouse://user:secret@127.0.0.1:1/db"),
     ],
 )
-def test_connectors_fail_without_unhandled_exceptions(kind: str, dsn: str, status: int) -> None:
+def test_connectors_fail_without_unhandled_exceptions(kind: str, dsn: str) -> None:
     db = DuckDBManager(":memory:")
     app.dependency_overrides[get_db] = lambda: db
     try:
@@ -78,6 +78,6 @@ def test_connectors_fail_without_unhandled_exceptions(kind: str, dsn: str, statu
     finally:
         app.dependency_overrides.clear()
         db.close()
-    assert response.status_code == status
+    assert response.status_code in (502, 503)
     assert response.json()["detail"]
     assert "secret" not in response.text

@@ -3,12 +3,15 @@
 Один порядок для API датасорсов, скриптов загрузки и CLI-прогона:
 1. attach() — коннектор создаёт таблицы, сразу за ним каждая таблица
    профилируется и профиль сохраняется в паспорт. Синхронно: без профиля
-   планировщик не отберёт колонки к первому вопросу.
+   планировщик не отберёт колонки к первому вопросу. Таблицу, которую
+   нельзя прочитать (нет прав), коннектор может пропустить (skip).
 2. describe() — если у таблицы есть описание (комментарии колонок в
    источнике или документ-описание), SchemaEnricher переносит из него в
    паспорт названия и описания колонок. Описания нет — ничего не делается,
    LLM не вызывается.
 """
+
+import duckdb
 
 from app.config import settings
 from app.core.data.connectors.base import BaseConnector
@@ -22,25 +25,61 @@ from app.models.enrichment import ColumnEnrichment
 def attach(connector: BaseConnector, db) -> dict[str, TableProfile]:
     """Подключить источник и профилировать его таблицы. Вызывать под db.lock.
 
-    Профилирование упало — подключённые таблицы откатываются (если коннектор
-    это умеет), чтобы в DuckDB не осталось таблиц без паспорта.
+    Профилирование упало — подключённые таблицы откатываются
+    (connector.rollback), чтобы в DuckDB не осталось таблиц без паспорта.
+    Возвращает профили подключённых таблиц без пропущенных.
     """
     tables = connector.connect(db)
     memory = ProfileMemory(db)
     profiles: dict[str, TableProfile] = {}
     try:
         for table in tables:
-            profile = profile_table(db, table, approx=settings.profile_approx_quantile)
+            try:
+                profile = profile_table(db, table, approx=settings.profile_approx_quantile)
+            except duckdb.Error as error:
+                if connector.skip(db, table, error):
+                    continue
+                raise
             memory.save_profile(profile)
             profiles[table] = profile
     except BaseException:
         for table in profiles:
             memory.delete(table)
-        rollback = getattr(connector, "rollback", None)
-        if rollback is not None:
-            rollback(db)
+        connector.rollback(db)
         raise
     return profiles
+
+
+def restore(connector: BaseConnector, db) -> list[str]:
+    """Переподключить сохранённый источник после рестарта. Вызывать под db.lock.
+
+    Таблица с паспортом не профилируется заново, если колонки представления
+    совпадают с колонками паспорта; иначе (схема в источнике изменилась или
+    паспорта нет) профиль пересчитывается. Нечитаемую таблицу коннектор может
+    пропустить (skip), её устаревший паспорт удаляется; иной сбой профиля
+    откатывает подключение (connector.rollback), как в attach().
+    Возвращает подключённые таблицы без пропущенных.
+    """
+    tables = connector.connect(db)
+    memory = ProfileMemory(db)
+    restored = []
+    try:
+        for table in tables:
+            profile = memory.load_profile(table)
+            if profile is None or [column.name for column in profile.columns] != db.columns(table):
+                try:
+                    profile = profile_table(db, table, approx=settings.profile_approx_quantile)
+                except duckdb.Error as error:
+                    if connector.skip(db, table, error):
+                        memory.delete(table)
+                        continue
+                    raise
+                memory.save_profile(profile)
+            restored.append(table)
+    except BaseException:
+        connector.rollback(db)
+        raise
+    return restored
 
 
 async def describe(
