@@ -77,7 +77,7 @@ def test_without_db_and_data_the_spec_is_empty() -> None:
     assert spec["usermeta"]["chart_type"] == "table"
 
 
-@pytest.mark.parametrize("chart_type", CHART_TYPES)
+@pytest.mark.parametrize("chart_type", [kind for kind in CHART_TYPES if kind != "kpi"])
 def test_every_type_fills_data_and_encoding(chart_type: str) -> None:
     spec = build_vega_spec(chart_type, "temp_result_v1", data=SALES, title="Выручка")
     assert spec["usermeta"]["chart_type"] == chart_type
@@ -300,3 +300,50 @@ def test_titles_use_aliases() -> None:
     encoding = encoding_of("bar", SALES, titles=column_aliases({"glossary": {"region": "регион"}}))
     assert encoding["x"]["title"] == "Регион"
     assert encoding["y"]["title"] == "revenue"
+
+
+def test_kpi_shows_one_number_with_the_title() -> None:
+    spec = build_vega_spec(
+        "kpi",
+        "temp_result_v1",
+        data=[{"total": Decimal("1250.5")}],
+        titles={"total": "Выручка"},
+        title="Выручка за квартал",
+    )
+    assert spec["usermeta"]["chart_type"] == "kpi"
+    assert spec["mark"] == {"type": "text", "fontSize": 48}
+    assert spec["encoding"]["text"] == {
+        "field": "total",
+        "type": "quantitative",
+        "title": "Выручка",
+        "format": ",.2~f",
+    }
+    assert spec["encoding"]["tooltip"] == [
+        {"field": "total", "type": "quantitative", "title": "Выручка"}
+    ]
+    assert spec["title"] == "Выручка за квартал"
+    assert spec["data"]["values"] == [{"total": 1250.5}]
+    json.dumps(spec, allow_nan=False)
+
+
+def test_kpi_takes_the_first_row_and_first_metric() -> None:
+    spec = build_vega_spec("kpi", "temp_result_v1", data=SALES)
+    assert spec["usermeta"]["chart_type"] == "kpi"
+    assert spec["encoding"]["text"]["field"] == "revenue"
+    assert spec["transform"] == [
+        {"window": [{"op": "row_number", "as": "_row"}]},
+        {"filter": "datum._row == 1"},
+    ]
+
+
+def test_kpi_without_numbers_falls_back_to_table() -> None:
+    spec = build_vega_spec("kpi", "temp_result_v1", data=[{"region": "msk"}])
+    assert spec["usermeta"]["chart_type"] == "table"
+    assert spec["usermeta"]["requested_type"] == "kpi"
+    assert spec["mark"] == "text"
+
+
+def test_kpi_without_title_is_captioned_by_its_metric() -> None:
+    spec = build_vega_spec("kpi", None, data=[{"total": 5}], titles={"total": "Выручка"})
+    assert spec["title"] == "Выручка"
+    assert build_vega_spec("kpi", None, data=[{"total": 5}])["title"] == "total"

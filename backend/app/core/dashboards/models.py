@@ -16,7 +16,7 @@ class DashboardTile(BaseModel):
     """Одна плитка дашборда."""
 
     id: str = Field(default_factory=lambda: uuid4().hex[:12])
-    title: str = "Визуализация"
+    title: str
     spec: dict[str, Any] = Field(default_factory=dict)
     source_step_id: int | None = None
     result_table: str | None = None

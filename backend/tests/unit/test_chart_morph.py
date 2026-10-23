@@ -101,3 +101,7 @@ def test_auto_morph_keeps_current_view_when_nothing_else_fits() -> None:
     spec = morph("table", AUTO, [])
     assert spec["usermeta"]["chart_type"] == "table"
     assert spec["encoding"] == {}
+
+
+def test_auto_morph_of_a_kpi_shows_a_table() -> None:
+    assert morph("kpi", AUTO, [{"total": 1250.5}])["usermeta"]["chart_type"] == "table"
