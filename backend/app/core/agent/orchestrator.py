@@ -15,6 +15,10 @@
 таблицей») обслуживается без планировщика и без повторного SQL: спека
 перестраивается chart_morph из кешированной temp_result_vN.
 
+О ходе работы фронт узнаёт из событий ``progress``: планирование
+(started/finished), каждый шаг (started/finished/failed), начало
+инсайта и графика.
+
 Упавший шаг планировщик исправляет по тексту ошибки (до
 ``STEP_FIX_ATTEMPTS`` раз, см. agent/recovery.py), о каждой попытке
 фронт получает событие ``progress`` со статусом ``fixing``. Не помогло —
@@ -28,6 +32,7 @@ SessionMemory состояние ожидания уточнения (``pending_
 import asyncio
 import json
 import logging
+import time
 from collections.abc import AsyncIterator, Callable
 from dataclasses import dataclass, field
 
@@ -51,6 +56,8 @@ from app.core.viz.vega_spec_builder import SPEC_ROW_LIMIT, build_vega_spec, colu
 from app.models.research_step import ResearchPlan, ResearchStep
 
 NO_TABLE_MESSAGE = "Сначала подключите данные"
+# Ход упал вне шагов (планировщик, инсайт, график): текст ошибки — в progress.
+FAILURE_MESSAGE = "Не удалось ответить на вопрос, попробуйте ещё раз"
 
 # Отправка события фронту из глубины плана (progress), пока run() стримит.
 Emit = Callable[[dict], None]
@@ -113,17 +120,27 @@ def _ignore(event: dict) -> None:
     """emit по умолчанию: события некому отдавать."""
 
 
-def _fixing_event(step: ResearchStep, attempt: int, error: Exception) -> dict:
-    payload = ProgressPayload(
-        stage="step",
-        status="fixing",
-        step_id=step.step_id,
-        tool=step.tool,
-        purpose=step.purpose,
-        attempt=attempt,
-        error=str(error),
-    )
+def _progress_event(stage: str, status: str, **fields: object) -> dict:
+    payload = ProgressPayload(stage=stage, status=status, **fields)
     return {"type": "progress", "data": payload.model_dump(exclude_none=True)}
+
+
+def _step_event(step: ResearchStep, status: str, **fields: object) -> dict:
+    return _progress_event(
+        "step", status, step_id=step.step_id, tool=step.tool, purpose=step.purpose, **fields
+    )
+
+
+def _fixing_event(step: ResearchStep, attempt: int, error: Exception) -> dict:
+    return _step_event(step, "fixing", attempt=attempt, error=str(error))
+
+
+def _failure_event() -> dict:
+    return {"type": "error", "data": {"message": FAILURE_MESSAGE}}
+
+
+def _elapsed_ms(started_at: float) -> int:
+    return round((time.perf_counter() - started_at) * 1000)
 
 
 class AgentOrchestrator:
@@ -197,29 +214,52 @@ class AgentOrchestrator:
                 },
             }
             return
+        except Exception:
+            # Сбой вне шагов (планировщик, LLM недоступна): без error и done
+            # фронт так и показывал бы «идёт планирование».
+            logger.exception("<<< run() ход прерван")
+            yield _failure_event()
+            yield {"type": "done", "data": {}}
+            return
         finally:
             # Клиент отключился посреди плана — задача больше не нужна.
             task.cancel()
         result_table = execution.result_table
 
         # --- Финальный блок: инсайт -> чарт -> дашборд -> done ---
-        logger.info(">>> run() генерация инсайта")
-        insight = await self.insight_gen.generate(
-            question, result_table, supporting=execution.supporting
-        )
-        logger.info("<<< run() инсайт: headline=%r details=%r", insight.headline, insight.details)
-        yield {"type": "text", "data": {"headline": insight.headline, "details": insight.details}}
+        stage = "insight"
+        try:
+            logger.info(">>> run() генерация инсайта")
+            yield _progress_event("insight", "started")
+            insight = await self.insight_gen.generate(
+                question, result_table, supporting=execution.supporting
+            )
+            logger.info(
+                "<<< run() инсайт: headline=%r details=%r", insight.headline, insight.details
+            )
+            yield {
+                "type": "text",
+                "data": {"headline": insight.headline, "details": insight.details},
+            }
 
-        chart_type = select_chart(question, result_table, execution.final_viz)
-        logger.info(">>> run() построение графика chart_type=%s", chart_type)
-        spec = build_vega_spec(chart_type, result_table, db=self.db, titles=titles)
-        logger.info(
-            "<<< run() график построен: mark=%s строк=%d",
-            spec.get("mark", "?"),
-            len(spec.get("data", {}).get("values", [])),
-        )
-        memory.record_chart(spec["usermeta"]["chart_type"], result_table, insight.headline)
-        yield {"type": "chart", "data": {"spec": spec, "caption": insight.headline}}
+            stage = "chart"
+            yield _progress_event("chart", "started")
+            chart_type = select_chart(question, result_table, execution.final_viz)
+            logger.info(">>> run() построение графика chart_type=%s", chart_type)
+            spec = build_vega_spec(chart_type, result_table, db=self.db, titles=titles)
+            logger.info(
+                "<<< run() график построен: mark=%s строк=%d",
+                spec.get("mark", "?"),
+                len(spec.get("data", {}).get("values", [])),
+            )
+            memory.record_chart(spec["usermeta"]["chart_type"], result_table, insight.headline)
+            yield {"type": "chart", "data": {"spec": spec, "caption": insight.headline}}
+        except Exception as exc:
+            logger.exception("<<< run() этап %s упал", stage)
+            yield _progress_event(stage, "failed", error=str(exc))
+            yield _failure_event()
+            yield {"type": "done", "data": {}}
+            return
 
         if execution.dashboard_requested:
             from app.core.dashboards.generator import DashboardGenerator
@@ -231,10 +271,17 @@ class AgentOrchestrator:
                 result_table=result_table,
                 insight=insight.headline,
             )
-            dashboard = await DashboardGenerator(db=self.db).generate(
-                request.session_id, "Дашборд", [tile]
-            )
-            yield {"type": "dashboard", "data": {"dashboard_id": dashboard.id}}
+            try:
+                dashboard = await DashboardGenerator(db=self.db).generate(
+                    request.session_id, "Дашборд", [tile]
+                )
+            except Exception as exc:
+                # Ответ и график уже у пользователя: ход не провален, нет
+                # только дашборда — без error, дальше обычный done.
+                logger.exception("<<< run() дашборд не собран")
+                yield _progress_event("dashboard", "failed", error=str(exc))
+            else:
+                yield {"type": "dashboard", "data": {"dashboard_id": dashboard.id}}
 
         memory.record_answer(insight.headline)
         yield {"type": "done", "data": {}}
@@ -259,7 +306,13 @@ class AgentOrchestrator:
         # Обычный путь: новый вопрос -> план -> выполнение шагов.
         context = memory.build_context(request.question)
         logger.info(">>> run() планируем шаги (planner.plan)")
-        plan = await self.planner.plan(request.question, context)
+        emit(_progress_event("planning", "started"))
+        try:
+            plan = await self.planner.plan(request.question, context)
+        except Exception as exc:
+            emit(_progress_event("planning", "failed", error=str(exc)))
+            raise
+        emit(_progress_event("planning", "finished", total_steps=len(plan.steps)))
         logger.info(
             "<<< run() план получен: шагов=%d final_viz=%s dashboard=%s",
             len(plan.steps),
@@ -323,9 +376,19 @@ class AgentOrchestrator:
                 step.columns,
                 current,
             )
+            emit(_step_event(step, "started"))
+            started_at = time.perf_counter()
             try:
                 step, table = await self._run_step(step, current, tables, source, emit)
             except _StepFailed as failed:
+                emit(
+                    _step_event(
+                        failed.step,
+                        "failed",
+                        elapsed_ms=_elapsed_ms(started_at),
+                        error=str(failed.error),
+                    )
+                )
                 steps[index] = failed.step
                 exc = failed.error
                 suggestions = (
@@ -354,6 +417,7 @@ class AgentOrchestrator:
                 raise ClarificationNeeded(
                     step_id=failed.step.step_id, error=str(exc), suggestions=suggestions
                 ) from exc
+            emit(_step_event(step, "finished", elapsed_ms=_elapsed_ms(started_at)))
             steps[index] = step
             kind = tool_kind(step)
             logger.info("<<< _execute_plan шаг %d УСПЕШЕН result_table=%s", step.step_id, table)

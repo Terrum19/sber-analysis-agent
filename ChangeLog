@@ -1,3 +1,232 @@
+2026-10-23  Alexander Yurits  <terruwork@gmail.com>
+
+	Восстановление источника пропускает таблицу без прав, как attach.
+	* backend/app/core/data/ingest.py (restore): Сбой профиля —
+	connector.skip(), при пропуске паспорт таблицы удаляется; иначе
+	connector.rollback().  Возвращает таблицы без пропущенных.
+	* backend/tests/unit/test_datasource_restore.py
+	(test_ingest_restore_skips_unreadable_table)
+	(test_ingest_restore_rolls_back_on_read_error): Новые тесты.
+	* docs/data_connectors.md (Восстановление после перезапуска): skip и
+	rollback при восстановлении.
+
+2026-10-23  Alexander Yurits  <terruwork@gmail.com>
+
+	Сбой дашборда не перечёркивает показанный ответ.
+	* backend/app/core/agent/orchestrator.py (AgentOrchestrator.run):
+	Дашборд собирается вне общего try инсайта и графика: при сбое —
+	dashboard failed и обычный done, без error; ответ записывается в
+	память сессии.
+	* backend/tests/unit/test_orchestrator_unit.py
+	(test_dashboard_failure_keeps_the_answer): Новый тест.
+	* docs/architecture.md (События стрима чата): dashboard failed
+	без error.
+
+2026-10-23  Alexander Yurits  <terruwork@gmail.com>
+
+	Сбой LLM вне шагов больше не обрывает стрим.
+	* backend/app/core/agent/orchestrator.py (FAILURE_MESSAGE)
+	(_failure_event): Новые: событие error для пользователя.
+	(AgentOrchestrator._research): planning failed с текстом ошибки,
+	если планировщик упал.
+	(AgentOrchestrator.run): Сбой плана — error и done; сбой инсайта,
+	графика или дашборда — failed этапа, error и done.
+	* backend/tests/unit/test_orchestrator_unit.py
+	(test_planner_failure_ends_the_stream)
+	(test_insight_failure_ends_the_stream): Новые тесты.
+	* docs/architecture.md (События стрима чата): События failed этапов
+	и гарантия done.
+
+2026-10-22  mb6ockatf  <smokenmirror@tutamail.com>
+
+	Источники PostgreSQL переживают перезапуск бэкенда (#118).
+	* backend/app/core/memory/datasource_store.py (DatasourceRecord)
+	(DatasourceStore): Новое хранилище подключённых источников в SQLite
+	(таблица datasources по SQLITE_PATH): upsert по identity, get, list,
+	delete.  DSN хранится только маскированным.
+	* backend/app/core/data/restore.py (remember): Новая функция:
+	запомнить источник PostgreSQL после подключения.  (password_for):
+	Пароль из POSTGRES_PASSWORD__<identity> или POSTGRES_PASSWORD
+	(окружение важнее .env).  (connection_string): DSN из хранилища с
+	паролем из env; None, если пароль нужен, но не задан.
+	(restore_saved_sources): Переподключить источники по очереди, каждый
+	в потоке с таймаутом; ошибка источника только пишется в лог.
+	(forget): Снять представления источника, удалить паспорта его таблиц и
+	запись.
+	* backend/app/core/data/ingest.py (restore): Новая функция:
+	переподключение без повторного профилирования таблиц, у которых
+	паспорт совпадает с колонками представления.
+	* backend/app/core/data/duckdb_manager.py (DuckDBManager.columns):
+	Искать и во временных представлениях; при совпадении имени брать
+	колонки из temp, как SELECT * FROM.  Тот же текст, что в #111.
+	* backend/app/api/routes/datasources.py (attach_db): Запоминать
+	источник.  (detach_db): Новый DELETE /api/datasources/{id}: 204 или
+	404.
+	* backend/app/main.py (lifespan): Фоновое восстановление источников,
+	задача отменяется при остановке.
+	* backend/app/config.py (Settings): postgres_restore_timeout_s.
+	* .env.example: POSTGRES_PASSWORD, POSTGRES_RESTORE_TIMEOUT_S.
+	* backend/tests/unit/test_datasource_restore.py: Новые тесты:
+	хранилище и upsert, пароль не попадает на диск, порядок источников
+	пароля, восстановление без перепрофилирования и с ним, сбой, таймаут и
+	нет пароля у одного источника, DELETE, фоновая задача lifespan,
+	columns() для TEMP VIEW.
+	* backend/tests/integration/test_postgres_connector.py
+	(test_saved_source_is_restored_after_restart): Подключить через API,
+	закрыть DuckDBManager, открыть новый на том же файле, восстановить,
+	проверить SELECT, columns() и имена, удалить через DELETE.
+	* docs/data_connectors.md: Восстановление после перезапуска, пароли в
+	env, DELETE.
+	* docs/repo_structure.md: restore.py, datasource_store.py.
+
+2026-10-22  mb6ockatf  <smokenmirror@tutamail.com>
+
+	События прогресса хода (S-01, #49).
+	* backend/app/core/agent/orchestrator.py (_progress_event)
+	(_step_event, _elapsed_ms): Новые функции: событие progress и время
+	шага в миллисекундах.  (_fixing_event): Через _step_event.
+	(AgentOrchestrator._research): planning started и planning finished
+	с total_steps вокруг планировщика.
+	(AgentOrchestrator._execute_plan): По каждому шагу step started,
+	затем step finished или step failed с elapsed_ms (failed — с текстом
+	ошибки).
+	(AgentOrchestrator.run): insight started перед инсайтом, chart
+	started перед графиком.
+	* backend/tests/unit/test_orchestrator_unit.py
+	(test_progress_events_precede_the_answer)
+	(test_failed_step_reports_progress)
+	(test_empty_plan_reports_zero_steps): Новые тесты: порядок и поля
+	событий.
+	* backend/tests/unit/test_recovery_and_cache.py (kinds, fixing):
+	События progress сравниваются как «этап:статус».
+	* backend/tests/unit/test_orchestrator_viz.py (collect): Без событий
+	progress.  (test_recovery_answers_the_original_question): Ответ на
+	уточнение идёт без planning.
+	* backend/tests/integration/test_memory_integration.py
+	(test_chart_view_change_uses_chart_of_current_table): Первым после
+	progress приходит text.
+	* backend/tests/contract/test_sse_serialization.py
+	(test_sse_progress_events): Новый тест: progress в SSE-стриме.
+	* docs/architecture.md (События стрима чата): Все события прогресса.
+	ClickHouse-коннектор по ревью #122: совместимость с #126 и #130.
+	* backend/app/core/data/connectors/clickhouse.py
+	(ClickHouseConnector.warnings): Метод вместо атрибута-списка, как
+	BaseConnector.warnings(table) из #126.  Атрибут перекрывал метод:
+	после мержа с #126 подключение ClickHouse падало на вызове списка.
+	(ClickHouseConnector.notes): Новый атрибут, предупреждение об обрезке
+	по DB_MAX_TABLES.
+	(ClickHouseConnector.scrub): Новый метод.  Ошибка профиля (422) теперь
+	без пароля.
+	(CLICKHOUSE_ERROR_CODES): Убран код 241 (MEMORY_LIMIT_EXCEEDED, а не
+	«нет прав»), добавлены 193, 194, 209.
+	(describe_failure): Код ищется в тексте ошибки («Code: 81»): у
+	исключений DuckDB нет атрибута code.  Убраны маркеры «401»/«403»,
+	ловившие любые числа.  «Table ... doesn't exist» больше не выдаётся
+	за отсутствие базы.
+	* backend/app/api/routes/datasources.py (attach_db)
+	* backend/app/api/schemas/datasource.py (DatasourceOut.warnings)
+	* frontend/src/types/datasource.ts: Поле warnings убрано.
+	getattr(connector, "warnings") после мержа с #126 возвращал метод, и
+	любой POST /api/datasources/db по PostgreSQL отвечал 500.
+	* backend/app/config.py (Settings.db_max_tables): POSTGRES_MAX_TABLES —
+	прежнее имя этой же настройки; если заданы обе, важнее DB_MAX_TABLES.
+	(Settings.postgres_max_tables): Удалена.
+	* backend/app/core/data/connectors/postgres.py (PostgresConnector):
+	Лимит из settings.db_max_tables.  Раньше выбирался сравнением с 50.
+
+2026-10-22  dmitriy-ya  <dmitriyyakushonok@yandex.ru>
+
+	Новый ClickHouse-коннектор через DuckDB community extension
+	clickhouse_scanner. Реализация подключает ClickHouse в lazy-режиме через
+	ATTACH и создаёт временные представления без копирования таблиц в Python,
+	без временных файлов и без HTTP-клиента/fallback.
+	* backend/app/core/data/connectors/clickhouse.py: Новый коннектор с разбором
+	DSN clickhouse:// и clickhouses://, native-портами 9000/9440, поддержкой
+	логина, пароля и database/schema, маскировкой секретов, DuckDB Secret,
+	установкой/загрузкой clickhouse_scanner, ATTACH READ_ONLY, discovery через
+	каталог DuckDB с фильтром выбранной базы, созданием TEMP VIEW, разрешением
+	коллизий имён, ограничением числа таблиц DB_MAX_TABLES, чтением комментариев
+	колонок, очисткой старых
+	подключений и понятными ошибками подключения/недоступного расширения без
+	утечки пароля.
+	* backend/app/core/data/connectors/factory.py: Регистрация ClickHouse в
+	фабрике коннекторов и передача schema/database.
+	* backend/app/core/data/connectors/postgres.py: Лимит таблиц из
+	DB_MAX_TABLES.
+	* backend/app/api/routes/datasources.py: Подключение ClickHouse к API
+	POST /api/datasources/db, преобразование ошибок коннектора в HTTP 502/503
+	и возврат списка таблиц.
+	* backend/app/api/schemas/datasource.py: Поддержка kind=clickhouse и
+	ClickHouse в ответной схеме datasource.
+	* frontend/src/types/datasource.ts, frontend/src/components/chat/DatasourcePanel.tsx:
+	Добавление ClickHouse в типы источников
+	данных frontend.
+	* backend/app/config.py, .env.example: DB_MAX_TABLES — лимит
+	подключаемых таблиц для PostgreSQL и ClickHouse.
+	* backend/Dockerfile: Предустановка postgres_scanner и
+	clickhouse_scanner для offline/runtime-образа.
+	* docker-compose.yml: Native-порт сервиса ClickHouse.
+	* .github/workflows/backend-ci.yml: Запуск integration job с ClickHouse
+	и проверка коннектора в CI без маскировки отсутствующей реализации через
+	NotImplementedError/skip.
+	* backend/tests/integration/test_clickhouse_connector.py: Integration-тесты
+	lazy TEMP VIEW, чтения по требованию, удалённого scan, фильтрации, API
+	attach, комментариев колонок, кириллических имён колонок, существующей
+	пустой таблицы, изоляции таблиц других баз и неверного пароля без его
+	появления в ошибке.
+	* backend/tests/unit/test_connectors_clickhouse.py: Unit-тесты без сервера
+	для DSN, secure-портов, маскировки/передачи секретов, SQL ATTACH/VIEW,
+	каталога выбранной базы, TLS-строки ATTACH, коллизий имён, лимита таблиц,
+	пустого результата, cleanup, rollback, классификации реальных ошибок и
+	отсутствия расширения.
+	* backend/tests/unit/test_datasources_api.py: API-тесты регистрации
+	ClickHouse, списка таблиц и обработки ошибок подключения.
+	* backend/tests/unit/test_duckdb_extensions.py: Проверки загрузки и
+	доступности ClickHouse community extension.
+	* docs/data_connectors.md: Полное описание ClickHouse DSN, native-портов,
+	секретов, clickhouse_scanner, ATTACH, filtered catalog discovery, lazy views, ограничений,
+	DB_MAX_TABLES, отсутствия HTTP/clickhouse-connect fallback и отсутствия
+	встроенного лимита строк.
+
+2026-10-22  Alexander Yurits  <terruwork@gmail.com>
+
+	Повторное подключение и сбой профиля PostgreSQL по ревью #97 (#115).
+	* backend/app/core/data/schema_enrichment.py (SchemaEnricher.enrich):
+	Без документа колонка обрабатывается заново, только если изменился
+	её комментарий; название из документа сохраняется.  Раньше
+	повторное подключение без description стирало названия и описания
+	из документа у всех колонок.
+	(previous_comment): Новая функция.
+	* backend/app/core/data/connectors/base.py (BaseConnector.skip)
+	(BaseConnector.rollback, BaseConnector.scrub): Новые методы.
+	* backend/app/core/data/connectors/postgres.py
+	(PostgresConnector.skip): Таблица без прав на SELECT пропускается с
+	предупреждением, её представление удаляется.
+	(PostgresConnector.rollback): Снимает представления и ATTACH этого
+	подключения.  Раньше после сбоя профиля представления оставались
+	без паспорта.
+	(PostgresConnector.scrub): Новый метод.
+	* backend/app/core/data/ingest.py (attach): Вызывает connector.skip
+	при duckdb.Error профиля и connector.rollback без getattr.
+	* backend/app/api/routes/datasources.py (attach_db): duckdb.Error ->
+	422 с текстом без пароля вместо 500; description больше 1 МБ -> 413.
+	* backend/tests/unit/test_schema_enrichment.py,
+	backend/tests/unit/test_ingest.py,
+	backend/tests/unit/test_connectors_postgres.py,
+	backend/tests/unit/test_datasources_api.py: Тесты.
+	* docs/data_connectors.md: Поле description, коды 413/422, откат;
+	путь к run_full_llm_cycle.py.
+	* scripts/run_full_llm_cycle.py: Перенесён из backend/.  Каталог
+	прогона по-прежнему backend/storage/runs/.
+	(bind_session): SessionMemory.set_table вместо удалённого
+	set_datasource; подмена SOURCE_TABLE оркестратора убрана: константы
+	больше нет, паспорт и подписи берутся из таблицы сессии.
+
+	* backend/app/models/research_step.py (ResearchPlan._null_is_default):
+	null в final_viz и dashboard_requested от LLM даёт значение по
+	умолчанию (auto, False).  Раньше такой план не проходил валидацию.
+	* backend/tests/unit/test_research_step.py: Тест.
+
 2026-10-22  thebulkapro  <saitbatalovbulat200@gmail.com>
 
 	Исправления API сессий по ревью #111.
@@ -52,6 +281,30 @@
 	datasource_id, временные представления, список таблиц.
 	* docs/memory.md: Метаданные и список сессий.
 2026-10-22  mb6ockatf  <smokenmirror@tutamail.com>
+
+	Очистка устаревших temp_result_vN (#55).
+	* backend/app/core/data/duckdb_manager.py
+	(DuckDBManager._ensure_result_meta): Новый метод: служебная таблица
+	_meta.result_meta(name, created_at), создаётся при первом результате.
+	(save_step_result): Записывает время создания результата.
+	(_last_step_number): Учитывает и удалённые результаты: номера не
+	используются повторно.
+	(cleanup_results): Новый метод: удаляет temp_result_vN старше
+	older_than_s, кроме keep; таблицы без учёта получают полный срок.
+	* backend/app/core/data/result_retention.py: Новый модуль.
+	(collect_keep): result_table плиток дашбордов и last_chart всех
+	таблиц сессий за 24 ч.  (cleanup): Проход очистки, ошибки в лог.
+	(cleanup_forever): Фоновая очистка раз в RESULT_TTL_S / 4.
+	* backend/app/main.py (lifespan): Очистка при старте и фоновая
+	задача, отменяется при остановке.
+	* backend/app/config.py (Settings.result_ttl_s): Новая настройка,
+	6 ч.
+	* .env.example: RESULT_TTL_S.
+	* backend/tests/unit/test_duckdb_manager.py: Тесты cleanup_results,
+	50 вопросов подряд.
+	* backend/tests/unit/test_result_retention.py: Новые тесты: keep,
+	дашборд открывается после очистки, очистка при старте.
+	* docs/memory.md, docs/architecture.md: Очистка state cache.
 
 	Шаблоны дашбордов (#46).
 	* backend/app/core/dashboards/templates.py (TemplateTile)
