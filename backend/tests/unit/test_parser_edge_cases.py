@@ -6,13 +6,13 @@ from app.core.agent.parser import parse_steps
 def test_parse_empty_string():
     steps = parse_steps("")
     assert len(steps) == 1
-    assert steps[0].needs_llm_codegen is True
+    assert steps[0].tool is None
 
 
 def test_parse_whitespace_only():
     steps = parse_steps("   \n\t ")
     assert len(steps) == 1
-    assert steps[0].needs_llm_codegen is True
+    assert steps[0].tool is None
 
 
 def test_parse_json_with_extra_text():

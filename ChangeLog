@@ -56,6 +56,45 @@
 	DB_MAX_TABLES, отсутствия HTTP/clickhouse-connect fallback и отсутствия
 	встроенного лимита строк.
 
+2026-10-22  Alexander Yurits  <terruwork@gmail.com>
+
+	Повторное подключение и сбой профиля PostgreSQL по ревью #97 (#115).
+	* backend/app/core/data/schema_enrichment.py (SchemaEnricher.enrich):
+	Без документа колонка обрабатывается заново, только если изменился
+	её комментарий; название из документа сохраняется.  Раньше
+	повторное подключение без description стирало названия и описания
+	из документа у всех колонок.
+	(previous_comment): Новая функция.
+	* backend/app/core/data/connectors/base.py (BaseConnector.skip)
+	(BaseConnector.rollback, BaseConnector.scrub): Новые методы.
+	* backend/app/core/data/connectors/postgres.py
+	(PostgresConnector.skip): Таблица без прав на SELECT пропускается с
+	предупреждением, её представление удаляется.
+	(PostgresConnector.rollback): Снимает представления и ATTACH этого
+	подключения.  Раньше после сбоя профиля представления оставались
+	без паспорта.
+	(PostgresConnector.scrub): Новый метод.
+	* backend/app/core/data/ingest.py (attach): Вызывает connector.skip
+	при duckdb.Error профиля и connector.rollback без getattr.
+	* backend/app/api/routes/datasources.py (attach_db): duckdb.Error ->
+	422 с текстом без пароля вместо 500; description больше 1 МБ -> 413.
+	* backend/tests/unit/test_schema_enrichment.py,
+	backend/tests/unit/test_ingest.py,
+	backend/tests/unit/test_connectors_postgres.py,
+	backend/tests/unit/test_datasources_api.py: Тесты.
+	* docs/data_connectors.md: Поле description, коды 413/422, откат;
+	путь к run_full_llm_cycle.py.
+	* scripts/run_full_llm_cycle.py: Перенесён из backend/.  Каталог
+	прогона по-прежнему backend/storage/runs/.
+	(bind_session): SessionMemory.set_table вместо удалённого
+	set_datasource; подмена SOURCE_TABLE оркестратора убрана: константы
+	больше нет, паспорт и подписи берутся из таблицы сессии.
+
+	* backend/app/models/research_step.py (ResearchPlan._null_is_default):
+	null в final_viz и dashboard_requested от LLM даёт значение по
+	умолчанию (auto, False).  Раньше такой план не проходил валидацию.
+	* backend/tests/unit/test_research_step.py: Тест.
+
 2026-10-22  thebulkapro  <saitbatalovbulat200@gmail.com>
 
 	Исправления API сессий по ревью #111.
@@ -110,6 +149,30 @@
 	datasource_id, временные представления, список таблиц.
 	* docs/memory.md: Метаданные и список сессий.
 2026-10-22  mb6ockatf  <smokenmirror@tutamail.com>
+
+	Очистка устаревших temp_result_vN (#55).
+	* backend/app/core/data/duckdb_manager.py
+	(DuckDBManager._ensure_result_meta): Новый метод: служебная таблица
+	_meta.result_meta(name, created_at), создаётся при первом результате.
+	(save_step_result): Записывает время создания результата.
+	(_last_step_number): Учитывает и удалённые результаты: номера не
+	используются повторно.
+	(cleanup_results): Новый метод: удаляет temp_result_vN старше
+	older_than_s, кроме keep; таблицы без учёта получают полный срок.
+	* backend/app/core/data/result_retention.py: Новый модуль.
+	(collect_keep): result_table плиток дашбордов и last_chart всех
+	таблиц сессий за 24 ч.  (cleanup): Проход очистки, ошибки в лог.
+	(cleanup_forever): Фоновая очистка раз в RESULT_TTL_S / 4.
+	* backend/app/main.py (lifespan): Очистка при старте и фоновая
+	задача, отменяется при остановке.
+	* backend/app/config.py (Settings.result_ttl_s): Новая настройка,
+	6 ч.
+	* .env.example: RESULT_TTL_S.
+	* backend/tests/unit/test_duckdb_manager.py: Тесты cleanup_results,
+	50 вопросов подряд.
+	* backend/tests/unit/test_result_retention.py: Новые тесты: keep,
+	дашборд открывается после очистки, очистка при старте.
+	* docs/memory.md, docs/architecture.md: Очистка state cache.
 
 	Шаблоны дашбордов (#46).
 	* backend/app/core/dashboards/templates.py (TemplateTile)
