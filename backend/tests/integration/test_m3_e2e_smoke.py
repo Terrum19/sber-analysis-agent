@@ -162,7 +162,11 @@ def test_e2e_clarification_scenario_and_recovery(tmp_path):
         # Start session
         sess_res = client.post(
             "/api/sessions",
-            json={"table": "demo_events", "title": "Demo Session", "datasource_id": ds["datasource_id"]},
+            json={
+                "table": "demo_events",
+                "title": "Demo Session",
+                "datasource_id": ds["datasource_id"],
+            },
         )
         session_id = sess_res.json()["session_id"]
 
@@ -177,7 +181,10 @@ def test_e2e_clarification_scenario_and_recovery(tmp_path):
         assert len(clarification_evs) == 1
         clarification_data = clarification_evs[0]["data"]
         assert clarification_data["step_id"] == 0
-        assert "Binder Error" in clarification_data["error"] or "category" in clarification_data["error"]
+        assert (
+            "Binder Error" in clarification_data["error"]
+            or "category" in clarification_data["error"]
+        )
         assert isinstance(clarification_data["suggestions"], list)
 
         # Recovery 1: action = "skip_step"
@@ -201,7 +208,11 @@ def test_e2e_clarification_scenario_and_recovery(tmp_path):
         # Recovery 2: action = "user_answer"
         sess_res2 = client.post(
             "/api/sessions",
-            json={"table": "demo_events", "title": "Session 2", "datasource_id": ds["datasource_id"]},
+            json={
+                "table": "demo_events",
+                "title": "Session 2",
+                "datasource_id": ds["datasource_id"],
+            },
         )
         session_id2 = sess_res2.json()["session_id"]
 
@@ -241,7 +252,10 @@ def test_e2e_table_selection_and_session_switching(tmp_path):
         with csv1.open("rb") as f1, csv2.open("rb") as f2:
             res = client.post(
                 "/api/datasources/csv",
-                files=[("files", ("t1.csv", f1, "text/csv")), ("files", ("t2.csv", f2, "text/csv"))],
+                files=[
+                    ("files", ("t1.csv", f1, "text/csv")),
+                    ("files", ("t2.csv", f2, "text/csv")),
+                ],
             )
         assert res.status_code == 200
 
@@ -288,7 +302,10 @@ def test_e2e_table_selection_and_session_switching(tmp_path):
     # Verify frontend useStartSession workWithTable implementation
     start_session_file = FRONTEND_DIR / "src/hooks/useStartSession.ts"
     start_code = start_session_file.read_text(encoding="utf-8")
-    assert "async function workWithTable(database: DatabaseFolder, table: string, sessionId?: string)" in start_code
+    assert (
+        "async function workWithTable(database: DatabaseFolder, table: string, sessionId?: string)"
+        in start_code
+    )
     assert "await setSessionTable(sessionId, table)" in start_code
     assert "await startSession(database, table)" in start_code or "createSession" in start_code
 

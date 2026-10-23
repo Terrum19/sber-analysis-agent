@@ -6,12 +6,9 @@ Verifies:
 - Mock data completeness and table guard behavior.
 """
 
-import json
-import os
 import re
 import subprocess
 from pathlib import Path
-import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 FRONTEND_DIR = REPO_ROOT / "frontend"
@@ -37,28 +34,34 @@ def test_m2_datasource_types_session_table_nullable() -> None:
     """SessionResponse.table must be typed as string | null."""
     datasource_ts = (FRONTEND_DIR / "src/types/datasource.ts").read_text(encoding="utf-8")
     # Verify SessionResponse contains table: string | null;
-    assert re.search(r"export\s+interface\s+SessionResponse\s*\{[^}]*table:\s*string\s*\|\s*null;", datasource_ts, re.DOTALL), (
-        "SessionResponse.table must be explicitly typed as string | null"
-    )
+    assert re.search(
+        r"export\s+interface\s+SessionResponse\s*\{[^}]*table:\s*string\s*\|\s*null;",
+        datasource_ts,
+        re.DOTALL,
+    ), "SessionResponse.table must be explicitly typed as string | null"
 
 
 def test_m2_left_sidebar_clickhouse_disabled() -> None:
     """LeftSidebar must keep ClickHouse radio strictly disabled with comingSoon badge to prevent 501."""
-    left_sidebar = (FRONTEND_DIR / "src/components/layout/LeftSidebar.tsx").read_text(encoding="utf-8")
+    left_sidebar = (FRONTEND_DIR / "src/components/layout/LeftSidebar.tsx").read_text(
+        encoding="utf-8"
+    )
     assert 'value="clickhouse"' in left_sidebar
     assert 't("modal.comingSoon")' in left_sidebar
     # Check that disabled and checked={false} are present on the clickhouse radio
     pattern = r'value="clickhouse"[^>]*disabled'
     pattern_rev = r'disabled[^>]*value="clickhouse"'
-    assert re.search(pattern, left_sidebar, re.DOTALL) or re.search(pattern_rev, left_sidebar, re.DOTALL), (
-        "ClickHouse radio input must have 'disabled' attribute"
-    )
+    assert re.search(pattern, left_sidebar, re.DOTALL) or re.search(
+        pattern_rev, left_sidebar, re.DOTALL
+    ), "ClickHouse radio input must have 'disabled' attribute"
     assert "checked={false}" in left_sidebar, "ClickHouse radio must have checked={false}"
 
 
 def test_m2_left_sidebar_session_sync() -> None:
     """LeftSidebar must invoke listSessions and mergeSessions on mount."""
-    left_sidebar = (FRONTEND_DIR / "src/components/layout/LeftSidebar.tsx").read_text(encoding="utf-8")
+    left_sidebar = (FRONTEND_DIR / "src/components/layout/LeftSidebar.tsx").read_text(
+        encoding="utf-8"
+    )
     assert "listSessions" in left_sidebar
     assert "mergeSessions" in left_sidebar
     assert "SESSIONS_PAGE" in left_sidebar
@@ -68,7 +71,10 @@ def test_m2_session_store_merge_sessions() -> None:
     """sessionStore must implement mergeSessions(remoteSessions: SessionResponse[])."""
     session_store = (FRONTEND_DIR / "src/store/sessionStore.ts").read_text(encoding="utf-8")
     assert "mergeSessions: (remoteSessions: SessionResponse[]) => void;" in session_store
-    assert "mergeSessions: (remoteSessions: SessionResponse[]) =>" in session_store or "mergeSessions: (remoteSessions)" in session_store
+    assert (
+        "mergeSessions: (remoteSessions: SessionResponse[]) =>" in session_store
+        or "mergeSessions: (remoteSessions)" in session_store
+    )
 
 
 def test_m2_chat_panel_active_table_guard() -> None:
@@ -106,7 +112,7 @@ def test_m2_mock_data_profiles_and_sessions() -> None:
     assert "mockListTables" in mock_data
     assert "mockListSessions" in mock_data
     assert "profiles:" in mock_data
-    assert "description_status: \"ready\"" in mock_data
+    assert 'description_status: "ready"' in mock_data
 
 
 def test_m2_legacy_datasource_panel_preserved() -> None:
