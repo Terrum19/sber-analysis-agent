@@ -1,4 +1,4 @@
-"""WASM-песочница (Pyodide) и кодогенерация шагов без подходящего тула."""
+"""WASM-песочница (Pyodide) и тул run_python (код по purpose пишет LLM)."""
 
 from pathlib import Path
 
@@ -76,6 +76,9 @@ def storage(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     return tmp_path
 
 
+PURPOSE = "Сумма amount по сегментам segment"
+
+
 def fenced(code: str) -> str:
     return f"Вот код:\n```python\n{code}\n```\nГотово."
 
@@ -86,21 +89,22 @@ def test_extract_code_strips_fences() -> None:
     assert extract_code("result = df.head()") == "result = df.head()"
 
 
-async def test_codegen_steps_go_to_codegen_and_unknown_tools_fail(
-    db: DuckDBManager, monkeypatch: pytest.MonkeyPatch
+async def test_run_python_step_goes_to_codegen_and_unknown_tools_fail(
+    db: DuckDBManager, monkeypatch: pytest.MonkeyPatch, codegen_available
 ) -> None:
     calls = []
 
-    async def fake_runner(step, input_table, manager, llm, sandbox):
-        calls.append((step.tool, input_table))
+    async def fake_runner(purpose, input_table, manager, llm, sandbox, output):
+        calls.append((purpose, input_table, output))
         return "temp_result_v9"
 
     monkeypatch.setattr(codegen_runner, "run_generated_code", fake_runner)
     executor = StepExecutor(db)
     with pytest.raises(ValueError, match="no_such_tool"):
         await executor.execute(ResearchStep(tool="no_such_tool", purpose="x"), "raw")
-    assert await executor.execute(ResearchStep(tool=None, needs_llm_codegen=True), "raw")
-    assert calls == [(None, "raw")]
+    step = ResearchStep(tool="run_python", arguments={"purpose": PURPOSE})
+    assert await executor.execute(step, "raw") == "temp_result_v9"
+    assert calls == [(PURPOSE, "raw", "table")]
 
 
 async def test_codegen_fixes_code_after_sandbox_error(db: DuckDBManager) -> None:
@@ -119,15 +123,14 @@ async def test_codegen_fixes_code_after_sandbox_error(db: DuckDBManager) -> None
 
     llm = FakeLLM(fenced("broken"), fenced("fixed"))
     sandbox = FakeSandbox()
-    step = ResearchStep(needs_llm_codegen=True, purpose="Сумма по сегментам", columns=["segment"])
-    table = await run_generated_code(step, "raw", db, llm, sandbox)
+    table = await run_generated_code(PURPOSE, "raw", db, llm, sandbox)
     assert table == "temp_result_v1"
     assert db.query(f"SELECT * FROM {table} ORDER BY segment") == [
         {"segment": "a", "total": 40},
         {"segment": "b", "total": 60},
     ]
     assert sandbox.codes == ["broken", "fixed"]
-    assert "Сумма по сегментам" in llm.prompts[0]
+    assert PURPOSE in llm.prompts[0]
     assert '"segment": "VARCHAR"' in llm.prompts[0]
     assert "NameError" in llm.prompts[1]
     assert not any((Path(settings.storage_dir) / "sandbox").iterdir())
@@ -140,9 +143,7 @@ async def test_codegen_gives_up_after_attempts(db: DuckDBManager) -> None:
 
     llm = FakeLLM("a", "b")
     with pytest.raises(SandboxError, match="boom"):
-        await run_generated_code(
-            ResearchStep(needs_llm_codegen=True), "raw", db, llm, FailingSandbox()
-        )
+        await run_generated_code(PURPOSE, "raw", db, llm, FailingSandbox())
 
 
 def test_missing_runtime_is_reported(tmp_path: Path) -> None:
@@ -181,7 +182,7 @@ async def test_agent_runs_generated_code_in_pyodide(db: DuckDBManager) -> None:
         "print('done')\n"
     )
     executor = StepExecutor(db, llm=FakeLLM(fenced(code)))
-    step = ResearchStep(tool=None, needs_llm_codegen=True, purpose="Сумма по сегментам")
+    step = ResearchStep(tool="run_python", arguments={"purpose": PURPOSE})
     table = await executor.execute(step, "raw")
     assert table == "temp_result_v1"
     rows = db.query(f"SELECT * FROM {table} ORDER BY segment")
@@ -238,3 +239,29 @@ def test_sandbox_reports_python_errors() -> None:
             sandbox.run("result = 1 / 0", workdir)
         with pytest.raises(SandboxError, match="result"):
             sandbox.run("value = 1", workdir)
+
+
+async def test_codegen_refuses_tables_over_the_row_limit(
+    db: DuckDBManager, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(settings, "codegen_max_rows", 3)
+    llm = FakeLLM()
+    with pytest.raises(ValueError, match="sample"):
+        await run_generated_code(PURPOSE, "raw", db, llm, WASMSandbox())
+    assert llm.prompts == []
+
+
+async def test_scalar_output_is_wrapped_into_a_table(db: DuckDBManager) -> None:
+    class RecordingSandbox(WASMSandbox):
+        def run(self, code: str, workdir: Path) -> dict:
+            self.code = code
+            (workdir / "result.csv").write_text("value\n25.0\n")
+            return {"ok": True, "stdout": ""}
+
+    llm = FakeLLM(fenced("result = df['amount'].median()"))
+    sandbox = RecordingSandbox()
+    table = await run_generated_code(PURPOSE, "raw", db, llm, sandbox, output="scalar")
+    assert db.query(f"SELECT * FROM {table}") == [{"value": 25.0}]
+    assert sandbox.code.startswith("result = df['amount'].median()")
+    assert '{"value": [result]}' in sandbox.code
+    assert "одно значение" in llm.prompts[0]

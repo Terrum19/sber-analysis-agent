@@ -3,6 +3,7 @@
 import pytest
 
 from app.core.data.duckdb_manager import DuckDBManager
+from app.core.tools.base import BaseTool
 from app.core.tools.registry import tool_registry
 
 
@@ -192,11 +193,11 @@ def test_tools_reject_invalid_arguments(db: DuckDBManager, name: str, columns: l
 
 
 def test_registry_is_extensible_without_orchestrator_changes(db: DuckDBManager) -> None:
-    class MarkerTool:
+    class MarkerTool(BaseTool):
         name = "marker"
         description = "marker"
 
-        def run(self, db, input_table, columns):
+        def execute(self, db, input_table, args):
             return db.save_step_result(input_table, "SELECT 1 AS marker")
 
         def describe(self):

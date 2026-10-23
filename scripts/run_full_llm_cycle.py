@@ -11,18 +11,18 @@
      -> график -> дашборд -> экспорт в Excel
   -> отчёт прогона (этапы, время, вызовы LLM).
 
-run_llm_agent.py остаётся тестом одного оркестратора; этот скрипт —
+backend/run_llm_agent.py остаётся тестом одного оркестратора; этот скрипт —
 e2e-прогон того, как платформа должна работать целиком.
 
-Каждый прогон пишет всё в свой каталог (storage/runs/<время>/): DuckDB,
+Каждый прогон пишет всё в свой каталог (backend/storage/runs/<время>/): DuckDB,
 SQLite сессий и дашбордов, спеки графиков, xlsx, лог и report.json —
 рабочий storage/ не затрагивается.
 
-Запуск:
-    python3 run_full_llm_cycle.py --csv ../data/sample_datasets/demo_events.csv
-    python3 run_full_llm_cycle.py --csv a.csv b.csv --table b --description README.md
-    python3 run_full_llm_cycle.py --pg "postgresql://user:pass@host/db" --table orders
-    USE_FAKE_LLM=true python3 run_full_llm_cycle.py --csv data.csv --questions q.txt
+Запуск из корня репозитория:
+    python3 scripts/run_full_llm_cycle.py --csv data/sample_datasets/demo_events.csv
+    python3 scripts/run_full_llm_cycle.py --csv a.csv b.csv --table b --description README.md
+    python3 scripts/run_full_llm_cycle.py --pg "postgresql://user:pass@host/db" --table orders
+    USE_FAKE_LLM=true python3 scripts/run_full_llm_cycle.py --csv data.csv --questions q.txt
 
 С --questions скрипт работает без диалога и возвращает ненулевой код,
 если хоть один ход не дошёл до done (e2e-критерий).
@@ -42,7 +42,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 
-BACKEND_DIR = Path(__file__).resolve().parent
+BACKEND_DIR = Path(__file__).resolve().parent.parent / "backend"
 sys.path.insert(0, str(BACKEND_DIR))
 
 LINE = "-" * 72
@@ -152,7 +152,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--session", default="cli-session", help="session_id")
     parser.add_argument("--questions", type=Path, help="файл с вопросами (по одному на строку)")
     parser.add_argument(
-        "--run-dir", type=Path, help="каталог прогона (по умолчанию storage/runs/<время>)"
+        "--run-dir", type=Path, help="каталог прогона (по умолчанию backend/storage/runs/<время>)"
     )
     parser.add_argument("--db", help="файл DuckDB (повторный прогон берёт паспорт из кеша)")
     parser.add_argument("--no-export", action="store_true", help="не выгружать результат в xlsx")
@@ -317,13 +317,7 @@ async def describe_tables(args, db, llm, connector, tables: list[str], report: R
 
 
 def bind_session(session_id: str, table: str, db) -> None:
-    """Привязать сессию к таблице источника.
-
-    Оркестратор пока берёт подписи графиков из константы SOURCE_TABLE,
-    а не из сессии (есть issue). Скрипт подменяет константу на таблицу
-    сессии — так подписи берутся из того паспорта, по которому строится план.
-    """
-    import app.core.agent.orchestrator as orchestrator_module
+    """Привязать сессию к таблице источника (по ней оркестратор берёт паспорт и подписи)."""
     from app.core.memory.profile_memory import ProfileMemory
     from app.core.memory.session_memory import SessionMemory
 
@@ -339,8 +333,7 @@ def bind_session(session_id: str, table: str, db) -> None:
                 {"tbl": table},
             )
         ]
-    SessionMemory(session_id, db=db).set_datasource(table, columns)
-    orchestrator_module.SOURCE_TABLE = table
+    SessionMemory(session_id, db=db).set_table(table, columns)
     print(f"\n  Сессия «{session_id}» привязана к таблице «{table}» ({len(columns)} колонок)")
 
 
@@ -499,7 +492,6 @@ async def run_turn(orchestrator, args, question: str, db, report: Report, number
 def export_result(session_id: str, db, run_dir: Path, number: int) -> str | None:
     """Выгрузить таблицу последнего графика в xlsx (как /api/artifacts/export)."""
     import duckdb
-
     from app.core.export.excel import ExcelExporter
     from app.core.memory.session_memory import SessionMemory
 

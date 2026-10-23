@@ -116,6 +116,47 @@ def test_update_keeps_tiles_when_only_title_changes(client: TestClient, db: Duck
     assert [tile["id"] for tile in body["tiles"]] == [created["tiles"][0]["id"]]
 
 
+def test_create_with_tiles_of_another_dashboard(client: TestClient, db: DuckDBManager) -> None:
+    source = create(client, tiles=[chart_tile(db)])
+    copy = create(client, tiles=source["tiles"])
+    assert copy["tiles"][0]["id"] != source["tiles"][0]["id"]
+    assert copy["tiles"][0]["spec"] == source["tiles"][0]["spec"]
+    assert client.get(f"/api/dashboards/{source['id']}").json() == source
+
+
+def test_create_with_duplicate_tile_ids(client: TestClient) -> None:
+    tile = {"id": "same", "title": "Плитка", "spec": {"mark": "text"}}
+    created = create(client, tiles=[tile, tile])
+    assert len({tile["id"] for tile in created["tiles"]}) == 2
+
+
+def test_update_keeps_own_tile_ids_and_replaces_foreign(
+    client: TestClient, db: DuckDBManager
+) -> None:
+    own = create(client, tiles=[chart_tile(db)])
+    other = create(client, tiles=[chart_tile(db)])
+    response = client.put(
+        f"/api/dashboards/{own['id']}", json={"tiles": own["tiles"] + other["tiles"]}
+    )
+    assert response.status_code == 200
+    ids = [tile["id"] for tile in response.json()["tiles"]]
+    assert ids[0] == own["tiles"][0]["id"]
+    assert ids[1] not in {own["tiles"][0]["id"], other["tiles"][0]["id"]}
+    assert client.get(f"/api/dashboards/{other['id']}").json() == other
+
+
+@pytest.mark.parametrize("table", ["secret", "temp_result_v1; DROP TABLE x", "temp-result"])
+def test_result_table_must_be_a_step_result(client: TestClient, table: str) -> None:
+    tile = {"title": "Плитка", "spec": {"mark": "text"}, "result_table": table}
+    response = client.post(
+        "/api/dashboards", json={"session_id": "s1", "title": "П", "tiles": [tile]}
+    )
+    assert response.status_code == 422
+    created = create(client)
+    response = client.put(f"/api/dashboards/{created['id']}", json={"tiles": [tile]})
+    assert response.status_code == 422
+
+
 def test_delete(client: TestClient) -> None:
     created = create(client)
     response = client.delete(f"/api/dashboards/{created['id']}")

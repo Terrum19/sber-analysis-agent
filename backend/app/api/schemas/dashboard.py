@@ -8,9 +8,15 @@ __all__ = [
     "DashboardCreate",
     "DashboardOut",
     "DashboardSummary",
+    "DashboardTileIn",
     "DashboardTileOut",
     "DashboardUpdate",
 ]
+
+
+class DashboardTileIn(DashboardTile):
+    # result_table попадает в SQL как имя таблицы — пускаем только temp_result_vN.
+    result_table: str | None = Field(default=None, pattern=r"^temp_result_v\d+$")
 
 
 class DashboardTileOut(DashboardTile):
@@ -30,9 +36,9 @@ class DashboardOut(BaseModel):
 class DashboardCreate(BaseModel):
     session_id: str
     title: str
-    tiles: list[DashboardTile] = Field(default_factory=list)
+    tiles: list[DashboardTileIn] = Field(default_factory=list)
 
 
 class DashboardUpdate(BaseModel):
     title: str | None = None
-    tiles: list[DashboardTile] | None = None
+    tiles: list[DashboardTileIn] | None = None
