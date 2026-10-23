@@ -116,6 +116,21 @@ export async function createSession(
   }
 }
 
+export async function deleteSessionApi(sessionId: string): Promise<{ ok: boolean }> {
+  if (isMockMode()) {
+    return { ok: true };
+  }
+  try {
+    const res = await fetch(`${API}/sessions/${encodeURIComponent(sessionId)}`, {
+      method: "DELETE",
+    });
+    if (!res.ok) throw await parseApiError(res);
+    return { ok: true };
+  } catch (err) {
+    throw toApiError(err);
+  }
+}
+
 export async function patchSession(
   sessionId: string,
   table: string,

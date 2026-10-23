@@ -78,3 +78,12 @@ def get_session(session_id: str) -> SessionOut:
     if not memory.exists():
         raise HTTPException(status_code=404, detail="Сессия не найдена.")
     return session_out(memory)
+
+
+@router.delete("/{session_id}")
+def delete_session(session_id: str) -> dict[str, bool]:
+    """Удалить сессию диалога."""
+    deleted = SessionMemory.delete(session_id)
+    if not deleted:
+        raise HTTPException(status_code=404, detail="Сессия не найдена.")
+    return {"ok": True}

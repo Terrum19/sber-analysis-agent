@@ -72,8 +72,8 @@ interface UiState {
   moveTab: (fromKey: string, toKey: string) => void;
   /** Закрывает вкладку и возвращает ту, что станет активной вместо неё. */
   closeTab: (tab: WorkspaceTab) => WorkspaceTab | null;
-  /** Закрывает вкладки удалённых сессий и артефактов. */
-  closeTabsForSessions: (sessionIds: string[], artifactIds?: string[]) => void;
+  /** Закрывает вкладки удалённых сессий и артефактов и возвращает новую активную вкладку. */
+  closeTabsForSessions: (sessionIds: string[], artifactIds?: string[]) => WorkspaceTab | null;
 }
 
 export const useUiStore = create<UiState>()(
@@ -134,14 +134,18 @@ export const useUiStore = create<UiState>()(
       closeTabsForSessions: (sessionIds, artifactIds = []) => {
         const sSet = new Set(sessionIds);
         const aSet = new Set(artifactIds);
+        let nextTab: WorkspaceTab | null = null;
         set((s) => {
           const next = s.tabs.filter((t) => {
             if (t.kind === "session" && sSet.has(t.id)) return false;
             if (t.kind === "artifact" && aSet.has(t.id)) return false;
             return true;
           });
-          return { tabs: next.length > 0 ? next : [{ kind: "welcome" }] };
+          const tabs = next.length > 0 ? next : [{ kind: "welcome" as const }];
+          nextTab = tabs[tabs.length - 1] ?? null;
+          return { tabs };
         });
+        return nextTab;
       },
     }),
     {
