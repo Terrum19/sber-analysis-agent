@@ -10,12 +10,18 @@
 	(describe_tables): Если перенос описания упал, pending становится
 	failed.
 	* backend/app/core/data/ingest.py (mark_pending): Новая функция: pending для таблиц с описанием, none
-	для остальных.
-	(describe): Ставит статус ready или failed.
+	для остальных; новый запуск переноса (DescribeJob) с прочитанными
+	комментариями колонок.
+	(describe): Ставит статус ready или failed. С job не перечитывает
+	комментарии и пропускает таблицу, подключённую заново.
+	* backend/app/core/data/schema_enrichment.py (Superseded)
+	(SchemaEnricher.enrich): С run не вызывает LLM и не пишет описания,
+	если таблицу подключили заново.
 	* backend/app/core/memory/profile_memory.py (SCHEMA): Колонка
-	_meta.table_passport.description_status (ADD COLUMN IF NOT EXISTS).
-	(set_description_status, load_description_status, fail_pending):
-	Новые методы.
+	_meta.table_passport.description_status и description_run (ADD
+	COLUMN IF NOT EXISTS).
+	(set_description_status, load_description_status, fail_pending)
+	(begin_description, load_description_run): Новые методы.
 	* backend/app/main.py (lifespan): При старте pending становится
 	failed: фоновый перенос описания не пережил рестарт.
 	* backend/app/core/data/connectors/base.py (BaseConnector.warnings):

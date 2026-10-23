@@ -73,6 +73,7 @@ SCHEMA = (
         "ALTER TABLE _meta.table_passport "
         "ADD COLUMN IF NOT EXISTS description_status VARCHAR DEFAULT 'none'"
     ),
+    "ALTER TABLE _meta.table_passport ADD COLUMN IF NOT EXISTS description_run VARCHAR",
 )
 
 DESCRIPTION_STATUSES = ("none", "pending", "ready", "failed")
@@ -206,14 +207,38 @@ class ProfileMemory:
             for row in rows
         ]
 
-    def set_description_status(self, table: str, status: str) -> None:
-        """Статус переноса описания в паспорт: none, pending, ready или failed."""
+    def set_description_status(self, table: str, status: str, run: str | None = None) -> None:
+        """Статус переноса описания в паспорт: none, pending, ready или failed.
+
+        run — запуск переноса (begin_description): статус меняется, только если
+        таблицу с тех пор не подключили заново. None — без проверки.
+        """
         if status not in DESCRIPTION_STATUSES:
             raise ValueError(f"Неизвестный статус описания «{status}»")
         self.db.execute(
-            "UPDATE _meta.table_passport SET description_status = $status WHERE table_name = $table",
-            {"table": table, "status": status},
+            "UPDATE _meta.table_passport SET description_status = $status "
+            "WHERE table_name = $table AND ($run IS NULL OR description_run = $run)",
+            {"table": table, "status": status, "run": run},
         )
+
+    def begin_description(self, table: str, run: str, described: bool) -> None:
+        """Новый запуск переноса описания: pending (есть описание) или none.
+
+        Перенос прошлого запуска по этой таблице больше ничего не запишет.
+        """
+        self.db.execute(
+            "UPDATE _meta.table_passport SET description_status = $status, description_run = $run "
+            "WHERE table_name = $table",
+            {"table": table, "status": "pending" if described else "none", "run": run},
+        )
+
+    def load_description_run(self, table: str) -> str | None:
+        """Текущий запуск переноса описания (begin_description) или None."""
+        rows = self.db.query(
+            "SELECT description_run FROM _meta.table_passport WHERE table_name = $table",
+            {"table": table},
+        )
+        return rows[0]["description_run"] if rows else None
 
     def load_description_status(self, table: str) -> str:
         """Статус переноса описания; без паспорта — none."""
@@ -223,15 +248,17 @@ class ProfileMemory:
         )
         return rows[0]["description_status"] if rows and rows[0]["description_status"] else "none"
 
-    def fail_pending(self) -> list[str]:
-        """pending → failed у всех таблиц; вернуть их имена.
+    def fail_pending(self, run: str | None = None) -> list[str]:
+        """pending → failed; вернуть имена таблиц.
 
-        Вызывается при старте: фоновый describe() прошлого процесса не
-        доработал, и сам статус уже не сменится.
+        Без run — у всех таблиц: при старте фоновый describe() прошлого
+        процесса уже не доработает. С run — только у таблиц этого запуска.
         """
         rows = self.db.query(
             "UPDATE _meta.table_passport SET description_status = 'failed' "
-            "WHERE description_status = 'pending' RETURNING table_name"
+            "WHERE description_status = 'pending' AND ($run IS NULL OR description_run = $run) "
+            "RETURNING table_name",
+            {"run": run},
         )
         return sorted(row["table_name"] for row in rows)
 

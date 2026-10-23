@@ -37,6 +37,10 @@ SYSTEM = "Ты — аналитик данных. Отвечай только JS
 TITLE_MAX_CHARS = 40
 
 
+class Superseded(Exception):
+    """Таблицу подключили заново: этот перенос описания устарел."""
+
+
 def fingerprint(column: ColumnStats, comment: str | None, document: str | None) -> str:
     """Хеш всего, от чего зависят название и описание колонки."""
     digest = hashlib.sha256(document.encode()).hexdigest() if document else None
@@ -139,7 +143,11 @@ class SchemaEnricher:
         self.llm_available = True
 
     async def enrich(
-        self, table: str, comments: dict[str, str] | None = None, document: str | None = None
+        self,
+        table: str,
+        comments: dict[str, str] | None = None,
+        document: str | None = None,
+        run: str | None = None,
     ) -> list[ColumnEnrichment]:
         """Записать в паспорт названия и описания колонок из описания таблицы.
 
@@ -147,13 +155,16 @@ class SchemaEnricher:
         document — текст документа-описания. Без них ничего не меняется.
         LLM вызывается только для документа и вне db.lock: на время ответа
         модели DuckDB не блокируется. Возвращает записи всех колонок в
-        порядке таблицы.
+        порядке таблицы. run — запуск переноса (ProfileMemory.begin_description):
+        если таблицу подключили заново, ничего не пишется.
 
         Raises:
             LookupError: профиля таблицы нет — ingest.attach ещё не вызывался.
+            Superseded: run больше не текущий.
         """
         document = (document or "").strip() or None
         with self.db.lock:
+            self.check_run(table, run)
             profile = self.memory.load_profile(table)
             saved = {row.column: row for row in self.memory.load_enrichment(table)}
         if profile is None:
@@ -184,8 +195,15 @@ class SchemaEnricher:
         if document is not None:
             await self.extract(drafts, document)
         fresh = {draft.name: draft.record() for draft in drafts}
-        self.memory.save_enrichment(table, list(fresh.values()))
+        with self.db.lock:
+            self.check_run(table, run)
+            self.memory.save_enrichment(table, list(fresh.values()))
         return [fresh.get(column.name, saved[column.name]) for column in profile.columns]
+
+    def check_run(self, table: str, run: str | None) -> None:
+        """Superseded, если run задан и таблицу с тех пор подключили заново. Под db.lock."""
+        if run is not None and self.memory.load_description_run(table) != run:
+            raise Superseded(table)
 
     async def extract(self, drafts: list[Draft], document: str) -> None:
         """Названия и описания колонок из документа (промпт column_extract)."""

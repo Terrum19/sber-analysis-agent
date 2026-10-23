@@ -205,7 +205,7 @@ def test_csv_upload_without_files_is_rejected(client, storage) -> None:
 def test_csv_upload_profiles_tables_at_once(client, storage, monkeypatch) -> None:
     calls = []
 
-    async def describe(connector, db, tables, document=None, llm=None):
+    async def describe(connector, db, tables, document=None, llm=None, job=None):
         calls.append((tables, document, ProfileMemory(db).load_profile(tables[0]).row_count))
         return {}
 
@@ -220,7 +220,7 @@ def test_csv_upload_profiles_tables_at_once(client, storage, monkeypatch) -> Non
 def test_csv_description_reaches_enricher(client, storage, monkeypatch) -> None:
     calls = []
 
-    async def describe(connector, db, tables, document=None, llm=None):
+    async def describe(connector, db, tables, document=None, llm=None, job=None):
         calls.append((tables, document))
         return {}
 
@@ -246,7 +246,7 @@ def test_csv_without_description_does_not_build_enricher(client, storage, monkey
 
 
 def test_failed_description_does_not_fail_attach(client, storage, monkeypatch, caplog) -> None:
-    async def broken(connector, db, tables, document=None, llm=None):
+    async def broken(connector, db, tables, document=None, llm=None, job=None):
         raise RuntimeError("LLM упала")
 
     monkeypatch.setattr(ingest, "describe", broken)
@@ -281,7 +281,7 @@ def test_db_description_reaches_enricher(monkeypatch) -> None:
     finally:
         db.close()
     [task] = background.tasks
-    assert task.args == (connector, db, ["orders"], "orders — заказы")
+    assert task.args[:4] == (connector, db, ["orders"], "orders — заказы")
 
 
 class UnreadableConnector(RecordingConnector):
@@ -407,7 +407,7 @@ def test_failed_llm_marks_description_failed(client, storage, monkeypatch) -> No
 
 
 def test_crashed_describe_marks_pending_tables_failed(client, storage, monkeypatch) -> None:
-    async def broken(connector, db, tables, document=None, llm=None):
+    async def broken(connector, db, tables, document=None, llm=None, job=None):
         raise RuntimeError("LLM упала")
 
     monkeypatch.setattr(ingest, "describe", broken)
@@ -425,7 +425,7 @@ async def test_describe_marks_table_failed_when_enricher_raises(monkeypatch) -> 
         def __init__(self, db, llm) -> None:
             pass
 
-        async def enrich(self, table, comments=None, document=None):
+        async def enrich(self, table, comments=None, document=None, run=None):
             raise LookupError(table)
 
     connector = RecordingConnector()
@@ -492,3 +492,80 @@ def test_startup_fails_pending_descriptions(tmp_path, monkeypatch) -> None:
     monkeypatch.setattr(main, "restore_saved_sources", nothing)
     with TestClient(app):
         assert ProfileMemory(app.state.db).load_description_status("orders") == "failed"
+
+
+class IdLLM:
+    """Описание колонки id; reattach — подключить таблицу заново, пока LLM «думает»."""
+
+    def __init__(self, reattach=None) -> None:
+        self.reattach = reattach
+        self.calls = 0
+
+    async def complete_structured(self, system: str, user: str, schema):
+        self.calls += 1
+        if self.reattach:
+            self.reattach()
+        return EnrichmentBatch(
+            columns=[ColumnEnrichment(column="id", title="Номер", description="номер заказа")]
+        )
+
+
+def reattach(connector, db) -> None:
+    with db.lock:
+        ingest.attach(connector, db)
+        ingest.mark_pending(connector, db, ["orders"], None)
+
+
+async def test_describe_after_reattach_writes_nothing() -> None:
+    connector = RecordingConnector()
+    db = DuckDBManager(":memory:")
+    llm = IdLLM()
+    try:
+        ingest.attach(connector, db)
+        first = ingest.mark_pending(connector, db, ["orders"], "doc")
+        reattach(connector, db)
+        assert await ingest.describe(connector, db, ["orders"], "doc", llm, job=first) == {}
+        assert llm.calls == 0
+        assert ProfileMemory(db).load_description_status("orders") == "none"
+    finally:
+        db.close()
+
+
+async def test_reattach_during_describe_discards_its_result() -> None:
+    connector = RecordingConnector()
+    db = DuckDBManager(":memory:")
+    llm = IdLLM(lambda: reattach(connector, db))
+    try:
+        ingest.attach(connector, db)
+        first = ingest.mark_pending(connector, db, ["orders"], "doc")
+        assert await ingest.describe(connector, db, ["orders"], "doc", llm, job=first) == {}
+        assert llm.calls == 1
+        memory = ProfileMemory(db)
+        assert memory.load_description_status("orders") == "none"
+        assert memory.load_enrichment("orders")[0].title is None
+    finally:
+        db.close()
+
+
+class CommentedConnector(RecordingConnector):
+    def __init__(self) -> None:
+        super().__init__()
+        self.comment_reads = 0
+
+    def column_comments(self, db, table: str) -> dict[str, str]:
+        self.comment_reads += 1
+        return {"id": "номер заказа"}
+
+
+def test_db_attach_reads_column_comments_once(client, storage, monkeypatch) -> None:
+    connector = CommentedConnector()
+    monkeypatch.setattr(datasources, "build_connector", lambda kind, dsn, schema: connector)
+    monkeypatch.setattr(schema_enrichment, "LLMClient", lambda: None)
+    response = client.post(
+        "/api/datasources/db", json={"kind": "postgres", "dsn": "host=x", "schema": "s"}
+    )
+    assert response.json()["profiles"][0]["description_status"] == "pending"
+    assert connector.comment_reads == 1
+    db = app.dependency_overrides[get_db]()
+    assert ProfileMemory(db).load_description_status("orders") == "ready"
+    assert ProfileMemory(db).load_enrichment("orders")[0].description == "номер заказа"

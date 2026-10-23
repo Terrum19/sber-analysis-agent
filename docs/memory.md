@@ -78,7 +78,7 @@
 
 | Таблица | Строка | Содержимое |
 |---|---|---|
-| `_meta.table_passport` | таблица | `row_count`, `column_count`, `glossary` (JSON), `summary` (заполняется отдельной задачей), `profiled_at`, `enriched_at`, `description_status` |
+| `_meta.table_passport` | таблица | `row_count`, `column_count`, `glossary` (JSON), `summary` (заполняется отдельной задачей), `profiled_at`, `enriched_at`, `description_status`, `description_run` |
 | `_meta.column_passport` | колонка, PK `(table_name, column_name)` | `position` (порядок как в `DESCRIBE`), `dtype`, `kind`, статистика `ColumnStats`, название, описание, `fingerprint`, `enriched_at` |
 
 Полный DDL — `SCHEMA` в `profile_memory.py`. Статистика колонки — поля
@@ -114,6 +114,11 @@
 `describe` не переживает рестарт, поэтому при старте приложения
 `fail_pending()` переводит оставшиеся `pending` в `failed`.
 
+`description_run` — запуск переноса: `ingest.mark_pending` при каждом
+подключении пишет новый. Фоновый `describe` от прошлого подключения той же
+таблицы сверяет его перед вызовом LLM и перед записью и, если таблицу
+подключили заново, не пишет ни описания колонок, ни статус.
+
 ### API `ProfileMemory(db)`
 
 Конструктор принимает `DuckDBManager` и создаёт схему (`CREATE ... IF NOT
@@ -125,11 +130,14 @@ EXISTS`). Записи — одной транзакцией под `DuckDBManag
   статистика, `position`, `dtype`, `kind`; название, описание и `fingerprint`
   не затираются. Колонки, которых больше нет в таблице, удаляются.
   `glossary=None` оставляет сохранённый словарь.
-- `set_description_status(table, status)` / `load_description_status(table)` —
+- `set_description_status(table, status, run=None)` / `load_description_status(table)` —
   статус переноса описания (`none` / `pending` / `ready` / `failed`; без
-  паспорта — `none`).
-- `fail_pending() -> list[str]` — `pending` → `failed` у всех таблиц (вызывается
-  при старте, `lifespan` в `main.py`); возвращает имена таких таблиц.
+  паспорта — `none`). С `run` статус меняется, только если запуск всё ещё текущий.
+- `begin_description(table, run, described)` / `load_description_run(table)` —
+  новый запуск переноса (`pending` или `none`) и текущий запуск.
+- `fail_pending(run=None) -> list[str]` — `pending` → `failed` у всех таблиц
+  (при старте, `lifespan` в `main.py`) или только у таблиц запуска `run`
+  (фоновый перенос упал); возвращает имена таких таблиц.
 - `load_profile(table) -> TableProfile | None` — профиль, равный
   сохранённому (`None`, если паспорта нет). `profiled_at` — строка ISO в UTC.
 - `load_glossary(table) -> dict | None`.

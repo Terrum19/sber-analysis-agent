@@ -79,28 +79,25 @@ def read_description(upload: UploadFile | None) -> str | None:
 
 
 async def describe_tables(
-    connector: BaseConnector, db: DuckDBManager, tables: list[str], document: str | None
+    connector: BaseConnector,
+    db: DuckDBManager,
+    tables: list[str],
+    document: str | None,
+    job: ingest.DescribeJob,
 ) -> None:
     """Фоновый перенос описания в паспорт: сбой не затрагивает подключение."""
     try:
-        await ingest.describe(connector, db, tables, document)
+        await ingest.describe(connector, db, tables, document, job=job)
     except Exception:
         logger.exception("Описание таблиц %s не перенесено в паспорт", tables)
         with db.lock:
-            memory = ProfileMemory(db)
-            for table in tables:
-                if memory.load_description_status(table) == "pending":
-                    memory.set_description_status(table, "failed")
+            ProfileMemory(db).fail_pending(job.run)
 
 
 def briefs(
-    connector: BaseConnector,
-    db: DuckDBManager,
-    profiles: dict[str, TableProfile],
-    document: str | None,
+    connector: BaseConnector, db: DuckDBManager, profiles: dict[str, TableProfile]
 ) -> list[TableBrief]:
-    """Пометить pending таблицы с описанием и собрать сводки паспортов. Под db.lock."""
-    ingest.mark_pending(connector, db, list(profiles), document)
+    """Сводки паспортов подключённых таблиц. Под db.lock, после ingest.mark_pending."""
     memory = ProfileMemory(db)
     return [
         TableBrief.from_profile(
@@ -138,14 +135,15 @@ def attach_csv(
         with db.lock:
             profiles = ingest.attach(connector, db)
             tables = list(profiles)
-            summaries = briefs(connector, db, profiles, document)
+            job = ingest.mark_pending(connector, db, tables, document)
+            summaries = briefs(connector, db, profiles)
     except CSVLoadError as error:
         shutil.rmtree(folder, ignore_errors=True)
         raise HTTPException(status_code=400, detail=str(error)) from None
     except BaseException:
         shutil.rmtree(folder, ignore_errors=True)
         raise
-    background.add_task(describe_tables, connector, db, tables, document)
+    background.add_task(describe_tables, connector, db, tables, document, job)
     return DatasourceOut(datasource_id=datasource_id, kind="csv", tables=tables, profiles=summaries)
 
 
@@ -162,7 +160,8 @@ def attach_db(
         with db.lock:
             profiles = ingest.attach(connector, db)
             tables = list(profiles)
-            summaries = briefs(connector, db, profiles, payload.description)
+            job = ingest.mark_pending(connector, db, tables, payload.description)
+            summaries = briefs(connector, db, profiles)
     except ValueError as error:
         raise HTTPException(status_code=400, detail=str(error)) from None
     except (PostgresConnectionError, ClickHouseConnectionError) as error:
@@ -180,7 +179,7 @@ def attach_db(
             status_code=501, detail=f"Коннектор «{payload.kind}» пока не реализован."
         ) from None
     restore.remember(connector, payload.description)
-    background.add_task(describe_tables, connector, db, tables, payload.description)
+    background.add_task(describe_tables, connector, db, tables, payload.description, job)
     datasource_id = getattr(connector, "identity", f"{payload.kind}_{uuid4().hex[:10]}")
     return DatasourceOut(
         datasource_id=datasource_id, kind=payload.kind, tables=tables, profiles=summaries
