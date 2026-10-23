@@ -102,11 +102,22 @@ def test_unknown_kind_is_422(client: TestClient) -> None:
     assert response.status_code == 422
 
 
-def test_clickhouse_is_501(client: TestClient) -> None:
+def test_unreachable_clickhouse_is_502(client: TestClient) -> None:
     response = client.post(
-        "/api/datasources/db", json={"kind": "clickhouse", "dsn": "clickhouse://localhost"}
+        "/api/datasources/db",
+        json={"kind": "clickhouse", "dsn": "clickhouse://user:TopSecret@127.0.0.1:1/db"},
     )
-    assert response.status_code == 501
+    assert response.status_code == 502
+    assert "TopSecret" not in response.text
+
+
+def test_invalid_clickhouse_dsn_is_400(client: TestClient) -> None:
+    response = client.post(
+        "/api/datasources/db", json={"kind": "clickhouse", "dsn": "clickhouse://user:TopSecret@/db"}
+    )
+    assert response.status_code == 400
+    assert "хост" in response.json()["detail"]
+    assert "TopSecret" not in response.text
 
 
 def test_unreachable_postgres_is_502(client: TestClient) -> None:

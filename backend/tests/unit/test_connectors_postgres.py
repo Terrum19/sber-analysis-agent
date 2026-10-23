@@ -201,11 +201,11 @@ def test_max_tables_truncates_and_warns(caplog: pytest.LogCaptureFixture) -> Non
     assert (
         sum(statement.startswith("CREATE OR REPLACE TEMP VIEW") for statement in db.statements) == 3
     )
-    assert "POSTGRES_MAX_TABLES" in caplog.text
+    assert "DB_MAX_TABLES" in caplog.text
 
 
 def test_max_tables_defaults_to_config(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(settings, "postgres_max_tables", 2)
+    monkeypatch.setattr(settings, "db_max_tables", 2)
     db = FakeDuckDB(tables=["alpha", "beta", "gamma"])
     assert PostgresConnector(DSN).connect(db) == ["alpha", "beta"]
 

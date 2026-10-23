@@ -21,6 +21,10 @@ from app.api.schemas.datasource import DatasourceCreate, DatasourceOut
 from app.config import settings
 from app.core.data import ingest
 from app.core.data.connectors.base import BaseConnector
+from app.core.data.connectors.clickhouse import (
+    ClickHouseConnectionError,
+    ClickHouseExtensionUnavailableError,
+)
 from app.core.data.connectors.csv import CSVConnector, CSVLoadError, table_name
 from app.core.data.connectors.factory import build_connector
 from app.core.data.connectors.postgres import (
@@ -132,9 +136,9 @@ def attach_db(
             tables = list(ingest.attach(connector, db))
     except ValueError as error:
         raise HTTPException(status_code=400, detail=str(error)) from None
-    except PostgresConnectionError as error:
+    except (PostgresConnectionError, ClickHouseConnectionError) as error:
         raise HTTPException(status_code=502, detail=str(error)) from None
-    except PostgresExtensionUnavailableError as error:
+    except (PostgresExtensionUnavailableError, ClickHouseExtensionUnavailableError) as error:
         raise HTTPException(status_code=503, detail=str(error)) from None
     except duckdb.Error as error:
         # Сбой профиля: ingest.attach уже откатил подключение.
