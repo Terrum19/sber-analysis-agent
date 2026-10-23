@@ -200,3 +200,28 @@ def test_empty_plan_reports_zero_steps(orchestrator):
 
     assert stages(events) == ["planning:started", "planning:finished", "clarification_needed"]
     assert events[1]["data"]["total_steps"] == 0
+
+
+def test_planner_failure_ends_the_stream(orchestrator):
+    class FailingPlanner:
+        async def plan(self, question, context):
+            raise RuntimeError("LLM timeout")
+
+    orchestrator.planner = FailingPlanner()
+    events = collect(orchestrator, "s1")
+
+    assert stages(events) == ["planning:started", "planning:failed", "error", "done"]
+    assert events[1]["data"]["error"] == "LLM timeout"
+    assert events[2]["data"]["message"]
+
+
+def test_insight_failure_ends_the_stream(orchestrator):
+    class FailingInsightGen:
+        async def generate(self, question, result_table, **_):
+            raise RuntimeError("LLM timeout")
+
+    orchestrator.insight_gen = FailingInsightGen()
+    events = collect(orchestrator, "s1")
+
+    assert stages(events)[-4:] == ["insight:started", "insight:failed", "error", "done"]
+    assert events[-3]["data"]["error"] == "LLM timeout"

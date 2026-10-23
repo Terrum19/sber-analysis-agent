@@ -56,7 +56,7 @@
 | `chart` | `{spec, caption}` | Vega-Lite спека |
 | `dashboard` | `{dashboard_id}` | дашборд собран по запросу |
 | `clarification_needed` | `{step_id, error, suggestions}` | шаг не выполнился, ждём `recovery_response` |
-| `error` | `{...}` | сбой хода |
+| `error` | `{message}` | сбой хода; дальше `done` |
 | `done` | `{}` | ход завершён |
 
 `ProgressPayload`: `stage` (`planning` / `step` / `insight` / `chart` /
@@ -69,6 +69,7 @@
 | stage | status | поля | когда |
 |---|---|---|---|
 | `planning` | `started` | — | планировщик получил вопрос |
+| `planning` | `failed` | `error` | планировщик упал (LLM недоступна), дальше `error` и `done` |
 | `planning` | `finished` | `total_steps` | план готов (`0` — инструментов нет, дальше `clarification_needed`) |
 | `step` | `started` | `step_id`, `tool`, `purpose` | шаг начал выполняться |
 | `step` | `fixing` | `step_id`, `tool`, `purpose`, `attempt`, `error` | шаг упал, планировщик исправляет его |
@@ -76,14 +77,20 @@
 | `step` | `failed` | `step_id`, `tool`, `purpose`, `elapsed_ms`, `error` | шаг не исправился, дальше `clarification_needed` |
 | `insight` | `started` | — | план выполнен, генерируется инсайт (дальше `text`) |
 | `chart` | `started` | — | строится график (дальше `chart`) |
+| `insight` / `chart` / `dashboard` | `failed` | `error` | этап упал, дальше `error` и `done` |
 
 `planning` приходит один раз на новый вопрос: ни достройка плана после
 lookup-шага, ни ответ на уточнение (`recovery_response`) его не шлют, а
 шаги после них идут теми же событиями `step`. У `step/finished` и
 `step/failed` поля `tool` и `purpose` — от последней версии шага (после
 исправления). Смена вида прошлого графика («сделай таблицей») идёт без
-плана: сразу `chart` и `done`. Этап `dashboard` в контракте есть, но пока
-не шлётся.
+плана: сразу `chart` и `done`. Этап `dashboard` шлёт только `failed`.
+
+Ход всегда заканчивается `done` или `clarification_needed`: любой сбой
+вне шагов (планировщик, инсайт, график, дашборд) приходит как
+`<stage>/failed` с текстом ошибки, затем `error` с сообщением для
+пользователя и `done`. Упавший шаг сюда не относится — он идёт через
+`fixing` и `clarification_needed`.
 
 Пример успешного хода из одного шага:
 

@@ -1,3 +1,18 @@
+2026-10-23  Alexander Yurits  <terruwork@gmail.com>
+
+	Сбой LLM вне шагов больше не обрывает стрим.
+	* backend/app/core/agent/orchestrator.py (FAILURE_MESSAGE)
+	(_failure_event): Новые: событие error для пользователя.
+	(AgentOrchestrator._research): planning failed с текстом ошибки,
+	если планировщик упал.
+	(AgentOrchestrator.run): Сбой плана — error и done; сбой инсайта,
+	графика или дашборда — failed этапа, error и done.
+	* backend/tests/unit/test_orchestrator_unit.py
+	(test_planner_failure_ends_the_stream)
+	(test_insight_failure_ends_the_stream): Новые тесты.
+	* docs/architecture.md (События стрима чата): События failed этапов
+	и гарантия done.
+
 2026-10-22  mb6ockatf  <smokenmirror@tutamail.com>
 
 	События прогресса хода (S-01, #49).
