@@ -94,7 +94,9 @@ def agent(db):
 
 
 async def collect(agent: AgentOrchestrator, question: str, session: str = "s1") -> list[dict]:
-    return [event async for event in agent.run(ChatRequest(session_id=session, question=question))]
+    """События ответа без progress: их проверяет test_orchestrator_unit."""
+    request = ChatRequest(session_id=session, question=question)
+    return [event async for event in agent.run(request) if event["type"] != "progress"]
 
 
 def chart_of(events: list[dict]) -> dict:
@@ -231,5 +233,7 @@ async def test_recovery_answers_the_original_question(db) -> None:
         session_id="s1", question="по сумме amount", recovery_response="по сумме amount"
     )
     events = [event async for event in agent.run(request)]
-    assert [event["type"] for event in events] == ["text", "chart", "done"]
+    assert [
+        event["data"]["stage"] if event["type"] == "progress" else event["type"] for event in events
+    ] == ["step", "step", "insight", "text", "chart", "chart", "done"]
     assert insight.question == "Сравни выручку по регионам"

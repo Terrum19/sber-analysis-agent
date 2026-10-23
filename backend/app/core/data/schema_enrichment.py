@@ -11,7 +11,9 @@
 профилем таблицы, который строит ingest.attach сразу после подключения.
 Профиль энричер не считает и ничего, кроме названий и описаний, не пишет.
 Колонка, у которой не изменились имя, тип, комментарий и документ
-(fingerprint), повторно не обрабатывается.
+(fingerprint), повторно не обрабатывается. Без документа (повторное
+подключение источника) сравнивается только комментарий: названия и
+описания из прошлого документа сохраняются.
 """
 
 import hashlib
@@ -48,6 +50,11 @@ def source_comment(name: str, comment: str | None) -> str | None:
     if not text or text.casefold() == name.casefold():
         return None
     return comment
+
+
+def previous_comment(record: ColumnEnrichment) -> str | None:
+    """Комментарий источника, с которым колонка была обработана в прошлый раз."""
+    return record.description if record.description_source == "source" else None
 
 
 def batches(items: list, size: int) -> Iterator[list]:
@@ -162,8 +169,16 @@ class SchemaEnricher:
         drafts = []
         for column in profile.columns:
             comment = comments.get(column.name)
+            record = saved[column.name]
+            if document is None:
+                # Без документа меняется только комментарий: название из
+                # документа остаётся, описание уступает новому комментарию.
+                if record.fingerprint is None or previous_comment(record) != comment:
+                    current = fingerprint(column, comment, None)
+                    drafts.append(Draft(column, comment, current, title=record.title))
+                continue
             current = fingerprint(column, comment, document)
-            if saved[column.name].fingerprint != current:
+            if record.fingerprint != current:
                 drafts.append(Draft(column, comment, current))
         self.llm_available = True
         if document is not None:

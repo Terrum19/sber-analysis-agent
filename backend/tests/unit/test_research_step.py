@@ -56,3 +56,14 @@ def test_research_step_validation_error() -> None:
     """Проверка валидации Pydantic."""
     with pytest.raises(ValidationError):
         ResearchStep(step_id="not an int")
+
+
+def test_research_plan_null_fields_fall_back_to_defaults() -> None:
+    """LLM присылает null вместо final_viz и dashboard_requested."""
+    plan = ResearchPlan.model_validate_json(
+        '{"steps": [{"tool": "inspect_temp_table", "arguments": {}}], '
+        '"final_viz": null, "dashboard_requested": null, "result_step": null}'
+    )
+    assert plan.final_viz == "auto"
+    assert plan.dashboard_requested is False
+    assert plan.result_step is None

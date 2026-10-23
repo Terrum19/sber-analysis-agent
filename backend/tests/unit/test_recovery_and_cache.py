@@ -81,7 +81,26 @@ async def collect(agent: AgentOrchestrator) -> list[dict]:
 
 
 def kinds(events: list[dict]) -> list[str]:
-    return [event["type"] for event in events]
+    """Типы событий; progress — как «этап:статус»."""
+    return [
+        f"{event['data']['stage']}:{event['data']['status']}"
+        if event["type"] == "progress"
+        else event["type"]
+        for event in events
+    ]
+
+
+def fixing(events: list[dict]) -> list[dict]:
+    return [
+        event["data"]
+        for event in events
+        if event["type"] == "progress" and event["data"]["status"] == "fixing"
+    ]
+
+
+PLANNED = ["planning:started", "planning:finished", "step:started"]
+ANSWERED = ["step:finished", "insight:started", "text", "chart:started", "chart", "done"]
+FAILED = ["step:failed", "clarification_needed"]
 
 
 async def test_wrong_column_is_fixed_by_planner(db) -> None:
@@ -89,15 +108,15 @@ async def test_wrong_column_is_fixed_by_planner(db) -> None:
     llm = ScriptedLLM(plan, [group_by("revenue", step_id=7, purpose="")])
     events = await collect(make_agent(db, llm))
 
-    assert kinds(events) == ["progress", "text", "chart", "done"]
-    progress = events[0]["data"]
-    assert progress["stage"] == "step"
-    assert progress["status"] == "fixing"
+    assert kinds(events) == [*PLANNED, "step:fixing", *ANSWERED]
+    progress = fixing(events)[0]
     assert progress["step_id"] == 0
     assert progress["attempt"] == 1
     assert "revenu" in progress["error"]
-    ChatEvent(**events[0])
-    ProgressPayload(**progress)
+    for event in events:
+        ChatEvent(**event)
+        if event["type"] == "progress":
+            ProgressPayload(**event["data"])
     # Планировщик видит ошибку и колонки входной таблицы шага.
     prompt = llm.prompts["ResearchStep"][0]
     assert "Candidate bindings" in prompt
@@ -113,8 +132,12 @@ async def test_unfixed_step_asks_the_user(db) -> None:
     llm = ScriptedLLM(plan, [group_by("revenu2"), group_by("revenu3")])
     events = await collect(make_agent(db, llm))
 
-    assert kinds(events) == ["progress", "progress", "clarification_needed"]
-    assert [event["data"]["attempt"] for event in events[:2]] == [1, 2]
+    assert kinds(events) == [*PLANNED, "step:fixing", "step:fixing", *FAILED]
+    assert [progress["attempt"] for progress in fixing(events)] == [1, 2]
+    failed = events[-2]["data"]
+    assert failed["step_id"] == 0
+    assert "revenu3" in failed["error"]
+    assert failed["elapsed_ms"] >= 0
     assert "revenu3" in events[-1]["data"]["error"]
     pending = SessionMemory("s1").get_pending_recovery()
     assert pending["attempts_made"] == STEP_FIX_ATTEMPTS + 1 == 3
@@ -127,9 +150,9 @@ async def test_invalid_fix_counts_as_attempt(db) -> None:
     llm = ScriptedLLM(plan, [unknown, group_by("revenue")])
     events = await collect(make_agent(db, llm))
 
-    assert kinds(events) == ["progress", "progress", "text", "chart", "done"]
+    assert kinds(events) == [*PLANNED, "step:fixing", "step:fixing", *ANSWERED]
     # Фронт видит ошибку выполнения шага, а не валидации исправления.
-    assert all("revenu" in event["data"]["error"] for event in events[:2])
+    assert all("revenu" in progress["error"] for progress in fixing(events))
     # Вторая попытка получает и ошибку выполнения, и отклонённый вариант
     # с причиной отказа.
     prompt = llm.prompts["ResearchStep"][1]
@@ -144,7 +167,7 @@ async def test_rejected_fixes_ask_with_the_step_error(db) -> None:
     llm = ScriptedLLM(plan, [unknown, unknown])
     events = await collect(make_agent(db, llm))
 
-    assert kinds(events) == ["progress", "progress", "clarification_needed"]
+    assert kinds(events) == [*PLANNED, "step:fixing", "step:fixing", *FAILED]
     # Пользователь видит, что не так с его данными, а не ошибку модели.
     error = events[-1]["data"]["error"]
     assert "revenu" in error
@@ -160,7 +183,7 @@ async def test_unavailable_planner_stops_fixing(db) -> None:
     llm = ScriptedLLM(plan, [ConnectionError("LLM недоступна")])
     events = await collect(make_agent(db, llm))
 
-    assert kinds(events) == ["progress", "clarification_needed"]
+    assert kinds(events) == [*PLANNED, "step:fixing", *FAILED]
     # Пользователь видит ошибку шага, а не сбой LLM.
     assert "revenu" in events[-1]["data"]["error"]
     assert SessionMemory("s1").get_pending_recovery()["attempts_made"] == 1
@@ -180,7 +203,7 @@ async def test_unreadable_columns_do_not_stop_fixing(db, monkeypatch) -> None:
     monkeypatch.setattr(db, "query", failing_query)
     events = await collect(agent)
 
-    assert kinds(events) == ["progress", "text", "chart", "done"]
+    assert kinds(events) == [*PLANNED, "step:fixing", *ANSWERED]
     assert "Колонки входной таблицы шага (имя: тип):\nнет" in llm.prompts["ResearchStep"][0]
 
 
@@ -191,7 +214,7 @@ async def test_broken_input_reference_shows_previous_columns(db) -> None:
     llm.answers["ResearchPlan"].append(plan)
     events = await collect(make_agent(db, llm))
 
-    assert kinds(events) == ["progress", "text", "chart", "done"]
+    assert kinds(events) == [*PLANNED, "step:fixing", *ANSWERED]
     assert "region: VARCHAR" in llm.prompts["ResearchStep"][0]
 
 

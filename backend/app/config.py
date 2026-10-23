@@ -7,7 +7,7 @@
 from functools import lru_cache
 from pathlib import Path
 
-from pydantic import SecretStr, field_validator
+from pydantic import AliasChoices, Field, SecretStr, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 _BACKEND_DIR = Path(__file__).resolve().parent.parent
@@ -33,6 +33,7 @@ class Settings(BaseSettings):
     duckdb_path: str = "backend/storage/duckdb/main.duckdb"
     sqlite_path: str = "backend/storage/sessions/sessions.sqlite"
     csv_max_upload_mb: int = 1024
+    result_ttl_s: int = 6 * 3600
 
     # Лимиты песочницы / агента
     wasm_timeout_s: int = 60
@@ -46,7 +47,11 @@ class Settings(BaseSettings):
     agent_max_steps: int = 12
     semantic_top_k: int = 5
 
-    postgres_max_tables: int = 50
+    # POSTGRES_MAX_TABLES — прежнее имя; DB_MAX_TABLES важнее, если заданы оба.
+    db_max_tables: int = Field(
+        default=50, validation_alias=AliasChoices("DB_MAX_TABLES", "POSTGRES_MAX_TABLES")
+    )
+    postgres_restore_timeout_s: int = 60
 
     profile_approx_quantile: bool = True
     profile_approx_min_rows: int = 100_000
