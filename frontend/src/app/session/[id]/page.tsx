@@ -10,7 +10,8 @@ import Splitter from "@/components/ui/Splitter";
 import WorkspaceShell from "@/components/layout/WorkspaceShell";
 import ChatPanel from "@/components/chat/ChatPanel";
 import Canvas from "@/components/canvas/Canvas";
-import { useSessionStore } from "@/store/sessionStore";
+import TablePassport from "@/components/chat/TablePassport";
+import { useSessionDatabase, useSessionStore } from "@/store/sessionStore";
 import { PANEL_WIDTH, useUiStore } from "@/store/uiStore";
 import { useT } from "@/i18n/useT";
 
@@ -23,6 +24,9 @@ export default function SessionPage({ params }: { params: { id: string } }) {
   const panelWidth = useUiStore((s) => s.panelWidth);
   const setPanelWidth = useUiStore((s) => s.setPanelWidth);
   const dragStartWidth = useRef(panelWidth);
+  const database = useSessionDatabase(params.id);
+  const activeTable = useSessionStore((s) => s.sessionActiveTable[params.id]);
+  const brief = database?.profiles?.find((p) => p.table === activeTable);
 
   useEffect(() => {
     if (params.id) {
@@ -60,6 +64,11 @@ export default function SessionPage({ params }: { params: { id: string } }) {
         <section
           className={`min-w-0 flex-1 overflow-hidden ${mobileTab === "chat" ? "flex flex-col" : "hidden lg:flex lg:flex-col"}`}
         >
+          {brief && (
+            <div className="shrink-0 px-4 pt-3">
+              <TablePassport brief={brief} database={database || undefined} sessionId={params.id} />
+            </div>
+          )}
           <ChatPanel sessionId={params.id} />
         </section>
 

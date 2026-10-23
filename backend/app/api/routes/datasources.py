@@ -16,7 +16,7 @@ from uuid import uuid4
 from fastapi import APIRouter, BackgroundTasks, Depends, File, HTTPException, UploadFile
 
 from app.api.deps import get_db
-from app.api.schemas.datasource import DatasourceCreate, DatasourceOut
+from app.api.schemas.datasource import DatasourceCreate, DatasourceOut, TableBrief
 from app.config import settings
 from app.core.data import ingest
 from app.core.data.connectors.base import BaseConnector
@@ -27,6 +27,8 @@ from app.core.data.connectors.postgres import (
     PostgresExtensionUnavailableError,
 )
 from app.core.data.duckdb_manager import DuckDBManager
+from app.core.data.profiling import TableProfile
+from app.core.memory.profile_memory import ProfileMemory
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -75,6 +77,28 @@ async def describe_tables(
         await ingest.describe(connector, db, tables, document)
     except Exception:
         logger.exception("Описание таблиц %s не перенесено в паспорт", tables)
+        with db.lock:
+            memory = ProfileMemory(db)
+            for table in tables:
+                if memory.load_description_status(table) == "pending":
+                    memory.set_description_status(table, "failed")
+
+
+def briefs(
+    connector: BaseConnector,
+    db: DuckDBManager,
+    profiles: dict[str, TableProfile],
+    document: str | None,
+) -> list[TableBrief]:
+    """Пометить pending таблицы с описанием и собрать сводки паспортов. Под db.lock."""
+    ingest.mark_pending(connector, db, list(profiles), document)
+    memory = ProfileMemory(db)
+    return [
+        TableBrief.from_profile(
+            profile, memory.load_description_status(table), connector.warnings(table)
+        )
+        for table, profile in profiles.items()
+    ]
 
 
 @router.post("/csv", response_model=DatasourceOut)
@@ -103,7 +127,9 @@ def attach_csv(
             paths[name] = str(target)
         connector = CSVConnector(paths)
         with db.lock:
-            tables = list(ingest.attach(connector, db))
+            profiles = ingest.attach(connector, db)
+            tables = list(profiles)
+            summaries = briefs(connector, db, profiles, document)
     except CSVLoadError as error:
         shutil.rmtree(folder, ignore_errors=True)
         raise HTTPException(status_code=400, detail=str(error)) from None
@@ -111,7 +137,7 @@ def attach_csv(
         shutil.rmtree(folder, ignore_errors=True)
         raise
     background.add_task(describe_tables, connector, db, tables, document)
-    return DatasourceOut(datasource_id=datasource_id, kind="csv", tables=tables)
+    return DatasourceOut(datasource_id=datasource_id, kind="csv", tables=tables, profiles=summaries)
 
 
 @router.post("/db", response_model=DatasourceOut)
@@ -123,7 +149,9 @@ def attach_db(
     try:
         connector = build_connector(payload.kind, payload.dsn, payload.db_schema)
         with db.lock:
-            tables = list(ingest.attach(connector, db))
+            profiles = ingest.attach(connector, db)
+            tables = list(profiles)
+            summaries = briefs(connector, db, profiles, payload.description)
     except ValueError as error:
         raise HTTPException(status_code=400, detail=str(error)) from None
     except PostgresConnectionError as error:
@@ -136,4 +164,6 @@ def attach_db(
         ) from None
     background.add_task(describe_tables, connector, db, tables, payload.description)
     datasource_id = getattr(connector, "identity", f"{payload.kind}_{uuid4().hex[:10]}")
-    return DatasourceOut(datasource_id=datasource_id, kind=payload.kind, tables=tables)
+    return DatasourceOut(
+        datasource_id=datasource_id, kind=payload.kind, tables=tables, profiles=summaries
+    )
