@@ -16,8 +16,9 @@ from typing import Any
 
 VEGA_LITE_SCHEMA = "https://vega.github.io/schema/vega-lite/v5.json"
 SPEC_ROW_LIMIT = 500
-CHART_TYPES = ("bar", "line", "area", "scatter", "histogram", "box", "heatmap", "table")
+CHART_TYPES = ("bar", "line", "area", "scatter", "histogram", "box", "heatmap", "table", "kpi")
 COUNT_TITLE = "Количество"
+KPI_FORMAT = ",.2~f"
 ROW_FIELD = "_row"
 COLUMN_FIELD = "_column"
 VALUE_FIELD = "_value"
@@ -38,6 +39,7 @@ _MARKS = {
     "box": "boxplot",
     "heatmap": "rect",
     "table": "text",
+    "kpi": {"type": "text", "fontSize": 48},
 }
 
 
@@ -310,6 +312,21 @@ def _table(columns: _Columns) -> tuple[str, dict]:
     return "table", {"transform": transform, "encoding": encoding}
 
 
+def _kpi(columns: _Columns) -> tuple[str, dict]:
+    metric = columns.metric()
+    if metric is None:
+        return _table(columns)
+    text_channel = columns.channel(metric, format=KPI_FORMAT)
+    return "kpi", {
+        "title": columns.labels[metric],
+        "transform": [
+            {"window": [{"op": "row_number", "as": ROW_FIELD}]},
+            {"filter": f"datum.{ROW_FIELD} == 1"},
+        ],
+        "encoding": {"text": text_channel, "tooltip": _tip(text_channel)},
+    }
+
+
 _ENCODERS = {
     "bar": _bar,
     "line": _line,
@@ -319,4 +336,5 @@ _ENCODERS = {
     "box": _box,
     "heatmap": _heatmap,
     "table": _table,
+    "kpi": _kpi,
 }
