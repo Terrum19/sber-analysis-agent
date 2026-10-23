@@ -118,7 +118,7 @@ def test_chart_view_change_uses_chart_of_current_table(agent, db):
     events = ask(agent, "switch", "Сделай таблицей")
     assert len(agent.planner.columns) == 2
     assert agent.planner.columns[-1] == ["age", "city"]
-    assert events[0]["type"] == "text"
+    assert next(event["type"] for event in events if event["type"] != "progress") == "text"
 
     SessionMemory("switch").set_table("sales", db.columns("sales"))
     events = ask(agent, "switch", "Сделай таблицей")

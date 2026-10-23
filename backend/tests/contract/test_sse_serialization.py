@@ -1,5 +1,7 @@
 """Contract-тесты: формат SSE сериализации."""
 
+import json
+
 import pytest
 from fastapi.testclient import TestClient
 
@@ -50,3 +52,36 @@ def test_sse_compact_json_no_spaces(fake_llm):
     assert '"type":"text"' in text
     assert '"type":"chart"' in text
     assert '"type":"done"' in text
+
+
+def test_sse_progress_events(fake_llm):
+    client = TestClient(app)
+    response = client.post(
+        "/api/chat",
+        json={"session_id": session(client), "question": "Тест SSE"},
+    )
+    events = [
+        json.loads(line.removeprefix("data: "))
+        for line in response.text.splitlines()
+        if line.startswith("data: ")
+    ]
+    progress = [event["data"] for event in events if event["type"] == "progress"]
+    assert {"stage": "planning", "status": "started"} in progress
+    assert {"stage": "insight", "status": "started"} in progress
+    assert {"stage": "chart", "status": "started"} in progress
+    planned = next(
+        data for data in progress if data["stage"] == "planning" and data["status"] == "finished"
+    )
+    assert planned["total_steps"] >= 1
+    finished = [
+        data for data in progress if data["stage"] == "step" and data["status"] == "finished"
+    ]
+    assert len(finished) == planned["total_steps"]
+    assert all(isinstance(data["elapsed_ms"], int) for data in finished)
+    assert all(value is not None for data in progress for value in data.values())
+    assert '"type":"progress"' in response.text
+    assert '"stage":"planning"' in response.text
+    kinds = [event["type"] for event in events]
+    assert (
+        kinds.index("progress") < kinds.index("text") < kinds.index("chart") < kinds.index("done")
+    )

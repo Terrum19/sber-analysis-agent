@@ -52,12 +52,12 @@
 
 | type | data | когда |
 |---|---|---|
-| `progress` | `ProgressPayload` (ниже) | по ходу плана, до ответа |
+| `progress` | `ProgressPayload` (ниже) | по ходу хода: план, шаги, начало инсайта и графика |
 | `text` | `{headline, details}` | инсайт готов |
 | `chart` | `{spec, caption}` | Vega-Lite спека |
 | `dashboard` | `{dashboard_id}` | дашборд собран по запросу |
 | `clarification_needed` | `{step_id, error, suggestions}` | шаг не выполнился, ждём `recovery_response` |
-| `error` | `{...}` | сбой хода |
+| `error` | `{message}` | сбой хода; дальше `done` |
 | `done` | `{}` | ход завершён |
 
 `ProgressPayload`: `stage` (`planning` / `step` / `insight` / `chart` /
@@ -65,7 +65,53 @@
 необязательные `step_id`, `tool`, `purpose`, `total_steps`, `elapsed_ms`,
 `attempt`, `error` — пустые поля в событие не попадают.
 
-Сейчас оркестратор шлёт только исправление шага:
+События прогресса по порядку:
+
+| stage | status | поля | когда |
+|---|---|---|---|
+| `planning` | `started` | — | планировщик получил вопрос |
+| `planning` | `failed` | `error` | планировщик упал (LLM недоступна), дальше `error` и `done` |
+| `planning` | `finished` | `total_steps` | план готов (`0` — инструментов нет, дальше `clarification_needed`) |
+| `step` | `started` | `step_id`, `tool`, `purpose` | шаг начал выполняться |
+| `step` | `fixing` | `step_id`, `tool`, `purpose`, `attempt`, `error` | шаг упал, планировщик исправляет его |
+| `step` | `finished` | `step_id`, `tool`, `purpose`, `elapsed_ms` | шаг выполнен (время — с учётом исправлений) |
+| `step` | `failed` | `step_id`, `tool`, `purpose`, `elapsed_ms`, `error` | шаг не исправился, дальше `clarification_needed` |
+| `insight` | `started` | — | план выполнен, генерируется инсайт (дальше `text`) |
+| `chart` | `started` | — | строится график (дальше `chart`) |
+| `insight` / `chart` | `failed` | `error` | этап упал, дальше `error` и `done` |
+| `dashboard` | `failed` | `error` | дашборд не собран; ответ и график уже отданы, дальше `done` без `error` |
+
+`planning` приходит один раз на новый вопрос: ни достройка плана после
+lookup-шага, ни ответ на уточнение (`recovery_response`) его не шлют, а
+шаги после них идут теми же событиями `step`. У `step/finished` и
+`step/failed` поля `tool` и `purpose` — от последней версии шага (после
+исправления). Смена вида прошлого графика («сделай таблицей») идёт без
+плана: сразу `chart` и `done`. Этап `dashboard` шлёт только `failed`.
+
+Ход всегда заканчивается `done` или `clarification_needed`: любой сбой
+вне шагов (планировщик, инсайт, график) приходит как
+`<stage>/failed` с текстом ошибки, затем `error` с сообщением для
+пользователя и `done`. Упавший шаг сюда не относится — он идёт через
+`fixing` и `clarification_needed`. Сбой дашборда ход не проваливает:
+после `dashboard/failed` сразу `done`, ответ сохраняется в памяти сессии.
+
+Пример успешного хода из одного шага:
+
+```json
+{"type": "progress", "data": {"stage": "planning", "status": "started"}}
+{"type": "progress", "data": {"stage": "planning", "status": "finished", "total_steps": 1}}
+{"type": "progress", "data": {"stage": "step", "status": "started", "step_id": 1,
+ "tool": "group_by", "purpose": "Выручка по регионам"}}
+{"type": "progress", "data": {"stage": "step", "status": "finished", "step_id": 1,
+ "tool": "group_by", "purpose": "Выручка по регионам", "elapsed_ms": 42}}
+{"type": "progress", "data": {"stage": "insight", "status": "started"}}
+{"type": "text", "data": {"headline": "...", "details": ["..."]}}
+{"type": "progress", "data": {"stage": "chart", "status": "started"}}
+{"type": "chart", "data": {"spec": {}, "caption": "..."}}
+{"type": "done", "data": {}}
+```
+
+Исправление шага:
 
 ```json
 {"type": "progress", "data": {"stage": "step", "status": "fixing", "step_id": 1,
@@ -77,5 +123,5 @@
 последняя ошибка выполнения шага (отклонённое валидацией исправление её не
 меняет: причину отказа видит только планировщик). План и шаги идут задачей
 (`AgentOrchestrator._research`), события из неё приходят через `emit` и
-очередь в `run()` сразу, не дожидаясь конца плана; новые события прогресса
-добавляются вызовом `emit` в нужном месте.
+очередь в `run()` сразу, не дожидаясь конца плана; `insight` и `chart`
+`run()` отдаёт сам (`yield`).
