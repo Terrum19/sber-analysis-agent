@@ -1,5 +1,17 @@
 2026-10-23  Alexander Yurits  <terruwork@gmail.com>
 
+	Восстановление источника пропускает таблицу без прав, как attach.
+	* backend/app/core/data/ingest.py (restore): Сбой профиля —
+	connector.skip(), при пропуске паспорт таблицы удаляется; иначе
+	connector.rollback().  Возвращает таблицы без пропущенных.
+	* backend/tests/unit/test_datasource_restore.py
+	(test_ingest_restore_skips_unreadable_table)
+	(test_ingest_restore_rolls_back_on_read_error): Новые тесты.
+	* docs/data_connectors.md (Восстановление после перезапуска): skip и
+	rollback при восстановлении.
+
+2026-10-23  Alexander Yurits  <terruwork@gmail.com>
+
 	Сбой дашборда не перечёркивает показанный ответ.
 	* backend/app/core/agent/orchestrator.py (AgentOrchestrator.run):
 	Дашборд собирается вне общего try инсайта и графика: при сбое —
@@ -24,6 +36,48 @@
 	(test_insight_failure_ends_the_stream): Новые тесты.
 	* docs/architecture.md (События стрима чата): События failed этапов
 	и гарантия done.
+
+2026-10-22  mb6ockatf  <smokenmirror@tutamail.com>
+
+	Источники PostgreSQL переживают перезапуск бэкенда (#118).
+	* backend/app/core/memory/datasource_store.py (DatasourceRecord)
+	(DatasourceStore): Новое хранилище подключённых источников в SQLite
+	(таблица datasources по SQLITE_PATH): upsert по identity, get, list,
+	delete.  DSN хранится только маскированным.
+	* backend/app/core/data/restore.py (remember): Новая функция:
+	запомнить источник PostgreSQL после подключения.  (password_for):
+	Пароль из POSTGRES_PASSWORD__<identity> или POSTGRES_PASSWORD
+	(окружение важнее .env).  (connection_string): DSN из хранилища с
+	паролем из env; None, если пароль нужен, но не задан.
+	(restore_saved_sources): Переподключить источники по очереди, каждый
+	в потоке с таймаутом; ошибка источника только пишется в лог.
+	(forget): Снять представления источника, удалить паспорта его таблиц и
+	запись.
+	* backend/app/core/data/ingest.py (restore): Новая функция:
+	переподключение без повторного профилирования таблиц, у которых
+	паспорт совпадает с колонками представления.
+	* backend/app/core/data/duckdb_manager.py (DuckDBManager.columns):
+	Искать и во временных представлениях; при совпадении имени брать
+	колонки из temp, как SELECT * FROM.  Тот же текст, что в #111.
+	* backend/app/api/routes/datasources.py (attach_db): Запоминать
+	источник.  (detach_db): Новый DELETE /api/datasources/{id}: 204 или
+	404.
+	* backend/app/main.py (lifespan): Фоновое восстановление источников,
+	задача отменяется при остановке.
+	* backend/app/config.py (Settings): postgres_restore_timeout_s.
+	* .env.example: POSTGRES_PASSWORD, POSTGRES_RESTORE_TIMEOUT_S.
+	* backend/tests/unit/test_datasource_restore.py: Новые тесты:
+	хранилище и upsert, пароль не попадает на диск, порядок источников
+	пароля, восстановление без перепрофилирования и с ним, сбой, таймаут и
+	нет пароля у одного источника, DELETE, фоновая задача lifespan,
+	columns() для TEMP VIEW.
+	* backend/tests/integration/test_postgres_connector.py
+	(test_saved_source_is_restored_after_restart): Подключить через API,
+	закрыть DuckDBManager, открыть новый на том же файле, восстановить,
+	проверить SELECT, columns() и имена, удалить через DELETE.
+	* docs/data_connectors.md: Восстановление после перезапуска, пароли в
+	env, DELETE.
+	* docs/repo_structure.md: restore.py, datasource_store.py.
 
 2026-10-22  mb6ockatf  <smokenmirror@tutamail.com>
 

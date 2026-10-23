@@ -5,6 +5,7 @@
 Сразу после подключения таблицы профилируются (ingest.attach); если к
 источнику есть описание — комментарии колонок или приложенный документ, —
 названия и описания колонок переносятся в паспорт в фоне (ingest.describe).
+Источник БД запоминается и переподключается после рестарта (core/data/restore.py).
 """
 
 import logging
@@ -19,7 +20,7 @@ from fastapi import APIRouter, BackgroundTasks, Depends, File, HTTPException, Up
 from app.api.deps import get_db
 from app.api.schemas.datasource import DatasourceCreate, DatasourceOut
 from app.config import settings
-from app.core.data import ingest
+from app.core.data import ingest, restore
 from app.core.data.connectors.base import BaseConnector
 from app.core.data.connectors.clickhouse import (
     ClickHouseConnectionError,
@@ -150,6 +151,14 @@ def attach_db(
         raise HTTPException(
             status_code=501, detail=f"Коннектор «{payload.kind}» пока не реализован."
         ) from None
+    restore.remember(connector, payload.description)
     background.add_task(describe_tables, connector, db, tables, payload.description)
     datasource_id = getattr(connector, "identity", f"{payload.kind}_{uuid4().hex[:10]}")
     return DatasourceOut(datasource_id=datasource_id, kind=payload.kind, tables=tables)
+
+
+@router.delete("/{datasource_id}", status_code=204)
+def detach_db(datasource_id: str, db: Annotated[DuckDBManager, Depends(get_db)]) -> None:
+    """Отключить источник БД и забыть его: после рестарта он не переподключится."""
+    if restore.forget(db, datasource_id) is None:
+        raise HTTPException(status_code=404, detail=f"Источник «{datasource_id}» не найден.")

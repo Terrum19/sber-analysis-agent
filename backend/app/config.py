@@ -51,6 +51,7 @@ class Settings(BaseSettings):
     db_max_tables: int = Field(
         default=50, validation_alias=AliasChoices("DB_MAX_TABLES", "POSTGRES_MAX_TABLES")
     )
+    postgres_restore_timeout_s: int = 60
 
     profile_approx_quantile: bool = True
     profile_approx_min_rows: int = 100_000

@@ -15,20 +15,24 @@ from fastapi import FastAPI
 from app.api.routes import artifacts, chat, dashboards, datasources, sessions
 from app.config import settings
 from app.core.data.duckdb_manager import DuckDBManager
+from app.core.data.restore import restore_saved_sources
 from app.core.data.result_retention import cleanup, cleanup_forever
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
-    """Инициализация ресурсов при старте (DuckDB, реестр, песочница) и очистка temp_result_vN."""
+    """Инициализация ресурсов при старте (DuckDB, реестр, песочница), очистка temp_result_vN
+    и переподключение источников БД."""
     # TODO(round-2): инициализация ToolRegistry, WASMRuntime
     app.state.db = DuckDBManager(settings.duckdb_path)
     cleanup(app.state.db)
     cleaner = asyncio.create_task(cleanup_forever(app.state.db))
+    restorer = asyncio.create_task(restore_saved_sources(app.state.db))
     yield
-    cleaner.cancel()
-    with suppress(asyncio.CancelledError):
-        await cleaner
+    for task in (cleaner, restorer):
+        task.cancel()
+        with suppress(asyncio.CancelledError):
+            await task
     app.state.db.close()
 
 
