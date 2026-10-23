@@ -352,17 +352,20 @@ HTTP-клиент отсутствуют. Лимит строк коннекто
   "datasource_id": "ch_1a2b3c4d5e",
   "kind": "clickhouse",
   "tables": ["orders", "users"],
-  "profile_summary": "",
-  "warnings": []
+  "profile_summary": ""
 }
 ```
 
-| Код | Когда |
-|---|---|
-| 400 | некорректная строка подключения (`ValueError`) |
-| 422 | неизвестный `kind` (валидация pydantic) |
-| 502 | ClickHouse недоступен или отклонил подключение (`ClickHouseConnectionError`) |
-| 503 | расширение `clickhouse_scanner` недоступно (`ClickHouseExtensionUnavailableError`) |
+Коды ответа — как у PostgreSQL (таблица выше): 502 —
+`ClickHouseConnectionError`, 503 — `ClickHouseExtensionUnavailableError`,
+422 — сбой профиля, текст ошибки проходит через `ClickHouseConnector.scrub`.
+Если таблиц больше `DB_MAX_TABLES`, подключаются первые по алфавиту, а
+`ClickHouseConnector.warnings(table)` возвращает предупреждение об обрезке.
+
+Причина в тексте 502 определяется по коду ClickHouse в тексте ошибки
+(`Code: 81`, `ClickHouse error 516`; таблица `CLICKHOUSE_ERROR_CODES`), а без
+кода — по маркерам (`describe_failure`): неизвестная база или таблица,
+учётные данные, хост, сеть, права.
 
 ## Описания колонок из источника
 

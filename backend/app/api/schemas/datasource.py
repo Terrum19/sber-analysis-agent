@@ -21,4 +21,3 @@ class DatasourceOut(BaseModel):
     kind: Literal["csv", "postgres", "clickhouse"]
     tables: list[str]
     profile_summary: str = ""  # «передо мной X Y Z» от LLM
-    warnings: list[str] = Field(default_factory=list)

@@ -3,6 +3,7 @@ import logging
 import duckdb
 import pytest
 
+from app.config import Settings, settings
 from app.core.data.connectors.clickhouse import (
     ClickHouseConnectionError,
     ClickHouseConnector,
@@ -84,10 +85,14 @@ def test_quoting_helpers() -> None:
     ("text", "expected"),
     [
         ("Password authentication failed for user sber", "учётные данные"),
-        ("HTTP 401 Unauthorized", "учётные данные"),
+        ("Authentication failed: password is incorrect", "учётные данные"),
         ("nodename nor servname provided, or not known", "Не удалось найти хост"),
         ("Connection refused", "недоступен"),
-        ("Database missing_db doesn't exist", "не существует"),
+        ("Database missing_db doesn't exist", "база данных не существует"),
+        ("Table default.missing doesn't exist", "таблица не существует"),
+        ("Failed to connect to ClickHouse: Database `nope` does not exist", "база данных"),
+        ("Failed to connect to ClickHouse: Connection refused", "недоступен"),
+        ("Remote at port 9000 returned 401 rows", "Не удалось подключиться к ClickHouse."),
         ("Access denied for user", "Недостаточно прав"),
         ("Something completely unexpected", "Не удалось подключиться к ClickHouse."),
     ],
@@ -96,21 +101,20 @@ def test_describe_failure(text: str, expected: str) -> None:
     assert expected in describe_failure(text)
 
 
-def test_describe_failure_with_clickhouse_error_code() -> None:
-    class DummyCHError(Exception):
-        def __init__(self, code: int):
-            self.code = code
-
-    assert "не существует" in describe_failure("Generic error", error=DummyCHError(81))
-    assert "учётные данные" in describe_failure("Generic error", error=DummyCHError(516))
-    assert "Недостаточно прав" in describe_failure("Generic error", error=DummyCHError(497))
-    assert "недоступен" in describe_failure("Generic error", error=DummyCHError(210))
-    assert "Не удалось подключиться к ClickHouse." in describe_failure(
-        "Generic error", error=DummyCHError(999)
-    )
-    assert "Не удалось подключиться к ClickHouse." in describe_failure(
-        "Generic error", error=Exception("no code")
-    )
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        ("ClickHouse error 81: no such thing", "база данных не существует"),
+        ("Code: 60. DB::Exception: oops", "таблица не существует"),
+        ("Code: 516. DB::Exception: default: Authentication failed", "учётные данные"),
+        ("Code: 193. DB::Exception: Wrong password", "учётные данные"),
+        ("Code: 497. DB::Exception: Not enough privileges", "Недостаточно прав"),
+        ("Code: 210. DB::NetException: Connection refused", "недоступен"),
+        ("Code: 241. DB::Exception: Memory limit exceeded", "Не удалось подключиться"),
+    ],
+)
+def test_describe_failure_by_clickhouse_error_code(text: str, expected: str) -> None:
+    assert expected in describe_failure(text)
 
 
 class FakeDuckDB:
@@ -227,7 +231,9 @@ def test_max_tables_limits_tables(caplog: pytest.LogCaptureFixture) -> None:
         views = connector.connect(db)
     assert views == ["t1", "t2"]
     assert "DB_MAX_TABLES" in caplog.text
-    assert connector.warnings == ["Подключены первые 2 таблиц из-за ограничения DB_MAX_TABLES."]
+    assert connector.warnings("t1") == [
+        "Подключены первые 2 таблиц из-за ограничения DB_MAX_TABLES."
+    ]
 
 
 def test_name_collision_gets_prefixed() -> None:
@@ -280,6 +286,30 @@ def test_factory_builds_clickhouse_with_schema() -> None:
     connector = build_connector("clickhouse", "clickhouse://localhost/db1", schema="db2")
     assert isinstance(connector, ClickHouseConnector)
     assert connector.dsn.database == "db2"
+
+
+def test_connector_scrub_masks_password() -> None:
+    connector = ClickHouseConnector(DSN)
+    assert connector.scrub("Binder Error: TopSecret") == "Binder Error: ***"
+
+
+def test_warnings_is_a_method_and_empty_by_default() -> None:
+    # BaseConnector.warnings(table) — метод; атрибут с тем же именем ломал бы его вызов.
+    connector = ClickHouseConnector(DSN)
+    connector.connect(FakeDuckDB(tables=["t1"]))
+    assert connector.warnings("t1") == []
+
+
+def test_max_tables_defaults_to_config(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(settings, "db_max_tables", 1)
+    assert ClickHouseConnector(DSN).connect(FakeDuckDB(tables=["t1", "t2"])) == ["t1"]
+
+
+def test_db_max_tables_wins_over_legacy_postgres_name(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("POSTGRES_MAX_TABLES", "50")
+    assert Settings(_env_file=None).db_max_tables == 50
+    monkeypatch.setenv("DB_MAX_TABLES", "10")
+    assert Settings(_env_file=None).db_max_tables == 10
 
 
 def test_connector_repr() -> None:

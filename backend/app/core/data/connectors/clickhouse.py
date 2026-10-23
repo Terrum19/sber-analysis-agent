@@ -26,29 +26,46 @@ DEFAULT_DATABASE = "default"
 DEFAULT_USER = "default"
 MASK = "***"
 
+NO_DATABASE = "Указанная база данных не существует на сервере ClickHouse."
+NO_TABLE = "Указанная таблица не существует на сервере ClickHouse."
+BAD_CREDENTIALS = "ClickHouse отклонил учётные данные: проверьте пользователя и пароль."
+NO_ACCESS = "Недостаточно прав для чтения данных ClickHouse."
+UNREACHABLE = "Сервер ClickHouse недоступен: проверьте сеть, хост и порт."
+
+# Коды из src/Common/ErrorCodes.cpp; в тексте ошибки они идут как «Code: 81» или
+# «ClickHouse error 81».
 CLICKHOUSE_ERROR_CODES: dict[int, str] = {
-    81: "Указанная база данных не существует на сервере ClickHouse.",
-    60: "Указанная таблица не существует на сервере ClickHouse.",
-    192: "ClickHouse отклонил учётные данные: проверьте пользователя и пароль.",
-    516: "ClickHouse отклонил учётные данные: проверьте пользователя и пароль.",
-    497: "Недостаточно прав для чтения данных ClickHouse.",
-    241: "Недостаточно прав для чтения данных ClickHouse.",
-    210: "Сервер ClickHouse недоступен: проверьте сеть, хост и порт.",
-    102: "Сервер ClickHouse недоступен: проверьте сеть, хост и порт.",
-    159: "Сервер ClickHouse недоступен: проверьте сеть, хост и порт.",
+    60: NO_TABLE,  # UNKNOWN_TABLE
+    81: NO_DATABASE,  # UNKNOWN_DATABASE
+    102: UNREACHABLE,  # UNEXPECTED_PACKET_FROM_SERVER: обычно не тот порт
+    159: UNREACHABLE,  # TIMEOUT_EXCEEDED
+    192: BAD_CREDENTIALS,  # UNKNOWN_USER
+    193: BAD_CREDENTIALS,  # WRONG_PASSWORD
+    194: BAD_CREDENTIALS,  # REQUIRED_PASSWORD
+    209: UNREACHABLE,  # SOCKET_TIMEOUT
+    210: UNREACHABLE,  # NETWORK_ERROR
+    497: NO_ACCESS,  # ACCESS_DENIED
+    516: BAD_CREDENTIALS,  # AUTHENTICATION_FAILED
 }
+ERROR_CODE = re.compile(r"\b(?:clickhouse error|code:?)\s*(\d+)\b", re.IGNORECASE)
 
 FAILURE_REASONS = (
+    (
+        ("unknown_database", "unknown database"),
+        NO_DATABASE,
+    ),
+    (
+        ("unknown_table", "unknown table"),
+        NO_TABLE,
+    ),
     (
         (
             "password authentication failed",
             "authentication failed",
             "wrong password",
             "credentials",
-            "401",
-            "403",
         ),
-        "ClickHouse отклонил учётные данные: проверьте пользователя и пароль.",
+        BAD_CREDENTIALS,
     ),
     (
         (
@@ -61,7 +78,7 @@ FAILURE_REASONS = (
     ),
     (
         ("failed to connect to clickhouse",),
-        "Сервер ClickHouse недоступен: проверьте сеть, хост и порт.",
+        UNREACHABLE,
     ),
     (
         (
@@ -75,20 +92,11 @@ FAILURE_REASONS = (
             "remote end closed",
             "operation not permitted",
         ),
-        "Сервер ClickHouse недоступен: проверьте сеть, хост и порт.",
-    ),
-    (
-        (
-            "database does not exist",
-            "database doesn't exist",
-            "doesn't exist",
-            "unknown database",
-        ),
-        "Указанная база данных не существует на сервере ClickHouse.",
+        UNREACHABLE,
     ),
     (
         ("access denied", "not allowed", "permission denied"),
-        "Недостаточно прав для чтения данных ClickHouse.",
+        NO_ACCESS,
     ),
 )
 
@@ -111,17 +119,17 @@ def quote_literal(value: str) -> str:
     return f"'{escaped}'"
 
 
-def describe_failure(text: str, error: Exception | None = None) -> str:
-    if error is not None:
-        code = getattr(error, "code", None)
-        if isinstance(code, int) and code in CLICKHOUSE_ERROR_CODES:
-            return CLICKHOUSE_ERROR_CODES[code]
-    match = re.search(r"\bclickhouse error\s+(\d+)\b", text, re.IGNORECASE)
-    if match:
-        code = int(match.group(1))
-        if code in CLICKHOUSE_ERROR_CODES:
-            return CLICKHOUSE_ERROR_CODES[code]
+def describe_failure(text: str) -> str:
+    """Причина сбоя по тексту ошибки DuckDB: у её исключений нет кода ClickHouse."""
+    for match in ERROR_CODE.finditer(text):
+        reason = CLICKHOUSE_ERROR_CODES.get(int(match.group(1)))
+        if reason is not None:
+            return reason
     lowered = text.lower()
+    # «Database `x` doesn't exist» и «Table x.y doesn't exist» без кода.
+    missing = re.search(r"\b(database|table) \S+ (?:does not|doesn't) exist", lowered)
+    if missing:
+        return NO_DATABASE if missing.group(1) == "database" else NO_TABLE
     for markers, reason in FAILURE_REASONS:
         if any(marker in lowered for marker in markers):
             return reason
@@ -217,10 +225,7 @@ class ClickHouseConnector(BaseConnector):
         max_tables: int | None = None,
     ) -> None:
         self.dsn = parse_dsn(dsn, default_database=database)
-        default_max_tables = getattr(
-            settings, "db_max_tables", getattr(settings, "postgres_max_tables", 50)
-        )
-        self.max_tables = default_max_tables if max_tables is None else max_tables
+        self.max_tables = settings.db_max_tables if max_tables is None else max_tables
         if self.max_tables < 1:
             raise ValueError("Лимит таблиц ClickHouse должен быть положительным числом.")
 
@@ -228,7 +233,8 @@ class ClickHouseConnector(BaseConnector):
         self.identity = f"ch_{digest}"
         self.alias = ""
         self.sources: dict[str, str] = {}
-        self.warnings: list[str] = []
+        # Предупреждения по всему источнику; не атрибут warnings — это метод коннектора.
+        self.notes: list[str] = []
 
     def __repr__(self) -> str:
         return f"ClickHouseConnector(dsn={self.dsn.masked()!r})"
@@ -241,7 +247,7 @@ class ClickHouseConnector(BaseConnector):
         started = time.perf_counter()
         self.alias = f"{self.identity}_{secrets.token_hex(3)}"
         self.sources = {}
-        self.warnings = []
+        self.notes = []
 
         self.load_extension(db)
         self.attach(db)
@@ -266,7 +272,7 @@ class ClickHouseConnector(BaseConnector):
                 self.max_tables,
             )
             tables = tables[: self.max_tables]
-            self.warnings.append(
+            self.notes.append(
                 f"Подключены первые {self.max_tables} таблиц из-за ограничения DB_MAX_TABLES."
             )
 
@@ -385,6 +391,13 @@ class ClickHouseConnector(BaseConnector):
         if self.alias:
             self.release(db, self.alias)
 
+    def scrub(self, text: str) -> str:
+        return self.dsn.scrub(text)
+
+    def warnings(self, table: str) -> list[str]:
+        """Предупреждения источника: относятся к каждой его таблице."""
+        return list(self.notes)
+
     def existing_names(self, db) -> set[str]:
         rows = db.query(
             "SELECT view_name AS name FROM duckdb_views() "
@@ -429,5 +442,5 @@ class ClickHouseConnector(BaseConnector):
             self.release(db, self.alias)
         except duckdb.Error:
             logger.warning("ClickHouse %s: не удалось освободить %s", self.source, self.alias)
-        reason = describe_failure(detail, error=error)
+        reason = describe_failure(detail)
         raise ClickHouseConnectionError(f"{reason} Источник: {self.source}.") from None

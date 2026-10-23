@@ -76,12 +76,7 @@ class PostgresConnector(BaseConnector):
     def __init__(self, dsn: str, schema: str | None = None, max_tables: int | None = None) -> None:
         self.dsn = parse_dsn(dsn)
         self.schema = (schema or "").strip() or DEFAULT_SCHEMA
-        default_max = (
-            settings.postgres_max_tables
-            if settings.postgres_max_tables != 50
-            else getattr(settings, "db_max_tables", 50)
-        )
-        self.max_tables = default_max if max_tables is None else max_tables
+        self.max_tables = settings.db_max_tables if max_tables is None else max_tables
         if self.max_tables < 1:
             raise ValueError("Лимит таблиц PostgreSQL должен быть положительным числом.")
         digest = hashlib.sha256(f"{self.dsn.masked()}|{self.schema}".encode()).hexdigest()[:10]
@@ -112,7 +107,7 @@ class PostgresConnector(BaseConnector):
         taken = self.existing_names(db)
         if len(tables) > self.max_tables:
             logger.warning(
-                "PostgreSQL %s: в схеме %d таблиц, подключены первые %d (POSTGRES_MAX_TABLES)",
+                "PostgreSQL %s: в схеме %d таблиц, подключены первые %d (DB_MAX_TABLES)",
                 self.source,
                 len(tables),
                 self.max_tables,

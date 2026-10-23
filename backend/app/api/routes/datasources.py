@@ -152,7 +152,4 @@ def attach_db(
         ) from None
     background.add_task(describe_tables, connector, db, tables, payload.description)
     datasource_id = getattr(connector, "identity", f"{payload.kind}_{uuid4().hex[:10]}")
-    warnings = getattr(connector, "warnings", [])
-    return DatasourceOut(
-        datasource_id=datasource_id, kind=payload.kind, tables=tables, warnings=warnings
-    )
+    return DatasourceOut(datasource_id=datasource_id, kind=payload.kind, tables=tables)

@@ -1,3 +1,31 @@
+2026-10-23  Alexander Yurits  <terruwork@gmail.com>
+
+	ClickHouse-коннектор по ревью #122: совместимость с #126 и #130.
+	* backend/app/core/data/connectors/clickhouse.py
+	(ClickHouseConnector.warnings): Метод вместо атрибута-списка, как
+	BaseConnector.warnings(table) из #126.  Атрибут перекрывал метод:
+	после мержа с #126 подключение ClickHouse падало на вызове списка.
+	(ClickHouseConnector.notes): Новый атрибут, предупреждение об обрезке
+	по DB_MAX_TABLES.
+	(ClickHouseConnector.scrub): Новый метод.  Ошибка профиля (422) теперь
+	без пароля.
+	(CLICKHOUSE_ERROR_CODES): Убран код 241 (MEMORY_LIMIT_EXCEEDED, а не
+	«нет прав»), добавлены 193, 194, 209.
+	(describe_failure): Код ищется в тексте ошибки («Code: 81»): у
+	исключений DuckDB нет атрибута code.  Убраны маркеры «401»/«403»,
+	ловившие любые числа.  «Table ... doesn't exist» больше не выдаётся
+	за отсутствие базы.
+	* backend/app/api/routes/datasources.py (attach_db)
+	* backend/app/api/schemas/datasource.py (DatasourceOut.warnings)
+	* frontend/src/types/datasource.ts: Поле warnings убрано.
+	getattr(connector, "warnings") после мержа с #126 возвращал метод, и
+	любой POST /api/datasources/db по PostgreSQL отвечал 500.
+	* backend/app/config.py (Settings.db_max_tables): POSTGRES_MAX_TABLES —
+	прежнее имя этой же настройки; если заданы обе, важнее DB_MAX_TABLES.
+	(Settings.postgres_max_tables): Удалена.
+	* backend/app/core/data/connectors/postgres.py (PostgresConnector):
+	Лимит из settings.db_max_tables.  Раньше выбирался сравнением с 50.
+
 2026-10-22  dmitriy-ya  <dmitriyyakushonok@yandex.ru>
 
 	Новый ClickHouse-коннектор через DuckDB community extension
@@ -15,8 +43,8 @@
 	утечки пароля.
 	* backend/app/core/data/connectors/factory.py: Регистрация ClickHouse в
 	фабрике коннекторов и передача schema/database.
-	* backend/app/core/data/connectors/postgres.py: Обновление общего
-	контракта/взаимодействия коннекторов для ClickHouse и PostgreSQL.
+	* backend/app/core/data/connectors/postgres.py: Лимит таблиц из
+	DB_MAX_TABLES.
 	* backend/app/api/routes/datasources.py: Подключение ClickHouse к API
 	POST /api/datasources/db, преобразование ошибок коннектора в HTTP 502/503
 	и возврат списка таблиц.
@@ -25,15 +53,11 @@
 	* frontend/src/types/datasource.ts, frontend/src/components/chat/DatasourcePanel.tsx:
 	Добавление ClickHouse в типы источников
 	данных frontend.
-	* backend/app/config.py, .env.example: Настройка DB_MAX_TABLES для лимита
-	количества подключаемых таблиц и удаление устаревшего лимита строк ClickHouse.
+	* backend/app/config.py, .env.example: DB_MAX_TABLES — лимит
+	подключаемых таблиц для PostgreSQL и ClickHouse.
 	* backend/Dockerfile: Предустановка postgres_scanner и
 	clickhouse_scanner для offline/runtime-образа.
-	* docker-compose.yml: Сервис ClickHouse 24.8 для integration-профиля,
-	порты native/HTTP и healthcheck.
-	* backend/pyproject.toml: Добавление зависимостей и последующее удаление
-	неиспользуемой clickhouse-connect после отказа от HTTP fallback.
-	* backend/requirements.txt: То же изменение для requirements-файла.
+	* docker-compose.yml: Native-порт сервиса ClickHouse.
 	* .github/workflows/backend-ci.yml: Запуск integration job с ClickHouse
 	и проверка коннектора в CI без маскировки отсутствующей реализации через
 	NotImplementedError/skip.
