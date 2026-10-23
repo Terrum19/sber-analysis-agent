@@ -42,12 +42,12 @@ backend/
 │   │   │   ├── sessions.py     — CRUD сессий диалога
 │   │   │   ├── chat.py         — SSE-эндпоинт диалога (стрим текста/картинок/дашбордов)
 │   │   │   ├── datasources.py  — подключение CSV / PostgreSQL / ClickHouse
-│   │   │   ├── dashboards.py   — реестр дашбордов (list/get для повторного доступа)
+│   │   │   ├── dashboards.py   — REST дашбордов: список, CRUD, пересчёт плиток
 │   │   │   └── artifacts.py    — экспорт в Excel/PDF, скачивание
 │   │   └── schemas/            — Pydantic-контракты API (фронт <-> бэк)
 │   │       ├── chat.py         — ChatRequest, ChatEvent (text/chart/dashboard/error/done)
 │   │       ├── datasource.py   — DatasourceCreate/Out
-│   │       └── dashboard.py    — DashboardTile/Config
+│   │       └── dashboard.py    — DashboardOut/TileOut/Create/Update, DashboardSummary
 │   │
 │   ├── core/              — ЯДРО: агент, данные, тулы, память, визуализация
 │   │   ├── llm/
@@ -77,8 +77,9 @@ backend/
 │   │   │   │   ├── factory.py         — build_connector: выбор коннектора по kind
 │   │   │   │   ├── pg_dsn.py          — разбор/проверка DSN PostgreSQL, маскирование пароля
 │   │   │   │   ├── postgres.py        — PostgreSQL -> DuckDB через postgres_scanner (готов)
-│   │   │   │   └── clickhouse.py      — ClickHouse -> DuckDB (TODO)
+│   │   │   │   └── clickhouse.py      — ClickHouse -> DuckDB через clickhouse_scanner
 │   │   │   ├── ingest.py          — подключение: connect -> профиль -> описание таблицы в паспорт
+│   │   │   ├── restore.py         — источники БД после рестарта: запомнить, переподключить, забыть
 │   │   │   ├── profiling.py       — метрики: NaN%, min/max, медиана, квартили, std
 │   │   │   ├── schema_enrichment.py — названия и описания колонок из описания таблицы -> паспорт
 │   │   │   └── semantic_select.py — топ-5 колонок под запрос (семант. сходство)
@@ -125,6 +126,7 @@ backend/
 │   │   │   └── codegen_runner.py  — кодогенерация и прогон кода шага (когда тула нет)
 │   │   │
 │   │   ├── memory/         — 4 уровня памяти (см. docs/memory.md)
+│   │   │   ├── datasource_store.py  — подключённые источники БД (SQLite, DSN без пароля)
 │   │   │   ├── session_memory.py    — (1) диалог + шаги, sliding window, SQLite
 │   │   │   ├── state_cache.py       — (2) результаты в temp-таблицах DuckDB
 │   │   │   └── profile_memory.py    — (3) «паспорт данных»: профиль/названия/описания (DuckDB _meta)
@@ -138,7 +140,8 @@ backend/
 │   │   │   ├── models.py        — Dashboard, DashboardTile, DashboardSummary
 │   │   │   ├── store.py         — DashboardStore: дашборды и плитки в SQLite сессий
 │   │   │   ├── templates.py     — шаблоны дашбордов по ролям колонок, match(columns)
-│   │   │   └── generator.py     — собрать дашборд из плиток, снять данные, сохранить
+│   │   │   ├── generator.py     — собрать дашборд из плиток, снять данные, сохранить
+│   │   │   └── recalculate.py   — пересчёт плиток по temp-таблицам (stale без таблицы)
 │   │   │
 │   │   └── export/         — выгрузка инсайта в делимый файл
 │   │       ├── excel.py           — openpyxl: таблицы + графики -> .xlsx

@@ -51,7 +51,6 @@ class FakeLLM:
                         step_id=0,
                         tool="aggregate",
                         columns=[column],
-                        needs_llm_codegen=False,
                         purpose="Агрегируем данные по категории",
                     )
                 ],

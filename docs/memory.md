@@ -41,6 +41,24 @@
 - **Как:** каждый успешный шаг -> `save_step_result()` -> уникальная ссылка.
 - **Чтение:** `StateCache.get(table, limit)` — срез temp-таблицы для графика
   (оркестратор берёт до 500 строк, как и `build_vega_spec`).
+- **Очистка:** `temp_result_vN` — постоянные таблицы файла DuckDB, поэтому
+  устаревшие удаляются (`core/data/result_retention.py`). `save_step_result()`
+  пишет время создания в служебную таблицу `_meta.result_meta(name, created_at)`
+  (схема `_meta` не попадает в список таблиц пользователя);
+  `cleanup_results(keep, older_than_s)` удаляет `temp_result_vN` старше
+  `RESULT_TTL_S` (по умолчанию 6 ч), кроме `keep`:
+  - `result_table` всех плиток дашбордов (`dashboard_tiles` в SQLite) — без
+    срока, плитки пересчитываются из этих таблиц;
+  - `last_chart.result_table` всех таблиц (`state["tables"]`) сессий,
+    обновлённых за последние 24 ч, — чтобы сменить вид графика без SQL.
+
+  Таблица без строки в `_meta.result_meta` (создана до появления учёта) получает
+  текущее время и живёт ещё полный срок. Строки удалённых таблиц остаются в
+  `_meta.result_meta`: номера не используются повторно, и старая ссылка на
+  `temp_result_vN` не укажет на чужие данные. Очистка идёт при старте
+  приложения (`lifespan`) и в фоне раз в `RESULT_TTL_S / 4`; ошибка очистки
+  только пишется в лог. Место в файле DuckDB после удаления не
+  возвращается системе, а переиспользуется под новые таблицы.
 
 ## 3. Метапамять: паспорт данных и глоссарий — `core/memory/profile_memory.py`
 - **Хранит:** структуру таблиц, статистику, названия и описания колонок из
@@ -171,3 +189,30 @@ EXISTS`). Записи — одной транзакцией под `DuckDBManag
   транзакции), `delete`, `update_snapshot(tile_id, records)`.
   `DashboardGenerator.generate` снимает данные плиток с `result_table` и
   сохраняет дашборд. Старые JSON из `storage/dashboards/` не мигрируются.
+- **REST (`api/routes/dashboards.py`):**
+
+  | Метод | Путь | Ответ |
+  |---|---|---|
+  | GET | `/api/dashboards?session_id=` (необязателен) | `list[DashboardSummary]`, новые по `updated_at` первыми |
+  | GET | `/api/dashboards/{id}` | `DashboardOut` / 404 |
+  | POST | `/api/dashboards` | `DashboardOut`, 201 |
+  | PUT | `/api/dashboards/{id}` | `DashboardOut` / 404 |
+  | DELETE | `/api/dashboards/{id}` | 204 / 404 |
+  | POST | `/api/dashboards/{id}/recalculate` | `DashboardOut` / 404 |
+
+  `DashboardCreate {session_id, title, tiles}` — `title` обязателен;
+  `DashboardUpdate {title?, tiles?}` — `tiles` заменяют все плитки.
+  Плитки на входе — `DashboardTileIn`: `result_table` только
+  `temp_result_vN` (оно идёт в SQL как имя таблицы), иначе 422. Id плиток
+  при POST всегда новые; при PUT id плитки этого дашборда сохраняется,
+  чужой или повторный id заменяется новым (`dashboard_tiles.id` —
+  глобальный ключ), так что GET → POST дублирует дашборд.
+  `recalculate` (`core/dashboards/recalculate.py`) перечитывает
+  `result_table` каждой плитки и пересобирает спеку запрошенным типом
+  графика (`usermeta.requested_type`, иначе `chart_type`: если в прошлый
+  раз построился запасной вид, на новых данных можно вернуться к
+  запрошенному), с прежними подписями колонок и заголовком. В спеке без
+  `usermeta` (собрана не `build_vega_spec`) заменяются только
+  `data.values`, остальное не трогается. Если таблицы уже нет, снимок и
+  спека остаются, а плитка приходит со
+  `stale: true`.  Флаг не хранится — он есть только в ответе пересчёта.

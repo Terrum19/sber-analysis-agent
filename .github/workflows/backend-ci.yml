@@ -81,7 +81,7 @@ jobs:
       - name: Coverage gate
         run: |
           coverage report
-          coverage report --fail-under=100 --include="app/core/data/connectors/pg_dsn.py,app/core/data/connectors/postgres.py,app/core/data/connectors/factory.py,app/api/deps.py,app/core/data/profiling.py,app/core/data/semantic_select.py,app/core/memory/profile_memory.py,app/core/data/schema_enrichment.py,app/core/viz/vega_spec_builder.py,app/core/viz/chart_morph.py,app/core/agent/orchestrator.py,app/core/memory/session_memory.py,app/core/memory/state_cache.py"
+          coverage report --fail-under=100 --include="app/core/data/connectors/pg_dsn.py,app/core/data/connectors/postgres.py,app/core/data/connectors/clickhouse.py,app/core/data/connectors/factory.py,app/api/deps.py,app/core/data/profiling.py,app/core/data/semantic_select.py,app/core/memory/profile_memory.py,app/core/data/schema_enrichment.py,app/core/viz/vega_spec_builder.py,app/core/viz/chart_morph.py,app/core/agent/orchestrator.py,app/core/memory/session_memory.py,app/core/memory/state_cache.py"
 
       # Неблокирующий бенчмарк профилирования (issue #6): 1 000 000 × 50 колонок, только замер.
       # Лимит 10 с проверяет tests/benchmark локально: у раннеров приватного репозитория
@@ -145,6 +145,7 @@ jobs:
           CLICKHOUSE_DB: sber_demo
         ports:
           - 8123:8123
+          - 9000:9000
         options: >-
           --health-cmd "wget --no-verbose --tries=1 --spider http://localhost:8123/ping"
           --health-interval 5s
@@ -152,7 +153,7 @@ jobs:
           --health-retries 20
     env:
       TEST_POSTGRES_DSN: postgresql://sber:sber@localhost:5432/sber_demo
-      TEST_CLICKHOUSE_DSN: clickhouse://sber:sber@localhost:8123/sber_demo
+      TEST_CLICKHOUSE_DSN: clickhouse://sber:sber@localhost:9000/sber_demo
     steps:
       - uses: actions/checkout@v4
 

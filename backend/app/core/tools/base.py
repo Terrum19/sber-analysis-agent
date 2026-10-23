@@ -14,13 +14,27 @@ import threading
 import types
 import typing
 from abc import ABC, abstractmethod
+from dataclasses import dataclass
 from functools import cache
-from typing import Annotated, Any, Literal
+from typing import TYPE_CHECKING, Annotated, Any, Literal
 
 import duckdb
 from pydantic import AfterValidator, BaseModel, ConfigDict, ValidationError
 
+if TYPE_CHECKING:
+    from app.core.llm.client import LLMClient
+    from app.core.sandbox.wasm_runtime import WASMSandbox
+
 ToolKind = Literal["transform", "analysis", "lookup"]
+
+
+@dataclass(frozen=True)
+class ToolContext:
+    """Что исполнитель даёт тулу помимо таблицы: LLM и песочница (None — по умолчанию)."""
+
+    llm: "LLMClient | None" = None
+    sandbox: "WASMSandbox | None" = None
+
 
 _FORBIDDEN_FUNCTIONS = frozenset({"current_setting", "getenv", "getvariable"})
 _PARSER_LOCK = threading.Lock()
@@ -200,9 +214,24 @@ class BaseTool(ABC):
                 f"expected {self.signature()}"
             ) from exc
 
+    def enabled(self) -> bool:
+        """Доступен ли тул сейчас; выключенный реестр не выдаёт и не показывает."""
+        return True
+
     def run(self, db, input_table: str, columns: list[Any] | None = None, **arguments: Any) -> str:
         """Применить тул к input_table, вернуть имя результирующей таблицы."""
         return self.execute(db, input_table, self.parse_args(columns, arguments))
+
+    async def arun(
+        self,
+        ctx: ToolContext,
+        db,
+        input_table: str,
+        columns: list[Any] | None = None,
+        **arguments: Any,
+    ) -> str:
+        """Точка входа исполнителя; тулы, которым нужны LLM или песочница, её переопределяют."""
+        return self.run(db, input_table, columns, **arguments)
 
     @abstractmethod
     def execute(self, db, input_table: str, args: Any) -> str:
