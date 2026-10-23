@@ -47,4 +47,13 @@ export interface DoneEvent {
   data: Record<string, unknown>;
 }
 
-export type ChatStreamEvent = ChartEvent | DashboardEvent | TextEvent | ErrorEvent | DoneEvent;
+export interface ClarificationNeededEvent {
+  type: "clarification_needed";
+  data: {
+    step_id?: number;
+    error?: string;
+    suggestions?: string[];
+  };
+}
+
+export type ChatStreamEvent = ChartEvent | DashboardEvent | TextEvent | ErrorEvent | DoneEvent | ClarificationNeededEvent;

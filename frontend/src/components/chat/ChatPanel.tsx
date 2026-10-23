@@ -49,6 +49,8 @@ export default function ChatPanel({ sessionId }: Props) {
   const addMessage = useSessionStore((s) => s.addMessage);
   const appendToLastMessage = useSessionStore((s) => s.appendToLastMessage);
   const updateLastMessage = useSessionStore((s) => s.updateLastMessage);
+  const removeMessage = useSessionStore((s) => s.removeMessage);
+  const removeLastFailedMessage = useSessionStore((s) => s.removeLastFailedMessage);
   const addTile = useSessionStore((s) => s.addTile);
   const registerSession = useSessionStore((s) => s.registerSession);
   const database = useSessionDatabase(sessionId);
@@ -109,13 +111,31 @@ export default function ChatPanel({ sessionId }: Props) {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages, streaming]);
 
-  function sendQuestion(textToSend?: string) {
+  function sendQuestion(
+    textToSend?: string,
+    options?: { isRetry?: boolean; messageIdToReplace?: string; recoveryResponse?: string },
+  ) {
     const q = textToSend || input;
     if (!q.trim() || streaming) return;
 
     lastQuestionRef.current = q;
     setLastFailedQuestion(null);
-    addMessage({ role: "user", content: q });
+
+    if (options?.isRetry) {
+      if (options.messageIdToReplace) {
+        removeMessage(options.messageIdToReplace);
+      } else {
+        removeLastFailedMessage();
+      }
+      const curMessages = useSessionStore.getState().messages;
+      const lastMsg = curMessages[curMessages.length - 1];
+      if (!lastMsg || lastMsg.role !== "user" || lastMsg.content !== q) {
+        addMessage({ role: "user", content: q });
+      }
+    } else {
+      addMessage({ role: "user", content: q });
+    }
+
     // Первая реплика: сессия появляется в папке своей базы данных
     registerSession(sessionId, q.length > 48 ? `${q.slice(0, 47)}…` : q);
     if (!textToSend) setInput("");
@@ -168,6 +188,20 @@ export default function ChatPanel({ sessionId }: Props) {
             setCanvasDashboard(dashData.dashboard_id, dashData.title || t("chat.dashboardDefault"), dashData.tiles);
             setCanvasOpen(true);
           }
+        } else if (event.type === "clarification_needed") {
+          answerStarted = false;
+          streamHadError = true;
+          setLastFailedQuestion(q);
+          const data = event.data || (event as any);
+          const msg = data?.error || t("chat.genericError");
+          const suggestions = data?.suggestions || [];
+          addMessage({
+            role: "agent",
+            content: t("chat.error", { msg }),
+            failed: true,
+            failedQuestion: q,
+            suggestions,
+          });
         } else if (event.type === "error") {
           answerStarted = false;
           streamHadError = true;
@@ -181,20 +215,21 @@ export default function ChatPanel({ sessionId }: Props) {
               : typeof raw.detail === "string"
               ? raw.detail
               : t("chat.genericError"));
-          addMessage({ role: "agent", content: t("chat.error", { msg }), failed: true });
+          addMessage({ role: "agent", content: t("chat.error", { msg }), failed: true, failedQuestion: q });
         }
       },
       (error) => {
         if (error) {
           streamHadError = true;
           setLastFailedQuestion(q);
-          addMessage({ role: "agent", content: t("chat.connectionLost", { msg: error }), failed: true });
+          addMessage({ role: "agent", content: t("chat.connectionLost", { msg: error }), failed: true, failedQuestion: q });
         } else if (!streamHadError) {
           setLastFailedQuestion(null);
         }
         stopRef.current = null;
         setStreaming(false);
       },
+      { recoveryResponse: options?.recoveryResponse },
     );
   }
 
@@ -299,15 +334,52 @@ export default function ChatPanel({ sessionId }: Props) {
 
                 {/* Кнопка повтора при ошибке или обрыве */}
                 {m.failed && !streaming && (
-                  <div className="mt-3 pt-2 border-t border-bad/30 flex items-center justify-between gap-2">
-                    <span className="text-[11px] text-bad">{t("chat.failed")}</span>
-                    <button
-                      onClick={() => sendQuestion(lastFailedQuestion || lastQuestionRef.current)}
-                      className="inline-flex items-center gap-1.5 rounded-lg bg-danger hover:bg-danger/90 px-3 py-1.5 text-xs font-semibold text-white shadow-sm transition"
-                    >
-                      <Icon name="refresh" size={14} />
-                      <span>{t("chat.retry")}</span>
-                    </button>
+                  <div className="mt-3 pt-2 border-t border-bad/30 flex flex-col gap-2">
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="text-[11px] text-bad">{t("chat.failed")}</span>
+                      <button
+                        onClick={() => {
+                          const questionToRetry =
+                            m.failedQuestion ||
+                            messages.slice(0, i).reverse().find((x) => x.role === "user")?.content ||
+                            lastFailedQuestion ||
+                            lastQuestionRef.current;
+                          sendQuestion(questionToRetry, { isRetry: true, messageIdToReplace: m.id });
+                        }}
+                        className="inline-flex items-center gap-1.5 rounded-lg bg-danger hover:bg-danger/90 px-3 py-1.5 text-xs font-semibold text-white shadow-sm transition cursor-pointer"
+                      >
+                        <Icon name="refresh" size={14} />
+                        <span>{t("chat.retry")}</span>
+                      </button>
+                    </div>
+                    {m.suggestions && m.suggestions.length > 0 && (
+                      <div className="flex flex-wrap gap-1.5 mt-1">
+                        {m.suggestions.map((sug) => (
+                          <button
+                            key={sug}
+                            onClick={() => {
+                              const questionToRetry =
+                                m.failedQuestion ||
+                                messages.slice(0, i).reverse().find((x) => x.role === "user")?.content ||
+                                lastFailedQuestion ||
+                                lastQuestionRef.current;
+                              const recoveryText = JSON.stringify({
+                                action: sug === "Пропустить этот шаг и продолжить" ? "skip_step" : "clarify",
+                                text: sug,
+                              });
+                              sendQuestion(questionToRetry, {
+                                isRetry: true,
+                                messageIdToReplace: m.id,
+                                recoveryResponse: recoveryText,
+                              });
+                            }}
+                            className="rounded-md border border-graphite-700 bg-graphite-800 px-2 py-1 text-[11px] text-graphite-200 hover:bg-graphite-700 hover:text-white transition cursor-pointer"
+                          >
+                            {sug}
+                          </button>
+                        ))}
+                      </div>
+                    )}
                   </div>
                 )}
 
@@ -363,8 +435,8 @@ export default function ChatPanel({ sessionId }: Props) {
               <span className="truncate">{t("chat.failedBanner", { q: lastFailedQuestion })}</span>
             </div>
             <button
-              onClick={() => sendQuestion(lastFailedQuestion)}
-              className="inline-flex items-center gap-1.5 rounded-lg bg-danger hover:bg-danger/90 px-3 py-1.5 text-xs font-semibold text-white shadow transition whitespace-nowrap"
+              onClick={() => sendQuestion(lastFailedQuestion, { isRetry: true })}
+              className="inline-flex items-center gap-1.5 rounded-lg bg-danger hover:bg-danger/90 px-3 py-1.5 text-xs font-semibold text-white shadow transition whitespace-nowrap cursor-pointer"
             >
               <Icon name="refresh" size={14} />
               <span>{t("chat.retry")}</span>

@@ -106,7 +106,9 @@ def test_dashboards_crud_not_found_handling(client: TestClient) -> None:
     non_existent_id = "non-existent-id-999"
 
     assert client.get(f"/api/dashboards/{non_existent_id}").status_code == 404
-    assert client.put(f"/api/dashboards/{non_existent_id}", json={"title": "Test"}).status_code == 404
+    assert (
+        client.put(f"/api/dashboards/{non_existent_id}", json={"title": "Test"}).status_code == 404
+    )
     assert client.delete(f"/api/dashboards/{non_existent_id}").status_code == 404
     assert client.post(f"/api/dashboards/{non_existent_id}/recalculate").status_code == 404
 
@@ -262,4 +264,3 @@ def test_dashboards_partial_updates(client: TestClient) -> None:
     assert update_res2.json()["tiles"][0]["title"] == "Замененная плитка"
 
     client.delete(f"/api/dashboards/{dash_id}")
-
