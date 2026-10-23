@@ -1,4 +1,4 @@
-.PHONY: help hooks install dev up up-gpu down test lint model seed hk-data
+.PHONY: help hooks install dev up up-gpu down test lint model seed hk-data smoke
 
 # Значение переменной: из окружения или командной строки make, иначе из .env.
 # .env не подключается через include: так его значения перекрыли бы окружение
@@ -19,6 +19,7 @@ help:
 	@echo "make down     — остановить compose, включая Ollama"
 	@echo "make test     — pytest"
 	@echo "make lint     — ruff + next lint"
+	@echo "make smoke    — smoke-тест поднятого стека (scripts/smoke.sh, как CI)"
 
 hooks:
 	git config core.hooksPath .githooks
@@ -55,3 +56,6 @@ test:
 lint:
 	cd backend && ruff check app tests
 	cd frontend && npm run lint
+
+smoke:
+	bash scripts/smoke.sh
