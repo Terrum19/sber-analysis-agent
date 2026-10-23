@@ -13,20 +13,30 @@ Empirically verifies:
 
 import asyncio
 import json
-from pathlib import Path
 import re
 import subprocess
+from pathlib import Path
+
 import pytest
 
 from app.api.schemas.chat import ChatRequest
-from app.core.agent.orchestrator import AgentOrchestrator
+from app.core.agent.orchestrator import AgentOrchestrator, ClarificationNeeded
 from app.core.data.duckdb_manager import DuckDBManager
 from app.models.research_step import ResearchPlan, ResearchStep
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 FRONTEND_DIR = REPO_ROOT / "frontend"
 
+# TSX-проверки рендерят компоненты фронтенда и требуют next/react из
+# frontend/node_modules; в Backend CI они не ставятся, поэтому тесты
+# пропускаются (как тесты песочницы без Pyodide).
+needs_frontend_deps = pytest.mark.skipif(
+    not (FRONTEND_DIR / "node_modules").is_dir(),
+    reason="frontend dependencies are not installed (cd frontend && npm ci)",
+)
 
+
+@needs_frontend_deps
 def test_empirical_table_passport_metadata_rendering_via_tsx() -> None:
     """Renders TablePassport using ReactDOMServer in Node.js/tsx across multiple TableBrief variations."""
     node_script = """
@@ -126,11 +136,13 @@ console.log('TABLE_PASSPORT_METADATA_SUCCESS');
         cwd=FRONTEND_DIR,
         capture_output=True,
         text=True,
+        check=False,
     )
     assert res.returncode == 0, f"TablePassport rendering test failed:\n{res.stderr}\n{res.stdout}"
     assert "TABLE_PASSPORT_METADATA_SUCCESS" in res.stdout
 
 
+@needs_frontend_deps
 def test_empirical_work_with_table_behavior_via_tsx() -> None:
     """Verifies workWithTable behavior: switches table in existing session vs creates new session."""
     node_script = """
@@ -205,6 +217,7 @@ run().catch((err) => {
         cwd=FRONTEND_DIR,
         capture_output=True,
         text=True,
+        check=False,
     )
     assert res.returncode == 0, f"workWithTable test failed:\n{res.stderr}\n{res.stdout}"
     assert "WORK_WITH_TABLE_SUCCESS" in res.stdout
@@ -225,7 +238,9 @@ def test_empirical_chat_panel_active_table_guard() -> None:
     assert banner_match is not None, "Warning banner for !activeTable not found in ChatPanel"
 
     # 2. Textarea disabled when !activeTable
-    assert "disabled={streaming || !activeTable}" in content, "Textarea must be disabled when !activeTable"
+    assert "disabled={streaming || !activeTable}" in content, (
+        "Textarea must be disabled when !activeTable"
+    )
 
     # 3. Textarea placeholder indicates missing table
     assert '!activeTable\n                ? t("chat.noTableWarning")' in content or (
@@ -233,27 +248,38 @@ def test_empirical_chat_panel_active_table_guard() -> None:
     ), "Textarea placeholder must show noTableWarning when !activeTable"
 
     # 4. Enter key handler guarded
-    assert "if (activeTable) sendQuestion();" in content, "Enter key must not submit question if !activeTable"
+    assert "if (activeTable) sendQuestion();" in content, (
+        "Enter key must not submit question if !activeTable"
+    )
 
     # 5. Submit button disabled when !activeTable
-    assert "disabled={!input.trim() || !activeTable}" in content, "Submit button must be disabled when !activeTable"
+    assert "disabled={!input.trim() || !activeTable}" in content, (
+        "Submit button must be disabled when !activeTable"
+    )
 
     # 6. Suggestion buttons disabled when !activeTable
-    assert "disabled={!activeTable}" in content, "Suggestion buttons must be disabled when !activeTable"
+    assert "disabled={!activeTable}" in content, (
+        "Suggestion buttons must be disabled when !activeTable"
+    )
 
     # 7. Retry button disabled when !activeTable
-    retry_pattern = r"<button[^>]*onClick=\{\(\)\s*=>\s*sendQuestion\(lastFailedQuestion\)\}[^>]*disabled=\{!activeTable\}"
-    assert re.search(retry_pattern, content, re.DOTALL), "Retry button must be disabled when !activeTable"
+    retry_call = "sendQuestion(lastFailedQuestion"
+    assert retry_call in content, "Retry must resend lastFailedQuestion"
+    retry_at = content.index(retry_call)
+    retry_tag = content[content.rindex("<button", 0, retry_at) : content.index(">", retry_at)]
+    assert "disabled={!activeTable}" in retry_tag, "Retry button must be disabled when !activeTable"
 
     # 8. sendQuestion early-exit guard
+    send_start = content.index("function sendQuestion")
     send_guard = re.search(
-        r"function\s+sendQuestion[^{]*\{[^}]*if\s*\(!activeTable\)\s*\{\s*setTableError\(t\(\"chat\.noTableWarning\"\)\);\s*return;\s*\}",
-        content,
+        r"if\s*\(!activeTable\)\s*\{\s*setTableError\(t\(\"chat\.noTableWarning\"\)\);\s*return;\s*\}",
+        content[send_start:],
         re.DOTALL,
     )
     assert send_guard is not None, "sendQuestion must abort and set tableError if !activeTable"
 
 
+@needs_frontend_deps
 def test_empirical_clarification_card_rendering_and_skip_step_via_tsx() -> None:
     """Verifies ClarificationCard UI rendering for suggestions, input mode, and onSkip vs onAnswer."""
     node_script = """
@@ -302,6 +328,7 @@ console.log('CLARIFICATION_CARD_SUCCESS');
         cwd=FRONTEND_DIR,
         capture_output=True,
         text=True,
+        check=False,
     )
     assert res.returncode == 0, f"ClarificationCard render test failed:\n{res.stderr}\n{res.stdout}"
     assert "CLARIFICATION_CARD_SUCCESS" in res.stdout
@@ -339,8 +366,14 @@ def test_empirical_backend_skip_step_recovery() -> None:
         "question": "Посчитай средний amount",
         "failed_step_id": 0,
         "plan_steps": [
-            ResearchStep(step_id=0, tool="filter_rows", arguments={"table": "raw", "column": "non_existent", "operator": ">", "value": 0}).model_dump(),
-            ResearchStep(step_id=1, tool="describe_stats", arguments={"column": "amount"}).model_dump(),
+            ResearchStep(
+                step_id=0,
+                tool="filter_rows",
+                arguments={"table": "raw", "column": "non_existent", "operator": ">", "value": 0},
+            ).model_dump(),
+            ResearchStep(
+                step_id=1, tool="describe_stats", arguments={"column": "amount"}
+            ).model_dump(),
         ],
         "input_table": "raw",
         "source_table": "raw",
@@ -370,17 +403,30 @@ def test_empirical_recovery_payload_formatting_contract_verification() -> None:
        - '{"action":"skip_step"}' -> action = 'skip_step' (HANDLED)
        - raw string 'my answer' -> action = None, free_text = 'my answer' (HANDLED)
        - '{"action":"user_answer","text":"my answer"}' -> action = 'user_answer', free_text = 'my answer' (HANDLED)
-       - '{"action":"user_answer","answer":"my answer"}' (PROJECT.md contract) -> free_text = '' (SILENTLY DROPPED!)
+       - '{"action":"user_answer","answer":"my answer"}' (PROJECT.md contract) -> free_text = 'my answer' (HANDLED)
     """
     # Verify ChatPanel wiring
     chat_file = FRONTEND_DIR / "src/components/chat/ChatPanel.tsx"
     chat_content = chat_file.read_text(encoding="utf-8")
     assert 'onSkip={() => sendQuestion(t("chat.skipStep"), RECOVERY_SKIP_STEP)}' in chat_content
-    assert "onAnswer={(text) => sendQuestion(text, m.clarification!.step_id >= 0 ? text : undefined)}" in chat_content
+    # step_id < 0 — план пуст и бэкенд не ждёт уточнения: текст уходит новым вопросом,
+    # иначе он передаётся как recovery_response.
+    on_answer = re.search(
+        r"onAnswer=\{\(text\)\s*=>\s*sendQuestion\(\s*text\s*,(?P<arg>.*?)\)\}",
+        chat_content,
+        re.DOTALL,
+    )
+    assert on_answer is not None, "ClarificationCard onAnswer must forward the user text"
+    assert "step_id" in on_answer.group("arg"), (
+        "onAnswer must send recovery_response only when the backend awaits clarification"
+    )
 
     types_file = FRONTEND_DIR / "src/types/chat.ts"
     types_content = types_file.read_text(encoding="utf-8")
-    assert 'export const RECOVERY_SKIP_STEP = JSON.stringify({ action: "skip_step" });' in types_content
+    assert (
+        'export const RECOVERY_SKIP_STEP = JSON.stringify({ action: "skip_step" });'
+        in types_content
+    )
 
     # Backend test for payload parsing
     db = DuckDBManager(":memory:")
@@ -408,7 +454,11 @@ def test_empirical_recovery_payload_formatting_contract_verification() -> None:
     pending = {
         "question": "исходный запрос",
         "failed_step_id": 0,
-        "plan_steps": [ResearchStep(step_id=0, tool="inspect_temp_table", arguments={"table": "raw"}).model_dump()],
+        "plan_steps": [
+            ResearchStep(
+                step_id=0, tool="inspect_temp_table", arguments={"table": "raw"}
+            ).model_dump()
+        ],
         "input_table": "raw",
         "source_table": "raw",
         "step_tables": {},
@@ -419,11 +469,13 @@ def test_empirical_recovery_payload_formatting_contract_verification() -> None:
     mem_a = RecordingMemory()
     planner_a = SpyPlanner()
     orch_a = AgentOrchestrator(db=db, planner=planner_a)
-    req_a = ChatRequest(session_id="s1", question="исходный запрос", recovery_response="колонка amount")
-    try:
+    req_a = ChatRequest(
+        session_id="s1", question="исходный запрос", recovery_response="колонка amount"
+    )
+    # SpyPlanner возвращает пустой план, поэтому _apply_recovery ожидаемо
+    # выбрасывает ClarificationNeeded — нам важен только собранный контекст.
+    with pytest.raises(ClarificationNeeded):
         asyncio.run(orch_a._apply_recovery(mem_a, pending, req_a))
-    except Exception:
-        pass
     assert mem_a.last_question == "исходный запрос\nУточнение пользователя: колонка amount", (
         "Free text user answer must be properly appended to clarification context"
     )
@@ -437,10 +489,8 @@ def test_empirical_recovery_payload_formatting_contract_verification() -> None:
         question="исходный запрос",
         recovery_response=json.dumps({"action": "user_answer", "text": "колонка amount"}),
     )
-    try:
+    with pytest.raises(ClarificationNeeded):
         asyncio.run(orch_b._apply_recovery(mem_b, pending, req_b))
-    except Exception:
-        pass
     assert mem_b.last_question == "исходный запрос\nУточнение пользователя: колонка amount", (
         "JSON with 'text' key must be properly appended to clarification context"
     )
@@ -455,10 +505,8 @@ def test_empirical_recovery_payload_formatting_contract_verification() -> None:
         question="исходный запрос",
         recovery_response=json.dumps({"action": "user_answer", "answer": "колонка amount"}),
     )
-    try:
+    with pytest.raises(ClarificationNeeded):
         asyncio.run(orch_c._apply_recovery(mem_c, pending, req_c))
-    except Exception:
-        pass
 
     # Now that orchestrator.py line 560 supports parsed.get("text") or parsed.get("answer"),
     # mem_c.last_question properly receives the user answer from the contract-defined JSON payload!
