@@ -249,6 +249,30 @@ export function mockAttachDb(kind: "postgres" | "clickhouse", dsn: string): Data
   };
 }
 
+export function mockListTables(): string[] {
+  return ["sales_orders", "regional_revenue", "customer_segments", "products"];
+}
+
+export function mockListSessions(offset = 0): SessionResponse[] {
+  if (offset > 0) return [];
+  return [
+    {
+      session_id: "demo-sales",
+      table: "sales_orders",
+      datasource_id: "demo-ds-1",
+      title: "Анализ выручки и регионов (Демо)",
+      created_at: new Date(Date.now() - 7200000).toISOString(),
+    },
+    {
+      session_id: "demo-kpi",
+      table: "regional_revenue",
+      datasource_id: "demo-ds-1",
+      title: "Операционные KPI (Демо)",
+      created_at: new Date(Date.now() - 3600000).toISOString(),
+    },
+  ];
+}
+
 export function mockCreateSession(table: string, datasourceId?: string, title?: string): SessionResponse {
   if (!table || table === "unknown_table") {
     const err = new Error("Таблица не найдена") as any;
@@ -285,6 +309,7 @@ export function mockStreamChat(
   question: string,
   onEvent: (event: ChatStreamEvent) => void,
   onClose?: (error?: string) => void,
+  _options?: { recoveryResponse?: string },
 ): () => void {
   let isCancelled = false;
   const isDashboardRequest = /дашборд|панел|график|kpi|отчет|показател/i.test(question);
