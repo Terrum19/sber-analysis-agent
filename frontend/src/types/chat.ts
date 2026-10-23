@@ -52,11 +52,14 @@ export interface DoneEvent {
 export interface ClarificationEvent {
   type: "clarification_needed";
   data: {
-    step_id: number;
+    step_id?: number;
     error: string;
     suggestions: string[];
   };
 }
+
+/** Алиас для обратной совместимости. */
+export type ClarificationNeededEvent = ClarificationEvent;
 
 /** Вопрос вне возможностей агента (A-05): причина и переформулировки. */
 export interface RefusalEvent {

@@ -204,10 +204,15 @@ export function streamChat(
   question: string,
   onEvent: (event: ChatStreamEvent) => void,
   onClose?: (error?: string) => void,
-  recoveryResponse?: string,
+  optionsOrRecoveryResponse?: { recoveryResponse?: string } | string,
 ): () => void {
+  const options =
+    typeof optionsOrRecoveryResponse === "string"
+      ? { recoveryResponse: optionsOrRecoveryResponse }
+      : optionsOrRecoveryResponse;
+
   if (isMockMode()) {
-    return mockStreamChat(sessionId, question, onEvent, onClose);
+    return mockStreamChat(sessionId, question, onEvent, onClose, options);
   }
 
   const controller = new AbortController();
@@ -220,7 +225,7 @@ export function streamChat(
         body: JSON.stringify({
           session_id: sessionId,
           question,
-          recovery_response: recoveryResponse ?? null,
+          recovery_response: options?.recoveryResponse ?? null,
         }),
         signal: controller.signal,
       });

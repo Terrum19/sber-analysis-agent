@@ -55,6 +55,8 @@ export default function ChatPanel({ sessionId }: Props) {
   const appendToLastMessage = useSessionStore((s) => s.appendToLastMessage);
   const updateLastMessage = useSessionStore((s) => s.updateLastMessage);
   const updateMessage = useSessionStore((s) => s.updateMessage);
+  const removeMessage = useSessionStore((s) => s.removeMessage);
+  const removeLastFailedMessage = useSessionStore((s) => s.removeLastFailedMessage);
   const addTile = useSessionStore((s) => s.addTile);
   const registerSession = useSessionStore((s) => s.registerSession);
   const setStreamingSessionId = useSessionStore((s) => s.setStreamingSessionId);
@@ -154,11 +156,19 @@ export default function ChatPanel({ sessionId }: Props) {
    * Отправить вопрос. recoveryResponse — ответ на уточнение: тогда q — то, что
    * видит пользователь в ленте, а бэкенд продолжает исходный вопрос.
    */
-  function sendQuestion(textToSend?: string, recoveryResponse?: string) {
+  function sendQuestion(
+    textToSend?: string,
+    optionsOrRecovery?: string | { isRetry?: boolean; messageIdToReplace?: string; recoveryResponse?: string },
+  ) {
     if (!activeTable) {
       setTableError(t("chat.noTableWarning"));
       return;
     }
+    const options =
+      typeof optionsOrRecovery === "string"
+        ? { recoveryResponse: optionsOrRecovery }
+        : optionsOrRecovery;
+    const recoveryResponse = options?.recoveryResponse;
     const q = textToSend || input;
     if (!q.trim() || streaming) return;
 
@@ -167,7 +177,22 @@ export default function ChatPanel({ sessionId }: Props) {
     // Повтор после сбоя ответа на уточнение — исходный вопрос, а не текст ответа
     const retryQuestion = recoveryResponse ? lastQuestionRef.current : q;
     setLastFailedQuestion(null);
-    addMessage({ role: "user", content: q });
+
+    if (options?.isRetry) {
+      if (options.messageIdToReplace) {
+        removeMessage(options.messageIdToReplace);
+      } else {
+        removeLastFailedMessage();
+      }
+      const curMessages = useSessionStore.getState().messages;
+      const lastMsg = curMessages[curMessages.length - 1];
+      if (!lastMsg || lastMsg.role !== "user" || lastMsg.content !== q) {
+        addMessage({ role: "user", content: q });
+      }
+    } else {
+      addMessage({ role: "user", content: q });
+    }
+
     // Первая реплика: сессия появляется в папке своей базы данных
     registerSession(sessionId, q.length > 48 ? `${q.slice(0, 47)}…` : q);
     if (!textToSend) setInput("");
@@ -269,7 +294,7 @@ export default function ChatPanel({ sessionId }: Props) {
               : typeof raw.detail === "string"
               ? raw.detail
               : t("chat.genericError"));
-          addMessage({ role: "agent", content: t("chat.error", { msg }), failed: true });
+          addMessage({ role: "agent", content: t("chat.error", { msg }), failed: true, failedQuestion: q });
         }
       },
       (error) => {
@@ -277,10 +302,10 @@ export default function ChatPanel({ sessionId }: Props) {
         if (error) {
           streamHadError = true;
           setLastFailedQuestion(retryQuestion);
-          addMessage({ role: "agent", content: t("chat.connectionLost", { msg: error }), failed: true });
+          addMessage({ role: "agent", content: t("chat.connectionLost", { msg: error }), failed: true, failedQuestion: retryQuestion });
         } else if (!streamFinished && !streamHadError && !cancelled) {
           setLastFailedQuestion(retryQuestion);
-          addMessage({ role: "agent", content: t("chat.streamIncomplete"), failed: true });
+          addMessage({ role: "agent", content: t("chat.streamIncomplete"), failed: true, failedQuestion: retryQuestion });
         } else if (!streamHadError) {
           setLastFailedQuestion(null);
         }
@@ -288,7 +313,7 @@ export default function ChatPanel({ sessionId }: Props) {
         setStreaming(false);
         setStreamingSessionId(null);
       },
-      recoveryResponse,
+      { recoveryResponse },
     );
     stopRef.current = () => {
       cancelled = true;
@@ -415,7 +440,7 @@ export default function ChatPanel({ sessionId }: Props) {
                     active={!streaming && m.id === activeClarificationId}
                     onSkip={() => sendQuestion(t("chat.skipStep"), RECOVERY_SKIP_STEP)}
                     // step_id < 0 — план пуст, бэкенд не ждёт уточнения: это новый вопрос
-                    onAnswer={(text) => sendQuestion(text, m.clarification!.step_id >= 0 ? text : undefined)}
+                    onAnswer={(text) => sendQuestion(text, (m.clarification?.step_id ?? 0) >= 0 ? text : undefined)}
                   />
                 )}
 
@@ -437,15 +462,52 @@ export default function ChatPanel({ sessionId }: Props) {
 
                 {/* Кнопка повтора при ошибке или обрыве */}
                 {m.failed && !streaming && (
-                  <div className="mt-3 pt-2 border-t border-bad/30 flex items-center justify-between gap-2">
-                    <span className="text-[11px] text-bad">{t("chat.failed")}</span>
-                    <button
-                      onClick={() => sendQuestion(lastFailedQuestion || lastQuestionRef.current)}
-                      className="inline-flex items-center gap-1.5 rounded-lg bg-danger hover:bg-danger/90 px-3 py-1.5 text-xs font-semibold text-white shadow-sm transition"
-                    >
-                      <Icon name="refresh" size={14} />
-                      <span>{t("chat.retry")}</span>
-                    </button>
+                  <div className="mt-3 pt-2 border-t border-bad/30 flex flex-col gap-2">
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="text-[11px] text-bad">{t("chat.failed")}</span>
+                      <button
+                        onClick={() => {
+                          const questionToRetry =
+                            m.failedQuestion ||
+                            messages.slice(0, i).reverse().find((x) => x.role === "user")?.content ||
+                            lastFailedQuestion ||
+                            lastQuestionRef.current;
+                          sendQuestion(questionToRetry, { isRetry: true, messageIdToReplace: m.id });
+                        }}
+                        className="inline-flex items-center gap-1.5 rounded-lg bg-danger hover:bg-danger/90 px-3 py-1.5 text-xs font-semibold text-white shadow-sm transition cursor-pointer"
+                      >
+                        <Icon name="refresh" size={14} />
+                        <span>{t("chat.retry")}</span>
+                      </button>
+                    </div>
+                    {m.suggestions && m.suggestions.length > 0 && (
+                      <div className="flex flex-wrap gap-1.5 mt-1">
+                        {m.suggestions.map((sug) => (
+                          <button
+                            key={sug}
+                            onClick={() => {
+                              const questionToRetry =
+                                m.failedQuestion ||
+                                messages.slice(0, i).reverse().find((x) => x.role === "user")?.content ||
+                                lastFailedQuestion ||
+                                lastQuestionRef.current;
+                              const recoveryText = JSON.stringify({
+                                action: sug === "Пропустить этот шаг и продолжить" ? "skip_step" : "clarify",
+                                text: sug,
+                              });
+                              sendQuestion(questionToRetry, {
+                                isRetry: true,
+                                messageIdToReplace: m.id,
+                                recoveryResponse: recoveryText,
+                              });
+                            }}
+                            className="rounded-md border border-graphite-700 bg-graphite-800 px-2 py-1 text-[11px] text-graphite-200 hover:bg-graphite-700 hover:text-white transition cursor-pointer"
+                          >
+                            {sug}
+                          </button>
+                        ))}
+                      </div>
+                    )}
                   </div>
                 )}
 
@@ -507,9 +569,9 @@ export default function ChatPanel({ sessionId }: Props) {
               <span className="truncate">{t("chat.failedBanner", { q: lastFailedQuestion })}</span>
             </div>
             <button
-              onClick={() => sendQuestion(lastFailedQuestion)}
+              onClick={() => sendQuestion(lastFailedQuestion, { isRetry: true })}
               disabled={!activeTable}
-              className="inline-flex items-center gap-1.5 rounded-lg bg-danger hover:bg-danger/90 px-3 py-1.5 text-xs font-semibold text-white shadow transition whitespace-nowrap disabled:opacity-50"
+              className="inline-flex items-center gap-1.5 rounded-lg bg-danger hover:bg-danger/90 px-3 py-1.5 text-xs font-semibold text-white shadow transition whitespace-nowrap disabled:opacity-50 cursor-pointer"
             >
               <Icon name="refresh" size={14} />
               <span>{t("chat.retry")}</span>
