@@ -96,6 +96,7 @@ function Tab({
     : activeTable
     ? `${title} (${activeTable})`
     : title;
+  const safeTooltipTitle = tooltipTitle.replace(/[<>&"'`]/g, "");
 
   return (
     <Link
@@ -121,7 +122,7 @@ function Tab({
       onDrop={(e) => e.preventDefault()}
       onDragEnd={onDragEnd}
       onAuxClick={(e) => e.button === 1 && handleClose(e)}
-      title={tooltipTitle}
+      title={safeTooltipTitle}
       className={`group relative flex h-full max-w-[220px] shrink-0 items-center gap-2 border-r border-graphite-800 pl-3 pr-1.5 text-[12.5px] transition ${
         active
           ? "bg-graphite-900 text-graphite-50"
