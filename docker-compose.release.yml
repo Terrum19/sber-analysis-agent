@@ -6,8 +6,8 @@
 #   SBER_VERSION=<версия> docker compose -f docker-compose.release.yml --profile cpu up -d
 #   (на GPU NVIDIA — --profile gpu и LLM_MODEL=<модель для GPU>)
 # LLM — Ollama, как в docker-compose.yml. Без интернета образ ollama/ollama и том
-# ollama-models с моделью должны прийти из архива релиза (#82); рядом с этим файлом
-# нужен infra/ollama/entrypoint.sh.
+# ollama-models с моделью должны прийти из архива релиза (#82);
+# infra/ollama/entrypoint.sh лежит в архиве рядом с этим файлом.
 
 x-ollama: &ollama
   image: ollama/ollama:0.35.1
@@ -23,7 +23,7 @@ x-ollama: &ollama
     default:
       aliases: [ollama]
   healthcheck:
-    test: ["CMD-SHELL", "ollama list | grep -qF \"$$LLM_MODEL\""]
+    test: ["CMD", "/bin/sh", "/entrypoint.sh", "check"]
     interval: 15s
     timeout: 10s
     retries: 3

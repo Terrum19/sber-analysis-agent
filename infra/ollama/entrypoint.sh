@@ -3,6 +3,8 @@
 # Поднимает сервер, при первом запуске скачивает модель $LLM_MODEL (и модель
 # эмбеддингов $EMBED_MODEL, если задана) в том ollama-models, затем ждёт сервер.
 # Повторные запуски модель не качают: она уже лежит в томе.
+# `entrypoint.sh check` — healthcheck: обе модели уже скачаны (то же сравнение
+# имён, что и при скачивании).
 set -eu
 
 : "${LLM_MODEL:?задайте LLM_MODEL в .env}"
@@ -26,6 +28,12 @@ pull_missing() {
 		ollama pull "$1"
 	fi
 }
+
+if [ "${1:-}" = check ]; then
+	has_model "$LLM_MODEL" || exit 1
+	[ -z "${EMBED_MODEL:-}" ] || has_model "$EMBED_MODEL"
+	exit
+fi
 
 ollama serve &
 server=$!

@@ -15,15 +15,16 @@ x-ollama: &ollama
   volumes:
     - ollama-models:/root/.ollama
     - ./infra/ollama/entrypoint.sh:/entrypoint.sh:ro
+  # Только localhost: API Ollama без авторизации; backend ходит по сети compose.
   ports:
-    - "${OLLAMA_PORT:-11434}:11434"
+    - "127.0.0.1:${OLLAMA_PORT:-11434}:11434"
   networks:
     default:
       aliases: [ollama]
-  # Первый запуск качает модель (минуты): пока идёт start_period, неудачные
-  # проверки не считаются, backend ждёт.
+  # Первый запуск качает модели (минуты): пока идёт start_period, неудачные
+  # проверки не считаются, backend ждёт и LLM_MODEL, и EMBED_MODEL.
   healthcheck:
-    test: ["CMD-SHELL", "ollama list | grep -qF \"$$LLM_MODEL\""]
+    test: ["CMD", "/bin/sh", "/entrypoint.sh", "check"]
     interval: 15s
     timeout: 10s
     retries: 3

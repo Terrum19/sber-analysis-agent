@@ -1,5 +1,21 @@
 2026-10-23  Alexander Yurits  <terruwork@gmail.com>
 
+	Ollama из compose: релиз, доступ и готовность моделей.
+	* .github/workflows/release.yml (Assemble bundle): В архив релиза
+	кладётся infra/ollama/entrypoint.sh; без него Docker создавал на его
+	месте каталог, и Ollama не стартовала.
+	* infra/ollama/entrypoint.sh (check): Новый режим для healthcheck:
+	скачаны LLM_MODEL и EMBED_MODEL, если задан; имена сравниваются так
+	же, как при скачивании.
+	* docker-compose.yml (x-ollama): Healthcheck — entrypoint.sh check.
+	Порт Ollama публикуется только на 127.0.0.1.
+	* docker-compose.release.yml (x-ollama): Healthcheck — то же.
+	* Makefile (env_or_file): Новая функция: переменная окружения или
+	командной строки перекрывает .env.  .env больше не подключается
+	через include.  (up-gpu): Модель через env_or_file.
+	* README.md: Docker Engine 25+ и Compose 2.20+, готовность моделей,
+	порт Ollama, переопределение .env окружением.
+
 	Контекст LLM в compose задаётся одним числом (#102).
 	* docker-compose.yml (backend): LLM_NUM_CTX из OLLAMA_CONTEXT_LENGTH.
 	* docker-compose.release.yml (backend): То же.
