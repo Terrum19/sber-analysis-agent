@@ -91,6 +91,19 @@ def test_get_unknown_session_is_404(client) -> None:
     assert client.get("/api/sessions/nope").status_code == 404
 
 
+def test_delete_session_removes_session(client) -> None:
+    session_id = client.post("/api/sessions", json={"table": "sales"}).json()["session_id"]
+    assert client.get(f"/api/sessions/{session_id}").status_code == 200
+    res = client.delete(f"/api/sessions/{session_id}")
+    assert res.status_code == 200
+    assert res.json() == {"ok": True}
+    assert client.get(f"/api/sessions/{session_id}").status_code == 404
+
+
+def test_delete_session_not_found_is_404(client) -> None:
+    assert client.delete("/api/sessions/nope").status_code == 404
+
+
 def test_session_survives_new_app(new_client) -> None:
     body = {"table": "sales", "title": "Продажи", "datasource_id": "csv_1"}
     created = new_client().post("/api/sessions", json=body).json()

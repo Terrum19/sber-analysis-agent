@@ -60,7 +60,6 @@ def create_session(
 
 
 @router.patch("/{session_id}", response_model=SessionOut)
-@router.post("/{session_id}/table", response_model=SessionOut)
 def set_session_table(
     session_id: str, payload: SessionTable, db: Annotated[DuckDBManager, Depends(get_db)]
 ) -> SessionOut:
@@ -79,3 +78,12 @@ def get_session(session_id: str) -> SessionOut:
     if not memory.exists():
         raise HTTPException(status_code=404, detail="Сессия не найдена.")
     return session_out(memory)
+
+
+@router.delete("/{session_id}")
+def delete_session(session_id: str) -> dict[str, bool]:
+    """Удалить сессию диалога."""
+    deleted = SessionMemory.delete(session_id)
+    if not deleted:
+        raise HTTPException(status_code=404, detail="Сессия не найдена.")
+    return {"ok": True}

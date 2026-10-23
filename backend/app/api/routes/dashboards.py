@@ -121,8 +121,8 @@ async def recalculate_dashboard(dashboard_id: str, request: Request) -> dict:
                             )
                         elif "data" in tile.spec and isinstance(tile.spec["data"], dict):
                             tile.spec["data"]["values"] = snapshot_records(records)
-            except Exception:  # noqa: BLE001, S110
-                pass
+            except (ValueError, TypeError, KeyError, AttributeError):
+                continue
         elif tile.is_kpi and tile.snapshot_data is not None:
             tile.snapshot_at = now
 

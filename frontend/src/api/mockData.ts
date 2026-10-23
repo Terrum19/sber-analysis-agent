@@ -8,7 +8,7 @@
  */
 import type { DashboardConfig, DashboardListItem, DashboardTile } from "@/types/dashboard";
 import type { ChatStreamEvent } from "@/types/chat";
-import type { Datasource, SessionResponse, TableBrief } from "@/types/datasource";
+import type { Datasource, SessionResponse } from "@/types/datasource";
 
 const STORAGE_KEY = "sber_mock_dashboards_db";
 
@@ -232,43 +232,19 @@ export function mockRecalculateDashboard(id: string): DashboardConfig {
 }
 
 export function mockAttachCsv(files: File[]): Datasource {
-  const tables = files.map((f) => f.name.replace(/\.[^/.]+$/, ""));
-  const profiles: TableBrief[] = tables.map((t) => ({
-    table: t,
-    rows: 1500,
-    columns: 6,
-    period_from: "2024-01-01",
-    period_to: "2024-06-30",
-    description_status: "ready",
-    summary: `Сводка демонстрационного датасета ${t}`,
-    warnings: [],
-  }));
   return {
     datasource_id: `csv-${Date.now()}`,
     kind: "csv",
-    tables,
-    profiles,
+    tables: files.map((f) => f.name.replace(/\.[^/.]+$/, "")),
     profile_summary: `DuckDB CSV: ${files.length} файл(ов) загружено`,
   };
 }
 
 export function mockAttachDb(kind: "postgres" | "clickhouse", dsn: string): Datasource {
-  const tables = ["sales_orders", "regional_revenue", "customer_segments", "products"];
-  const profiles: TableBrief[] = tables.map((t) => ({
-    table: t,
-    rows: 5000,
-    columns: 8,
-    period_from: "2023-01-01",
-    period_to: "2024-12-31",
-    description_status: "ready",
-    summary: `Сводка таблицы ${t}`,
-    warnings: [],
-  }));
   return {
     datasource_id: `db-${Date.now()}`,
     kind,
-    tables,
-    profiles,
+    tables: ["sales_orders", "regional_revenue", "customer_segments", "products"],
     profile_summary: `${kind.toUpperCase()} (${dsn.split("@")[1] || "подключено"}): 4 таблицы`,
   };
 }

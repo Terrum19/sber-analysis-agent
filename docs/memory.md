@@ -60,7 +60,7 @@
 
 | Таблица | Строка | Содержимое |
 |---|---|---|
-| `_meta.table_passport` | таблица | `row_count`, `column_count`, `glossary` (JSON), `summary` (заполняется отдельной задачей), `profiled_at`, `enriched_at`, `description_status` |
+| `_meta.table_passport` | таблица | `row_count`, `column_count`, `glossary` (JSON), `summary` (заполняется отдельной задачей), `profiled_at`, `enriched_at` |
 | `_meta.column_passport` | колонка, PK `(table_name, column_name)` | `position` (порядок как в `DESCRIBE`), `dtype`, `kind`, статистика `ColumnStats`, название, описание, `fingerprint`, `enriched_at` |
 
 Полный DDL — `SCHEMA` в `profile_memory.py`. Статистика колонки — поля
@@ -87,13 +87,6 @@
 `description_original`: конструктор `ProfileMemory` добавляет `title`
 (`ADD COLUMN IF NOT EXISTS`), старые колонки больше не читаются.
 
-`description_status` в `_meta.table_passport` — статус переноса описания:
-`none` (по умолчанию: описания нет), `pending` (ставит `ingest.mark_pending`, он же сбрасывает в `none`
-перед фоновым `ingest.describe`), `ready` или `failed` (ставит
-`ingest.describe`: `failed`, если у какой-либо колонки после переноса нет
-`fingerprint` или энричер упал). В старых паспортах колонку добавляет
-конструктор (`ADD COLUMN IF NOT EXISTS ... DEFAULT 'none'`).
-
 ### API `ProfileMemory(db)`
 
 Конструктор принимает `DuckDBManager` и создаёт схему (`CREATE ... IF NOT
@@ -105,9 +98,6 @@ EXISTS`). Записи — одной транзакцией под `DuckDBManag
   статистика, `position`, `dtype`, `kind`; название, описание и `fingerprint`
   не затираются. Колонки, которых больше нет в таблице, удаляются.
   `glossary=None` оставляет сохранённый словарь.
-- `set_description_status(table, status)` / `load_description_status(table)` —
-  статус переноса описания (`none` / `pending` / `ready` / `failed`; без
-  паспорта — `none`).
 - `load_profile(table) -> TableProfile | None` — профиль, равный
   сохранённому (`None`, если паспорта нет). `profiled_at` — строка ISO в UTC.
 - `load_glossary(table) -> dict | None`.

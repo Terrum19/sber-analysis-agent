@@ -11,10 +11,10 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { useParams, useRouter } from "next/navigation";
-import { attachDb, listSessions, SESSIONS_PAGE } from "@/api/client";
+import { attachDb, deleteSessionApi, listSessions, SESSIONS_PAGE } from "@/api/client";
 import { useSessionStore, type DatabaseFolder, type SessionItem } from "@/store/sessionStore";
 import { useArtifactStore } from "@/store/artifactStore";
-import { useUiStore } from "@/store/uiStore";
+import { tabHref, useUiStore } from "@/store/uiStore";
 import { useStartSession } from "@/hooks/useStartSession";
 import { useCsvUpload } from "@/hooks/useCsvUpload";
 import { useT } from "@/i18n/useT";
@@ -366,10 +366,11 @@ export default function LeftSidebar() {
       .filter((a) => a.sessionId === sessionId)
       .map((a) => a.id);
     artStore.removeArtifactsBySessionIds([sessionId]);
-    useUiStore.getState().closeTabsForSessions([sessionId], artIdsToRemove);
+    const nextTab = useUiStore.getState().closeTabsForSessions([sessionId], artIdsToRemove);
     deleteSession(sessionId);
+    deleteSessionApi(sessionId).catch(() => undefined);
     if (currentSessionId === sessionId) {
-      router.push("/");
+      router.push(nextTab ? tabHref(nextTab) : "/");
     }
   }
 
@@ -382,10 +383,13 @@ export default function LeftSidebar() {
       .filter((a) => a.sessionId && sSet.has(a.sessionId))
       .map((a) => a.id);
     artStore.removeArtifactsBySessionIds(sessionIds);
-    useUiStore.getState().closeTabsForSessions(sessionIds, artIdsToRemove);
+    const nextTab = useUiStore.getState().closeTabsForSessions(sessionIds, artIdsToRemove);
     deleteDatabase(databaseId);
+    for (const sid of sessionIds) {
+      deleteSessionApi(sid).catch(() => undefined);
+    }
     if (currentSessionId && sessionIds.includes(currentSessionId)) {
-      router.push("/");
+      router.push(nextTab ? tabHref(nextTab) : "/");
     }
   }
 
@@ -599,9 +603,6 @@ export default function LeftSidebar() {
                   className="w-full rounded-lg border border-graphite-700 bg-graphite-950 px-3 py-2 text-xs text-graphite-50 placeholder-graphite-500 outline-none focus:border-graphite-400"
                   required
                 />
-                <p className="mt-1 text-[11px] text-graphite-500">
-                  {t("modal.dsnHint", { format: DSN_PLACEHOLDER[dbKind] })}
-                </p>
               </div>
               {dbKind === "postgres" && (
                 <div>

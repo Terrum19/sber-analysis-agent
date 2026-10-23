@@ -15,10 +15,6 @@
 таблицей») обслуживается без планировщика и без повторного SQL: спека
 перестраивается chart_morph из кешированной temp_result_vN.
 
-О ходе работы фронт узнаёт из событий ``progress``: планирование
-(started/finished), каждый шаг (started/finished/failed), начало
-инсайта и графика.
-
 Упавший шаг планировщик исправляет по тексту ошибки (до
 ``STEP_FIX_ATTEMPTS`` раз, см. agent/recovery.py), о каждой попытке
 фронт получает событие ``progress`` со статусом ``fixing``. Не помогло —
@@ -32,7 +28,6 @@ SessionMemory состояние ожидания уточнения (``pending_
 import asyncio
 import json
 import logging
-import time
 from collections.abc import AsyncIterator, Callable
 from dataclasses import dataclass, field
 
@@ -118,23 +113,17 @@ def _ignore(event: dict) -> None:
     """emit по умолчанию: события некому отдавать."""
 
 
-def _progress_event(stage: str, status: str, **fields: object) -> dict:
-    payload = ProgressPayload(stage=stage, status=status, **fields)
-    return {"type": "progress", "data": payload.model_dump(exclude_none=True)}
-
-
-def _step_event(step: ResearchStep, status: str, **fields: object) -> dict:
-    return _progress_event(
-        "step", status, step_id=step.step_id, tool=step.tool, purpose=step.purpose, **fields
-    )
-
-
 def _fixing_event(step: ResearchStep, attempt: int, error: Exception) -> dict:
-    return _step_event(step, "fixing", attempt=attempt, error=str(error))
-
-
-def _elapsed_ms(started_at: float) -> int:
-    return round((time.perf_counter() - started_at) * 1000)
+    payload = ProgressPayload(
+        stage="step",
+        status="fixing",
+        step_id=step.step_id,
+        tool=step.tool,
+        purpose=step.purpose,
+        attempt=attempt,
+        error=str(error),
+    )
+    return {"type": "progress", "data": payload.model_dump(exclude_none=True)}
 
 
 class AgentOrchestrator:
@@ -215,14 +204,12 @@ class AgentOrchestrator:
 
         # --- Финальный блок: инсайт -> чарт -> дашборд -> done ---
         logger.info(">>> run() генерация инсайта")
-        yield _progress_event("insight", "started")
         insight = await self.insight_gen.generate(
             question, result_table, supporting=execution.supporting
         )
         logger.info("<<< run() инсайт: headline=%r details=%r", insight.headline, insight.details)
         yield {"type": "text", "data": {"headline": insight.headline, "details": insight.details}}
 
-        yield _progress_event("chart", "started")
         chart_type = select_chart(question, result_table, execution.final_viz)
         logger.info(">>> run() построение графика chart_type=%s", chart_type)
         spec = build_vega_spec(chart_type, result_table, db=self.db, titles=titles)
@@ -272,9 +259,7 @@ class AgentOrchestrator:
         # Обычный путь: новый вопрос -> план -> выполнение шагов.
         context = memory.build_context(request.question)
         logger.info(">>> run() планируем шаги (planner.plan)")
-        emit(_progress_event("planning", "started"))
         plan = await self.planner.plan(request.question, context)
-        emit(_progress_event("planning", "finished", total_steps=len(plan.steps)))
         logger.info(
             "<<< run() план получен: шагов=%d final_viz=%s dashboard=%s",
             len(plan.steps),
@@ -338,19 +323,9 @@ class AgentOrchestrator:
                 step.columns,
                 current,
             )
-            emit(_step_event(step, "started"))
-            started_at = time.perf_counter()
             try:
                 step, table = await self._run_step(step, current, tables, source, emit)
             except _StepFailed as failed:
-                emit(
-                    _step_event(
-                        failed.step,
-                        "failed",
-                        elapsed_ms=_elapsed_ms(started_at),
-                        error=str(failed.error),
-                    )
-                )
                 steps[index] = failed.step
                 exc = failed.error
                 suggestions = (
@@ -379,7 +354,6 @@ class AgentOrchestrator:
                 raise ClarificationNeeded(
                     step_id=failed.step.step_id, error=str(exc), suggestions=suggestions
                 ) from exc
-            emit(_step_event(step, "finished", elapsed_ms=_elapsed_ms(started_at)))
             steps[index] = step
             kind = tool_kind(step)
             logger.info("<<< _execute_plan шаг %d УСПЕШЕН result_table=%s", step.step_id, table)
@@ -557,7 +531,7 @@ class AgentOrchestrator:
             parsed = json.loads(recovery_text)
             if isinstance(parsed, dict) and "action" in parsed:
                 action = parsed["action"]
-                free_text = parsed.get("text") or parsed.get("answer") or ""
+                free_text = parsed.get("text", "")
         except (json.JSONDecodeError, TypeError):
             action = None
             free_text = recovery_text
