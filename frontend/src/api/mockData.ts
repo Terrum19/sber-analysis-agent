@@ -285,6 +285,7 @@ export function mockStreamChat(
   question: string,
   onEvent: (event: ChatStreamEvent) => void,
   onClose?: (error?: string) => void,
+  _options?: { recoveryResponse?: string },
 ): () => void {
   let isCancelled = false;
   const isDashboardRequest = /дашборд|панел|график|kpi|отчет|показател/i.test(question);
