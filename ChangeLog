@@ -1,3 +1,29 @@
+2026-10-23  thebulkapro  <saitbatalovbulat200@gmail.com>
+
+	Флаги качества в профиле (#105).
+	* backend/app/core/data/profiling.py (ColumnStats.flags): Новое поле:
+	numeric_as_text, null_tokens:N, header_value для VARCHAR-колонок.
+	Считаются в частотном подзапросе по различным значениям, без нового
+	запроса.  numeric_as_text не ставится кодам: ведущие нули, имя-
+	идентификатор, unique, fixed_width.
+	(TableProfile.empty_rows): Новое поле: строки, где все колонки NULL.
+	(quality_notes): Флаги и пустые строки в «Качество данных»: раньше
+	по грязному CSV паспорт писал «пропусков нет».
+	(flag_notes): Новая функция: флаги словами.
+	* backend/app/core/memory/profile_memory.py (SCHEMA): Колонки flags и
+	empty_rows, миграция ADD COLUMN IF NOT EXISTS.
+	* backend/app/core/data/semantic_select.py (describe_columns): Метки ⚠
+	в строке колонки; у numeric_as_text подсказка про TRY_CAST.
+	* backend/app/config.py (Settings.csv_null_tokens): Новая настройка,
+	общая с очисткой CSV (#103).
+	* .env.example: CSV_NULL_TOKENS.
+	* backend/tests/unit/test_profiling.py,
+	backend/tests/unit/test_profile_memory.py,
+	backend/tests/unit/test_semantic_select.py: Три флага на грязной
+	колонке, коды без numeric_as_text, NaN и inf, порог 95 %, настройка
+	литералов, сохранение и миграция паспорта, метки в выжимке.
+	* docs/data_connectors.md, docs/memory.md: Флаги качества, empty_rows.
+
 2026-10-22  mb6ockatf  <smokenmirror@tutamail.com>
 
 	Сводка паспорта в ответе подключения (#96).
