@@ -3,9 +3,49 @@
 #   docker load -i sber-backend-<версия>.tar.gz
 #   docker load -i sber-frontend-<версия>.tar.gz
 #   cp .env.example .env
-#   SBER_VERSION=<версия> docker compose -f docker-compose.release.yml up -d
-# LLM (Qwen) — отдельно на хосте (Ollama/vLLM), как и в docker-compose.yml.
+#   SBER_VERSION=<версия> docker compose -f docker-compose.release.yml --profile cpu up -d
+#   (на GPU NVIDIA — --profile gpu и LLM_MODEL=<модель для GPU>)
+# LLM — Ollama, как в docker-compose.yml. Без интернета образ ollama/ollama и том
+# ollama-models с моделью должны прийти из архива релиза (#82);
+# infra/ollama/entrypoint.sh лежит в архиве рядом с этим файлом.
+
+x-ollama: &ollama
+  image: ollama/ollama:0.35.1
+  entrypoint: ["/bin/sh", "/entrypoint.sh"]
+  environment:
+    LLM_MODEL: ${LLM_MODEL:-qwen2.5-coder:7b}
+    EMBED_MODEL: ${EMBED_MODEL:-}
+    OLLAMA_CONTEXT_LENGTH: ${OLLAMA_CONTEXT_LENGTH:-16384}
+  volumes:
+    - ollama-models:/root/.ollama
+    - ./infra/ollama/entrypoint.sh:/entrypoint.sh:ro
+  networks:
+    default:
+      aliases: [ollama]
+  healthcheck:
+    test: ["CMD", "/bin/sh", "/entrypoint.sh", "check"]
+    interval: 15s
+    timeout: 10s
+    retries: 3
+    start_period: 1h
+    start_interval: 5s
+
 services:
+  ollama-cpu:
+    <<: *ollama
+    profiles: [cpu]
+
+  ollama-gpu:
+    <<: *ollama
+    profiles: [gpu]
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+
   backend:
     image: sber-backend:${SBER_VERSION:?укажите SBER_VERSION, например v0.1.0}
     env_file: .env
@@ -15,11 +55,22 @@ services:
       STORAGE_DIR: /app/storage
       DUCKDB_PATH: /app/storage/duckdb/main.duckdb
       SQLITE_PATH: /app/storage/sessions/sessions.sqlite
+      LLM_BASE_URL: http://ollama:11434/v1
+      LLM_MODEL: ${LLM_MODEL:-qwen2.5-coder:7b}
+      # Бэкенд ждёт тот же контекст, что задан Ollama (#102).
+      LLM_NUM_CTX: ${OLLAMA_CONTEXT_LENGTH:-16384}
     ports:
       - "8000:8000"
     volumes:
       - ./storage:/app/storage
       - ./data:/app/data:ro
+    depends_on:
+      ollama-cpu:
+        condition: service_healthy
+        required: false
+      ollama-gpu:
+        condition: service_healthy
+        required: false
 
   frontend:
     image: sber-frontend:${SBER_VERSION:?укажите SBER_VERSION, например v0.1.0}
@@ -29,3 +80,6 @@ services:
       - NEXT_PUBLIC_API_URL=http://backend:8000
     depends_on:
       - backend
+
+volumes:
+  ollama-models:

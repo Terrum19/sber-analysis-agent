@@ -1,5 +1,49 @@
 2026-10-23  Alexander Yurits  <terruwork@gmail.com>
 
+	Ollama из compose: релиз, доступ и готовность моделей.
+	* .github/workflows/release.yml (Assemble bundle): В архив релиза
+	кладётся infra/ollama/entrypoint.sh; без него Docker создавал на его
+	месте каталог, и Ollama не стартовала.
+	* infra/ollama/entrypoint.sh (check): Новый режим для healthcheck:
+	скачаны LLM_MODEL и EMBED_MODEL, если задан; имена сравниваются так
+	же, как при скачивании.
+	* docker-compose.yml (x-ollama): Healthcheck — entrypoint.sh check.
+	Порт Ollama публикуется только на 127.0.0.1.
+	* docker-compose.release.yml (x-ollama): Healthcheck — то же.
+	* Makefile (env_or_file): Новая функция: переменная окружения или
+	командной строки перекрывает .env.  .env больше не подключается
+	через include.  (up-gpu): Модель через env_or_file.
+	* README.md: Docker Engine 25+ и Compose 2.20+, готовность моделей,
+	порт Ollama, переопределение .env окружением.
+
+	Контекст LLM в compose задаётся одним числом (#102).
+	* docker-compose.yml (backend): LLM_NUM_CTX из OLLAMA_CONTEXT_LENGTH.
+	* docker-compose.release.yml (backend): То же.
+
+2026-10-22  mb6ockatf  <smokenmirror@tutamail.com>
+
+	Ollama с моделью в docker compose (#78).
+	* docker-compose.yml (ollama-cpu, ollama-gpu): Новые сервисы Ollama
+	(ollama/ollama:0.35.1) в профилях cpu и gpu, оба с сетевым именем
+	ollama и общим томом ollama-models.  Healthcheck ждёт, пока модель
+	LLM_MODEL появится в ollama list; start_period — час, на первое
+	скачивание модели.  OLLAMA_CONTEXT_LENGTH по умолчанию 16384 (#102).
+	(backend): LLM_BASE_URL — http://ollama:11434/v1, LLM_MODEL — тот же,
+	что у Ollama; ждёт healthy Ollama из активного профиля, без профиля
+	стартует без неё.
+	* docker-compose.release.yml: Те же сервисы Ollama для запуска из
+	архива релиза.
+	* infra/ollama/entrypoint.sh: Новый.  Сервер Ollama, скачивание
+	LLM_MODEL и EMBED_MODEL, если их ещё нет в томе, корректная остановка.
+	* Makefile (up): Профиль cpu.  (up-gpu): Новая цель: профиль gpu и
+	модель LLM_MODEL_GPU.  (down): Останавливает и сервисы Ollama.
+	* .env.example: LLM_BASE_URL и LLM_MODEL заполнены; новые
+	LLM_MODEL_GPU, OLLAMA_CONTEXT_LENGTH, EMBED_MODEL, OLLAMA_PORT.
+	* README.md: Запуск в Docker.
+	* docs/repo_structure.md: infra/ollama, make up-gpu.
+
+2026-10-23  Alexander Yurits  <terruwork@gmail.com>
+
 	Плитки дашборда из запроса не ломают вставку и не читают чужие таблицы.
 	* backend/app/api/schemas/dashboard.py (DashboardTileIn): Новая
 	входная схема плитки: result_table только temp_result_vN, иначе 422.
