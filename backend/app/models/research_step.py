@@ -19,7 +19,6 @@ class ResearchStep(BaseModel):
     arguments: dict[str, Any] = Field(default_factory=dict)
     # Старый позиционный формат: раскладывается по аргументам тула по порядку.
     columns: list[Any] = Field(default_factory=list)
-    needs_llm_codegen: bool = False
     purpose: str = ""
 
     @model_validator(mode="before")
@@ -30,7 +29,6 @@ class ResearchStep(BaseModel):
         LLM часто присылает:
         - ``description`` вместо ``purpose``
         - ``properties`` (JSON-схему) вместо плоского списка ``columns``
-        - опечатку ``needs_lllm_codegen`` вместо ``needs_llm_codegen``
         - вообще не присылает ``tool``
         """
         if not isinstance(data, dict):
@@ -52,10 +50,6 @@ class ResearchStep(BaseModel):
                 if isinstance(enum_vals, list):
                     data["columns"] = [str(c) for c in enum_vals]
             data.pop("properties", None)
-
-        # Исправляем опечатку needs_lllm_codegen → needs_llm_codegen
-        if "needs_lllm_codegen" in data:
-            data["needs_llm_codegen"] = data.pop("needs_lllm_codegen")
 
         # tool по умолчанию None, если не прислали
         data.setdefault("tool", None)

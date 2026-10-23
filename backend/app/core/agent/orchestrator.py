@@ -49,6 +49,7 @@ from app.core.data.duckdb_manager import DuckDBManager
 from app.core.memory.profile_memory import ProfileMemory
 from app.core.memory.session_memory import SessionMemory
 from app.core.memory.state_cache import StateCache
+from app.core.sandbox.wasm_runtime import SandboxError
 from app.core.viz.chart_morph import detect_morph, morph
 from app.core.viz.chart_selector import select_chart
 from app.core.viz.vega_spec_builder import SPEC_ROW_LIMIT, build_vega_spec, column_aliases
@@ -67,7 +68,7 @@ CLARIFICATION_SUGGESTIONS = [
     "Уточнить колонки",
     "Пропустить этот шаг и продолжить",
 ]
-# Шаг невыполним в принципе (нет нужной возможности) — колонки не помогут.
+# Код в песочнице не отработал и после исправлений — колонки не помогут.
 UNSUPPORTED_SUGGESTIONS = [
     "Переформулировать вопрос",
     "Пропустить этот шаг и продолжить",
@@ -386,7 +387,7 @@ class AgentOrchestrator:
                 exc = failed.error
                 suggestions = (
                     UNSUPPORTED_SUGGESTIONS
-                    if isinstance(exc, NotImplementedError)
+                    if isinstance(exc, SandboxError)
                     else CLARIFICATION_SUGGESTIONS
                 )
                 # Сохраняем контекст неудачи для последующего уточнения.
@@ -472,7 +473,7 @@ class AgentOrchestrator:
         feedback = str(error)
         executions = 1
         for attempt in range(1, STEP_FIX_ATTEMPTS + 1):
-            if not fixable(step, error):
+            if not fixable(error):
                 break
             logger.warning(
                 "    шаг %d: исправление %d/%d после ошибки %r",
