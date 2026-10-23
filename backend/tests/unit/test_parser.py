@@ -23,6 +23,6 @@ def test_parse_steps_valid(raw: str) -> None:
 
 
 def test_parse_steps_fallback() -> None:
-    """Совсем мусорный вывод -> запасной шаг с кодогенерацией."""
+    """Совсем мусорный вывод -> запасной шаг без инструмента."""
     steps = parse_steps("вообще не json")
-    assert steps[0].needs_llm_codegen is True
+    assert steps[0].tool is None

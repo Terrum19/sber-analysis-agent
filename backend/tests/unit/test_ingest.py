@@ -1,3 +1,4 @@
+import duckdb
 import pytest
 
 from app.core.data import ingest
@@ -102,3 +103,59 @@ async def test_describe_sends_document_for_every_table(db) -> None:
     assert llm.calls == 2
     assert [row.title for row in described["users"]] == ["Номер", "Сумма"]
     assert await ingest.describe(connector, db, ["orders"], "   ", llm) == {}
+
+
+class GuardedConnector(BaseConnector):
+    """Источник, у которого таблицу users нельзя прочитать, как PostgreSQL без GRANT."""
+
+    def __init__(self, skippable: bool) -> None:
+        self.skippable = skippable
+        self.skipped: list[str] = []
+        self.rolled_back = False
+
+    def connect(self, db) -> list[str]:
+        db.execute("CREATE TABLE orders AS SELECT 1 AS id")
+        db.execute("CREATE TABLE users AS SELECT 1 AS id")
+        return ["orders", "users"]
+
+    def skip(self, db, table: str, error: Exception) -> bool:
+        if not self.skippable:
+            return False
+        self.skipped.append(table)
+        db.execute(f"DROP TABLE {table}")
+        return True
+
+    def rollback(self, db) -> None:
+        self.rolled_back = True
+        db.execute("DROP TABLE IF EXISTS orders")
+        db.execute("DROP TABLE IF EXISTS users")
+
+
+def denied(real):
+    def profile(db, table, **kwargs):
+        if table == "users":
+            raise duckdb.PermissionException("permission denied for table users")
+        return real(db, table, **kwargs)
+
+    return profile
+
+
+def test_attach_skips_unreadable_table(db, monkeypatch) -> None:
+    monkeypatch.setattr(ingest, "profile_table", denied(ingest.profile_table))
+    connector = GuardedConnector(skippable=True)
+    with db.lock:
+        profiles = ingest.attach(connector, db)
+    assert list(profiles) == ["orders"]
+    assert connector.skipped == ["users"]
+    assert not connector.rolled_back
+    assert ProfileMemory(db).load_profile("users") is None
+
+
+def test_attach_rolls_back_connector_on_read_error(db, monkeypatch) -> None:
+    monkeypatch.setattr(ingest, "profile_table", denied(ingest.profile_table))
+    connector = GuardedConnector(skippable=False)
+    with pytest.raises(duckdb.Error), db.lock:
+        ingest.attach(connector, db)
+    assert connector.rolled_back
+    assert db.user_tables() == []
+    assert ProfileMemory(db).load_profile("orders") is None
