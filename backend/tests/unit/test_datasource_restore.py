@@ -5,6 +5,7 @@ import threading
 import time
 from pathlib import Path
 
+import duckdb
 import pytest
 from fastapi.testclient import TestClient
 
@@ -173,6 +174,61 @@ def test_ingest_restore_profiles_changed_or_new_tables(db, profiled) -> None:
     assert profiled == ["orders", "orders", "users"]
     assert [column.name for column in memory.load_profile("orders").columns] == ["id", "total"]
     assert memory.load_profile("users") is not None
+
+
+class GuardedConnector(BaseConnector):
+    """Вторая таблица без прав на SELECT; skip и rollback записываются."""
+
+    def __init__(self, skippable: bool) -> None:
+        self.skippable = skippable
+        self.skipped: list[str] = []
+        self.rolled_back = False
+
+    def connect(self, db) -> list[str]:
+        db.execute("CREATE OR REPLACE TABLE orders AS SELECT 1 AS id")
+        db.execute("CREATE OR REPLACE TABLE users AS SELECT 1 AS id")
+        return ["orders", "users"]
+
+    def skip(self, db, table: str, error: Exception) -> bool:
+        if not self.skippable:
+            return False
+        self.skipped.append(table)
+        db.execute(f"DROP TABLE {table}")
+        return True
+
+    def rollback(self, db) -> None:
+        self.rolled_back = True
+        db.execute("DROP TABLE IF EXISTS orders")
+        db.execute("DROP TABLE IF EXISTS users")
+
+
+def denied(db, table, approx=True):
+    if table == "users":
+        raise duckdb.PermissionException("permission denied for table users")
+    return profile_table(db, table, approx=approx)
+
+
+def test_ingest_restore_skips_unreadable_table(db, monkeypatch) -> None:
+    memory = ProfileMemory(db)
+    db.execute("CREATE TABLE users AS SELECT 1 AS old")
+    memory.save_profile(profile_table(db, "users"))
+    monkeypatch.setattr(ingest, "profile_table", denied)
+    connector = GuardedConnector(skippable=True)
+    assert ingest.restore(connector, db) == ["orders"]
+    assert connector.skipped == ["users"]
+    assert not connector.rolled_back
+    assert db.user_tables() == ["orders"]
+    assert memory.load_profile("orders") is not None
+    assert memory.load_profile("users") is None
+
+
+def test_ingest_restore_rolls_back_on_read_error(db, monkeypatch) -> None:
+    monkeypatch.setattr(ingest, "profile_table", denied)
+    connector = GuardedConnector(skippable=False)
+    with pytest.raises(duckdb.Error):
+        ingest.restore(connector, db)
+    assert connector.rolled_back
+    assert db.user_tables() == []
 
 
 @pytest.fixture

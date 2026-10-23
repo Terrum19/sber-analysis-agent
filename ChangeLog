@@ -1,5 +1,17 @@
 2026-10-23  Alexander Yurits  <terruwork@gmail.com>
 
+	Восстановление источника пропускает таблицу без прав, как attach.
+	* backend/app/core/data/ingest.py (restore): Сбой профиля —
+	connector.skip(), при пропуске паспорт таблицы удаляется; иначе
+	connector.rollback().  Возвращает таблицы без пропущенных.
+	* backend/tests/unit/test_datasource_restore.py
+	(test_ingest_restore_skips_unreadable_table)
+	(test_ingest_restore_rolls_back_on_read_error): Новые тесты.
+	* docs/data_connectors.md (Восстановление после перезапуска): skip и
+	rollback при восстановлении.
+
+2026-10-23  Alexander Yurits  <terruwork@gmail.com>
+
 	Сбой дашборда не перечёркивает показанный ответ.
 	* backend/app/core/agent/orchestrator.py (AgentOrchestrator.run):
 	Дашборд собирается вне общего try инсайта и графика: при сбое —

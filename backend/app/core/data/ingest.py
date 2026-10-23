@@ -55,16 +55,31 @@ def restore(connector: BaseConnector, db) -> list[str]:
 
     Таблица с паспортом не профилируется заново, если колонки представления
     совпадают с колонками паспорта; иначе (схема в источнике изменилась или
-    паспорта нет) профиль пересчитывается.
+    паспорта нет) профиль пересчитывается. Нечитаемую таблицу коннектор может
+    пропустить (skip), её устаревший паспорт удаляется; иной сбой профиля
+    откатывает подключение (connector.rollback), как в attach().
+    Возвращает подключённые таблицы без пропущенных.
     """
     tables = connector.connect(db)
     memory = ProfileMemory(db)
-    for table in tables:
-        profile = memory.load_profile(table)
-        if profile is not None and [column.name for column in profile.columns] == db.columns(table):
-            continue
-        memory.save_profile(profile_table(db, table, approx=settings.profile_approx_quantile))
-    return tables
+    restored = []
+    try:
+        for table in tables:
+            profile = memory.load_profile(table)
+            if profile is None or [column.name for column in profile.columns] != db.columns(table):
+                try:
+                    profile = profile_table(db, table, approx=settings.profile_approx_quantile)
+                except duckdb.Error as error:
+                    if connector.skip(db, table, error):
+                        memory.delete(table)
+                        continue
+                    raise
+                memory.save_profile(profile)
+            restored.append(table)
+    except BaseException:
+        connector.rollback(db)
+        raise
+    return restored
 
 
 async def describe(
