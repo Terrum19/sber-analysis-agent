@@ -69,13 +69,7 @@ SCHEMA = (
     # Паспорта, созданные до появления названий колонок (aliases и
     # description_original в них остаются и больше не читаются).
     "ALTER TABLE _meta.column_passport ADD COLUMN IF NOT EXISTS title VARCHAR",
-    (
-        "ALTER TABLE _meta.table_passport "
-        "ADD COLUMN IF NOT EXISTS description_status VARCHAR DEFAULT 'none'"
-    ),
 )
-
-DESCRIPTION_STATUSES = ("none", "pending", "ready", "failed")
 
 SAVE_TABLE = """INSERT INTO _meta.table_passport
     (table_name, row_count, column_count, glossary, profiled_at)
@@ -205,23 +199,6 @@ class ProfileMemory:
             )
             for row in rows
         ]
-
-    def set_description_status(self, table: str, status: str) -> None:
-        """Статус переноса описания в паспорт: none, pending, ready или failed."""
-        if status not in DESCRIPTION_STATUSES:
-            raise ValueError(f"Неизвестный статус описания «{status}»")
-        self.db.execute(
-            "UPDATE _meta.table_passport SET description_status = $status WHERE table_name = $table",
-            {"table": table, "status": status},
-        )
-
-    def load_description_status(self, table: str) -> str:
-        """Статус переноса описания; без паспорта — none."""
-        rows = self.db.query(
-            "SELECT description_status FROM _meta.table_passport WHERE table_name = $table",
-            {"table": table},
-        )
-        return rows[0]["description_status"] if rows and rows[0]["description_status"] else "none"
 
     def delete(self, table: str) -> None:
         """Удалить паспорт таблицы."""

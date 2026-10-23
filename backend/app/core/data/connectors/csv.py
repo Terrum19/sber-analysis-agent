@@ -49,24 +49,6 @@ class CSVReport:
     tolerant: bool = False
     all_text: bool = False
 
-    def warnings(self) -> list[str]:
-        notes = []
-        if self.encoding != "utf-8":
-            notes.append(f"Файл в кодировке {self.encoding} перекодирован в UTF-8.")
-        if self.numeric_text_columns:
-            names = ", ".join(f"«{column}»" for column in self.numeric_text_columns)
-            notes.append(f"Числа, записанные текстом, приведены к числам в колонках {names}.")
-        if self.all_text:
-            notes.append(
-                "Типы колонок определить не удалось: все колонки загружены как текст, "
-                "нечитаемые строки отброшены."
-            )
-        elif self.tolerant:
-            notes.append(
-                "В строках с неполным числом полей недостающие значения оставлены пустыми."
-            )
-        return notes
-
 
 def table_name(filename: str) -> str:
     stem = Path(filename).stem.lower()
@@ -295,12 +277,6 @@ class CSVConnector(BaseConnector):
             {"table": table},
         )
         return {row["column_name"]: row["comment"] for row in rows}
-
-    def warnings(self, table: str) -> list[str]:
-        for report in self.reports:
-            if report.table == table:
-                return report.warnings()
-        return []
 
     def rollback(self, db) -> None:
         for report in self.reports:

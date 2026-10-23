@@ -6,19 +6,16 @@
  * - Графики и дашборды в ленту не выводятся: они уходят на правую панель,
  *   а в сообщении остаётся ссылка «Показать на панели» / «Открыть во вкладке»
  */
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
-import { getSession, setSessionTable, listTables, streamChat } from "@/api/client";
+import { getSession, patchSession, streamChat } from "@/api/client";
 import { useSessionStore, useSessionDatabase } from "@/store/sessionStore";
 import { useCanvasStore } from "@/store/canvasStore";
 import { useUiStore } from "@/store/uiStore";
 import { useOpenArtifact } from "@/hooks/useOpenArtifact";
 import Icon from "@/components/ui/Icon";
-import ClarificationCard from "@/components/chat/ClarificationCard";
-import StepProgress from "@/components/chat/StepProgress";
 import { useT } from "@/i18n/useT";
 import type { DashboardTile as DashboardTileType } from "@/types/dashboard";
-import { RECOVERY_SKIP_STEP, applyProgress, type TurnProgress } from "@/types/chat";
 
 /** Плитка панели из события «chart»; id хранится в самом событии. */
 function chartTile(chartData: any, fallbackTitle: string): DashboardTileType {
@@ -46,15 +43,12 @@ export default function ChatPanel({ sessionId }: Props) {
   const [streaming, setStreaming] = useState(false);
   const [lastFailedQuestion, setLastFailedQuestion] = useState<string | null>(null);
   const lastQuestionRef = useRef<string>("");
-  // Сообщение с карточкой уточнения, на которую ещё можно ответить
-  const [activeClarificationId, setActiveClarificationId] = useState<string | null>(null);
   const messagesEndRef = useRef<HTMLDivElement | null>(null);
 
   const messages = useSessionStore((s) => s.messages);
   const addMessage = useSessionStore((s) => s.addMessage);
   const appendToLastMessage = useSessionStore((s) => s.appendToLastMessage);
   const updateLastMessage = useSessionStore((s) => s.updateLastMessage);
-  const updateMessage = useSessionStore((s) => s.updateMessage);
   const addTile = useSessionStore((s) => s.addTile);
   const registerSession = useSessionStore((s) => s.registerSession);
   const database = useSessionDatabase(sessionId);
@@ -63,24 +57,6 @@ export default function ChatPanel({ sessionId }: Props) {
   const activeTable = useSessionStore((s) => s.sessionActiveTable[sessionId]);
   const switchSessionTable = useSessionStore((s) => s.switchSessionTable);
   const bindSession = useSessionStore((s) => s.bindSession);
-
-  const [remoteTables, setRemoteTables] = useState<string[]>([]);
-  useEffect(() => {
-    let cancelled = false;
-    listTables()
-      .then((tables) => {
-        if (!cancelled && Array.isArray(tables)) setRemoteTables(tables);
-      })
-      .catch(() => {});
-    return () => {
-      cancelled = true;
-    };
-  }, []);
-
-  const availableTables = useMemo(() => {
-    const list = [...(database?.tables ?? []), ...remoteTables];
-    return Array.from(new Set(list)).filter(Boolean);
-  }, [database?.tables, remoteTables]);
 
   const [isTableSwitching, setIsTableSwitching] = useState(false);
   const [tableError, setTableError] = useState<string | null>(null);
@@ -105,15 +81,12 @@ export default function ChatPanel({ sessionId }: Props) {
   }, [sessionId, activeTable, bindSession, t]);
 
   async function handleTableChange(nextTable: string) {
-    if (!nextTable || nextTable === activeTable || isTableSwitching || streaming) return;
+    if (nextTable === activeTable || isTableSwitching || streaming) return;
     setIsTableSwitching(true);
     setTableError(null);
     try {
-      await setSessionTable(sessionId, nextTable);
+      await patchSession(sessionId, nextTable);
       switchSessionTable(sessionId, nextTable);
-      if (database) {
-        bindSession(sessionId, database.id, nextTable);
-      }
     } catch (err: any) {
       if (err?.status === 404) {
         setTableError(t("chat.tableNotFound"));
@@ -136,22 +109,11 @@ export default function ChatPanel({ sessionId }: Props) {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages, streaming]);
 
-  /**
-   * Отправить вопрос. recoveryResponse — ответ на уточнение: тогда q — то, что
-   * видит пользователь в ленте, а бэкенд продолжает исходный вопрос.
-   */
-  function sendQuestion(textToSend?: string, recoveryResponse?: string) {
-    if (!activeTable) {
-      setTableError(t("chat.noTableWarning"));
-      return;
-    }
+  function sendQuestion(textToSend?: string) {
     const q = textToSend || input;
     if (!q.trim() || streaming) return;
 
-    setActiveClarificationId(null);
-    if (!recoveryResponse) lastQuestionRef.current = q;
-    // Повтор после сбоя ответа на уточнение — исходный вопрос, а не текст ответа
-    const retryQuestion = recoveryResponse ? lastQuestionRef.current : q;
+    lastQuestionRef.current = q;
     setLastFailedQuestion(null);
     addMessage({ role: "user", content: q });
     // Первая реплика: сессия появляется в папке своей базы данных
@@ -161,18 +123,6 @@ export default function ChatPanel({ sessionId }: Props) {
 
     let answerStarted = false;
     let streamHadError = false;
-    // Поток без done и без уточнения — оборван, это ошибка
-    let streamFinished = false;
-    let cancelled = false;
-    // Прогресс хода живёт в отдельном сообщении над ответом
-    let progress: TurnProgress | null = null;
-    const progressId = `msg-progress-${Date.now().toString(36)}`;
-    const finishProgress = () => {
-      if (progress && progress.finished_at === undefined) {
-        progress = { ...progress, finished_at: Date.now() };
-        updateMessage(progressId, { progress });
-      }
-    };
     const appendText = (text: string) => {
       if (answerStarted) {
         appendToLastMessage(text);
@@ -182,34 +132,11 @@ export default function ChatPanel({ sessionId }: Props) {
       }
     };
 
-    const stop = streamChat(
+    stopRef.current = streamChat(
       sessionId,
       q,
       (event) => {
-        if (event.type === "done") {
-          streamFinished = true;
-          finishProgress();
-        } else if (event.type === "progress") {
-          if (!progress) {
-            progress = applyProgress({ planning: false, steps: [], started_at: Date.now() }, event.data);
-            answerStarted = false;
-            addMessage({ id: progressId, role: "agent", content: "", progress });
-          } else {
-            progress = applyProgress(progress, event.data);
-            updateMessage(progressId, { progress });
-          }
-        } else if (event.type === "clarification_needed") {
-          // Бэкенд закрывает поток без done: ждёт recovery_response
-          answerStarted = false;
-          streamFinished = true;
-          const id = `msg-clarify-${Date.now().toString(36)}`;
-          addMessage({ id, role: "agent", content: "", clarification: event.data });
-          setActiveClarificationId(id);
-        } else if (event.type === "refusal") {
-          answerStarted = false;
-          streamFinished = true;
-          addMessage({ role: "agent", content: event.data.reason || t("chat.refusal"), refusal: event.data });
-        } else if (event.type === "text") {
+        if (event.type === "text") {
           const raw = event as any;
           const content = event.data?.headline || event.data?.chunk || raw.headline || raw.chunk || "";
           if (content) appendText(content);
@@ -244,7 +171,7 @@ export default function ChatPanel({ sessionId }: Props) {
         } else if (event.type === "error") {
           answerStarted = false;
           streamHadError = true;
-          setLastFailedQuestion(retryQuestion);
+          setLastFailedQuestion(q);
           const raw = event as any;
           const msg =
             event.data?.message ||
@@ -258,26 +185,17 @@ export default function ChatPanel({ sessionId }: Props) {
         }
       },
       (error) => {
-        finishProgress();
         if (error) {
           streamHadError = true;
-          setLastFailedQuestion(retryQuestion);
+          setLastFailedQuestion(q);
           addMessage({ role: "agent", content: t("chat.connectionLost", { msg: error }), failed: true });
-        } else if (!streamFinished && !streamHadError && !cancelled) {
-          setLastFailedQuestion(retryQuestion);
-          addMessage({ role: "agent", content: t("chat.streamIncomplete"), failed: true });
         } else if (!streamHadError) {
           setLastFailedQuestion(null);
         }
         stopRef.current = null;
         setStreaming(false);
       },
-      recoveryResponse,
     );
-    stopRef.current = () => {
-      cancelled = true;
-      stop();
-    };
   }
 
   function handleOpenDashboard(dashboardId: string) {
@@ -304,19 +222,14 @@ export default function ChatPanel({ sessionId }: Props) {
           </span>
           <span className="text-graphite-600 text-xs">/</span>
           <span className="text-[12px] text-graphite-400 shrink-0">{t("chat.activeTable")}:</span>
-          {availableTables.length > 0 ? (
+          {database && database.tables.length > 1 ? (
             <select
-              value={activeTable || ""}
+              value={activeTable || (database.tables[0] ?? "")}
               onChange={(e) => handleTableChange(e.target.value)}
               disabled={isTableSwitching || streaming}
               className="rounded-md border border-graphite-700 bg-graphite-850 px-2 py-0.5 text-xs font-mono text-graphite-100 outline-none focus:border-graphite-500 cursor-pointer disabled:opacity-50"
             >
-              {!activeTable && (
-                <option value="" disabled>
-                  {t("chat.chooseTable")}
-                </option>
-              )}
-              {availableTables.map((tbl) => (
+              {database.tables.map((tbl) => (
                 <option key={tbl} value={tbl}>
                   {tbl}
                 </option>
@@ -324,7 +237,7 @@ export default function ChatPanel({ sessionId }: Props) {
             </select>
           ) : (
             <span className="rounded-md bg-graphite-800/80 px-2 py-0.5 font-mono text-xs text-graphite-200">
-              {activeTable || "—"}
+              {activeTable || (database?.tables?.[0] ?? "—")}
             </span>
           )}
         </div>
@@ -361,8 +274,7 @@ export default function ChatPanel({ sessionId }: Props) {
                 <button
                   key={q}
                   onClick={() => sendQuestion(q)}
-                  disabled={!activeTable}
-                  className="rounded-lg px-2 py-1 -mx-2 text-[13px] text-graphite-300 hover:bg-graphite-800 hover:text-graphite-50 transition disabled:opacity-50 disabled:cursor-not-allowed"
+                  className="rounded-lg px-2 py-1 -mx-2 text-[13px] text-graphite-300 hover:bg-graphite-800 hover:text-graphite-50 transition"
                 >
                   {t("chat.quoted", { q })}
                 </button>
@@ -382,41 +294,8 @@ export default function ChatPanel({ sessionId }: Props) {
                     : "w-full text-graphite-200"
                 }`}
               >
-                {m.progress && <StepProgress progress={m.progress} />}
-
                 {/* Текст сообщения */}
-                {m.content && (
-                  <div className={`whitespace-pre-wrap ${m.refusal ? "border-l-2 border-warn/60 pl-3 text-graphite-300" : ""}`}>
-                    {m.content}
-                  </div>
-                )}
-
-                {/* Уточнение после сбоя шага */}
-                {m.clarification && (
-                  <ClarificationCard
-                    data={m.clarification}
-                    active={!streaming && m.id === activeClarificationId}
-                    onSkip={() => sendQuestion(t("chat.skipStep"), RECOVERY_SKIP_STEP)}
-                    // step_id < 0 — план пуст, бэкенд не ждёт уточнения: это новый вопрос
-                    onAnswer={(text) => sendQuestion(text, m.clarification!.step_id >= 0 ? text : undefined)}
-                  />
-                )}
-
-                {/* Отказ: переформулировки отправляются как новый вопрос */}
-                {m.refusal && m.refusal.suggestions?.length > 0 && (
-                  <div className="mt-2 flex flex-wrap gap-2">
-                    {m.refusal.suggestions.map((suggestion) => (
-                      <button
-                        key={suggestion}
-                        onClick={() => sendQuestion(suggestion)}
-                        disabled={streaming}
-                        className="rounded-full border border-graphite-600 px-3 py-1 text-xs text-graphite-200 hover:bg-graphite-800 disabled:opacity-50 transition"
-                      >
-                        {suggestion}
-                      </button>
-                    ))}
-                  </div>
-                )}
+                <div className="whitespace-pre-wrap">{m.content}</div>
 
                 {/* Кнопка повтора при ошибке или обрыве */}
                 {m.failed && !streaming && (
@@ -478,12 +357,6 @@ export default function ChatPanel({ sessionId }: Props) {
 
       {/* Поле ввода (как композер Claude Code) */}
       <div className="mx-auto w-full max-w-3xl px-4 pb-4 md:px-8">
-        {!activeTable && (
-          <div className="mb-3 flex items-center gap-2 rounded-xl border border-amber-500/30 bg-amber-500/10 px-3.5 py-2.5 text-xs text-amber-200">
-            <Icon name="alertTriangle" size={14} className="shrink-0 text-amber-400" />
-            <span>{t("chat.noTableWarning")}</span>
-          </div>
-        )}
         {lastFailedQuestion && !streaming && (
           <div className="mb-3 flex items-center justify-between gap-3 rounded-xl border border-bad/30 bg-bad/10 px-3.5 py-2 text-xs text-bad">
             <div className="flex items-center gap-2 overflow-hidden">
@@ -491,8 +364,7 @@ export default function ChatPanel({ sessionId }: Props) {
             </div>
             <button
               onClick={() => sendQuestion(lastFailedQuestion)}
-              disabled={!activeTable}
-              className="inline-flex items-center gap-1.5 rounded-lg bg-danger hover:bg-danger/90 px-3 py-1.5 text-xs font-semibold text-white shadow transition whitespace-nowrap disabled:opacity-50"
+              className="inline-flex items-center gap-1.5 rounded-lg bg-danger hover:bg-danger/90 px-3 py-1.5 text-xs font-semibold text-white shadow transition whitespace-nowrap"
             >
               <Icon name="refresh" size={14} />
               <span>{t("chat.retry")}</span>
@@ -512,19 +384,13 @@ export default function ChatPanel({ sessionId }: Props) {
             onKeyDown={(e) => {
               if (e.key === "Enter" && !e.shiftKey) {
                 e.preventDefault();
-                if (activeTable) sendQuestion();
+                sendQuestion();
               }
             }}
             rows={1}
-            placeholder={
-              !activeTable
-                ? t("chat.noTableWarning")
-                : activeClarificationId
-                ? t("chat.clarifyPlaceholder")
-                : t("chat.placeholder")
-            }
-            className="max-h-40 min-h-[36px] flex-1 resize-none overflow-y-hidden bg-transparent py-2 text-sm leading-5 text-graphite-100 placeholder-graphite-500 outline-none disabled:cursor-not-allowed disabled:opacity-60"
-            disabled={streaming || !activeTable}
+            placeholder={t("chat.placeholder")}
+            className="max-h-40 min-h-[36px] flex-1 resize-none overflow-y-hidden bg-transparent py-2 text-sm leading-5 text-graphite-100 placeholder-graphite-500 outline-none"
+            disabled={streaming}
           />
           {streaming ? (
             <button
@@ -537,7 +403,7 @@ export default function ChatPanel({ sessionId }: Props) {
           ) : (
             <button
               onClick={() => sendQuestion()}
-              disabled={!input.trim() || !activeTable}
+              disabled={!input.trim()}
               className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-graphite-100 text-graphite-950 hover:bg-graphite-50 disabled:bg-graphite-700 disabled:text-graphite-500 disabled:cursor-not-allowed transition"
               title={t("chat.send")}
             >

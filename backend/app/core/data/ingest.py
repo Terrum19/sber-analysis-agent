@@ -53,42 +53,16 @@ async def describe(
     """Перенести описание таблиц в паспорт; таблицы без описания пропускаются.
 
     document — один документ на весь источник (может описывать несколько
-    таблиц). Возвращает записи паспорта по описанным таблицам. Статус описания
-    таблицы — ready, если перенесены все колонки, и failed, если LLM не
-    разобрала документ хотя бы по одной колонке (у неё нет fingerprint) или
-    перенос упал.
+    таблиц). Возвращает записи паспорта по описанным таблицам.
     """
     document = (document or "").strip() or None
     enricher = None
     described = {}
-    memory = ProfileMemory(db)
     for table in tables:
         with db.lock:
             comments = connector.column_comments(db, table)
         if not comments and document is None:
             continue
         enricher = enricher or SchemaEnricher(db, llm)
-        try:
-            rows = await enricher.enrich(table, comments=comments, document=document)
-        except BaseException:
-            with db.lock:
-                memory.set_description_status(table, "failed")
-            raise
-        described[table] = rows
-        status = "failed" if any(row.fingerprint is None for row in rows) else "ready"
-        with db.lock:
-            memory.set_description_status(table, status)
+        described[table] = await enricher.enrich(table, comments=comments, document=document)
     return described
-
-
-def mark_pending(connector: BaseConnector, db, tables: list[str], document: str | None) -> None:
-    """Статус описания до запуска describe() в фоне. Вызывать под db.lock.
-
-    Таблицы с описанием — pending (ответ подключения уже показывает, что
-    перенос идёт), остальные — none: describe() их пропустит.
-    """
-    document = (document or "").strip() or None
-    memory = ProfileMemory(db)
-    for table in tables:
-        described = document is not None or connector.column_comments(db, table)
-        memory.set_description_status(table, "pending" if described else "none")
