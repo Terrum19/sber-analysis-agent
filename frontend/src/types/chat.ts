@@ -1,7 +1,6 @@
 /**
  * Типы стрима чата (синхронизировано с backend/app/api/schemas/chat.py).
- * Фронт получает события: text | chart | dashboard | error | done |
- * clarification_needed | progress | refusal (refusal — A-05, бэкенд ещё не шлёт).
+ * Фронт получает события: text | chart | dashboard | error | done.
  */
 import type { DashboardTile } from "./dashboard";
 

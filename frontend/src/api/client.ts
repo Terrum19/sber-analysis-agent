@@ -118,6 +118,21 @@ export async function createSession(
   }
 }
 
+export async function deleteSessionApi(sessionId: string): Promise<{ ok: boolean }> {
+  if (isMockMode()) {
+    return { ok: true };
+  }
+  try {
+    const res = await fetch(`${API}/sessions/${encodeURIComponent(sessionId)}`, {
+      method: "DELETE",
+    });
+    if (!res.ok) throw await parseApiError(res);
+    return { ok: true };
+  } catch (err) {
+    throw toApiError(err);
+  }
+}
+
 export async function patchSession(
   sessionId: string,
   table: string,
@@ -137,6 +152,23 @@ export async function patchSession(
     const apiErr = toApiError(err);
     if (apiErr.status === 404) {
       apiErr.detail = "Таблица не найдена";
+    }
+    throw apiErr;
+  }
+}
+
+export async function getSession(sessionId: string): Promise<SessionResponse> {
+  if (isMockMode()) {
+    return { session_id: sessionId, table: "mock_table" };
+  }
+  try {
+    const res = await fetch(`${API}/sessions/${encodeURIComponent(sessionId)}`);
+    if (!res.ok) throw await parseApiError(res);
+    return await res.json();
+  } catch (err) {
+    const apiErr = toApiError(err);
+    if (apiErr.status === 404) {
+      apiErr.detail = "Сессия не найдена";
     }
     throw apiErr;
   }
@@ -176,28 +208,9 @@ export async function listTables(): Promise<string[]> {
   }
 }
 
-export async function getSession(sessionId: string): Promise<SessionResponse> {
-  if (isMockMode()) {
-    return { session_id: sessionId, table: "mock_table" };
-  }
-  try {
-    const res = await fetch(`${API}/sessions/${encodeURIComponent(sessionId)}`);
-    if (!res.ok) throw await parseApiError(res);
-    return await res.json();
-  } catch (err) {
-    const apiErr = toApiError(err);
-    if (apiErr.status === 404) {
-      apiErr.detail = "Сессия не найдена";
-    }
-    throw apiErr;
-  }
-}
-
 /**
  * Подписка на SSE-поток диалога; onEvent вызывается на каждое событие,
  * onClose — один раз, когда поток закончился, оборвался или был отменён.
- * recoveryResponse — ответ на clarification_needed (JSON с action или
- * свободный текст), уходит в поле recovery_response.
  */
 export function streamChat(
   sessionId: string,
@@ -274,7 +287,7 @@ export function streamChat(
 }
 
 /**
- * Загрузить один или несколько сырых CSV (multipart-поле files);
+ * Загрузить один или несколько сырых CSV (multipart-поле files).
  * description — необязательный документ-описание данных в том же multipart.
  */
 export async function attachCsv(files: File[], description?: File | null): Promise<Datasource> {

@@ -134,14 +134,6 @@ function Tab({
       {dropTarget && <span className="absolute inset-y-1 left-0 w-0.5 rounded bg-graphite-300" />}
       <Icon name={TAB_ICON[tab.kind]} size={14} className="shrink-0 text-graphite-500" />
       <span className="truncate">{title}</span>
-      {tab.kind === "session" && activeTable && (
-        <span
-          className="shrink-0 rounded bg-graphite-800 px-1.5 py-0.5 text-[10px] font-mono text-graphite-300 border border-graphite-700/60 max-w-[80px] truncate"
-          title={`${t("chat.activeTable")}: ${activeTable}`}
-        >
-          {activeTable}
-        </span>
-      )}
       <button
         type="button"
         disabled={isGenerating}
