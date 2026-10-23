@@ -60,7 +60,6 @@ def create_session(
 
 
 @router.patch("/{session_id}", response_model=SessionOut)
-@router.post("/{session_id}/table", response_model=SessionOut)
 def set_session_table(
     session_id: str, payload: SessionTable, db: Annotated[DuckDBManager, Depends(get_db)]
 ) -> SessionOut:

@@ -20,8 +20,6 @@ import {
   mockDeleteDashboard,
   mockFetchDashboard,
   mockFetchDashboards,
-  mockListSessions,
-  mockListTables,
   mockPatchSession,
   mockRecalculateDashboard,
   mockStreamChat,
@@ -157,40 +155,6 @@ export async function patchSession(
   }
 }
 
-/** PATCH /api/sessions/{id} {table}: сменить таблицу сессии (404 — «Таблица не найдена»). */
-export const setSessionTable = patchSession;
-
-/** Страница сессий (до SESSIONS_PAGE штук), недавно изменённые первыми. */
-export const SESSIONS_PAGE = 30;
-
-export async function listSessions(offset = 0): Promise<SessionResponse[]> {
-  if (isMockMode()) {
-    return mockListSessions(offset);
-  }
-  try {
-    const res = await fetch(`${API}/sessions?offset=${offset}`);
-    if (!res.ok) throw await parseApiError(res);
-    return await res.json();
-  } catch (err) {
-    throw toApiError(err);
-  }
-}
-
-/** Таблицы пользователя по алфавиту (CSV и PostgreSQL). */
-export async function listTables(): Promise<string[]> {
-  if (isMockMode()) {
-    return mockListTables();
-  }
-  try {
-    const res = await fetch(`${API}/datasources/tables`);
-    if (!res.ok) throw await parseApiError(res);
-    const body: Array<string | { table: string }> = await res.json();
-    return body.map((item) => (typeof item === "string" ? item : item.table));
-  } catch (err) {
-    throw toApiError(err);
-  }
-}
-
 export async function getSession(sessionId: string): Promise<SessionResponse> {
   if (isMockMode()) {
     return { session_id: sessionId, table: "mock_table" };
@@ -211,15 +175,12 @@ export async function getSession(sessionId: string): Promise<SessionResponse> {
 /**
  * Подписка на SSE-поток диалога; onEvent вызывается на каждое событие,
  * onClose — один раз, когда поток закончился, оборвался или был отменён.
- * recoveryResponse — ответ на clarification_needed (JSON с action или
- * свободный текст), уходит в поле recovery_response.
  */
 export function streamChat(
   sessionId: string,
   question: string,
   onEvent: (event: ChatStreamEvent) => void,
   onClose?: (error?: string) => void,
-  recoveryResponse?: string,
 ): () => void {
   if (isMockMode()) {
     return mockStreamChat(sessionId, question, onEvent, onClose);
@@ -232,11 +193,7 @@ export function streamChat(
       const res = await fetch(`${API}/chat`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          session_id: sessionId,
-          question,
-          recovery_response: recoveryResponse ?? null,
-        }),
+        body: JSON.stringify({ session_id: sessionId, question }),
         signal: controller.signal,
       });
 
@@ -283,18 +240,14 @@ export function streamChat(
   return () => controller.abort();
 }
 
-/**
- * Загрузить один или несколько сырых CSV (multipart-поле files);
- * description — необязательный документ-описание данных в том же multipart.
- */
-export async function attachCsv(files: File[], description?: File | null): Promise<Datasource> {
+/** Загрузить один или несколько сырых CSV (multipart-поле files). */
+export async function attachCsv(files: File[]): Promise<Datasource> {
   if (isMockMode()) {
     return mockAttachCsv(files);
   }
   try {
     const body = new FormData();
     for (const file of files) body.append("files", file);
-    if (description) body.append("description", description);
     const res = await fetch(`${API}/datasources/csv`, { method: "POST", body });
     if (!res.ok) throw await parseApiError(res);
     return await res.json();
@@ -312,12 +265,7 @@ export async function attachDb(payload: DatasourceDbRequest): Promise<Datasource
     const res = await fetch(`${API}/datasources/db`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        kind: payload.kind,
-        dsn: payload.dsn,
-        schema: payload.schema || null,
-        description: payload.description || null,
-      }),
+      body: JSON.stringify({ kind: payload.kind, dsn: payload.dsn, schema: payload.schema || null }),
     });
     if (!res.ok) throw await parseApiError(res);
     return await res.json();
