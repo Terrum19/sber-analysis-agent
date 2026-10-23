@@ -192,7 +192,8 @@ def test_saved_source_is_restored_after_restart(
     views = response.json()["tables"]
     stored = DatasourceStore().get(identity)
     password = parse_dsn(DSN).password
-    assert password is None or password not in stored.dsn
+    # Сравнение целиком: пароль может совпадать с частью имени базы (sber / sber_demo).
+    assert stored.dsn == parse_dsn(DSN).masked()
     if password:
         monkeypatch.setenv(f"POSTGRES_PASSWORD__{identity}", password)
 
