@@ -21,7 +21,8 @@ SCHEMA = (
         glossary      JSON,
         summary       VARCHAR,
         profiled_at   TIMESTAMPTZ NOT NULL,
-        enriched_at   TIMESTAMPTZ
+        enriched_at   TIMESTAMPTZ,
+        empty_rows    BIGINT
     )""",
     """CREATE TABLE IF NOT EXISTS _meta.column_passport (
         table_name           VARCHAR NOT NULL,
@@ -57,6 +58,7 @@ SCHEMA = (
         is_unique            BOOLEAN NOT NULL,
         outlier_count        BIGINT,
         identifier_by        VARCHAR,
+        flags                JSON,
         lower_fence          DOUBLE,
         upper_fence          DOUBLE,
         title                VARCHAR,
@@ -69,16 +71,19 @@ SCHEMA = (
     # Паспорта, созданные до появления названий колонок (aliases и
     # description_original в них остаются и больше не читаются).
     "ALTER TABLE _meta.column_passport ADD COLUMN IF NOT EXISTS title VARCHAR",
+    "ALTER TABLE _meta.column_passport ADD COLUMN IF NOT EXISTS flags JSON",
+    "ALTER TABLE _meta.table_passport ADD COLUMN IF NOT EXISTS empty_rows BIGINT",
 )
 
 SAVE_TABLE = """INSERT INTO _meta.table_passport
-    (table_name, row_count, column_count, glossary, profiled_at)
-    VALUES ($table, $row_count, $column_count, $glossary, $profiled_at)
+    (table_name, row_count, column_count, glossary, profiled_at, empty_rows)
+    VALUES ($table, $row_count, $column_count, $glossary, $profiled_at, $empty_rows)
     ON CONFLICT (table_name) DO UPDATE SET
         row_count = excluded.row_count,
         column_count = excluded.column_count,
         glossary = COALESCE(excluded.glossary, glossary),
-        profiled_at = excluded.profiled_at"""
+        profiled_at = excluded.profiled_at,
+        empty_rows = excluded.empty_rows"""
 
 COLUMN_FIELDS = ("table_name", "position", *ROW_FIELDS)
 UPDATED_FIELDS = [name for name in COLUMN_FIELDS if name not in ("table_name", "column_name")]
@@ -100,7 +105,7 @@ SAVE_ENRICHMENT = """UPDATE _meta.column_passport SET
         enriched_at = now()
     WHERE table_name = $table AND column_name = $column"""
 
-LOAD_TABLE = """SELECT table_name, row_count, column_count,
+LOAD_TABLE = """SELECT table_name, row_count, column_count, empty_rows,
         strftime(profiled_at AT TIME ZONE 'UTC', '%Y-%m-%dT%H:%M:%S+00:00') AS profiled_at
     FROM _meta.table_passport WHERE table_name = $table"""
 
@@ -136,6 +141,7 @@ class ProfileMemory:
                     if glossary is None
                     else json.dumps(glossary, ensure_ascii=False),
                     "profiled_at": profile.profiled_at,
+                    "empty_rows": profile.empty_rows,
                 },
             )
             names = [column.name for column in profile.columns]
