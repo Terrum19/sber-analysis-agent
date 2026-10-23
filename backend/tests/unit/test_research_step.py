@@ -1,8 +1,11 @@
 """Unit-тесты моделей ResearchStep и ResearchPlan."""
 
+from typing import get_args
+
 import pytest
 from pydantic import ValidationError
 
+from app.core.viz.vega_spec_builder import CHART_TYPES
 from app.models.research_step import ResearchPlan, ResearchStep
 
 
@@ -67,3 +70,11 @@ def test_research_plan_null_fields_fall_back_to_defaults() -> None:
     assert plan.final_viz == "auto"
     assert plan.dashboard_requested is False
     assert plan.result_step is None
+
+
+def test_plan_final_viz_is_a_known_chart_type() -> None:
+    allowed = get_args(ResearchPlan.model_fields["final_viz"].annotation)
+    assert set(allowed) == {*CHART_TYPES, "auto"}
+    assert ResearchPlan(final_viz=" KPI ").final_viz == "kpi"
+    with pytest.raises(ValidationError):
+        ResearchPlan(final_viz="pie")

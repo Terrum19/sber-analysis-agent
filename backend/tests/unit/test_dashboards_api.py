@@ -262,3 +262,17 @@ def test_recalculate_keeps_a_foreign_spec_and_refreshes_its_data(
         {"region": "spb", "revenue": 5},
     ]
     assert rebuilt["snapshot_data"] == rebuilt["spec"]["data"]["values"]
+
+
+def test_recalculate_keeps_a_kpi_tile(client: TestClient, db: DuckDBManager) -> None:
+    db.execute("CREATE TABLE temp_result_v3 AS SELECT 15 AS total")
+    spec = build_vega_spec(
+        "kpi", result_table="temp_result_v3", data=db.to_records("temp_result_v3")
+    )
+    tile = {"title": "Итого", "spec": spec, "result_table": "temp_result_v3", "is_kpi": True}
+    created = create(client, tiles=[tile])
+    db.execute("CREATE OR REPLACE TABLE temp_result_v3 AS SELECT 20 AS total")
+    rebuilt = client.post(f"/api/dashboards/{created['id']}/recalculate").json()["tiles"][0]
+    assert rebuilt["spec"]["usermeta"]["chart_type"] == "kpi"
+    assert rebuilt["spec"]["data"]["values"] == [{"total": 20}]
+    assert rebuilt["is_kpi"] is True

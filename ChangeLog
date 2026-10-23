@@ -18,6 +18,36 @@
 
 2026-10-22  mb6ockatf  <smokenmirror@tutamail.com>
 
+	Типизированное событие dashboard и KPI-плитка (#48).
+	* backend/app/api/schemas/chat.py (DashboardPayload): tiles — список
+	DashboardTileOut вместо словарей.  (DashboardPayload.from_dashboard):
+	Событие из дашборда; snapshot_data в SSE не отправляется, данные уже в
+	spec.data.values.
+	* backend/app/core/viz/vega_spec_builder.py (CHART_TYPES, _MARKS)
+	(_kpi): Новый вид kpi: первая метрика первой строки крупным текстом
+	(fontSize 48) в формате ,.2~f, подпись — title спеки, без него —
+	название метрики; без чисел строится таблица.
+	* backend/app/core/viz/chart_selector.py (select_chart): Новый
+	аргумент records: одна строка с одним конечным числом — kpi.  TODO
+	удалён.  (is_single_number): Новая функция.
+	* backend/app/core/viz/chart_morph.py (MORPH_MAP): Из kpi — в table и
+	bar.
+	* backend/app/core/llm/prompts/step_planner.py (STEP_PLANNER): kpi в
+	списке final_viz, для ответа одним числом — kpi.
+	* backend/app/models/research_step.py (ResearchPlan.final_viz): Только
+	известные виды и auto, без учёта регистра.
+	* backend/tests/contract/test_chat_event_schema.py: Событие dashboard
+	проверяется по DashboardPayload.
+	* backend/tests/unit/test_chart_selector.py: Новые тесты.
+	* backend/tests/unit/test_vega_spec_builder.py: Тесты KPI.
+	* backend/tests/unit/test_chart_morph.py,
+	backend/tests/unit/test_research_step.py,
+	backend/tests/unit/test_dashboards_api.py: Морфинг KPI, final_viz,
+	KPI после пересчёта.
+	* docs/visualization.md: KPI-спека, выбор вида, событие dashboard.
+
+2026-10-22  mb6ockatf  <smokenmirror@tutamail.com>
+
 	REST API дашбордов и пересчёт плиток (#47).
 	* backend/app/api/routes/dashboards.py: Эндпоинты GET (список,
 	session_id необязателен), GET по id, POST (201), PUT, DELETE (204) и
