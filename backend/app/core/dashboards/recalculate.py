@@ -43,10 +43,12 @@ def recalculate(
     for tile in dashboard.tiles:
         if not tile.result_table:
             continue
-        if not db.columns(tile.result_table):
-            stale_tiles.add(tile.id)
-            continue
-        records = db.to_records(tile.result_table, limit=SPEC_ROW_LIMIT)
+        # Под одним lock: очистка temp_result_vN не удалит таблицу между проверкой и чтением.
+        with db.lock:
+            if not db.columns(tile.result_table):
+                stale_tiles.add(tile.id)
+                continue
+            records = db.to_records(tile.result_table, limit=SPEC_ROW_LIMIT)
         tile.spec = rebuild_spec(tile, records)
         tile.snapshot_data = snapshot_records(records)
         tile.snapshot_at = time.time()

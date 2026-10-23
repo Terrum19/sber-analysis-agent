@@ -1,3 +1,21 @@
+2026-10-23  Alexander Yurits  <terruwork@gmail.com>
+
+	Плитки дашборда из запроса не ломают вставку и не читают чужие таблицы.
+	* backend/app/api/schemas/dashboard.py (DashboardTileIn): Новая
+	входная схема плитки: result_table только temp_result_vN, иначе 422.
+	DashboardCreate и DashboardUpdate принимают её.
+	* backend/app/api/routes/dashboards.py (own_tiles): Новая функция.
+	POST даёт плиткам новые id; PUT сохраняет id плиток этого дашборда,
+	чужие и повторные заменяет.  (update_dashboard): 404 до замены плиток.
+	* backend/app/core/dashboards/recalculate.py (recalculate): Проверка
+	таблицы и чтение под одним db.lock.
+	* backend/tests/unit/test_dashboards_api.py
+	(test_create_with_tiles_of_another_dashboard)
+	(test_create_with_duplicate_tile_ids)
+	(test_update_keeps_own_tile_ids_and_replaces_foreign)
+	(test_result_table_must_be_a_step_result): Новые тесты.
+	* docs/memory.md: Входная схема плитки и id плиток.
+
 2026-10-22  mb6ockatf  <smokenmirror@tutamail.com>
 
 	REST API дашбордов и пересчёт плиток (#47).

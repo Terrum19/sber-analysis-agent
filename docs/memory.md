@@ -202,6 +202,11 @@ EXISTS`). Записи — одной транзакцией под `DuckDBManag
 
   `DashboardCreate {session_id, title, tiles}` — `title` обязателен;
   `DashboardUpdate {title?, tiles?}` — `tiles` заменяют все плитки.
+  Плитки на входе — `DashboardTileIn`: `result_table` только
+  `temp_result_vN` (оно идёт в SQL как имя таблицы), иначе 422. Id плиток
+  при POST всегда новые; при PUT id плитки этого дашборда сохраняется,
+  чужой или повторный id заменяется новым (`dashboard_tiles.id` —
+  глобальный ключ), так что GET → POST дублирует дашборд.
   `recalculate` (`core/dashboards/recalculate.py`) перечитывает
   `result_table` каждой плитки и пересобирает спеку запрошенным типом
   графика (`usermeta.requested_type`, иначе `chart_type`: если в прошлый
