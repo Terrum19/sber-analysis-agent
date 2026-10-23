@@ -20,8 +20,8 @@ Ollama/vLLM), DuckDB как единый SQL-движок, WASM-песочниц
 ## Быстрый старт (локально)
 
 ```bash
-# 1) LLM (замкнутый контур): Ollama или vLLM
-ollama pull qwen2.5-coder:14b && ollama serve
+# 1) LLM (замкнутый контур): Ollama или vLLM; контекст — как LLM_NUM_CTX в .env
+ollama pull qwen2.5-coder:14b && OLLAMA_CONTEXT_LENGTH=16384 ollama serve
 # или GPU: MODEL=Qwen/Qwen2.5-Coder-14B-Instruct bash infra/vllm/serve.sh
 
 # 2) Зависимости
@@ -37,6 +37,28 @@ bash infra/local-dev.sh
 ```
 
 Или одной командой: `make up` (см. Makefile).
+
+### Длина контекста LLM
+
+Промпт планировщика — около 12 тыс. символов, это 4–5 тыс. токенов. У Ollama
+контекст по умолчанию 4096 токенов, и не влезшее начало промпта отбрасывается
+без ошибки: модель не видит список инструментов. Контекст задаётся на сервере
+и должен быть не меньше `LLM_NUM_CTX` (по умолчанию 16384):
+
+- Ollama, запущенная руками: `OLLAMA_CONTEXT_LENGTH=16384 ollama serve`.
+- Ollama как служба systemd: `sudo systemctl edit ollama`, в `[Service]` —
+  `Environment="OLLAMA_CONTEXT_LENGTH=16384"`, затем `sudo systemctl restart ollama`.
+- Или модель с контекстом в Modelfile: `FROM qwen2.5-coder:14b` и
+  `PARAMETER num_ctx 16384`, `ollama create qwen2.5-coder-16k -f Modelfile`,
+  `LLM_MODEL=qwen2.5-coder-16k`.
+- vLLM: `infra/vllm/serve.sh` передаёт `--max-model-len` (`MAX_MODEL_LEN`, по
+  умолчанию `LLM_NUM_CTX`).
+
+`options.num_ctx` в запросе к OpenAI-совместимому `/v1` Ollama игнорирует. Проверка:
+`python3 scripts/check_llm_client.py` отправляет промпт 12 тыс. символов с паролем
+в начале и печатает `prompt_tokens` и виден ли пароль. Бэкенд при первом ответе
+спрашивает контекст у сервера и пишет warning, если он меньше `LLM_NUM_CTX`, а
+каждый обрезанный промпт — warning «Промпт обрезан сервером LLM».
 
 ## Структура репозитория
 

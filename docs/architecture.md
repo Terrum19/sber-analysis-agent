@@ -40,6 +40,7 @@
 | **Vega-Lite JSON-конфиги** | фронт рендерит спеку; бэк не занимается отрисовкой |
 | **4 уровня памяти** | сессия (скользящее окно) / кеш результатов (DuckDB) / паспорт данных (DuckDB `_meta`) / реестр дашбордов |
 | **Замкнутый контур** | Ollama/vLLM локально; интернет — только к разрешённым доменам (HuggingFace, пакеты) |
+| **Контекст LLM на сервере, проверка в клиенте** | Ollama молча обрезает начало длинного промпта, а `options.num_ctx` в `/v1` не действует. Контекст задаёт сервер (`LLM_NUM_CTX` = `OLLAMA_CONTEXT_LENGTH` / `--max-model-len`); клиент сверяет `usage.prompt_tokens` с контекстом сервера, бюджет промпта — `core/llm/budget.py` |
 
 ## Память
 
@@ -58,7 +59,7 @@
 | `dashboard` | `{dashboard_id}` | дашборд собран по запросу |
 | `clarification_needed` | `{step_id, error, suggestions}` | шаг не выполнился, ждём `recovery_response` |
 | `error` | `{message}` | сбой хода; дальше `done` |
-| `done` | `{}` | ход завершён |
+| `done` | `{}` или `{prompt_truncated}` | ход завершён; `prompt_truncated` — сколько промптов хода сервер LLM обрезал (только если > 0) |
 
 `ProgressPayload`: `stage` (`planning` / `step` / `insight` / `chart` /
 `dashboard`), `status` (`started` / `finished` / `failed` / `fixing`) и

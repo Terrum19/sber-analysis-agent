@@ -7,12 +7,14 @@
 FakeLLM вместо реального клиента — для тестирования на CI без локальной модели.
 """
 
+import json
 import logging
 import os
 import re
 import time
 from typing import Any, TypeVar
 
+import httpx
 import instructor
 import openai
 from openai import AsyncOpenAI
@@ -25,6 +27,7 @@ except ImportError:  # instructor 1.3.x
     from instructor.retry import InstructorRetryException
 
 from app.config import settings
+from app.core.llm import budget
 
 logger = logging.getLogger(__name__)
 
@@ -32,6 +35,8 @@ T = TypeVar("T", bound=BaseModel)
 
 # Сколько раз instructor переспрашивает модель, если ответ не прошёл валидацию схемы.
 STRUCTURED_ATTEMPTS = 3
+# Запрос длины контекста у сервера не должен задерживать ход.
+SERVER_INFO_TIMEOUT_S = 5.0
 
 
 def _validation_retries() -> AsyncRetrying:
@@ -85,8 +90,13 @@ class LLMClient:
             base_url=settings.llm_base_url,
             api_key=settings.llm_api_key.get_secret_value() or "not-needed",
             timeout=settings.llm_timeout_s,
+            # Хук видит каждый ответ, включая повторы instructor и fallback.
+            http_client=openai.DefaultAsyncHttpxClient(
+                event_hooks={"response": [self._check_context]}
+            ),
         )
         self.model = settings.llm_model
+        self.last_prompt_tokens: int | None = None
         self._instructor = instructor.from_openai(self._client)
         logger.info(
             "LLMClient инициализирован: base_url=%s, model=%s, timeout=%ss, temp=%s",
@@ -95,6 +105,56 @@ class LLMClient:
             settings.llm_timeout_s,
             settings.llm_temperature,
         )
+
+    async def _check_context(self, response: httpx.Response) -> None:
+        """Сверить prompt_tokens ответа с длиной промпта: не обрезал ли его сервер.
+
+        При первом ответе спрашивает у сервера его контекст (модель к этому
+        моменту загружена — Ollama показывает его в /api/ps). Сбой проверки
+        запрос не роняет.
+        """
+        if response.status_code != 200 or not response.url.path.endswith("/chat/completions"):
+            return
+        try:
+            await response.aread()
+            prompt_tokens = (response.json().get("usage") or {}).get("prompt_tokens")
+            messages = json.loads(response.request.content).get("messages") or []
+            self.last_prompt_tokens = prompt_tokens
+            if not prompt_tokens:
+                return
+            base_url = str(self._client.base_url)
+            if not budget.known_server_context(base_url, self.model):
+                ctx = await self._server_context()
+                budget.remember_server_context(base_url, self.model, ctx)
+            prompt_chars = sum(
+                len(m["content"]) for m in messages if isinstance(m.get("content"), str)
+            )
+            ctx = budget.server_context(base_url, self.model) or settings.llm_num_ctx
+            reason = budget.check_prompt(prompt_chars, prompt_tokens, ctx)
+        except Exception:  # проверка вспомогательная, запрос не роняет
+            logger.warning("Проверка контекста LLM не удалась", exc_info=True)
+            return
+        if reason:
+            budget.report_truncation(prompt_chars, prompt_tokens, reason)
+
+    async def _server_context(self) -> int | None:
+        """Контекст модели по словам сервера: vLLM — /v1/models, Ollama — /api/ps."""
+        options: Any = {"timeout": SERVER_INFO_TIMEOUT_S, "max_retries": 0}
+
+        async def fetch(path: str) -> Any:
+            try:
+                return await self._client.get(path, cast_to=object, options=options)
+            except Exception:  # сервер может не знать такой путь
+                logger.debug("LLM %s недоступен", path, exc_info=True)
+                return None
+
+        models = await fetch("models")
+        ctx = budget.parse_server_context(models, None, self.model)
+        root = str(self._client.base_url).rstrip("/")
+        if ctx is None and root.endswith("/v1"):
+            ps = await fetch(root.removesuffix("/v1") + "/api/ps")
+            ctx = budget.parse_server_context(None, ps, self.model)
+        return ctx
 
     async def complete(self, system: str, user: str, **kwargs: Any) -> str:
         """Одиночный completion (без structured output)."""

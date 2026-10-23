@@ -34,6 +34,7 @@ import json
 import logging
 import time
 from collections.abc import AsyncIterator, Callable
+from contextlib import aclosing
 from dataclasses import dataclass, field
 
 logger = logging.getLogger(__name__)
@@ -46,6 +47,7 @@ from app.core.agent.planner import StepPlanner
 from app.core.agent.recovery import STEP_FIX_ATTEMPTS, fixable
 from app.core.agent.step_executor import StepExecutor, resolve_input, tool_kind
 from app.core.data.duckdb_manager import DuckDBManager
+from app.core.llm.budget import track_truncations
 from app.core.memory.profile_memory import ProfileMemory
 from app.core.memory.session_memory import SessionMemory
 from app.core.memory.state_cache import StateCache
@@ -165,7 +167,21 @@ class AgentOrchestrator:
         self.profiles = ProfileMemory(self.db)
 
     async def run(self, request: ChatRequest) -> AsyncIterator[dict]:
-        """Выполнить исследование и вернуть поток событий для фронта."""
+        """Выполнить исследование и вернуть поток событий для фронта.
+
+        Если сервер LLM обрезал промпты хода, done несёт их число в
+        prompt_truncated: eval (#58) отбрасывает такие прогоны.
+        """
+        truncations = track_truncations()
+        # aclosing: клиент отключился — ход закрывается сразу, с отменой задачи плана.
+        async with aclosing(self._turn(request)) as events:
+            async for event in events:
+                if event["type"] == "done" and truncations:
+                    event["data"]["prompt_truncated"] = len(truncations)
+                yield event
+
+    async def _turn(self, request: ChatRequest) -> AsyncIterator[dict]:
+        """Один ход: события для фронта до done или clarification_needed."""
         logger.info(">>> run() session_id=%s question=%r", request.session_id, request.question)
         memory = SessionMemory(request.session_id, db=self.db)
         table = memory.table

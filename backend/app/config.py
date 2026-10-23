@@ -27,6 +27,11 @@ class Settings(BaseSettings):
     llm_api_key: SecretStr = SecretStr("not-needed")
     llm_timeout_s: int = 120
     llm_temperature: float = 0.0
+    # Контекст модели в токенах. Задаётся на сервере (Ollama — OLLAMA_CONTEXT_LENGTH,
+    # vLLM — --max-model-len), здесь — сколько ждём; от него считается бюджет промпта.
+    llm_num_ctx: int = 16384
+    # Символов на токен для оценки длины промпта: с запасом под кириллицу (~2,6).
+    llm_chars_per_token: float = 2.5
 
     # Хранилище
     storage_dir: str = "backend/storage"

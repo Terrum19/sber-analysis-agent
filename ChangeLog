@@ -1,5 +1,43 @@
 2026-10-23  Alexander Yurits  <terruwork@gmail.com>
 
+	Длина контекста LLM: проверка обрезки промпта и его бюджет (#102).
+	* backend/app/config.py (llm_num_ctx, llm_chars_per_token): Новые.
+	* backend/app/core/llm/budget.py: Новый.  Реальный контекст сервера
+	(server_context, num_ctx — меньшее из него и LLM_NUM_CTX),
+	prompt_budget, признаки обрезки (check_prompt), сбор обрезок хода
+	(track_truncations, report_truncation), probe_context для проверочных
+	скриптов.
+	* backend/app/core/llm/client.py (LLMClient._check_context): Новый
+	response-хук httpx: сверяет usage.prompt_tokens каждого ответа, включая
+	повторы instructor и fallback, с длиной промпта и контекстом сервера;
+	обрезку пишет warning'ом.
+	(LLMClient._server_context): Новый.  Контекст из /v1/models (vLLM,
+	max_model_len) или /api/ps (Ollama, context_length), один раз на модель.
+	* backend/app/core/agent/orchestrator.py (AgentOrchestrator.run): done
+	несёт prompt_truncated, если сервер обрезал промпты хода.
+	(AgentOrchestrator._turn): Прежнее тело run.
+	* scripts/check_llm_client.py: Проверка промпта заданной длины с
+	паролем в начале.
+	* scripts/run_full_llm_cycle.py (check_llm): Контекст сервера;
+	--check-context CHARS — та же проверка.  Обрезка из done — в
+	предупреждения отчёта.
+	* infra/vllm/serve.sh: --max-model-len (MAX_MODEL_LEN, по умолчанию
+	LLM_NUM_CTX).
+	* scripts/download_model.sh: OLLAMA_CONTEXT_LENGTH в подсказке.
+	* .env.example: LLM_NUM_CTX, LLM_CHARS_PER_TOKEN.
+	* README.md (Длина контекста LLM): Новый раздел.
+	* docs/architecture.md: prompt_truncated в done; решение о контексте.
+	* backend/tests/unit/test_budget.py: Новый.
+	* backend/tests/unit/test_llm_client_retries.py
+	(test_ollama_truncation_is_reported)
+	(test_far_fewer_tokens_than_estimate_is_reported)
+	(test_full_prompt_is_not_reported)
+	(test_broken_server_info_does_not_fail_the_call): Новые тесты.
+	* backend/tests/unit/test_orchestrator_unit.py
+	(test_done_counts_truncated_prompts): Новый тест.
+
+2026-10-23  Alexander Yurits  <terruwork@gmail.com>
+
 	Восстановление источника пропускает таблицу без прав, как attach.
 	* backend/app/core/data/ingest.py (restore): Сбой профиля —
 	connector.skip(), при пропуске паспорт таблицы удаляется; иначе
