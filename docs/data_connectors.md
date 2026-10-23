@@ -53,8 +53,7 @@ curl -F files=@Продажи.csv -F files=@users.csv http://localhost:8000/api/
         "Числа, записанные текстом, приведены к числам в колонках «Сумма»."
       ]
     }
-  ],
-  "profile_summary": ""
+  ]
 }
 ```
 
@@ -66,11 +65,17 @@ curl -F files=@Продажи.csv -F files=@users.csv http://localhost:8000/api/
 | `table`, `rows`, `columns` | имя таблицы, число строк и колонок из профиля |
 | `period_from`, `period_to` | `min_date`/`max_date` первой `temporal`-колонки профиля (ISO 8601) или `null`, если дат нет |
 | `description_status` | перенос описания в паспорт: `none` — описания нет, LLM не вызывается; `pending` — фоновый перенос запущен; `ready` — перенесено; `failed` — LLM не разобрала документ хотя бы по одной колонке (у неё `fingerprint = NULL`) или перенос упал. В ответе подключения статус `none` или `pending`, итог читается из паспорта |
-| `summary` | описание таблицы от LLM; пока `null` (D-04, #54) |
+| `summary` | описание таблицы «что передо мной» от LLM, если оно уже построено по этим же данным (повторное подключение), иначе `null`: новое описание строится в фоне после переноса описания колонок (`ingest.summarize`, см. [memory.md](memory.md#что-передо-мной--coredataoverviewpy)) |
 | `warnings` | что загрузчик CSV исправил или не смог исправить: перекодировка, числа из текста, нестрогий разбор, загрузка всех колонок текстом с отбрасыванием нечитаемых строк. У источников БД пусто |
 
 `GET /api/datasources/tables` по-прежнему возвращает список имён (`string[]`):
-фронт уже использует этот контракт, сводки берутся из ответа подключения.
+фронт уже использует этот контракт.
+
+`GET /api/datasources/tables/{table}` — тот же `TableBrief` по паспорту
+таблицы: итоговый `description_status` (`ready` / `failed`) и `summary`,
+когда фоновая задача их построила (`404`, если паспорта нет). `warnings`
+здесь всегда пустой: предупреждения загрузчика в паспорте не хранятся и
+приходят только в ответе подключения.
 
 | Код | Когда |
 |---|---|
@@ -135,7 +140,6 @@ curl -F files=@Продажи.csv -F files=@users.csv http://localhost:8000/api/
 - Кроме UTF-8/UTF-16 распознаётся только cp1251 (KOI8-R и пр. прочитаются как cp1251).
 - Даты `дд/мм/гггг` и `мм/дд/гггг` различает DuckDB по данным; если все дни ≤ 12,
   выбор неоднозначен.
-- `profile_summary` и `TableBrief.summary` ещё не заполняются (D-04, #54).
 - Перекодированная копия `<имя>.utf8.csv` пишется рядом с исходным файлом. Для загрузок через API
   это папка `uploads/<datasource_id>/`; при прямом вызове `DuckDBManager.attach_csv` с cp1251-файлом
   копия появится в каталоге этого файла.
@@ -173,7 +177,7 @@ curl -F files=@Продажи.csv -F files=@users.csv http://localhost:8000/api/
 Ответ `200`:
 
 ```json
-{"datasource_id": "pg_1a2b3c4d5e", "kind": "postgres", "tables": ["orders", "users"], "profiles": [...], "profile_summary": ""}
+{"datasource_id": "pg_1a2b3c4d5e", "kind": "postgres", "tables": ["orders", "users"], "profiles": [...]}
 ```
 
 `datasource_id` стабилен для одного источника (хост, порт, база,
@@ -445,7 +449,7 @@ HTTP-клиент отсутствуют. Лимит строк коннекто
   "datasource_id": "ch_1a2b3c4d5e",
   "kind": "clickhouse",
   "tables": ["orders", "users"],
-  "profile_summary": ""
+  "profiles": [...]
 }
 ```
 

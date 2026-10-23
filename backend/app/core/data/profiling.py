@@ -196,6 +196,10 @@ class TableProfile:
     def column(self, name: str) -> ColumnStats | None:
         return next((column for column in self.columns if column.name == name), None)
 
+    def temporal_column(self) -> ColumnStats | None:
+        """Колонка периода данных: первая temporal-колонка (None, если дат нет)."""
+        return next((column for column in self.columns if column.kind == "temporal"), None)
+
     def to_dict(self) -> dict:
         return {
             "table": self.table,

@@ -1,3 +1,64 @@
+2026-10-23  thebulkapro  <saitbatalovbulat200@gmail.com>
+
+	«Что передо мной?»: описание таблицы от LLM в паспорте (#54).
+	* backend/app/core/data/overview.py: Новый модуль.
+	(describe_dataset): Промпт SCHEMA_DESCRIBE из паспорта; LLM только
+	при новом отпечатке промпта, описание сохраняется в паспорте.
+	(build_prompt, profile_lines, family_line, clip): Промпт с системным
+	не длиннее PROMPT_MAX_CHARS (контекст 4096 токенов при 1,5 символа
+	на токен, ответ до 600 токенов): однотипные колонки (Q1A…Q35A) одной
+	строкой, 5 частых значений, остальное — «… и ещё N».
+	(quality_block, grouped_notes, split_note, group_line): «Качество
+	данных» до 1000 символов, по строке на вид замечания со списком
+	колонок («пропуски: «A» (10%), «B» (15%)»); каждому виду хватает
+	места хотя бы на число колонок.
+	(facts, profile_rows): Объём, период и таблица колонок без LLM.
+	(is_overview_question): Вопрос целиком из обзорных фраз.
+	(passport): Нет паспорта — профиль строится и сохраняется.
+	(cached_summary): Сохранённое описание по текущему паспорту, без LLM.
+	* backend/app/core/memory/profile_memory.py (SCHEMA): Колонка
+	summary_fingerprint (ADD COLUMN IF NOT EXISTS).
+	(save_summary, load_summary): Новые методы.
+	* backend/app/core/data/ingest.py (summarize): Новая функция:
+	описание таблиц после переноса описания колонок; без LLM прогон
+	прекращается.
+	* backend/app/api/routes/datasources.py (describe_tables): После
+	describe — summarize; сбой только в лог.
+	(briefs): TableBrief.summary — описание, сохранённое по тем же
+	данным.  (table_brief): Новый GET /api/datasources/tables/{table}:
+	TableBrief по паспорту с итогом переноса и описанием, 404 без
+	паспорта.
+	* backend/app/api/schemas/datasource.py (TableBrief.from_profile):
+	Параметр summary; период через TableProfile.temporal_column.
+	(DatasourceOut.profile_summary): Удалено, описание — в TableBrief.
+	* backend/app/core/data/profiling.py (TableProfile.temporal_column):
+	Новый метод: колонка периода, общая для TableBrief и overview.facts.
+	* backend/app/core/agent/orchestrator.py (AgentOrchestrator._overview):
+	Обзорный вопрос без планировщика: insight started, text (факты и
+	описание), chart started, chart table, done.  LLM не ответила —
+	факты и таблица без описания.
+	* backend/app/core/data/semantic_select.py (column_facts): Бывшая
+	_column_facts; параметр top_values, как у describe_columns.
+	* backend/app/core/llm/prompts/schema_describe.py
+	(SCHEMA_DESCRIBE_SYSTEM): Новый системный промпт.  (SCHEMA_DESCRIBE):
+	Не пересчитывать объём и период, строки семейств, 3-6 предложений.
+	* backend/tests/unit/test_overview.py: Новые тесты: кеш, смена
+	профиля и названий, сбой и пустой ответ LLM, лимит промпта, семейства,
+	замечания по видам, детектор вопросов, summarize.
+	* backend/tests/unit/test_profile_memory.py,
+	backend/tests/unit/test_orchestrator_unit.py,
+	backend/tests/unit/test_datasources_api.py,
+	backend/tests/unit/test_datasource_restore.py: Тесты сводки в
+	паспорте, обзорного хода и фоновой задачи, GET сводки таблицы и
+	описание при повторном подключении; summarize подменён.
+	* backend/tests/e2e/test_scenarios.py (test_scenario_1): Новый тест:
+	ответ содержит число строк и период.  Колонка date — DATE.
+	* backend/tests/benchmark/test_orchestrator_benchmark.py: Вопрос с
+	планом вместо обзорного.
+	* docs/memory.md, docs/architecture.md, docs/prompts.md,
+	docs/repo_structure.md, docs/data_connectors.md: Описание таблицы,
+	обзорный ход, TableBrief.summary и GET сводки таблицы.
+
 2026-10-22  mb6ockatf  <smokenmirror@tutamail.com>
 
 	Сводка паспорта в ответе подключения (#96).

@@ -9,6 +9,7 @@
 6. Диалог с контекстом.
 """
 
+import json
 from collections.abc import Iterator
 
 import pytest
@@ -31,7 +32,7 @@ def fake_llm(monkeypatch: pytest.MonkeyPatch) -> Iterator[FakeLLM]:
     db.execute(
         """
         CREATE TABLE raw AS
-        SELECT *
+        SELECT category, revenue, date::DATE AS date
         FROM (
             VALUES
                 ('Электроника', 100000, '2024-01-01'),
@@ -51,6 +52,30 @@ def fake_llm(monkeypatch: pytest.MonkeyPatch) -> Iterator[FakeLLM]:
 def session(client: TestClient) -> str:
     """Сессия над таблицей raw, созданная через API."""
     return client.post("/api/sessions", json={"table": "raw"}).json()["session_id"]
+
+
+def events(response) -> list[dict]:
+    return [json.loads(line[len("data: ") :]) for line in response.text.splitlines() if line]
+
+
+def test_scenario_1(fake_llm: FakeLLM) -> None:
+    """Сценарий 1: «что передо мной?» — объём и период из паспорта, без планировщика."""
+    client = TestClient(app)
+    response = client.post(
+        "/api/chat",
+        json={"session_id": session(client), "question": "Что передо мной и за какой период?"},
+    )
+    assert response.status_code == 200
+    stream = events(response)
+    assert [event["type"] for event in stream if event["type"] != "progress"] == [
+        "text",
+        "chart",
+        "done",
+    ]
+    headline = stream[1]["data"]["headline"]
+    assert "6 строк" in headline
+    assert "с 2024-01-01 по 2024-02-01" in headline
+    assert all(event["data"].get("stage") != "planning" for event in stream)
 
 
 def test_scenario_simple_question(fake_llm: FakeLLM) -> None:

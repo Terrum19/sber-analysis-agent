@@ -214,3 +214,40 @@ def test_old_passport_gets_title_column(tmp_path) -> None:
         assert "title" in {row["column_name"] for row in columns}
     finally:
         db.close()
+
+
+def test_summary_is_saved_and_kept_on_reprofile(db) -> None:
+    memory = ProfileMemory(db)
+    assert memory.load_summary("sales") is None
+    memory.save_profile(profile_table(db, "sales", approx=False))
+    assert memory.load_summary("sales") is None
+    memory.save_summary("sales", "Передо мной продажи.", "abc")
+    assert memory.load_summary("sales") == ("Передо мной продажи.", "abc")
+    memory.save_profile(profile_table(db, "sales", approx=False))
+    assert memory.load_summary("sales") == ("Передо мной продажи.", "abc")
+
+
+def test_summary_without_passport_is_not_saved(db) -> None:
+    memory = ProfileMemory(db)
+    memory.save_summary("sales", "текст", "abc")
+    assert memory.load_summary("sales") is None
+
+
+def test_old_passport_gets_summary_fingerprint_column(tmp_path) -> None:
+    path = str(tmp_path / "old.duckdb")
+    old = DuckDBManager(path)
+    old.execute("CREATE SCHEMA _meta")
+    old.execute(
+        "CREATE TABLE _meta.table_passport (table_name VARCHAR PRIMARY KEY, "
+        "row_count BIGINT NOT NULL, column_count INTEGER NOT NULL, glossary JSON, "
+        "summary VARCHAR, profiled_at TIMESTAMPTZ NOT NULL, enriched_at TIMESTAMPTZ)"
+    )
+    old.execute(
+        "INSERT INTO _meta.table_passport VALUES ('sales', 1, 1, NULL, 'старое', now(), NULL)"
+    )
+    old.close()
+    db = DuckDBManager(path)
+    try:
+        assert ProfileMemory(db).load_summary("sales") == ("старое", None)
+    finally:
+        db.close()
