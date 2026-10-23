@@ -39,3 +39,7 @@ class BaseConnector(ABC):
     def scrub(self, text: str) -> str:
         """Текст ошибки без секретов источника (по умолчанию как есть)."""
         return text
+
+    def warnings(self, table: str) -> list[str]:
+        """Что загрузчик исправил в данных таблицы или не смог исправить (по умолчанию ничего)."""
+        return []
