@@ -110,7 +110,9 @@
 перед фоновым `ingest.describe`), `ready` или `failed` (ставит
 `ingest.describe`: `failed`, если у какой-либо колонки после переноса нет
 `fingerprint` или энричер упал). В старых паспортах колонку добавляет
-конструктор (`ADD COLUMN IF NOT EXISTS ... DEFAULT 'none'`).
+конструктор (`ADD COLUMN IF NOT EXISTS ... DEFAULT 'none'`). Фоновый
+`describe` не переживает рестарт, поэтому при старте приложения
+`fail_pending()` переводит оставшиеся `pending` в `failed`.
 
 ### API `ProfileMemory(db)`
 
@@ -126,6 +128,8 @@ EXISTS`). Записи — одной транзакцией под `DuckDBManag
 - `set_description_status(table, status)` / `load_description_status(table)` —
   статус переноса описания (`none` / `pending` / `ready` / `failed`; без
   паспорта — `none`).
+- `fail_pending() -> list[str]` — `pending` → `failed` у всех таблиц (вызывается
+  при старте, `lifespan` в `main.py`); возвращает имена таких таблиц.
 - `load_profile(table) -> TableProfile | None` — профиль, равный
   сохранённому (`None`, если паспорта нет). `profiled_at` — строка ISO в UTC.
 - `load_glossary(table) -> dict | None`.

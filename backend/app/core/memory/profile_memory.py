@@ -223,6 +223,18 @@ class ProfileMemory:
         )
         return rows[0]["description_status"] if rows and rows[0]["description_status"] else "none"
 
+    def fail_pending(self) -> list[str]:
+        """pending → failed у всех таблиц; вернуть их имена.
+
+        Вызывается при старте: фоновый describe() прошлого процесса не
+        доработал, и сам статус уже не сменится.
+        """
+        rows = self.db.query(
+            "UPDATE _meta.table_passport SET description_status = 'failed' "
+            "WHERE description_status = 'pending' RETURNING table_name"
+        )
+        return sorted(row["table_name"] for row in rows)
+
     def delete(self, table: str) -> None:
         """Удалить паспорт таблицы."""
         with self.db.transaction():

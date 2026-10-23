@@ -7,6 +7,7 @@ import pytest
 from fastapi import BackgroundTasks
 from fastapi.testclient import TestClient
 
+from app import main
 from app.api.deps import get_db
 from app.api.routes import datasources
 from app.api.schemas.datasource import DatasourceCreate
@@ -460,3 +461,34 @@ def test_unknown_description_status_is_rejected() -> None:
         assert ProfileMemory(db).load_description_status("orders") == "none"
     finally:
         db.close()
+
+
+def test_fail_pending_marks_interrupted_descriptions_failed() -> None:
+    db = DuckDBManager(":memory:")
+    try:
+        ingest.attach(RecordingConnector(), db)
+        memory = ProfileMemory(db)
+        memory.set_description_status("orders", "pending")
+        assert memory.fail_pending() == ["orders"]
+        assert memory.load_description_status("orders") == "failed"
+        assert memory.fail_pending() == []
+    finally:
+        db.close()
+
+
+def test_startup_fails_pending_descriptions(tmp_path, monkeypatch) -> None:
+    path = tmp_path / "main.duckdb"
+    db = DuckDBManager(str(path))
+    try:
+        ingest.attach(RecordingConnector(), db)
+        ProfileMemory(db).set_description_status("orders", "pending")
+    finally:
+        db.close()
+    monkeypatch.setattr(settings, "duckdb_path", str(path))
+
+    async def nothing(db):
+        return []
+
+    monkeypatch.setattr(main, "restore_saved_sources", nothing)
+    with TestClient(app):
+        assert ProfileMemory(app.state.db).load_description_status("orders") == "failed"

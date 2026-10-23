@@ -14,7 +14,10 @@
 	(describe): Ставит статус ready или failed.
 	* backend/app/core/memory/profile_memory.py (SCHEMA): Колонка
 	_meta.table_passport.description_status (ADD COLUMN IF NOT EXISTS).
-	(set_description_status, load_description_status): Новые методы.
+	(set_description_status, load_description_status, fail_pending):
+	Новые методы.
+	* backend/app/main.py (lifespan): При старте pending становится
+	failed: фоновый перенос описания не пережил рестарт.
 	* backend/app/core/data/connectors/base.py (BaseConnector.warnings):
 	Новый метод, по умолчанию пустой список.
 	* backend/app/core/data/connectors/csv.py (CSVReport.warnings)
