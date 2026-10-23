@@ -111,7 +111,9 @@ async def recalculate_dashboard(dashboard_id: str, request: Request) -> dict:
                                 if isinstance(col, dict) and col.get("field") and col.get("title")
                             }
                             tile.spec = build_vega_spec(
-                                usermeta.get("chart_type") or usermeta.get("requested_type") or "bar",
+                                usermeta.get("chart_type")
+                                or usermeta.get("requested_type")
+                                or "bar",
                                 result_table=tile.result_table,
                                 data=records,
                                 titles=titles,
@@ -119,7 +121,7 @@ async def recalculate_dashboard(dashboard_id: str, request: Request) -> dict:
                             )
                         elif "data" in tile.spec and isinstance(tile.spec["data"], dict):
                             tile.spec["data"]["values"] = snapshot_records(records)
-            except Exception:
+            except Exception:  # noqa: BLE001, S110
                 pass
         elif tile.is_kpi and tile.snapshot_data is not None:
             tile.snapshot_at = now
