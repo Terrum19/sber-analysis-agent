@@ -8,8 +8,14 @@
 import { create } from "zustand";
 import { persist, createJSONStorage } from "zustand/middleware";
 import type { DashboardTile } from "@/types/dashboard";
-import type { DashboardEvent, ChartEvent } from "@/types/chat";
-import type { Datasource } from "@/types/datasource";
+import type {
+  ChartEvent,
+  ClarificationEvent,
+  DashboardEvent,
+  RefusalEvent,
+  TurnProgress,
+} from "@/types/chat";
+import type { Datasource, SessionResponse } from "@/types/datasource";
 import { useCanvasStore } from "@/store/canvasStore";
 
 export interface ChatMessage {
@@ -21,6 +27,16 @@ export interface ChatMessage {
   timestamp?: string;
   /** Сообщение об ошибке или обрыве — под ним кнопка повтора. */
   failed?: boolean;
+  /** Карточка уточнения (clarification_needed). */
+  clarification?: ClarificationEvent["data"];
+  /** Отказ агента (refusal) с переформулировками. */
+  refusal?: RefusalEvent["data"];
+  /** Прогресс хода по событиям progress. */
+  progress?: TurnProgress;
+  /** Исходный текст вопроса, вызвавший ошибку (для кнопки повтора). */
+  failedQuestion?: string;
+  /** Подсказки для уточнения/повтора (если backend прислал clarification_needed). */
+  suggestions?: string[];
 }
 
 export interface SessionItem {
@@ -71,11 +87,17 @@ interface SessionState {
   sessionCache: Record<string, SessionSnapshot>;
   /** Кеш сообщений и плиток сессии, изолированный по таблицам. */
   sessionTableCache: Record<string, Record<string, SessionTableSnapshot>>;
+  /** ID сессии, в которой прямо сейчас генерируется ответ агента. */
+  activeStreamingSessionId: string | null;
+  setStreamingSessionId: (sessionId: string | null) => void;
 
   setSession: (id: string) => void;
   addMessage: (msg: ChatMessage) => void;
   appendToLastMessage: (chunk: string) => void;
   updateLastMessage: (patch: Partial<ChatMessage>) => void;
+  updateMessage: (id: string, patch: Partial<ChatMessage>) => void;
+  removeMessage: (id: string) => void;
+  removeLastFailedMessage: () => void;
   addTile: (tile: DashboardTile) => void;
   setTiles: (tiles: DashboardTile[]) => void;
   selectTile: (index: number | null) => void;
@@ -95,6 +117,8 @@ interface SessionState {
   renameSession: (sessionId: string, title: string) => void;
   togglePinSession: (sessionId: string) => void;
   deleteSession: (sessionId: string) => void;
+  /** Подтягивает сессии бэкенда в локальные папки (создаёт папки при необходимости). */
+  mergeSessions: (remoteSessions: SessionResponse[]) => void;
 }
 
 export const useSessionStore = create<SessionState>()(
@@ -113,6 +137,9 @@ export const useSessionStore = create<SessionState>()(
       sessionActiveTable: {},
       sessionCache: {},
       sessionTableCache: {},
+      activeStreamingSessionId: null,
+
+      setStreamingSessionId: (sessionId) => set({ activeStreamingSessionId: sessionId }),
 
       setSession: (id) =>
         set((s) => {
@@ -167,6 +194,40 @@ export const useSessionStore = create<SessionState>()(
           }
           return { messages: nextMessages, sessionTableCache: nextTableCache };
         }),
+      removeMessage: (id) =>
+        set((s) => {
+          const nextMessages = s.messages.filter((m) => m.id !== id);
+          let nextTableCache = s.sessionTableCache;
+          if (s.sessionId && s.sessionActiveTable[s.sessionId]) {
+            const curTable = s.sessionActiveTable[s.sessionId];
+            nextTableCache = {
+              ...s.sessionTableCache,
+              [s.sessionId]: {
+                ...(s.sessionTableCache[s.sessionId] || {}),
+                [curTable]: { messages: nextMessages, tiles: s.tiles },
+              },
+            };
+          }
+          return { messages: nextMessages, sessionTableCache: nextTableCache };
+        }),
+      removeLastFailedMessage: () =>
+        set((s) => {
+          const lastIdx = s.messages.length - 1;
+          if (lastIdx < 0 || !s.messages[lastIdx].failed) return {};
+          const nextMessages = s.messages.slice(0, lastIdx);
+          let nextTableCache = s.sessionTableCache;
+          if (s.sessionId && s.sessionActiveTable[s.sessionId]) {
+            const curTable = s.sessionActiveTable[s.sessionId];
+            nextTableCache = {
+              ...s.sessionTableCache,
+              [s.sessionId]: {
+                ...(s.sessionTableCache[s.sessionId] || {}),
+                [curTable]: { messages: nextMessages, tiles: s.tiles },
+              },
+            };
+          }
+          return { messages: nextMessages, sessionTableCache: nextTableCache };
+        }),
       appendToLastMessage: (chunk) =>
         set((s) => {
           const last = s.messages[s.messages.length - 1];
@@ -175,6 +236,23 @@ export const useSessionStore = create<SessionState>()(
             ...s.messages.slice(0, -1),
             { ...last, content: last.content + chunk },
           ];
+          let nextTableCache = s.sessionTableCache;
+          if (s.sessionId && s.sessionActiveTable[s.sessionId]) {
+            const curTable = s.sessionActiveTable[s.sessionId];
+            nextTableCache = {
+              ...s.sessionTableCache,
+              [s.sessionId]: {
+                ...(s.sessionTableCache[s.sessionId] || {}),
+                [curTable]: { messages: nextMessages, tiles: s.tiles },
+              },
+            };
+          }
+          return { messages: nextMessages, sessionTableCache: nextTableCache };
+        }),
+      updateMessage: (id, patch) =>
+        set((s) => {
+          if (!s.messages.some((m) => m.id === id)) return {};
+          const nextMessages = s.messages.map((m) => (m.id === id ? { ...m, ...patch } : m));
           let nextTableCache = s.sessionTableCache;
           if (s.sessionId && s.sessionActiveTable[s.sessionId]) {
             const curTable = s.sessionActiveTable[s.sessionId];
@@ -263,6 +341,7 @@ export const useSessionStore = create<SessionState>()(
           tiles: [],
           selectedTile: null,
           datasource: null,
+          activeStreamingSessionId: null,
         }),
 
       addDatabase: (datasource, title) => {
@@ -310,6 +389,7 @@ export const useSessionStore = create<SessionState>()(
             delete nextTableCache[sid];
           }
           const isActiveDeleted = s.sessionId ? sessionIds.includes(s.sessionId) : false;
+          const isStreamingDeleted = s.activeStreamingSessionId ? sessionIds.includes(s.activeStreamingSessionId) : false;
           const isDatasourceDeleted = s.datasource?.datasource_id === databaseId;
           return {
             databases: nextDatabases,
@@ -319,6 +399,7 @@ export const useSessionStore = create<SessionState>()(
             sessionActiveTable: nextActiveTable,
             sessionTableCache: nextTableCache,
             ...(isActiveDeleted ? { sessionId: null, messages: [], tiles: [], selectedTile: null } : {}),
+            ...(isStreamingDeleted ? { activeStreamingSessionId: null } : {}),
             ...(isDatasourceDeleted ? { datasource: null, datasourceTitle: null } : {}),
           };
         });
@@ -419,6 +500,7 @@ export const useSessionStore = create<SessionState>()(
           const nextTableCache = { ...s.sessionTableCache };
           delete nextTableCache[sessionId];
           const isActiveDeleted = s.sessionId === sessionId;
+          const isStreamingDeleted = s.activeStreamingSessionId === sessionId;
           return {
             databases: nextDatabases,
             sessionDatabase: nextSessionDb,
@@ -426,6 +508,70 @@ export const useSessionStore = create<SessionState>()(
             sessionActiveTable: nextActiveTable,
             sessionTableCache: nextTableCache,
             ...(isActiveDeleted ? { sessionId: null, messages: [], tiles: [], selectedTile: null } : {}),
+            ...(isStreamingDeleted ? { activeStreamingSessionId: null } : {}),
+          };
+        }),
+      mergeSessions: (remoteSessions: SessionResponse[]) =>
+        set((s) => {
+          const nextDatabases = s.databases.map((d) => ({
+            ...d,
+            tables: [...d.tables],
+            sessions: [...d.sessions],
+          }));
+          const nextSessionDb = { ...s.sessionDatabase };
+          const nextActiveTable = { ...s.sessionActiveTable };
+
+          for (const remote of remoteSessions) {
+            if (!remote.session_id) continue;
+
+            // 1. Map by datasource_id or matching table
+            let db = nextDatabases.find((d) => remote.datasource_id && d.id === remote.datasource_id);
+            if (!db && remote.table) {
+              db = nextDatabases.find((d) => d.tables.includes(remote.table!));
+            }
+
+            // If no existing folder matches, create a folder for the table/datasource
+            if (!db && remote.table) {
+              db = {
+                id: remote.datasource_id || `ds-${remote.table}`,
+                title: remote.table,
+                kind: "duckdb",
+                tables: [remote.table],
+                sessions: [],
+              };
+              nextDatabases.push(db);
+            }
+
+            if (db) {
+              nextSessionDb[remote.session_id] = db.id;
+              const sessionExists = db.sessions.some((x) => x.id === remote.session_id);
+              if (!sessionExists) {
+                db.sessions = [
+                  {
+                    id: remote.session_id,
+                    title: remote.title || remote.table || "Сессия",
+                    created_at: remote.created_at ? new Date(remote.created_at).getTime() : Date.now(),
+                  },
+                  ...db.sessions,
+                ];
+              } else if (remote.title) {
+                db.sessions = db.sessions.map((x) =>
+                  x.id === remote.session_id && (!x.title || x.title === "Новая сессия" || x.title === "Сессия")
+                    ? { ...x, title: remote.title || x.title }
+                    : x
+                );
+              }
+            }
+
+            if (remote.table && !nextActiveTable[remote.session_id]) {
+              nextActiveTable[remote.session_id] = remote.table;
+            }
+          }
+
+          return {
+            databases: nextDatabases,
+            sessionDatabase: nextSessionDb,
+            sessionActiveTable: nextActiveTable,
           };
         }),
     }),
