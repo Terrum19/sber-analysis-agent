@@ -349,3 +349,29 @@ async def test_long_document_is_trimmed(db, monkeypatch, caplog) -> None:
 
 def test_default_llm_client(db) -> None:
     assert isinstance(SchemaEnricher(db).llm, LLMClient)
+
+
+async def test_reconnect_without_document_keeps_document_titles(db) -> None:
+    first = by_column(
+        await SchemaEnricher(db, FakeLLM()).enrich("orders", {"amount": SHORT}, DOCUMENT)
+    )
+    llm = FakeLLM()
+    rows = by_column(await SchemaEnricher(db, llm).enrich("orders", {"amount": SHORT}))
+    assert llm.calls == []
+    assert rows == first
+    assert by_column(ProfileMemory(db).load_enrichment("orders")) == first
+
+    rows = by_column(await SchemaEnricher(db, llm).enrich("orders", {"status": "Код статуса"}))
+    assert llm.calls == []
+    assert rows["amount"].title == "Название amount"
+    assert (rows["amount"].description, rows["amount"].description_source) == (None, "none")
+    assert rows["status"].title == "Название status"
+    assert (rows["status"].description, rows["status"].description_source) == (
+        "Код статуса",
+        "source",
+    )
+    assert rows["region"] == first["region"]
+
+    llm = FakeLLM()
+    await SchemaEnricher(db, llm).enrich("orders", {"status": "Код статуса"}, DOCUMENT)
+    assert llm.columns() == [["amount", "status"]]

@@ -255,6 +255,29 @@ class PostgresConnector(BaseConnector):
             return {}
         return {row["column_name"]: row["comment"] for row in rows}
 
+    def skip(self, db, table: str, error: Exception) -> bool:
+        """Таблицу без прав на SELECT пропустить, остальные ошибки — нет."""
+        detail = self.dsn.scrub(str(error))
+        if "permission denied" not in detail.lower():
+            return False
+        logger.warning(
+            "PostgreSQL %s: нет прав на чтение таблицы «%s», она не подключена: %s",
+            self.source,
+            self.sources.get(table, table),
+            detail,
+        )
+        db.execute(f"DROP VIEW IF EXISTS temp.main.{quote_identifier(table)}")
+        self.sources.pop(table, None)
+        return True
+
+    def rollback(self, db) -> None:
+        """Сбой профиля: снять представления и подключение этого connect()."""
+        self.release(db, self.alias)
+        self.sources = {}
+
+    def scrub(self, text: str) -> str:
+        return self.dsn.scrub(text)
+
     def fail(self, db, error: Exception) -> NoReturn:
         detail = self.dsn.scrub(str(error))
         logger.warning("PostgreSQL %s: ошибка подключения: %s", self.source, detail)

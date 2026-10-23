@@ -446,3 +446,28 @@ def test_factory_builds_known_kinds_and_rejects_unknown() -> None:
     assert isinstance(build_connector("clickhouse", "clickhouse://localhost"), ClickHouseConnector)
     with pytest.raises(ValueError, match="mysql"):
         build_connector("mysql", DSN)
+
+
+def test_unreadable_table_is_skipped_and_its_view_dropped(caplog: pytest.LogCaptureFixture) -> None:
+    db = FakeDuckDB(tables=["orders", "secret"])
+    connector = PostgresConnector(DSN)
+    connector.connect(db)
+    error = duckdb.Error("permission denied for table secret, password=TopSecret")
+    with caplog.at_level(logging.WARNING):
+        assert connector.skip(db, "secret", error)
+    assert 'DROP VIEW IF EXISTS temp.main."secret"' in db.statements
+    assert "secret" not in connector.sources
+    assert "нет прав" in caplog.text
+    assert "TopSecret" not in caplog.text
+    assert not connector.skip(db, "orders", duckdb.Error("Out of Memory"))
+
+
+def test_rollback_releases_views_and_attachment() -> None:
+    db = FakeDuckDB(tables=["orders"])
+    connector = PostgresConnector(DSN)
+    connector.connect(db)
+    connector.rollback(db)
+    assert f"DETACH DATABASE IF EXISTS {connector.alias}" in db.statements
+    assert f"DROP TEMPORARY SECRET IF EXISTS {connector.alias}_secret" in db.statements
+    assert connector.sources == {}
+    assert connector.scrub("auth TopSecret") == "auth ***"

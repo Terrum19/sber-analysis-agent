@@ -269,3 +269,49 @@ def test_db_description_reaches_enricher(monkeypatch) -> None:
         db.close()
     [task] = background.tasks
     assert task.args == (connector, db, ["orders"], "orders — заказы")
+
+
+class UnreadableConnector(RecordingConnector):
+    """Подключение удалось, а профиль упал — как SELECT по таблице без прав."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.rolled_back = False
+
+    def connect(self, db) -> list[str]:
+        db.execute("CREATE OR REPLACE TEMP VIEW orders AS SELECT 1 AS id")
+        return ["orders"]
+
+    def rollback(self, db) -> None:
+        self.rolled_back = True
+        db.execute("DROP VIEW IF EXISTS temp.main.orders")
+
+    def scrub(self, text: str) -> str:
+        return text.replace("TopSecret", "***")
+
+
+def test_db_profile_failure_rolls_back_and_is_422(client, monkeypatch) -> None:
+    connector = UnreadableConnector()
+    monkeypatch.setattr(datasources, "build_connector", lambda kind, dsn, schema: connector)
+
+    def broken(db, table, **kwargs):
+        raise duckdb.IOException("Out of Memory near TopSecret")
+
+    monkeypatch.setattr(ingest, "profile_table", broken)
+    response = client.post("/api/datasources/db", json={"kind": "postgres", "dsn": "host=x"})
+    assert response.status_code == 422
+    assert "Не удалось прочитать таблицы источника" in response.json()["detail"]
+    assert "TopSecret" not in response.text
+    assert connector.rolled_back
+    assert client.get("/api/datasources/tables").json() == []
+
+
+def test_db_too_large_description_is_413(client, monkeypatch) -> None:
+    connector = RecordingConnector()
+    monkeypatch.setattr(datasources, "build_connector", lambda kind, dsn, schema: connector)
+    response = client.post(
+        "/api/datasources/db",
+        json={"kind": "postgres", "dsn": "host=x", "description": "я" * (1 << 20)},
+    )
+    assert response.status_code == 413
+    assert connector.databases == []
