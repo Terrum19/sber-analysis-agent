@@ -130,6 +130,7 @@ class LLMClient:
                 len(m["content"]) for m in messages if isinstance(m.get("content"), str)
             )
             ctx = budget.server_context(base_url, self.model) or settings.llm_num_ctx
+            logger.debug("LLM промпт: %d символов, %d токенов", prompt_chars, prompt_tokens)
             reason = budget.check_prompt(prompt_chars, prompt_tokens, ctx)
         except Exception:  # проверка вспомогательная, запрос не роняет
             logger.warning("Проверка контекста LLM не удалась", exc_info=True)
