@@ -59,5 +59,5 @@ def _field_regex(raw: str) -> list[ResearchStep]:
 
 
 def _fallback_step() -> ResearchStep:
-    """Запасной вариант: доверить шаг генерации кода в песочнице."""
-    return ResearchStep(step_id=0, tool=None, needs_llm_codegen=True)
+    """Запасной вариант: шаг без инструмента (валидация плана его отклонит)."""
+    return ResearchStep(step_id=0, tool=None)

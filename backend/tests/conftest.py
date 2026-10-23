@@ -25,3 +25,10 @@ def _isolated_storage(request: pytest.FixtureRequest, tmp_path_factory, monkeypa
     monkeypatch.setattr(settings, "storage_dir", str(root))
     monkeypatch.setattr(settings, "duckdb_path", str(root / "duckdb" / "main.duckdb"))
     monkeypatch.setattr(settings, "sqlite_path", str(root / "sessions" / "sessions.sqlite"))
+
+
+@pytest.fixture
+def codegen_available(monkeypatch):
+    """Тул run_python виден, даже если node/Pyodide на машине не установлены."""
+    monkeypatch.setattr(settings, "codegen_enabled", True)
+    monkeypatch.setattr("app.core.tools.codegen.sandbox_available", lambda: True)

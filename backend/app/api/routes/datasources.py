@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Annotated
 from uuid import uuid4
 
+import duckdb
 from fastapi import APIRouter, BackgroundTasks, Depends, File, HTTPException, UploadFile
 
 from app.api.deps import get_db
@@ -21,6 +22,10 @@ from app.api.schemas.datasource import DatasourceCreate, DatasourceOut
 from app.config import settings
 from app.core.data import ingest, restore
 from app.core.data.connectors.base import BaseConnector
+from app.core.data.connectors.clickhouse import (
+    ClickHouseConnectionError,
+    ClickHouseExtensionUnavailableError,
+)
 from app.core.data.connectors.csv import CSVConnector, CSVLoadError, table_name
 from app.core.data.connectors.factory import build_connector
 from app.core.data.connectors.postgres import (
@@ -49,16 +54,25 @@ def store_upload(upload: UploadFile, target: Path, limit: int) -> None:
             output.write(chunk)
 
 
+@router.get("/tables", response_model=list[str])
+def list_tables(db: Annotated[DuckDBManager, Depends(get_db)]) -> list[str]:
+    """Таблицы и представления пользователя без temp_result_vN и служебных схем."""
+    return db.user_tables()
+
+
+def too_large(name: str) -> HTTPException:
+    return HTTPException(
+        status_code=413, detail=f"Описание «{name}» больше {DESCRIPTION_MAX_BYTES >> 20} МБ."
+    )
+
+
 def read_description(upload: UploadFile | None) -> str | None:
     """Текст документа-описания (README, словарь колонок) или None."""
     if upload is None:
         return None
     data = upload.file.read(DESCRIPTION_MAX_BYTES + 1)
     if len(data) > DESCRIPTION_MAX_BYTES:
-        raise HTTPException(
-            status_code=413,
-            detail=f"Описание «{upload.filename}» больше {DESCRIPTION_MAX_BYTES >> 20} МБ.",
-        )
+        raise too_large(upload.filename)
     return data.decode("utf-8-sig", errors="replace")
 
 
@@ -115,16 +129,24 @@ def attach_db(
     db: Annotated[DuckDBManager, Depends(get_db)],
     background: BackgroundTasks,
 ) -> DatasourceOut:
+    if payload.description and len(payload.description.encode()) > DESCRIPTION_MAX_BYTES:
+        raise too_large("description")
     try:
         connector = build_connector(payload.kind, payload.dsn, payload.db_schema)
         with db.lock:
             tables = list(ingest.attach(connector, db))
     except ValueError as error:
         raise HTTPException(status_code=400, detail=str(error)) from None
-    except PostgresConnectionError as error:
+    except (PostgresConnectionError, ClickHouseConnectionError) as error:
         raise HTTPException(status_code=502, detail=str(error)) from None
-    except PostgresExtensionUnavailableError as error:
+    except (PostgresExtensionUnavailableError, ClickHouseExtensionUnavailableError) as error:
         raise HTTPException(status_code=503, detail=str(error)) from None
+    except duckdb.Error as error:
+        # Сбой профиля: ingest.attach уже откатил подключение.
+        raise HTTPException(
+            status_code=422,
+            detail=f"Не удалось прочитать таблицы источника: {connector.scrub(str(error))}",
+        ) from None
     except NotImplementedError:
         raise HTTPException(
             status_code=501, detail=f"Коннектор «{payload.kind}» пока не реализован."

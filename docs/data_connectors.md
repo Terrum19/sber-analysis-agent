@@ -14,7 +14,7 @@ DuckDB. Дальше весь аналитический слой работае
 |---|---|---|
 | `csv.py` | кодировка + `sniff_csv` + `read_csv` -> TABLE (копия в DuckDB) | готов |
 | `postgres.py` | `postgres_scanner` + `ATTACH ... (TYPE postgres, READ_ONLY)` -> TEMP VIEW | готов |
-| `clickhouse.py` | чтение через HTTP/clickhouse ext | TODO(round-2) |
+| `clickhouse.py` | `clickhouse_scanner` + `ATTACH` -> TEMP VIEW в DuckDB | готов |
 
 Коннектор выбирается фабрикой `connectors/factory.py::build_connector(kind, dsn, schema)`.
 
@@ -126,8 +126,15 @@ curl -F files=@Продажи.csv -F files=@users.csv http://localhost:8000/api/
 `POST /api/datasources/db`:
 
 ```json
-{"kind": "postgres", "dsn": "postgresql://analyst:***@db.local:5432/shop", "schema": "public"}
+{"kind": "postgres", "dsn": "postgresql://analyst:***@db.local:5432/shop", "schema": "public",
+ "description": "## orders\n- amount — сумма заказа"}
 ```
+
+`description` — необязательный документ-описание таблиц (README, словарь
+колонок, не больше 1 МБ в UTF-8): из него в паспорт попадают названия и
+описания колонок (фоновая задача после ответа). Повторное подключение без
+`description` названия из прошлого документа не стирает: сравнивается
+только комментарий колонки.
 
 Ответ `200`:
 
@@ -141,12 +148,20 @@ curl -F files=@Продажи.csv -F files=@users.csv http://localhost:8000/api/
 | Код | Когда |
 |---|---|
 | 400 | некорректная строка подключения (`ValueError`) |
+| 413 | `description` больше 1 МБ |
 | 422 | неизвестный `kind` (валидация pydantic) |
-| 501 | коннектор ещё не реализован (ClickHouse) |
-| 502 | PostgreSQL недоступен или отклонил подключение (`PostgresConnectionError`) |
-| 503 | в DuckDB нет расширения `postgres_scanner` (`PostgresExtensionUnavailableError`) |
+| 422 | не удалось профилировать таблицу (`duckdb.Error`); подключение откатывается |
+| 502 | PostgreSQL или ClickHouse недоступен или отклонил подключение |
+| 503 | в DuckDB нет расширения `postgres_scanner` или `clickhouse_scanner` |
 
 Тексты ошибок — на русском и никогда не содержат пароль.
+
+Таблица, на которую у пользователя нет прав `SELECT`, не подключается:
+профиль её не прочитал, представление удаляется, в лог пишется
+`logging.warning`, остальные таблицы схемы подключаются. Любая другая
+ошибка профиля откатывает подключение (`PostgresConnector.rollback` снимает
+представления и `ATTACH`). Прежнее подключение того же источника к этому
+моменту уже снято, источник нужно подключить заново.
 
 `DELETE /api/datasources/{datasource_id}` отключает источник: снимает его
 представления, отсоединяет базу, удаляет секрет, паспорта его таблиц и
@@ -186,8 +201,8 @@ curl -F files=@Продажи.csv -F files=@users.csv http://localhost:8000/api/
    — в список попадают и таблицы, и представления PostgreSQL.
 6. Прежнее подключение того же источника (если было) снимается: его view
    удаляются, база отсоединяется, секрет удаляется.
-7. Пустая схема -> `[]` и `logging.warning`. Больше `POSTGRES_MAX_TABLES`
-   таблиц (по умолчанию 50, `.env`) -> берутся первые по алфавиту,
+7. Пустая схема -> `[]` и `logging.warning`. Больше `DB_MAX_TABLES`
+   таблиц (по умолчанию 50, `.env`; прежнее имя `POSTGRES_MAX_TABLES` тоже читается) -> берутся первые по алфавиту,
    `logging.warning`.
 8. На каждую таблицу — `CREATE OR REPLACE TEMP VIEW "<имя>" AS SELECT * FROM <alias>."<схема>"."<таблица>"`.
 9. `logging.info`: источник (без пароля), число таблиц, время подключения.
@@ -335,12 +350,84 @@ PostgreSQL 17): подключение с лимитом 50 занимает о�
   источник через API, закрывает `DuckDBManager`, открывает новый на том же
   файле, восстанавливает источник и удаляет его через `DELETE`.
 
+## ClickHouse
+Пользователь передаёт строку подключения с нативным портом ClickHouse:
+
+```text
+clickhouse://[user[:password]@]host[:9000]/database
+clickhouses://[user[:password]@]host[:9440]/database
+```
+
+`clickhouses://` используется для защищённого native TCP-подключения. Пароль
+передаётся в DuckDB Secret и не включается в строку `ATTACH`, логи или сообщения
+об ошибках.
+
+Коннектор использует только community extension DuckDB `clickhouse_scanner`.
+
+1. Загружает расширение (`LOAD clickhouse_scanner`; при необходимости сначала
+   пытается выполнить `INSTALL clickhouse_scanner FROM community`).
+2. Создаёт временный `SECRET` для пароля.
+3. Подключает базу через `ATTACH ... (TYPE clickhouse, READ_ONLY, SECRET ...)`.
+4. Получает список таблиц из каталога подключённой базы DuckDB с фильтром по
+   `database=<alias>` и `schema=<database из DSN>`, поэтому таблицы других баз
+   ClickHouse не импортируются.
+5. Создаёт временные представления
+   `SELECT * FROM <alias>.<database>.<table>`.
+
+Данные читаются при выполнении запроса через удалённый scan, без загрузки
+таблиц целиком в Python. Fallback через `clickhouse-connect` и отдельный
+HTTP-клиент отсутствуют. Лимит строк коннектор не устанавливает: ограничение
+результата задаётся самим SQL-запросом, а `DB_MAX_TABLES` ограничивает только
+число подключаемых таблиц.
+
+### Ограничения
+
+- В окружении должен быть доступен совместимый с версией DuckDB community
+  extension `clickhouse_scanner`.
+- Для production/offline-образов расширение следует установить на этапе сборки;
+  runtime `INSTALL` требует сетевого доступа и выполняется только как попытка
+  восстановления.
+- Discovery использует каталог DuckDB подключённой базы и фильтрует таблицы по
+  выбранной схеме; `SHOW TABLES` без фильтра по базе не используется.
+- `DB_MAX_TABLES` ограничивает количество создаваемых представлений, но не
+  количество строк в удалённых таблицах.
+
+### API
+
+`POST /api/datasources/db`:
+
+```json
+{"kind": "clickhouse", "dsn": "clickhouse://localhost:9000/sber_demo"}
+```
+
+Ответ `200`:
+
+```json
+{
+  "datasource_id": "ch_1a2b3c4d5e",
+  "kind": "clickhouse",
+  "tables": ["orders", "users"],
+  "profile_summary": ""
+}
+```
+
+Коды ответа — как у PostgreSQL (таблица выше): 502 —
+`ClickHouseConnectionError`, 503 — `ClickHouseExtensionUnavailableError`,
+422 — сбой профиля, текст ошибки проходит через `ClickHouseConnector.scrub`.
+Если таблиц больше `DB_MAX_TABLES`, подключаются первые по алфавиту, а
+`ClickHouseConnector.warnings(table)` возвращает предупреждение об обрезке.
+
+Причина в тексте 502 определяется по коду ClickHouse в тексте ошибки
+(`Code: 81`, `ClickHouse error 516`; таблица `CLICKHOUSE_ERROR_CODES`), а без
+кода — по маркерам (`describe_failure`): неизвестная база или таблица,
+учётные данные, хост, сеть, права.
+
 ## Описания колонок из источника
 
 `BaseConnector.column_comments(db, table) -> dict[str, str]` — комментарии
 колонок `{колонка: описание}` — часть описания таблицы, которое энричер
 переносит в паспорт как есть; `table` — имя, которое вернул
-`connect()`. По умолчанию `{}` (ClickHouse).
+`connect()`. ClickHouse получает комментарии из `system.columns`.
 
 - **PostgreSQL.** TEMP VIEW комментарии не переносит, поэтому они читаются из
   самого источника: `col_description()` по `pg_attribute`/`pg_class`/`pg_namespace`
@@ -487,8 +574,10 @@ python scripts/run_profile_benchmark.py --max-seconds 10
   сразу после `connector.connect()` для каждой таблицы и сохраняет профиль в
   паспорт (таблицы схемы `_meta`, `ProfileMemory`, см. [memory.md](memory.md)).
   Так подключают источник `POST /api/datasources/*`, `scripts/load_hk_datasets.py`
-  и `backend/run_full_llm_cycle.py`. Упало профилирование — подключённые
-  таблицы откатываются.
+  и `scripts/run_full_llm_cycle.py`. Упало профилирование — подключённые
+  таблицы откатываются (`connector.rollback`); таблицу, которую нельзя
+  прочитать, коннектор может пропустить (`connector.skip`, у PostgreSQL —
+  при `permission denied`).
 - `core/data/schema_enrichment.py` — `SchemaEnricher` профиль не считает: если
   у таблицы есть описание, переносит из него в паспорт названия и описания
   колонок (см. [memory.md](memory.md#описание-таблицы--coredataschema_enrichmentpy)).

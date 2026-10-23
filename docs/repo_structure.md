@@ -77,7 +77,7 @@ backend/
 │   │   │   │   ├── factory.py         — build_connector: выбор коннектора по kind
 │   │   │   │   ├── pg_dsn.py          — разбор/проверка DSN PostgreSQL, маскирование пароля
 │   │   │   │   ├── postgres.py        — PostgreSQL -> DuckDB через postgres_scanner (готов)
-│   │   │   │   └── clickhouse.py      — ClickHouse -> DuckDB (TODO)
+│   │   │   │   └── clickhouse.py      — ClickHouse -> DuckDB через clickhouse_scanner
 │   │   │   ├── ingest.py          — подключение: connect -> профиль -> описание таблицы в паспорт
 │   │   │   ├── restore.py         — источники БД после рестарта: запомнить, переподключить, забыть
 │   │   │   ├── profiling.py       — метрики: NaN%, min/max, медиана, квартили, std
