@@ -189,3 +189,30 @@ EXISTS`). Записи — одной транзакцией под `DuckDBManag
   транзакции), `delete`, `update_snapshot(tile_id, records)`.
   `DashboardGenerator.generate` снимает данные плиток с `result_table` и
   сохраняет дашборд. Старые JSON из `storage/dashboards/` не мигрируются.
+- **REST (`api/routes/dashboards.py`):**
+
+  | Метод | Путь | Ответ |
+  |---|---|---|
+  | GET | `/api/dashboards?session_id=` (необязателен) | `list[DashboardSummary]`, новые по `updated_at` первыми |
+  | GET | `/api/dashboards/{id}` | `DashboardOut` / 404 |
+  | POST | `/api/dashboards` | `DashboardOut`, 201 |
+  | PUT | `/api/dashboards/{id}` | `DashboardOut` / 404 |
+  | DELETE | `/api/dashboards/{id}` | 204 / 404 |
+  | POST | `/api/dashboards/{id}/recalculate` | `DashboardOut` / 404 |
+
+  `DashboardCreate {session_id, title, tiles}` — `title` обязателен;
+  `DashboardUpdate {title?, tiles?}` — `tiles` заменяют все плитки.
+  Плитки на входе — `DashboardTileIn`: `result_table` только
+  `temp_result_vN` (оно идёт в SQL как имя таблицы), иначе 422. Id плиток
+  при POST всегда новые; при PUT id плитки этого дашборда сохраняется,
+  чужой или повторный id заменяется новым (`dashboard_tiles.id` —
+  глобальный ключ), так что GET → POST дублирует дашборд.
+  `recalculate` (`core/dashboards/recalculate.py`) перечитывает
+  `result_table` каждой плитки и пересобирает спеку запрошенным типом
+  графика (`usermeta.requested_type`, иначе `chart_type`: если в прошлый
+  раз построился запасной вид, на новых данных можно вернуться к
+  запрошенному), с прежними подписями колонок и заголовком. В спеке без
+  `usermeta` (собрана не `build_vega_spec`) заменяются только
+  `data.values`, остальное не трогается. Если таблицы уже нет, снимок и
+  спека остаются, а плитка приходит со
+  `stale: true`.  Флаг не хранится — он есть только в ответе пересчёта.
