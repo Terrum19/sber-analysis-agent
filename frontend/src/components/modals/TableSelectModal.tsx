@@ -2,6 +2,8 @@
 
 import { useEffect, useState } from "react";
 import Icon from "@/components/ui/Icon";
+import TablePassport from "@/components/chat/TablePassport";
+import type { TableBrief } from "@/types/datasource";
 import { useT } from "@/i18n/useT";
 
 interface TableSelectModalProps {
@@ -9,6 +11,7 @@ interface TableSelectModalProps {
   onClose: () => void;
   databaseTitle: string;
   tables: string[];
+  profiles?: TableBrief[];
   onSelect: (table: string) => Promise<void> | void;
 }
 
@@ -17,6 +20,7 @@ export default function TableSelectModal({
   onClose,
   databaseTitle,
   tables,
+  profiles,
   onSelect,
 }: TableSelectModalProps) {
   const t = useT();
@@ -98,6 +102,11 @@ export default function TableSelectModal({
             })}
           </div>
 
+          {(() => {
+            const brief = profiles?.find((p) => p.table === selectedTable);
+            return brief ? <TablePassport brief={brief} /> : null;
+          })()}
+
           {error && (
             <div className="rounded-lg border border-bad/30 bg-bad/10 p-2.5 text-xs text-bad flex items-center justify-between">
               <span>{error}</span>
@@ -119,7 +128,7 @@ export default function TableSelectModal({
               disabled={!selectedTable || isSubmitting}
               className="rounded-lg bg-graphite-100 px-4 py-1.5 text-xs font-medium text-graphite-950 hover:bg-graphite-50 disabled:opacity-50 disabled:cursor-not-allowed transition"
             >
-              {isSubmitting ? "..." : t("modal.selectTableBtn")}
+              {isSubmitting ? "..." : t("passport.useTable")}
             </button>
           </div>
         </form>

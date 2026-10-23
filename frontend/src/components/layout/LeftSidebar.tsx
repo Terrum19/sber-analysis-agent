@@ -11,7 +11,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { useParams, useRouter } from "next/navigation";
-import { attachCsv, attachDb, deleteSessionApi } from "@/api/client";
+import { attachCsv, attachDb, deleteSessionApi, listSessions, SESSIONS_PAGE } from "@/api/client";
 import { useSessionStore, type DatabaseFolder, type SessionItem } from "@/store/sessionStore";
 import { useArtifactStore } from "@/store/artifactStore";
 import { tabHref, useUiStore } from "@/store/uiStore";
@@ -33,12 +33,14 @@ function SidebarAction({
   onClick,
   href,
   disabled,
+  title,
 }: {
   icon: IconName;
   label: string;
   onClick?: () => void;
   href?: string;
   disabled?: boolean;
+  title?: string;
 }) {
   const className =
     "flex w-full items-center gap-2.5 rounded-lg px-2.5 py-1.5 text-[13px] text-graphite-300 hover:bg-graphite-900 hover:text-graphite-100 transition disabled:opacity-50";
@@ -53,7 +55,7 @@ function SidebarAction({
       {content}
     </Link>
   ) : (
-    <button type="button" onClick={onClick} disabled={disabled} className={className}>
+    <button type="button" onClick={onClick} disabled={disabled} title={title} className={className}>
       {content}
     </button>
   );
@@ -355,6 +357,7 @@ export default function LeftSidebar() {
   const [dbKind, setDbKind] = useState<DbKind>("postgres");
   const [dsn, setDsn] = useState("");
   const [schema, setSchema] = useState("");
+  const [dbDescription, setDbDescription] = useState("");
   const [isBusy, setIsBusy] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
 
@@ -363,15 +366,45 @@ export default function LeftSidebar() {
     if (csvPickRequest > 0) fileInputRef.current?.click();
   }, [csvPickRequest]);
 
+  // Синхронизация сессий с бэкендом на старте страницы
+  useEffect(() => {
+    let cancelled = false;
+    async function syncSessions() {
+      try {
+        let offset = 0;
+        const allSessions = [];
+        for (;;) {
+          const page = await listSessions(offset);
+          if (cancelled || !page || page.length === 0) break;
+          allSessions.push(...page);
+          if (page.length < SESSIONS_PAGE) break;
+          offset += page.length;
+        }
+        if (!cancelled && allSessions.length > 0) {
+          useSessionStore.getState().mergeSessions(allSessions);
+        }
+      } catch {
+        // Фоновая синхронизация не блокирует UI при сетевых сбоях
+      }
+    }
+    syncSessions();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
   async function handleCsvUpload(e: React.ChangeEvent<HTMLInputElement>) {
-    const files = Array.from(e.target.files ?? []);
+    const picked = Array.from(e.target.files ?? []);
     e.target.value = "";
+    // Не-CSV файл среди выбранных — документ-описание данных (multipart-поле description)
+    const files = picked.filter((f) => /\.csv$/i.test(f.name));
+    const description = picked.find((f) => !/\.csv$/i.test(f.name)) ?? null;
     if (!files.length) return;
 
     setIsBusy(true);
     setErrorMsg(null);
     try {
-      const ds = await attachCsv(files);
+      const ds = await attachCsv(files, description);
       const title = files.map((f) => f.name.replace(/\.csv$/i, "")).join(", ");
       const folder = addDatabase(ds, title);
       await startSession(folder);
@@ -393,6 +426,7 @@ export default function LeftSidebar() {
         kind: dbKind,
         dsn: dsn.trim(),
         schema: dbKind === "postgres" ? schema.trim() : undefined,
+        description: dbDescription.trim() || undefined,
       });
       const host = dsn.trim().split("@")[1]?.split("/")[0];
       const dbName = dsn.trim().split("/").pop()?.split("?")[0];
@@ -400,6 +434,7 @@ export default function LeftSidebar() {
       setDbModalOpen(false);
       setDsn("");
       setSchema("");
+      setDbDescription("");
       await startSession(folder);
     } catch (err: any) {
       setErrorMsg(err.message || t("sidebar.dbError"));
@@ -420,8 +455,21 @@ export default function LeftSidebar() {
 
       {/* Действия */}
       <div className="space-y-0.5 px-2 pb-3">
-        <input ref={fileInputRef} type="file" accept=".csv,text/csv" multiple hidden onChange={handleCsvUpload} />
-        <SidebarAction icon="upload" label={t("sidebar.uploadCsv")} onClick={() => fileInputRef.current?.click()} disabled={isBusy} />
+        <input
+          ref={fileInputRef}
+          type="file"
+          accept=".csv,text/csv,.md,.txt"
+          multiple
+          hidden
+          onChange={handleCsvUpload}
+        />
+        <SidebarAction
+          icon="upload"
+          label={t("sidebar.uploadCsv")}
+          title={t("sidebar.csvHint")}
+          onClick={() => fileInputRef.current?.click()}
+          disabled={isBusy}
+        />
         <SidebarAction
           icon="database"
           label={t("sidebar.connectDb")}
@@ -516,6 +564,9 @@ export default function LeftSidebar() {
                   className="w-full rounded-lg border border-graphite-700 bg-graphite-950 px-3 py-2 text-xs text-graphite-50 placeholder-graphite-500 outline-none focus:border-graphite-400"
                   required
                 />
+                <p className="mt-1 text-[11px] text-graphite-500">
+                  {t("modal.dsnHint", { format: DSN_PLACEHOLDER[dbKind] })}
+                </p>
               </div>
               {dbKind === "postgres" && (
                 <div>
@@ -529,6 +580,16 @@ export default function LeftSidebar() {
                   />
                 </div>
               )}
+              <div>
+                <label className="block text-xs text-graphite-400 mb-1">{t("modal.description")}</label>
+                <textarea
+                  value={dbDescription}
+                  onChange={(e) => setDbDescription(e.target.value)}
+                  rows={3}
+                  placeholder={t("modal.descriptionHint")}
+                  className="w-full resize-y rounded-lg border border-graphite-700 bg-graphite-950 px-3 py-2 text-xs text-graphite-50 placeholder-graphite-500 outline-none focus:border-graphite-400"
+                />
+              </div>
               {errorMsg && (
                 <div className="rounded-lg border border-bad/30 bg-bad/10 p-2 text-xs text-bad">{errorMsg}</div>
               )}

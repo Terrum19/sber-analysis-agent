@@ -18,6 +18,7 @@ STREAM_HEADERS = {"Cache-Control": "no-cache, no-transform", "X-Accel-Buffering"
 
 
 @router.post("")
+@router.post("/stream")
 async def chat(
     payload: ChatRequest, db: Annotated[DuckDBManager, Depends(get_db)]
 ) -> StreamingResponse:
