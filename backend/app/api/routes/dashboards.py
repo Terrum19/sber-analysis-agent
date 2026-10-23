@@ -128,4 +128,3 @@ async def recalculate_dashboard(dashboard_id: str, request: Request) -> dict:
 
     updated = store.update(dashboard_id, title=dashboard.title, tiles=dashboard.tiles)
     return updated.model_dump() if updated else dashboard.model_dump()
-
