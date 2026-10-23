@@ -110,6 +110,20 @@ class SessionMemory:
             conn.close()
         return row is not None
 
+    @staticmethod
+    def delete(session_id: str) -> bool:
+        """Удалить сессию из SQLite."""
+        conn = _connect(Path(settings.sqlite_path))
+        try:
+            cursor = conn.execute(
+                "DELETE FROM session_state WHERE session_id = ?",
+                (session_id,),
+            )
+            conn.commit()
+            return cursor.rowcount > 0
+        finally:
+            conn.close()
+
     def _persist(self) -> None:
         """Сохранить состояние сессии в SQLite."""
         conn = self._connect()

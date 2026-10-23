@@ -11,10 +11,10 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { useParams, useRouter } from "next/navigation";
-import { attachCsv, attachDb } from "@/api/client";
+import { attachCsv, attachDb, deleteSessionApi } from "@/api/client";
 import { useSessionStore, type DatabaseFolder, type SessionItem } from "@/store/sessionStore";
 import { useArtifactStore } from "@/store/artifactStore";
-import { useUiStore } from "@/store/uiStore";
+import { tabHref, useUiStore } from "@/store/uiStore";
 import { useStartSession } from "@/hooks/useStartSession";
 import { useT } from "@/i18n/useT";
 import { describeDatabase } from "@/lib/describeDatabase";
@@ -324,10 +324,11 @@ export default function LeftSidebar() {
       .filter((a) => a.sessionId === sessionId)
       .map((a) => a.id);
     artStore.removeArtifactsBySessionIds([sessionId]);
-    useUiStore.getState().closeTabsForSessions([sessionId], artIdsToRemove);
+    const nextTab = useUiStore.getState().closeTabsForSessions([sessionId], artIdsToRemove);
     deleteSession(sessionId);
+    deleteSessionApi(sessionId).catch(() => undefined);
     if (currentSessionId === sessionId) {
-      router.push("/");
+      router.push(nextTab ? tabHref(nextTab) : "/");
     }
   }
 
@@ -340,10 +341,13 @@ export default function LeftSidebar() {
       .filter((a) => a.sessionId && sSet.has(a.sessionId))
       .map((a) => a.id);
     artStore.removeArtifactsBySessionIds(sessionIds);
-    useUiStore.getState().closeTabsForSessions(sessionIds, artIdsToRemove);
+    const nextTab = useUiStore.getState().closeTabsForSessions(sessionIds, artIdsToRemove);
     deleteDatabase(databaseId);
+    for (const sid of sessionIds) {
+      deleteSessionApi(sid).catch(() => undefined);
+    }
     if (currentSessionId && sessionIds.includes(currentSessionId)) {
-      router.push("/");
+      router.push(nextTab ? tabHref(nextTab) : "/");
     }
   }
 
