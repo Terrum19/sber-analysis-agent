@@ -41,6 +41,24 @@
 - **Как:** каждый успешный шаг -> `save_step_result()` -> уникальная ссылка.
 - **Чтение:** `StateCache.get(table, limit)` — срез temp-таблицы для графика
   (оркестратор берёт до 500 строк, как и `build_vega_spec`).
+- **Очистка:** `temp_result_vN` — постоянные таблицы файла DuckDB, поэтому
+  устаревшие удаляются (`core/data/result_retention.py`). `save_step_result()`
+  пишет время создания в служебную таблицу `_meta.result_meta(name, created_at)`
+  (схема `_meta` не попадает в список таблиц пользователя);
+  `cleanup_results(keep, older_than_s)` удаляет `temp_result_vN` старше
+  `RESULT_TTL_S` (по умолчанию 6 ч), кроме `keep`:
+  - `result_table` всех плиток дашбордов (`dashboard_tiles` в SQLite) — без
+    срока, плитки пересчитываются из этих таблиц;
+  - `last_chart.result_table` всех таблиц (`state["tables"]`) сессий,
+    обновлённых за последние 24 ч, — чтобы сменить вид графика без SQL.
+
+  Таблица без строки в `_meta.result_meta` (создана до появления учёта) получает
+  текущее время и живёт ещё полный срок. Строки удалённых таблиц остаются в
+  `_meta.result_meta`: номера не используются повторно, и старая ссылка на
+  `temp_result_vN` не укажет на чужие данные. Очистка идёт при старте
+  приложения (`lifespan`) и в фоне раз в `RESULT_TTL_S / 4`; ошибка очистки
+  только пишется в лог. Место в файле DuckDB после удаления не
+  возвращается системе, а переиспользуется под новые таблицы.
 
 ## 3. Метапамять: паспорт данных и глоссарий — `core/memory/profile_memory.py`
 - **Хранит:** структуру таблиц, статистику, названия и описания колонок из
@@ -60,7 +78,7 @@
 
 | Таблица | Строка | Содержимое |
 |---|---|---|
-| `_meta.table_passport` | таблица | `row_count`, `column_count`, `glossary` (JSON), `summary` (заполняется отдельной задачей), `profiled_at`, `enriched_at` |
+| `_meta.table_passport` | таблица | `row_count`, `column_count`, `glossary` (JSON), `summary` (заполняется отдельной задачей), `profiled_at`, `enriched_at`, `description_status`, `description_run` |
 | `_meta.column_passport` | колонка, PK `(table_name, column_name)` | `position` (порядок как в `DESCRIBE`), `dtype`, `kind`, статистика `ColumnStats`, название, описание, `fingerprint`, `enriched_at` |
 
 Полный DDL — `SCHEMA` в `profile_memory.py`. Статистика колонки — поля
@@ -87,6 +105,20 @@
 `description_original`: конструктор `ProfileMemory` добавляет `title`
 (`ADD COLUMN IF NOT EXISTS`), старые колонки больше не читаются.
 
+`description_status` в `_meta.table_passport` — статус переноса описания:
+`none` (по умолчанию: описания нет), `pending` (ставит `ingest.mark_pending`, он же сбрасывает в `none`
+перед фоновым `ingest.describe`), `ready` или `failed` (ставит
+`ingest.describe`: `failed`, если у какой-либо колонки после переноса нет
+`fingerprint` или энричер упал). В старых паспортах колонку добавляет
+конструктор (`ADD COLUMN IF NOT EXISTS ... DEFAULT 'none'`). Фоновый
+`describe` не переживает рестарт, поэтому при старте приложения
+`fail_pending()` переводит оставшиеся `pending` в `failed`.
+
+`description_run` — запуск переноса: `ingest.mark_pending` при каждом
+подключении пишет новый. Фоновый `describe` от прошлого подключения той же
+таблицы сверяет его перед вызовом LLM и перед записью и, если таблицу
+подключили заново, не пишет ни описания колонок, ни статус.
+
 ### API `ProfileMemory(db)`
 
 Конструктор принимает `DuckDBManager` и создаёт схему (`CREATE ... IF NOT
@@ -98,6 +130,14 @@ EXISTS`). Записи — одной транзакцией под `DuckDBManag
   статистика, `position`, `dtype`, `kind`; название, описание и `fingerprint`
   не затираются. Колонки, которых больше нет в таблице, удаляются.
   `glossary=None` оставляет сохранённый словарь.
+- `set_description_status(table, status, run=None)` / `load_description_status(table)` —
+  статус переноса описания (`none` / `pending` / `ready` / `failed`; без
+  паспорта — `none`). С `run` статус меняется, только если запуск всё ещё текущий.
+- `begin_description(table, run, described)` / `load_description_run(table)` —
+  новый запуск переноса (`pending` или `none`) и текущий запуск.
+- `fail_pending(run=None) -> list[str]` — `pending` → `failed` у всех таблиц
+  (при старте, `lifespan` в `main.py`) или только у таблиц запуска `run`
+  (фоновый перенос упал); возвращает имена таких таблиц.
 - `load_profile(table) -> TableProfile | None` — профиль, равный
   сохранённому (`None`, если паспорта нет). `profiled_at` — строка ISO в UTC.
 - `load_glossary(table) -> dict | None`.
@@ -171,3 +211,30 @@ EXISTS`). Записи — одной транзакцией под `DuckDBManag
   транзакции), `delete`, `update_snapshot(tile_id, records)`.
   `DashboardGenerator.generate` снимает данные плиток с `result_table` и
   сохраняет дашборд. Старые JSON из `storage/dashboards/` не мигрируются.
+- **REST (`api/routes/dashboards.py`):**
+
+  | Метод | Путь | Ответ |
+  |---|---|---|
+  | GET | `/api/dashboards?session_id=` (необязателен) | `list[DashboardSummary]`, новые по `updated_at` первыми |
+  | GET | `/api/dashboards/{id}` | `DashboardOut` / 404 |
+  | POST | `/api/dashboards` | `DashboardOut`, 201 |
+  | PUT | `/api/dashboards/{id}` | `DashboardOut` / 404 |
+  | DELETE | `/api/dashboards/{id}` | 204 / 404 |
+  | POST | `/api/dashboards/{id}/recalculate` | `DashboardOut` / 404 |
+
+  `DashboardCreate {session_id, title, tiles}` — `title` обязателен;
+  `DashboardUpdate {title?, tiles?}` — `tiles` заменяют все плитки.
+  Плитки на входе — `DashboardTileIn`: `result_table` только
+  `temp_result_vN` (оно идёт в SQL как имя таблицы), иначе 422. Id плиток
+  при POST всегда новые; при PUT id плитки этого дашборда сохраняется,
+  чужой или повторный id заменяется новым (`dashboard_tiles.id` —
+  глобальный ключ), так что GET → POST дублирует дашборд.
+  `recalculate` (`core/dashboards/recalculate.py`) перечитывает
+  `result_table` каждой плитки и пересобирает спеку запрошенным типом
+  графика (`usermeta.requested_type`, иначе `chart_type`: если в прошлый
+  раз построился запасной вид, на новых данных можно вернуться к
+  запрошенному), с прежними подписями колонок и заголовком. В спеке без
+  `usermeta` (собрана не `build_vega_spec`) заменяются только
+  `data.values`, остальное не трогается. Если таблицы уже нет, снимок и
+  спека остаются, а плитка приходит со
+  `stale: true`.  Флаг не хранится — он есть только в ответе пересчёта.

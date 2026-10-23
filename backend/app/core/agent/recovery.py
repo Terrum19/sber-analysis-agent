@@ -11,8 +11,6 @@
 
 import duckdb
 
-from app.models.research_step import ResearchStep
-
 # Сколько раз исправить упавший шаг перед вопросом пользователю.
 STEP_FIX_ATTEMPTS = 2
 
@@ -20,13 +18,11 @@ STEP_FIX_ATTEMPTS = 2
 FIXABLE_ERRORS = (ValueError, duckdb.Error)
 
 
-def fixable(step: ResearchStep, exc: Exception) -> bool:
+def fixable(exc: Exception) -> bool:
     """Можно ли исправить шаг по этой ошибке.
 
-    Шаг кодогенерации исправляет свой код сам (settings.codegen_attempts);
-    NotImplementedError и прочие сбои (песочница, баг тула) исправлением
-    аргументов не лечатся.
+    SandboxError (run_python уже исправлял свой код сам, в пределах
+    settings.codegen_attempts), NotImplementedError и прочие сбои
+    исправлением аргументов не лечатся.
     """
-    if step.needs_llm_codegen or not step.tool:
-        return False
     return isinstance(exc, FIXABLE_ERRORS)

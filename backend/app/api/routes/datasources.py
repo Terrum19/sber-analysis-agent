@@ -5,6 +5,7 @@
 Сразу после подключения таблицы профилируются (ingest.attach); если к
 источнику есть описание — комментарии колонок или приложенный документ, —
 названия и описания колонок переносятся в паспорт в фоне (ingest.describe).
+Источник БД запоминается и переподключается после рестарта (core/data/restore.py).
 """
 
 import logging
@@ -13,13 +14,18 @@ from pathlib import Path
 from typing import Annotated
 from uuid import uuid4
 
+import duckdb
 from fastapi import APIRouter, BackgroundTasks, Depends, File, HTTPException, UploadFile
 
 from app.api.deps import get_db
-from app.api.schemas.datasource import DatasourceCreate, DatasourceOut
+from app.api.schemas.datasource import DatasourceCreate, DatasourceOut, TableBrief
 from app.config import settings
-from app.core.data import ingest
+from app.core.data import ingest, restore
 from app.core.data.connectors.base import BaseConnector
+from app.core.data.connectors.clickhouse import (
+    ClickHouseConnectionError,
+    ClickHouseExtensionUnavailableError,
+)
 from app.core.data.connectors.csv import CSVConnector, CSVLoadError, table_name
 from app.core.data.connectors.factory import build_connector
 from app.core.data.connectors.postgres import (
@@ -27,6 +33,8 @@ from app.core.data.connectors.postgres import (
     PostgresExtensionUnavailableError,
 )
 from app.core.data.duckdb_manager import DuckDBManager
+from app.core.data.profiling import TableProfile
+from app.core.memory.profile_memory import ProfileMemory
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -54,27 +62,49 @@ def list_tables(db: Annotated[DuckDBManager, Depends(get_db)]) -> list[str]:
     return db.user_tables()
 
 
+def too_large(name: str) -> HTTPException:
+    return HTTPException(
+        status_code=413, detail=f"Описание «{name}» больше {DESCRIPTION_MAX_BYTES >> 20} МБ."
+    )
+
+
 def read_description(upload: UploadFile | None) -> str | None:
     """Текст документа-описания (README, словарь колонок) или None."""
     if upload is None:
         return None
     data = upload.file.read(DESCRIPTION_MAX_BYTES + 1)
     if len(data) > DESCRIPTION_MAX_BYTES:
-        raise HTTPException(
-            status_code=413,
-            detail=f"Описание «{upload.filename}» больше {DESCRIPTION_MAX_BYTES >> 20} МБ.",
-        )
+        raise too_large(upload.filename)
     return data.decode("utf-8-sig", errors="replace")
 
 
 async def describe_tables(
-    connector: BaseConnector, db: DuckDBManager, tables: list[str], document: str | None
+    connector: BaseConnector,
+    db: DuckDBManager,
+    tables: list[str],
+    document: str | None,
+    job: ingest.DescribeJob,
 ) -> None:
     """Фоновый перенос описания в паспорт: сбой не затрагивает подключение."""
     try:
-        await ingest.describe(connector, db, tables, document)
+        await ingest.describe(connector, db, tables, document, job=job)
     except Exception:
         logger.exception("Описание таблиц %s не перенесено в паспорт", tables)
+        with db.lock:
+            ProfileMemory(db).fail_pending(job.run)
+
+
+def briefs(
+    connector: BaseConnector, db: DuckDBManager, profiles: dict[str, TableProfile]
+) -> list[TableBrief]:
+    """Сводки паспортов подключённых таблиц. Под db.lock, после ingest.mark_pending."""
+    memory = ProfileMemory(db)
+    return [
+        TableBrief.from_profile(
+            profile, memory.load_description_status(table), connector.warnings(table)
+        )
+        for table, profile in profiles.items()
+    ]
 
 
 @router.post("/csv", response_model=DatasourceOut)
@@ -103,15 +133,18 @@ def attach_csv(
             paths[name] = str(target)
         connector = CSVConnector(paths)
         with db.lock:
-            tables = list(ingest.attach(connector, db))
+            profiles = ingest.attach(connector, db)
+            tables = list(profiles)
+            job = ingest.mark_pending(connector, db, tables, document)
+            summaries = briefs(connector, db, profiles)
     except CSVLoadError as error:
         shutil.rmtree(folder, ignore_errors=True)
         raise HTTPException(status_code=400, detail=str(error)) from None
     except BaseException:
         shutil.rmtree(folder, ignore_errors=True)
         raise
-    background.add_task(describe_tables, connector, db, tables, document)
-    return DatasourceOut(datasource_id=datasource_id, kind="csv", tables=tables)
+    background.add_task(describe_tables, connector, db, tables, document, job)
+    return DatasourceOut(datasource_id=datasource_id, kind="csv", tables=tables, profiles=summaries)
 
 
 @router.post("/db", response_model=DatasourceOut)
@@ -120,20 +153,41 @@ def attach_db(
     db: Annotated[DuckDBManager, Depends(get_db)],
     background: BackgroundTasks,
 ) -> DatasourceOut:
+    if payload.description and len(payload.description.encode()) > DESCRIPTION_MAX_BYTES:
+        raise too_large("description")
     try:
         connector = build_connector(payload.kind, payload.dsn, payload.db_schema)
         with db.lock:
-            tables = list(ingest.attach(connector, db))
+            profiles = ingest.attach(connector, db)
+            tables = list(profiles)
+            job = ingest.mark_pending(connector, db, tables, payload.description)
+            summaries = briefs(connector, db, profiles)
     except ValueError as error:
         raise HTTPException(status_code=400, detail=str(error)) from None
-    except PostgresConnectionError as error:
+    except (PostgresConnectionError, ClickHouseConnectionError) as error:
         raise HTTPException(status_code=502, detail=str(error)) from None
-    except PostgresExtensionUnavailableError as error:
+    except (PostgresExtensionUnavailableError, ClickHouseExtensionUnavailableError) as error:
         raise HTTPException(status_code=503, detail=str(error)) from None
+    except duckdb.Error as error:
+        # Сбой профиля: ingest.attach уже откатил подключение.
+        raise HTTPException(
+            status_code=422,
+            detail=f"Не удалось прочитать таблицы источника: {connector.scrub(str(error))}",
+        ) from None
     except NotImplementedError:
         raise HTTPException(
             status_code=501, detail=f"Коннектор «{payload.kind}» пока не реализован."
         ) from None
-    background.add_task(describe_tables, connector, db, tables, payload.description)
+    restore.remember(connector, payload.description)
+    background.add_task(describe_tables, connector, db, tables, payload.description, job)
     datasource_id = getattr(connector, "identity", f"{payload.kind}_{uuid4().hex[:10]}")
-    return DatasourceOut(datasource_id=datasource_id, kind=payload.kind, tables=tables)
+    return DatasourceOut(
+        datasource_id=datasource_id, kind=payload.kind, tables=tables, profiles=summaries
+    )
+
+
+@router.delete("/{datasource_id}", status_code=204)
+def detach_db(datasource_id: str, db: Annotated[DuckDBManager, Depends(get_db)]) -> None:
+    """Отключить источник БД и забыть его: после рестарта он не переподключится."""
+    if restore.forget(db, datasource_id) is None:
+        raise HTTPException(status_code=404, detail=f"Источник «{datasource_id}» не найден.")

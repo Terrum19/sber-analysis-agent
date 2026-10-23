@@ -15,6 +15,8 @@ from app.config import settings
 
 T = TypeVar("T", bound=BaseModel)
 
+PLAN_COLUMNS = ("category", "user_id")
+
 
 class FakeLLM:
     """Заглушка LLMClient с фиксированным ответом для любого вопроса."""
@@ -42,13 +44,13 @@ class FakeLLM:
         if schema.__name__ == "ResearchPlan":
             from app.models.research_step import ResearchStep
 
+            column = next((name for name in PLAN_COLUMNS if name in user), PLAN_COLUMNS[0])
             return schema(
                 steps=[
                     ResearchStep(
                         step_id=0,
                         tool="aggregate",
-                        columns=["category"],
-                        needs_llm_codegen=False,
+                        columns=[column],
                         purpose="Агрегируем данные по категории",
                     )
                 ],

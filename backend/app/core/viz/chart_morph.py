@@ -20,6 +20,7 @@ MORPH_MAP = {
     "scatter": ["bar", "line", "table"],
     "heatmap": ["bar", "table"],
     "table": ["bar", "line"],
+    "kpi": ["table", "bar"],
 }
 
 _TYPE_WORDS = (

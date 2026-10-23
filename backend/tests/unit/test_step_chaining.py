@@ -52,7 +52,7 @@ def test_report_tools_do_not_transform_data() -> None:
     assert tool_kind(ResearchStep(tool="search_categorical_values")) == "lookup"
     assert tool_kind(ResearchStep(tool="create_column")) == "transform"
     assert tool_kind(ResearchStep(tool="unknown_tool")) == "transform"
-    assert tool_kind(ResearchStep(needs_llm_codegen=True)) == "transform"
+    assert tool_kind(ResearchStep(tool=None)) == "transform"
 
 
 async def test_steps_after_a_report_still_see_the_data(db) -> None:

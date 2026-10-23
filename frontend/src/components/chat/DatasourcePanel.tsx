@@ -12,7 +12,7 @@ import type { Datasource, DbKind } from "@/types/datasource";
 
 const DSN_PLACEHOLDER: Record<DbKind, string> = {
   postgres: "postgresql://analyst:***@db.local:5432/shop",
-  clickhouse: "clickhouse://analyst:***@db.local:8123/shop",
+  clickhouse: "clickhouse://analyst:***@db.local:9000/shop",
 };
 
 export default function DatasourcePanel() {
