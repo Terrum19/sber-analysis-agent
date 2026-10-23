@@ -254,28 +254,34 @@ class AgentOrchestrator:
             )
             memory.record_chart(spec["usermeta"]["chart_type"], result_table, insight.headline)
             yield {"type": "chart", "data": {"spec": spec, "caption": insight.headline}}
-
-            if execution.dashboard_requested:
-                from app.core.dashboards.generator import DashboardGenerator
-                from app.core.dashboards.models import DashboardTile
-
-                stage = "dashboard"
-                tile = DashboardTile(
-                    title=spec.get("title") or insight.headline,
-                    spec=spec,
-                    result_table=result_table,
-                    insight=insight.headline,
-                )
-                dashboard = await DashboardGenerator(db=self.db).generate(
-                    request.session_id, "Дашборд", [tile]
-                )
-                yield {"type": "dashboard", "data": {"dashboard_id": dashboard.id}}
         except Exception as exc:
             logger.exception("<<< run() этап %s упал", stage)
             yield _progress_event(stage, "failed", error=str(exc))
             yield _failure_event()
             yield {"type": "done", "data": {}}
             return
+
+        if execution.dashboard_requested:
+            from app.core.dashboards.generator import DashboardGenerator
+            from app.core.dashboards.models import DashboardTile
+
+            tile = DashboardTile(
+                title=spec.get("title") or insight.headline,
+                spec=spec,
+                result_table=result_table,
+                insight=insight.headline,
+            )
+            try:
+                dashboard = await DashboardGenerator(db=self.db).generate(
+                    request.session_id, "Дашборд", [tile]
+                )
+            except Exception as exc:
+                # Ответ и график уже у пользователя: ход не провален, нет
+                # только дашборда — без error, дальше обычный done.
+                logger.exception("<<< run() дашборд не собран")
+                yield _progress_event("dashboard", "failed", error=str(exc))
+            else:
+                yield {"type": "dashboard", "data": {"dashboard_id": dashboard.id}}
 
         memory.record_answer(insight.headline)
         yield {"type": "done", "data": {}}

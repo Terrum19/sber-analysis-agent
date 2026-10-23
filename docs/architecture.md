@@ -78,7 +78,8 @@
 | `step` | `failed` | `step_id`, `tool`, `purpose`, `elapsed_ms`, `error` | шаг не исправился, дальше `clarification_needed` |
 | `insight` | `started` | — | план выполнен, генерируется инсайт (дальше `text`) |
 | `chart` | `started` | — | строится график (дальше `chart`) |
-| `insight` / `chart` / `dashboard` | `failed` | `error` | этап упал, дальше `error` и `done` |
+| `insight` / `chart` | `failed` | `error` | этап упал, дальше `error` и `done` |
+| `dashboard` | `failed` | `error` | дашборд не собран; ответ и график уже отданы, дальше `done` без `error` |
 
 `planning` приходит один раз на новый вопрос: ни достройка плана после
 lookup-шага, ни ответ на уточнение (`recovery_response`) его не шлют, а
@@ -88,10 +89,11 @@ lookup-шага, ни ответ на уточнение (`recovery_response`) �
 плана: сразу `chart` и `done`. Этап `dashboard` шлёт только `failed`.
 
 Ход всегда заканчивается `done` или `clarification_needed`: любой сбой
-вне шагов (планировщик, инсайт, график, дашборд) приходит как
+вне шагов (планировщик, инсайт, график) приходит как
 `<stage>/failed` с текстом ошибки, затем `error` с сообщением для
 пользователя и `done`. Упавший шаг сюда не относится — он идёт через
-`fixing` и `clarification_needed`.
+`fixing` и `clarification_needed`. Сбой дашборда ход не проваливает:
+после `dashboard/failed` сразу `done`, ответ сохраняется в памяти сессии.
 
 Пример успешного хода из одного шага:
 

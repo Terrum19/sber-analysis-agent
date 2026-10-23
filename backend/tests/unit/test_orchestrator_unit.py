@@ -224,3 +224,24 @@ def test_insight_failure_ends_the_stream(orchestrator):
 
     assert stages(events)[-4:] == ["insight:started", "insight:failed", "error", "done"]
     assert events[-3]["data"]["error"] == "LLM timeout"
+
+
+def test_dashboard_failure_keeps_the_answer(orchestrator, monkeypatch):
+    from app.core.dashboards.generator import DashboardGenerator
+    from app.models.research_step import ResearchPlan
+
+    class DashboardPlanner(FakePlanner):
+        async def plan(self, question, context):
+            plan = await super().plan(question, context)
+            return ResearchPlan(steps=plan.steps, final_viz="bar", dashboard_requested=True)
+
+    async def failing_generate(self, *args, **kwargs):
+        raise RuntimeError("SQLite недоступна")
+
+    orchestrator.planner = DashboardPlanner()
+    monkeypatch.setattr(DashboardGenerator, "generate", failing_generate)
+    events = collect(orchestrator, "s1")
+
+    assert stages(events)[-4:] == ["chart:started", "chart", "dashboard:failed", "done"]
+    assert "error" not in stages(events)
+    assert events[-2]["data"]["error"] == "SQLite недоступна"

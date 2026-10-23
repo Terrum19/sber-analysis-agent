@@ -1,5 +1,17 @@
 2026-10-23  Alexander Yurits  <terruwork@gmail.com>
 
+	Сбой дашборда не перечёркивает показанный ответ.
+	* backend/app/core/agent/orchestrator.py (AgentOrchestrator.run):
+	Дашборд собирается вне общего try инсайта и графика: при сбое —
+	dashboard failed и обычный done, без error; ответ записывается в
+	память сессии.
+	* backend/tests/unit/test_orchestrator_unit.py
+	(test_dashboard_failure_keeps_the_answer): Новый тест.
+	* docs/architecture.md (События стрима чата): dashboard failed
+	без error.
+
+2026-10-23  Alexander Yurits  <terruwork@gmail.com>
+
 	Сбой LLM вне шагов больше не обрывает стрим.
 	* backend/app/core/agent/orchestrator.py (FAILURE_MESSAGE)
 	(_failure_event): Новые: событие error для пользователя.
