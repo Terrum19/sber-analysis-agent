@@ -166,9 +166,10 @@ export function streamChat(
   question: string,
   onEvent: (event: ChatStreamEvent) => void,
   onClose?: (error?: string) => void,
+  options?: { recoveryResponse?: string },
 ): () => void {
   if (isMockMode()) {
-    return mockStreamChat(sessionId, question, onEvent, onClose);
+    return mockStreamChat(sessionId, question, onEvent, onClose, options);
   }
 
   const controller = new AbortController();
@@ -178,7 +179,11 @@ export function streamChat(
       const res = await fetch(`${API}/chat`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ session_id: sessionId, question }),
+        body: JSON.stringify({
+          session_id: sessionId,
+          question,
+          recovery_response: options?.recoveryResponse ?? null,
+        }),
         signal: controller.signal,
       });
 

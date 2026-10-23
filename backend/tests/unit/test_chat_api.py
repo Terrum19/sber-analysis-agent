@@ -35,3 +35,18 @@ def test_chat_stream_forbids_proxy_buffering() -> None:
     assert "content-encoding" not in response.headers
     assert response.text.startswith("data: ")
     assert '"type":"error"' in response.text
+
+
+def test_chat_stream_accepts_recovery_response() -> None:
+    client = TestClient(app)
+    response = client.post(
+        "/api/chat",
+        json={
+            "session_id": "s1",
+            "question": "Повторный запрос",
+            "recovery_response": '{"action": "skip_step", "text": "Пропустить этот шаг"}',
+        },
+    )
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("text/event-stream")
+    assert response.text.startswith("data: ")

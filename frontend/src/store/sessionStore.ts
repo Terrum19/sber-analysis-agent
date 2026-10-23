@@ -21,6 +21,10 @@ export interface ChatMessage {
   timestamp?: string;
   /** Сообщение об ошибке или обрыве — под ним кнопка повтора. */
   failed?: boolean;
+  /** Исходный текст вопроса, вызвавший ошибку (для кнопки повтора). */
+  failedQuestion?: string;
+  /** Подсказки для уточнения/повтора (если backend прислал clarification_needed). */
+  suggestions?: string[];
 }
 
 export interface SessionItem {
@@ -76,6 +80,8 @@ interface SessionState {
   addMessage: (msg: ChatMessage) => void;
   appendToLastMessage: (chunk: string) => void;
   updateLastMessage: (patch: Partial<ChatMessage>) => void;
+  removeMessage: (id: string) => void;
+  removeLastFailedMessage: () => void;
   addTile: (tile: DashboardTile) => void;
   setTiles: (tiles: DashboardTile[]) => void;
   selectTile: (index: number | null) => void;
@@ -154,6 +160,40 @@ export const useSessionStore = create<SessionState>()(
             timestamp: msg.timestamp || new Date().toLocaleTimeString("ru-RU", { hour: "2-digit", minute: "2-digit" }),
           };
           const nextMessages = [...s.messages, newMsg];
+          let nextTableCache = s.sessionTableCache;
+          if (s.sessionId && s.sessionActiveTable[s.sessionId]) {
+            const curTable = s.sessionActiveTable[s.sessionId];
+            nextTableCache = {
+              ...s.sessionTableCache,
+              [s.sessionId]: {
+                ...(s.sessionTableCache[s.sessionId] || {}),
+                [curTable]: { messages: nextMessages, tiles: s.tiles },
+              },
+            };
+          }
+          return { messages: nextMessages, sessionTableCache: nextTableCache };
+        }),
+      removeMessage: (id) =>
+        set((s) => {
+          const nextMessages = s.messages.filter((m) => m.id !== id);
+          let nextTableCache = s.sessionTableCache;
+          if (s.sessionId && s.sessionActiveTable[s.sessionId]) {
+            const curTable = s.sessionActiveTable[s.sessionId];
+            nextTableCache = {
+              ...s.sessionTableCache,
+              [s.sessionId]: {
+                ...(s.sessionTableCache[s.sessionId] || {}),
+                [curTable]: { messages: nextMessages, tiles: s.tiles },
+              },
+            };
+          }
+          return { messages: nextMessages, sessionTableCache: nextTableCache };
+        }),
+      removeLastFailedMessage: () =>
+        set((s) => {
+          const lastIdx = s.messages.length - 1;
+          if (lastIdx < 0 || !s.messages[lastIdx].failed) return {};
+          const nextMessages = s.messages.slice(0, lastIdx);
           let nextTableCache = s.sessionTableCache;
           if (s.sessionId && s.sessionActiveTable[s.sessionId]) {
             const curTable = s.sessionActiveTable[s.sessionId];
