@@ -1,3 +1,9 @@
+2026-10-23  Alexander Yurits  <terruwork@gmail.com>
+
+	Контекст LLM в compose задаётся одним числом (#102).
+	* docker-compose.yml (backend): LLM_NUM_CTX из OLLAMA_CONTEXT_LENGTH.
+	* docker-compose.release.yml (backend): То же.
+
 2026-10-22  mb6ockatf  <smokenmirror@tutamail.com>
 
 	Ollama с моделью в docker compose (#78).
