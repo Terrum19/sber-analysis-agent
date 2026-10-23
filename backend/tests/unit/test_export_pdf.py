@@ -8,7 +8,8 @@ from fastapi.testclient import TestClient
 from app.api.deps import get_db
 from app.core.data.duckdb_manager import DuckDBManager
 from app.core.export.charts import normalize_spec, render_chart_png
-from app.core.export.pdf import PdfExporter
+from app.core.export.pdf import PdfExporter, sanitize_text, truncate_text
+from app.core.memory.session_memory import SessionMemory
 from app.main import app
 
 SAMPLE_SPEC = {
@@ -32,7 +33,9 @@ SAMPLE_SPEC = {
 
 
 @pytest.fixture
-def client(tmp_path: Path):
+def client(tmp_path: Path, monkeypatch):
+    monkeypatch.setattr("app.config.settings.storage_dir", str(tmp_path))
+    monkeypatch.setattr("app.config.settings.sqlite_path", str(tmp_path / "sessions.sqlite"))
     db = DuckDBManager(":memory:")
     app.dependency_overrides[get_db] = lambda: db
     yield TestClient(app)
@@ -142,16 +145,19 @@ def test_4_export_minimal_table_only_report(tmp_path: Path) -> None:
     assert Path(compat_path).exists()
 
 
-def test_5_api_export_pdf_endpoint(client: TestClient, tmp_path: Path, monkeypatch) -> None:
+def test_5_api_export_pdf_endpoint(client: TestClient, tmp_path: Path) -> None:
     """Тест 5: API-тест эндпоинта POST /api/artifacts/export с format='pdf'."""
-    monkeypatch.setattr("app.config.settings.storage_dir", str(tmp_path))
-
     # Подготавливаем таблицу в DuckDB
     db: DuckDBManager = client.app.dependency_overrides[get_db]()
     db.execute(
         "CREATE TABLE temp_result_v1 AS SELECT 'Электроника' AS category, 42500000 AS revenue "
         "UNION ALL SELECT 'Одежда', 21000000"
     )
+
+    # Привязываем сессию и промежуточный результат к памяти
+    memory = SessionMemory("test_session_123", db)
+    memory.set_table("raw", ["category", "revenue"])
+    memory.record_step({"step_id": 1, "purpose": "Группировка по категориям"}, "temp_result_v1")
 
     payload = {
         "session_id": "test_session_123",
@@ -201,11 +207,15 @@ def test_api_export_pdf_validation_errors(client: TestClient) -> None:
     assert resp.status_code == 404
 
 
-def test_api_export_xlsx_endpoint(client: TestClient, tmp_path: Path, monkeypatch) -> None:
+def test_api_export_xlsx_endpoint(client: TestClient, tmp_path: Path) -> None:
     """Тест экспорта в Excel через эндпоинт /api/artifacts/export."""
-    monkeypatch.setattr("app.config.settings.storage_dir", str(tmp_path))
     db: DuckDBManager = client.app.dependency_overrides[get_db]()
     db.execute("CREATE TABLE temp_result_v2 AS SELECT 'Товар' AS item, 100 AS price")
+
+    memory = SessionMemory("s1", db)
+    memory.set_table("raw", ["item", "price"])
+    memory.record_step({"step_id": 1, "purpose": "Выборка товаров"}, "temp_result_v2")
+
     resp = client.post(
         "/api/artifacts/export",
         json={"session_id": "s1", "format": "xlsx", "result_ref": "temp_result_v2"},
@@ -213,6 +223,116 @@ def test_api_export_xlsx_endpoint(client: TestClient, tmp_path: Path, monkeypatc
     assert resp.status_code == 200
     assert "spreadsheetml" in resp.headers["content-type"]
     assert resp.headers["content-disposition"].startswith('attachment; filename="agent_export_')
+
+
+def test_xml_escaping_in_pdf_report(tmp_path: Path) -> None:
+    """Тест экранирования XML-символов в тексте пользователя и таблицах."""
+    pdf_path = str(tmp_path / "xml_escape_test.pdf")
+
+    # Текст с символами, опасными для парсера ReportLab (<, >, &, теги)
+    question = "Выручка < 100 млн & > 50 млн? <b>fake</b>"
+    headline = "Анализ: маржа & рентабельность <тег & незакрытый>"
+    details = [
+        "Компании: AT&T, P&G, Johnson & Johnson",
+        "Сравнение: X < Y и A > B",
+        "Символ рубля: 1 500 ₽ и тег <i>курсив</i>",
+    ]
+    records = [
+        {
+            "№": 1,
+            "<Категория & ID>": "<b>XSS-like value</b> & <unclosed>",
+            "Значение": "x < 50",
+            "Выручка, ₽": 2500000,
+        }
+    ]
+
+    exporter = PdfExporter()
+    out = exporter.export_answer(
+        path=pdf_path,
+        records=records,
+        question=question,
+        headline=headline,
+        details=details,
+        title="Тест & Безопасность <v1>",
+    )
+    assert out == pdf_path
+    assert Path(pdf_path).exists()
+
+    reader = pypdf.PdfReader(pdf_path)
+    all_text = "".join(page.extract_text() for page in reader.pages)
+
+    # Проверяем, что теги не были съедены парсером, а отображаются как буквальный текст
+    assert "<b>fake</b>" in all_text
+    assert "AT&T" in all_text
+    assert "руб." in all_text
+    assert "<b>XSS-like value</b>" in all_text
+    assert "<unclosed>" in all_text or "unclosed" in all_text
+
+
+def test_api_export_suppressed_error_fixed_raises_404(client: TestClient) -> None:
+    """Проверка исправления подавления ошибок: если result_ref не удаётся прочитать, возвращается 404, а не пустой отчёт."""
+    db: DuckDBManager = client.app.dependency_overrides[get_db]()
+    memory = SessionMemory("session_err", db)
+    memory.set_table("raw", ["col1"])
+    # Записываем шаг, но таблицы в DuckDB нет
+    memory.record_step({"step_id": 1, "purpose": "step"}, "temp_result_v99")
+
+    payload = {
+        "session_id": "session_err",
+        "format": "pdf",
+        "result_ref": "temp_result_v99",
+        "headline": "Присутствует инсайт",
+        "question": "Присутствует вопрос",
+    }
+    resp = client.post("/api/artifacts/export", json=payload)
+    # Ранее возвращался 200 с неполным отчётом без таблицы, теперь должен возвращаться 404
+    assert resp.status_code == 404
+    assert "temp_result_v99" in resp.json()["detail"]
+
+
+def test_api_export_session_isolation(client: TestClient) -> None:
+    """Проверка изоляции сессий: нельзя получить результат другой сессии."""
+    db: DuckDBManager = client.app.dependency_overrides[get_db]()
+    db.execute("CREATE TABLE temp_result_v10 AS SELECT 1 AS id, 'secret' AS val")
+
+    # Сессия А владеет temp_result_v10
+    mem_a = SessionMemory("session_alice", db)
+    mem_a.set_table("raw", ["id", "val"])
+    mem_a.record_step({"step_id": 1, "purpose": "step"}, "temp_result_v10")
+
+    # Сессия Б существует, но не владеет temp_result_v10
+    mem_b = SessionMemory("session_bob", db)
+    mem_b.set_table("raw", ["id", "val"])
+
+    # Сессия Б пытается запросить результат Сессии А
+    resp_b = client.post(
+        "/api/artifacts/export",
+        json={"session_id": "session_bob", "format": "xlsx", "result_ref": "temp_result_v10"},
+    )
+    assert resp_b.status_code == 404
+    assert "не найден в сессии" in resp_b.json()["detail"]
+
+    # Несуществующая сессия
+    resp_c = client.post(
+        "/api/artifacts/export",
+        json={"session_id": "session_charlie", "format": "xlsx", "result_ref": "temp_result_v10"},
+    )
+    assert resp_c.status_code == 404
+    assert "не найдена" in resp_c.json()["detail"]
+
+    # Пустой session_id
+    resp_empty = client.post(
+        "/api/artifacts/export",
+        json={"session_id": "  ", "format": "xlsx", "result_ref": "temp_result_v10"},
+    )
+    assert resp_empty.status_code == 400
+
+    # Сессия А успешно экспортирует свой результат
+    resp_a = client.post(
+        "/api/artifacts/export",
+        json={"session_id": "session_alice", "format": "xlsx", "result_ref": "temp_result_v10"},
+    )
+    assert resp_a.status_code == 200
 
 
 def test_charts_edge_cases(monkeypatch) -> None:
@@ -244,6 +364,11 @@ def test_pdf_exporter_edge_cases(tmp_path: Path) -> None:
     """Проверка краевых случаев в PdfExporter."""
     exporter = PdfExporter()
 
+    # Проверка функции sanitize_text
+    assert sanitize_text("<b>тест & пример</b>") == "&lt;b&gt;тест &amp; пример&lt;/b&gt;"
+    assert sanitize_text("100 ₽") == "100 руб."
+    assert sanitize_text(None) == ""
+
     # Форматирование значений ячеек
     assert exporter._format_cell_value(None) == "—"
     assert exporter._format_cell_value(1000) == "1 000"
@@ -261,3 +386,51 @@ def test_pdf_exporter_edge_cases(tmp_path: Path) -> None:
     empty_pdf = str(tmp_path / "empty.pdf")
     exporter.export_answer(empty_pdf)
     assert Path(empty_pdf).exists()
+
+
+def test_truncate_text_helper() -> None:
+    """Проверка функции безопасного усечения текста truncate_text."""
+    assert truncate_text("короткий", 10) == "короткий"
+    assert truncate_text("очень длинный текст", 10) == "очень д..."
+    assert truncate_text(None, 10) == ""
+    assert truncate_text("  пробелы  ", 20) == "пробелы"
+
+
+def test_long_user_text_does_not_raise_layout_error(tmp_path: Path) -> None:
+    """Тест предотвращения LayoutError при передаче сверхдлинного пользовательского текста."""
+    pdf_path = str(tmp_path / "overflow_test.pdf")
+
+    # Сверхдлинный вопрос, вывод и детали
+    huge_question = "Вопрос аналитика с подробным описанием контекста: " * 50  # ~2500 символов
+    huge_headline = "Главный аналитический вывод с множеством факторов: " * 40  # ~2000 символов
+    huge_details = [
+        f"Детальный пункт {i}: " + ("пояснение к фактору " * 30)  # ~600 символов
+        for i in range(15)
+    ]
+    # Таблица с ячейками, содержащими длинные строки
+    records = [
+        {
+            "Колонка 1": f"Значение строки {r}: " + ("очень длинное текстовое описание " * 20),
+            "Колонка 2": 1000000 + r * 500,
+            "Колонка 3": "Нормальный текст",
+        }
+        for r in range(25)
+    ]
+
+    exporter = PdfExporter()
+    out = exporter.export_answer(
+        path=pdf_path,
+        records=records,
+        question=huge_question,
+        headline=huge_headline,
+        details=huge_details,
+        title="Сверхдлинный отчёт " * 10,
+    )
+    assert out == pdf_path
+    assert Path(pdf_path).exists()
+
+    # Проверяем, что документ успешно собрался и разбился на страницы
+    reader = pypdf.PdfReader(pdf_path)
+    assert len(reader.pages) >= 3, "Многостраничный контент должен распределиться между страницами"
+    for page in reader.pages:
+        assert len(page.extract_text()) > 0, "Каждая страница должна содержать валидный текст"

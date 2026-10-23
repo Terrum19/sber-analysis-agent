@@ -223,9 +223,20 @@ class SessionMemory:
 
     def record_step(self, step, result_table: str) -> None:
         """Запомнить выполненный шаг и его результат."""
-        self._state["steps"].append(
-            {"step_id": step.step_id, "purpose": step.purpose, "result": result_table}
+        step_id = (
+            getattr(step, "step_id", None)
+            if hasattr(step, "step_id")
+            else (step.get("step_id") if isinstance(step, dict) else len(self._state["steps"]) + 1)
         )
+        purpose = (
+            getattr(step, "purpose", "")
+            if hasattr(step, "purpose")
+            else (step.get("purpose", "") if isinstance(step, dict) else "")
+        )
+        self._state["steps"].append(
+            {"step_id": step_id, "purpose": purpose, "result": result_table}
+        )
+        self._persist()
 
     def record_chart(self, chart_type: str, result_table: str, caption: str = "") -> None:
         """Запомнить последний показанный график текущей таблицы (для смены вида без LLM)."""
@@ -234,6 +245,30 @@ class SessionMemory:
             "result_table": result_table,
             "caption": caption,
         }
+        self._persist()
+
+    def owns_result(self, result_table: str) -> bool:
+        """Проверить, принадлежит ли промежуточная таблица данной сессии."""
+        if not result_table:
+            return False
+
+        for step in self._state.get("steps", []):
+            if step.get("result") == result_table:
+                return True
+
+        for tbl_data in self._state.get("tables", {}).values():
+            chart = tbl_data.get("last_chart")
+            if chart and chart.get("result_table") == result_table:
+                return True
+
+        pending = self._state.get("pending_recovery")
+        if pending and isinstance(pending, dict):
+            step_tables = pending.get("step_tables", {})
+            if isinstance(step_tables, dict) and result_table in step_tables.values():
+                return True
+            if pending.get("input_table") == result_table:
+                return True
+        return False
 
     def last_chart(self) -> dict | None:
         """Последний показанный график текущей таблицы или None."""
@@ -243,8 +278,6 @@ class SessionMemory:
         """Запомнить ответ агента в истории текущей таблицы."""
         self._history()["messages"].append({"role": "agent", "content": answer})
         self._persist()
-
-    # --- pending_recovery (восстановление после ошибки шага) ---
 
     def set_pending_recovery(self, data: dict) -> None:
         """Сохранить контекст неудачи шага для последующего уточнения."""

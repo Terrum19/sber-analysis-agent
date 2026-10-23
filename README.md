@@ -60,4 +60,4 @@ cd backend && pytest
 ## Технологии
 
 Qwen 2.5-Coder (Ollama/vLLM) · DuckDB · FastAPI · Instructor + Pydantic ·
-WASM-песочница · React/Next.js + Zustand · Vega-Lite/ECharts · openpyxl + Typst/ReportLab
+WASM-песочница · React/Next.js + Zustand · Vega-Lite/ECharts · openpyxl + ReportLab

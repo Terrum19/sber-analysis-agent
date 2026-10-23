@@ -74,7 +74,7 @@ class ExportRequest(BaseModel):
     session_id: str
     format: Literal["xlsx", "pdf"] = "xlsx"
     result_ref: str | None = None  # ссылка на temp_result_vN в DuckDB
-    question: str | None = None
-    headline: str | None = None
-    details: list[str] | None = None
+    question: str | None = Field(default=None, max_length=5000)
+    headline: str | None = Field(default=None, max_length=3000)
+    details: list[str] | None = Field(default=None, max_length=100)
     spec: dict[str, Any] | None = None

@@ -11,6 +11,7 @@ import datetime
 import io
 import logging
 import os
+import xml.sax.saxutils
 from pathlib import Path
 from typing import Any
 
@@ -118,12 +119,35 @@ def ensure_fonts_registered() -> tuple[str, str]:
     return ACTIVE_FONT_NAME, ACTIVE_BOLD_FONT_NAME
 
 
-def sanitize_text(text: Any) -> str:
-    """Очистить текст от символов, не поддерживаемых базовыми TrueType шрифтами (например, символ рубля U+20BD)."""
+# Пределы длины полей для предотвращения LayoutError в ReportLab
+MAX_QUESTION_LENGTH = 1500
+MAX_HEADLINE_LENGTH = 1000
+MAX_DETAIL_ITEM_LENGTH = 1000
+MAX_DETAILS_COUNT = 30
+MAX_CELL_LENGTH = 300
+MAX_TITLE_LENGTH = 150
+MAX_COLUMN_NAME_LENGTH = 80
+MAX_TABLE_COLUMNS = 10
+
+
+def truncate_text(text: Any, max_length: int) -> str:
+    """Обрезать слишком длинный текст с добавлением многоточия для предотвращения LayoutError."""
     if text is None:
         return ""
-    s = str(text)
-    return s.replace("₽", "руб.").replace("\u20bd", "руб.")
+    s = str(text).strip()
+    if len(s) <= max_length:
+        return s
+    return s[: max_length - 3].rstrip() + "..."
+
+
+def sanitize_text(text: Any) -> str:
+    """Очистить текст от символов, не поддерживаемых базовыми TrueType шрифтами,
+    и экранировать специальные XML-символы (<, >, &) для безопасной вставки в ReportLab Paragraph.
+    """
+    if text is None:
+        return ""
+    s = str(text).replace("₽", "руб.").replace("\u20bd", "руб.")
+    return xml.sax.saxutils.escape(s)
 
 
 class NumberedCanvas(canvas.Canvas):
@@ -160,7 +184,7 @@ class NumberedCanvas(canvas.Canvas):
         self.line(36, 32, A4[0] - 36, 32)
 
         if self._pageNumber > 1:
-            self.drawString(36, A4[1] - 25, "Sber AI BI Platform — Приложение с данными")
+            self.drawString(36, A4[1] - 25, "Sber AI BI Platform — Аналитический отчёт")
             self.drawRightString(
                 A4[0] - 36, A4[1] - 25, datetime.datetime.now().strftime("%d.%m.%Y")
             )
@@ -215,10 +239,14 @@ class PdfExporter:
             Путь к сгенерированному файлу.
         """
         records = records or []
-        details = [sanitize_text(d) for d in (details or [])]
-        question = sanitize_text(question) if question else None
-        headline = sanitize_text(headline) if headline else None
-        title = sanitize_text(title)
+        title = sanitize_text(truncate_text(title, MAX_TITLE_LENGTH))
+        question = sanitize_text(truncate_text(question, MAX_QUESTION_LENGTH)) if question else None
+        headline = sanitize_text(truncate_text(headline, MAX_HEADLINE_LENGTH)) if headline else None
+        details = [
+            sanitize_text(truncate_text(d, MAX_DETAIL_ITEM_LENGTH))
+            for d in (details or [])[:MAX_DETAILS_COUNT]
+            if d and str(d).strip()
+        ]
 
         doc = SimpleDocTemplate(
             path,
@@ -268,11 +296,15 @@ class PdfExporter:
             )
 
             if question:
-                q_content = [
-                    Paragraph("ВОПРОС ИССЛЕДОВАНИЯ", styles["MetaLabel"]),
-                    Paragraph(question, styles["QuestionText"]),
-                ]
-                q_table = Table([[q_content]], colWidths=[printable_width])
+                q_paragraphs = [p.strip() for p in question.split("\n") if p.strip()]
+                if not q_paragraphs:
+                    q_paragraphs = [question]
+
+                q_rows = [[Paragraph("ВОПРОС ИССЛЕДОВАНИЯ", styles["MetaLabel"])]]
+                for p_text in q_paragraphs:
+                    q_rows.append([Paragraph(p_text, styles["QuestionText"])])
+
+                q_table = Table(q_rows, colWidths=[printable_width])
                 q_table.setStyle(
                     TableStyle(
                         [
@@ -280,8 +312,10 @@ class PdfExporter:
                             ("BOX", (0, 0), (-1, -1), 0.5, colors.HexColor("#CBD5E1")),
                             ("LEFTPADDING", (0, 0), (-1, -1), 10),
                             ("RIGHTPADDING", (0, 0), (-1, -1), 10),
-                            ("TOPPADDING", (0, 0), (-1, -1), 8),
-                            ("BOTTOMPADDING", (0, 0), (-1, -1), 8),
+                            ("TOPPADDING", (0, 0), (-1, -1), 3),
+                            ("BOTTOMPADDING", (0, 0), (-1, -1), 3),
+                            ("TOPPADDING", (0, 0), (-1, 0), 8),
+                            ("BOTTOMPADDING", (0, -1), (-1, -1), 8),
                         ]
                     )
                 )
@@ -289,16 +323,15 @@ class PdfExporter:
                 elements.append(Spacer(1, 10))
 
             if headline or details:
-                insight_items: list[Any] = [Paragraph("КЛЮЧЕВЫЕ ВЫВОДЫ", styles["MetaLabelGreen"])]
+                insight_rows = [[Paragraph("КЛЮЧЕВЫЕ ВЫВОДЫ", styles["MetaLabelGreen"])]]
                 if headline:
-                    insight_items.append(Paragraph(headline, styles["HeadlineText"]))
+                    insight_rows.append([Paragraph(headline, styles["HeadlineText"])])
                 if details:
-                    insight_items.append(Spacer(1, 4))
                     for item in details:
                         bullet_text = f"• &nbsp; {item}"
-                        insight_items.append(Paragraph(bullet_text, styles["DetailItem"]))
+                        insight_rows.append([Paragraph(bullet_text, styles["DetailItem"])])
 
-                insight_table = Table([[insight_items]], colWidths=[printable_width])
+                insight_table = Table(insight_rows, colWidths=[printable_width])
                 insight_table.setStyle(
                     TableStyle(
                         [
@@ -307,8 +340,10 @@ class PdfExporter:
                             ("LINELEFT", (0, 0), (0, -1), 3.0, colors.HexColor("#059669")),
                             ("LEFTPADDING", (0, 0), (-1, -1), 12),
                             ("RIGHTPADDING", (0, 0), (-1, -1), 10),
-                            ("TOPPADDING", (0, 0), (-1, -1), 8),
-                            ("BOTTOMPADDING", (0, 0), (-1, -1), 8),
+                            ("TOPPADDING", (0, 0), (-1, -1), 3),
+                            ("BOTTOMPADDING", (0, 0), (-1, -1), 3),
+                            ("TOPPADDING", (0, 0), (-1, 0), 8),
+                            ("BOTTOMPADDING", (0, -1), (-1, -1), 8),
                         ]
                     )
                 )
@@ -328,7 +363,7 @@ class PdfExporter:
             if records:
                 elements.append(Spacer(1, 4))
                 hint_text = (
-                    "<i>Таблица с детальными показателями приведена на странице 2. "
+                    "<i>Таблица с детальными показателями приведена в приложении ниже. "
                     "Для выгрузки полного массива данных используйте экспорт в Excel.</i>"
                 )
                 elements.append(Paragraph(hint_text, styles["Footnote"]))
@@ -389,7 +424,7 @@ class PdfExporter:
         if not sample_rows:
             return None
 
-        headers = list(sample_rows[0].keys())
+        headers = list(sample_rows[0].keys())[:MAX_TABLE_COLUMNS]
         col_count = len(headers)
         if col_count == 0:
             return None
@@ -399,7 +434,11 @@ class PdfExporter:
         table_data: list[list[Paragraph]] = []
 
         header_row = [
-            Paragraph(f"<b>{sanitize_text(col)}</b>", styles["TableHeaderCell"]) for col in headers
+            Paragraph(
+                f"<b>{sanitize_text(truncate_text(col, MAX_COLUMN_NAME_LENGTH))}</b>",
+                styles["TableHeaderCell"],
+            )
+            for col in headers
         ]
         table_data.append(header_row)
 
@@ -438,7 +477,8 @@ class PdfExporter:
             return f"{val:,.2f}".replace(",", " ")
         if isinstance(val, int):
             return f"{val:,}".replace(",", " ")
-        return sanitize_text(str(val))
+        s = truncate_text(val, MAX_CELL_LENGTH)
+        return sanitize_text(s)
 
     def _build_styles(self) -> dict[str, ParagraphStyle]:
         """Подготовка типографических стилей документа."""
@@ -513,6 +553,7 @@ class PdfExporter:
                 fontSize=11,
                 leading=14,
                 textColor=colors.HexColor("#0F172A"),
+                keepWithNext=True,
             ),
             "Footnote": ParagraphStyle(
                 "Footnote",
