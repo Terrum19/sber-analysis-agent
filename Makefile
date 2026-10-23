@@ -1,6 +1,9 @@
 .PHONY: help hooks install dev up up-gpu down test lint model seed hk-data
 
--include .env
+# Значение переменной: из окружения или командной строки make, иначе из .env.
+# .env не подключается через include: так его значения перекрыли бы окружение
+# (и ушли бы в окружение рецептов вместо него).
+env_or_file = $(if $(filter undefined,$(origin $(1))),$(shell sed -n 's/^$(1)=//p' .env 2>/dev/null | tail -n 1 | sed "s/^[\"']\(.*\)[\"']$$/\1/"),$($(1)))
 
 HK_REPO = https://gitverse.ru/kban/HK_Datasets
 
@@ -41,7 +44,7 @@ up:
 	docker compose --profile cpu up --build
 
 up-gpu:
-	LLM_MODEL="$(or $(LLM_MODEL_GPU),$(LLM_MODEL))" docker compose --profile gpu up --build
+	LLM_MODEL="$(or $(call env_or_file,LLM_MODEL_GPU),$(call env_or_file,LLM_MODEL))" docker compose --profile gpu up --build
 
 down:
 	docker compose --profile cpu --profile gpu down

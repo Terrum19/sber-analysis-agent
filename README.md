@@ -45,8 +45,15 @@ make up-gpu    # или Ollama на GPU NVIDIA (нужен NVIDIA Container Tool
 make down
 ```
 
+Нужны Docker Engine 25+ и Docker Compose 2.20+ (`start_interval` в healthcheck,
+`depends_on.required`): `docker version`, `docker compose version`.
+
 Первый запуск скачивает модель в том `ollama-models` (несколько минут, несколько ГБ);
-backend ждёт, пока Ollama не станет healthy. Дальше модель берётся из тома.
+backend ждёт, пока Ollama не станет healthy: скачаны `LLM_MODEL` и `EMBED_MODEL`,
+если он задан. Дальше модели берутся из тома. Ollama доступна только с этой
+машины: `http://localhost:${OLLAMA_PORT:-11434}`.
+
+Переменные окружения перекрывают `.env`: `LLM_MODEL_GPU=qwen2.5-coder:32b make up-gpu`.
 
 ## Структура репозитория
 
