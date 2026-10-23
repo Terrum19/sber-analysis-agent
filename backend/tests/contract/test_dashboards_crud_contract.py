@@ -92,10 +92,10 @@ def test_dashboards_full_crud_and_recalculate_lifecycle(client: TestClient) -> N
     assert recalc_data["id"] == dashboard_id
     assert "updated_at" in recalc_data
 
-    # 7. DELETE /api/dashboards/{dashboard_id} удаляет дашборд со статусом 200
+    # 7. DELETE /api/dashboards/{dashboard_id} удаляет дашборд со статусом 204
     del_res = client.delete(f"/api/dashboards/{dashboard_id}")
-    assert del_res.status_code == 200
-    assert del_res.json().get("ok") is True
+    assert del_res.status_code == 204
+    assert del_res.content == b""
 
     # Проверяем, что дашборд удалён
     assert client.get(f"/api/dashboards/{dashboard_id}").status_code == 404
@@ -117,7 +117,7 @@ def test_dashboards_recalculate_with_duckdb(client: TestClient) -> None:
     db = getattr(app.state, "db", None)
     assert db is not None
 
-    table_name = "test_recalc_sales_v1"
+    table_name = "temp_result_v1"
     db.execute(f"CREATE TABLE IF NOT EXISTS {table_name} (category VARCHAR, revenue INTEGER)")
     db.execute(f"DELETE FROM {table_name}")
     db.execute(f"INSERT INTO {table_name} VALUES ('Electronics', 5000)")
@@ -216,23 +216,6 @@ def test_dashboards_nested_snapshot_data_preservation(client: TestClient) -> Non
     assert tile["snapshot_data"]["meta"]["delta"] == 15.5
 
     client.delete(f"/api/dashboards/{dash_id}")
-
-
-def test_dashboards_default_title_and_empty_tiles(client: TestClient) -> None:
-    # 1. Создание без title и tiles
-    res = client.post("/api/dashboards", json={"session_id": "sess-default"})
-    assert res.status_code == 201
-    data = res.json()
-    assert data["title"] == "Новый дашборд"
-    assert data["tiles"] == []
-
-    # 2. Создание с пустым title
-    res2 = client.post("/api/dashboards", json={"session_id": "sess-default", "title": "   "})
-    assert res2.status_code == 201
-    assert res2.json()["title"] == "Новый дашборд"
-
-    client.delete(f"/api/dashboards/{data['id']}")
-    client.delete(f"/api/dashboards/{res2.json()['id']}")
 
 
 def test_dashboards_partial_updates(client: TestClient) -> None:

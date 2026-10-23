@@ -1,130 +1,107 @@
-"""Реестр дашбордов — повторный доступ из UI и полный CRUD жизненный цикл.
+"""Реестр дашбордов — повторный доступ и правка из UI.
 
 Требование: созданный дашборд доступен повторно из чата и из
 интерфейса платформы (см. core/dashboards/store.py).
 """
 
-import time
-from typing import Any
+from collections.abc import Collection
+from typing import Annotated
+from uuid import uuid4
 
-from fastapi import APIRouter, HTTPException, Query, Request, status
-from pydantic import BaseModel, Field
+from fastapi import APIRouter, Depends, HTTPException, Response, status
 
+from app.api.deps import get_db
+from app.api.schemas.dashboard import (
+    DashboardCreate,
+    DashboardOut,
+    DashboardSummary,
+    DashboardTileOut,
+    DashboardUpdate,
+)
 from app.core.dashboards.models import Dashboard, DashboardTile
-from app.core.dashboards.store import DashboardStore, snapshot_records
-from app.core.viz.vega_spec_builder import SPEC_ROW_LIMIT, build_vega_spec
+from app.core.dashboards.recalculate import recalculate
+from app.core.dashboards.store import DashboardStore
+from app.core.data.duckdb_manager import DuckDBManager
 
 router = APIRouter()
 
-
-class DashboardCreate(BaseModel):
-    id: str | None = None
-    session_id: str
-    title: str | None = "Новый дашборд"
-    template_id: str | None = None
-    tiles: list[DashboardTile] = Field(default_factory=list)
+NOT_FOUND = "Дашборд не найден"
 
 
-class DashboardUpdate(BaseModel):
-    title: str | None = None
-    tiles: list[DashboardTile] | None = None
+def dashboard_out(dashboard: Dashboard | None, stale_tiles: set[str] | None = None) -> DashboardOut:
+    if dashboard is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, NOT_FOUND)
+    return DashboardOut(
+        **dashboard.model_dump(exclude={"tiles"}),
+        tiles=[
+            DashboardTileOut(**tile.model_dump(), stale=tile.id in (stale_tiles or set()))
+            for tile in dashboard.tiles
+        ],
+    )
 
 
-@router.get("")
-async def list_dashboards(session_id: str | None = Query(default=None)) -> list[dict]:
-    """Список дашбордов (id, заголовок, число плиток, когда создан и изменён)."""
-    return [summary.model_dump() for summary in DashboardStore().list(session_id)]
+def own_tiles(tiles: list[DashboardTile], keep: Collection[str] = ()) -> list[DashboardTile]:
+    """Плитки с id из keep сохраняют его (первая с таким id), остальные получают новый.
+
+    dashboard_tiles.id — глобальный ключ: плитка с id из другого дашборда
+    или повтор id в одном запросе дали бы IntegrityError.
+    """
+    seen: set[str] = set()
+    own = []
+    for tile in tiles:
+        if tile.id in keep and tile.id not in seen:
+            seen.add(tile.id)
+            own.append(DashboardTile(**tile.model_dump()))
+        else:
+            own.append(DashboardTile(**tile.model_dump(exclude={"id"}), id=uuid4().hex[:12]))
+    return own
 
 
-@router.get("/{dashboard_id}")
-async def get_dashboard(dashboard_id: str) -> dict:
+@router.get("", response_model=list[DashboardSummary])
+def list_dashboards(session_id: str | None = None) -> list[DashboardSummary]:
+    """Список дашбордов (id, заголовок, число плиток, время); session_id необязателен."""
+    return DashboardStore().list(session_id)
+
+
+@router.get("/{dashboard_id}", response_model=DashboardOut)
+def get_dashboard(dashboard_id: str) -> DashboardOut:
     """Полный дашборд: плитки с Vega-Lite спеками и снимками данных."""
-    dashboard = DashboardStore().get(dashboard_id)
-    if dashboard is None:
-        raise HTTPException(status_code=404, detail="Дашборд не найден")
-    return dashboard.model_dump()
+    return dashboard_out(DashboardStore().get(dashboard_id))
 
 
-@router.post("", status_code=status.HTTP_201_CREATED)
-async def create_dashboard(payload: DashboardCreate) -> dict:
-    """Создать новый дашборд."""
-    raw_title = (payload.title or "").strip()
-    title = raw_title if raw_title else "Новый дашборд"
-    kwargs: dict[str, Any] = {
-        "session_id": payload.session_id,
-        "title": title,
-        "template_id": payload.template_id,
-        "tiles": payload.tiles,
-    }
-    if payload.id:
-        kwargs["id"] = payload.id
-    dashboard = Dashboard(**kwargs)
+@router.post("", response_model=DashboardOut, status_code=status.HTTP_201_CREATED)
+def create_dashboard(payload: DashboardCreate) -> DashboardOut:
+    dashboard = Dashboard(
+        session_id=payload.session_id, title=payload.title, tiles=own_tiles(payload.tiles)
+    )
+    DashboardStore().create(dashboard)
+    return dashboard_out(dashboard)
+
+
+@router.put("/{dashboard_id}", response_model=DashboardOut)
+def update_dashboard(dashboard_id: str, payload: DashboardUpdate) -> DashboardOut:
     store = DashboardStore()
-    dashboard_id = store.create(dashboard)
-    saved = store.get(dashboard_id)
-    return saved.model_dump() if saved else dashboard.model_dump()
+    current = store.get(dashboard_id)
+    if current is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, NOT_FOUND)
+    tiles = payload.tiles
+    if tiles is not None:
+        tiles = own_tiles(tiles, keep={tile.id for tile in current.tiles})
+    return dashboard_out(store.update(dashboard_id, title=payload.title, tiles=tiles))
 
 
-@router.put("/{dashboard_id}")
-async def update_dashboard(dashboard_id: str, payload: DashboardUpdate) -> dict:
-    """Обновить заголовок и/или плитки дашборда."""
-    store = DashboardStore()
-    updated = store.update(dashboard_id, title=payload.title, tiles=payload.tiles)
-    if updated is None:
-        raise HTTPException(status_code=404, detail="Дашборд не найден")
-    return updated.model_dump()
+@router.delete("/{dashboard_id}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_dashboard(dashboard_id: str) -> Response:
+    if not DashboardStore().delete(dashboard_id):
+        raise HTTPException(status.HTTP_404_NOT_FOUND, NOT_FOUND)
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
-@router.delete("/{dashboard_id}")
-async def delete_dashboard(dashboard_id: str) -> dict:
-    """Удалить дашборд со всеми связанными плитками."""
-    store = DashboardStore()
-    deleted = store.delete(dashboard_id)
-    if not deleted:
-        raise HTTPException(status_code=404, detail="Дашборд не найден")
-    return {"ok": True, "id": dashboard_id}
-
-
-@router.post("/{dashboard_id}/recalculate")
-async def recalculate_dashboard(dashboard_id: str, request: Request) -> dict:
-    """Пересчитать снимок данных для плиток дашборда."""
-    store = DashboardStore()
-    dashboard = store.get(dashboard_id)
-    if dashboard is None:
-        raise HTTPException(status_code=404, detail="Дашборд не найден")
-
-    db = getattr(request.app.state, "db", None)
-    now = time.time()
-    for tile in dashboard.tiles:
-        if tile.result_table and db is not None:
-            try:
-                if db.columns(tile.result_table):
-                    records = db.to_records(tile.result_table, limit=SPEC_ROW_LIMIT)
-                    tile.snapshot_data = snapshot_records(records)
-                    tile.snapshot_at = now
-                    if isinstance(tile.spec, dict):
-                        usermeta = tile.spec.get("usermeta") or {}
-                        if isinstance(usermeta, dict) and usermeta.get("columns"):
-                            titles = {
-                                col["field"]: col["title"]
-                                for col in usermeta.get("columns", [])
-                                if isinstance(col, dict) and col.get("field") and col.get("title")
-                            }
-                            tile.spec = build_vega_spec(
-                                usermeta.get("chart_type")
-                                or usermeta.get("requested_type")
-                                or "bar",
-                                result_table=tile.result_table,
-                                data=records,
-                                titles=titles,
-                                title=tile.spec.get("title") or tile.title,
-                            )
-                        elif "data" in tile.spec and isinstance(tile.spec["data"], dict):
-                            tile.spec["data"]["values"] = snapshot_records(records)
-            except (ValueError, TypeError, KeyError, AttributeError):
-                continue
-        elif tile.is_kpi and tile.snapshot_data is not None:
-            tile.snapshot_at = now
-
-    updated = store.update(dashboard_id, title=dashboard.title, tiles=dashboard.tiles)
-    return updated.model_dump() if updated else dashboard.model_dump()
+@router.post("/{dashboard_id}/recalculate", response_model=DashboardOut)
+def recalculate_dashboard(
+    dashboard_id: str, db: Annotated[DuckDBManager, Depends(get_db)]
+) -> DashboardOut:
+    result = recalculate(dashboard_id, db)
+    if result is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, NOT_FOUND)
+    return dashboard_out(result.dashboard, result.stale_tiles)
