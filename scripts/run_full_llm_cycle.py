@@ -11,6 +11,11 @@
      -> график -> дашборд -> экспорт в Excel
   -> отчёт прогона (этапы, время, вызовы LLM).
 
+Время в отчёте делится на два вида. «Ожидание API» — это HTTP-попытки, которые
+закончились 429, 5xx, таймаутом или обрывом связи, вместе с паузой до следующего
+повтора: клиент openai сам повторяет такие запросы, снаружи их не видно. С
+локальной моделью этого нет. «Чистое» время = всё время минус ожидание API.
+
 backend/run_llm_agent.py остаётся тестом одного оркестратора; этот скрипт —
 e2e-прогон того, как платформа должна работать целиком.
 
@@ -37,10 +42,14 @@ import os
 import sys
 import time
 import traceback
+from collections import Counter
 from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
+
+import httpx
 
 BACKEND_DIR = Path(__file__).resolve().parent.parent / "backend"
 sys.path.insert(0, str(BACKEND_DIR))
@@ -56,6 +65,73 @@ VEGA_HTML = """<!doctype html>
 <script>vegaEmbed("#chart", {spec});</script></body></html>
 """
 
+# Этапы внутри хода: их время уже входит в «turns».
+NESTED_STAGES = ("select_columns", "export")
+# Как проблема API называется в выводе.
+API_PROBLEMS = {"429": "429", "5xx": "5xx", "timeout": "таймаут", "network": "обрыв связи"}
+
+
+# --- Ожидание API ---
+
+
+@dataclass
+class Attempt:
+    """Одна HTTP-попытка к LLM. problem=None, если пришёл ответ модели."""
+
+    started: float
+    problem: str | None
+
+
+# HTTP-попытки текущего вызова LLM; список задаёт CountingLLM на время вызова.
+_attempts: ContextVar[list[Attempt] | None] = ContextVar("llm_attempts", default=None)
+
+
+class ApiTransport(httpx.AsyncBaseTransport):
+    """Транспорт клиента openai: записывает каждую попытку, включая его же повторы."""
+
+    def __init__(self) -> None:
+        self.inner = httpx.AsyncHTTPTransport()
+
+    async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
+        started = time.perf_counter()
+        problem = "network"
+        try:
+            response = await self.inner.handle_async_request(request)
+        except httpx.TimeoutException:
+            problem = "timeout"
+            raise
+        else:
+            if response.status_code == 429:
+                problem = "429"
+            elif response.status_code >= 500:
+                problem = "5xx"
+            else:
+                problem = None
+            return response
+        finally:
+            attempts = _attempts.get()
+            if attempts is not None:
+                attempts.append(Attempt(started, problem))
+
+    async def aclose(self) -> None:
+        await self.inner.aclose()
+
+
+def api_wait(attempts: list[Attempt], end: float) -> tuple[float, Counter]:
+    """Сколько вызов потерял на API: плохие попытки вместе с паузой до следующей."""
+    waited, problems = 0.0, Counter()
+    for index, attempt in enumerate(attempts):
+        if attempt.problem is None:
+            continue
+        problems[attempt.problem] += 1
+        following = attempts[index + 1].started if index + 1 < len(attempts) else end
+        waited += following - attempt.started
+    return waited, problems
+
+
+def format_problems(problems: dict[str, int]) -> str:
+    return ", ".join(f"{API_PROBLEMS[name]}×{count}" for name, count in problems.items())
+
 
 # --- Отчёт прогона ---
 
@@ -67,6 +143,9 @@ class Report:
     run_dir: Path
     stage: str = "startup"
     stages: dict[str, float] = field(default_factory=dict)
+    stages_api_wait: dict[str, float] = field(default_factory=dict)
+    api_wait: float = 0.0
+    api_problems: Counter = field(default_factory=Counter)
     llm: dict[str, dict] = field(default_factory=dict)
     source: dict = field(default_factory=dict)
     passport: dict = field(default_factory=dict)
@@ -77,18 +156,35 @@ class Report:
     def measure(self, name: str):
         """Засечь этап; вызовы LLM внутри него записываются на этот этап."""
         previous, self.stage = self.stage, name
-        start = time.perf_counter()
+        start, waited = time.perf_counter(), self.api_wait
         try:
             yield
         finally:
             self.stages[name] = self.stages.get(name, 0.0) + time.perf_counter() - start
+            self.stages_api_wait[name] = (
+                self.stages_api_wait.get(name, 0.0) + self.api_wait - waited
+            )
             self.stage = previous
 
-    def llm_call(self, method: str, seconds: float, failed: bool) -> None:
-        entry = self.llm.setdefault(self.stage, {"calls": 0, "failed": 0, "seconds": 0.0})
+    def llm_call(
+        self, method: str, seconds: float, failed: bool, waited: float, problems: Counter
+    ) -> None:
+        entry = self.llm.setdefault(
+            self.stage,
+            {"calls": 0, "failed": 0, "seconds": 0.0, "api_wait_s": 0.0, "api_problems": {}},
+        )
         entry["calls"] += 1
         entry["failed"] += int(failed)
         entry["seconds"] += seconds
+        entry["api_wait_s"] += waited
+        for name, count in problems.items():
+            entry["api_problems"][name] = entry["api_problems"].get(name, 0) + count
+        self.api_wait += waited
+        self.api_problems.update(problems)
+
+    def clean(self, stage: str) -> float:
+        """Время этапа без ожидания API."""
+        return self.stages[stage] - self.stages_api_wait.get(stage, 0.0)
 
     def save(self) -> Path:
         path = self.run_dir / "report.json"
@@ -96,6 +192,8 @@ class Report:
             "source": self.source,
             "passport": self.passport,
             "stages_s": {name: round(value, 3) for name, value in self.stages.items()},
+            "stages_clean_s": {name: round(self.clean(name), 3) for name in self.stages},
+            "api_wait": {"seconds": round(self.api_wait, 3), "problems": dict(self.api_problems)},
             "llm": self.llm,
             "turns": self.turns,
             "warnings": self.warnings,
@@ -105,7 +203,7 @@ class Report:
 
 
 class CountingLLM:
-    """Прокси LLM-клиента: считает вызовы и их время по этапам отчёта."""
+    """Прокси LLM-клиента: считает вызовы, их время и ожидание API по этапам отчёта."""
 
     def __init__(self, inner, report: Report) -> None:
         self.inner = inner
@@ -123,6 +221,8 @@ class CountingLLM:
         )
 
     async def _timed(self, method: str, call):
+        attempts: list[Attempt] = []
+        token = _attempts.set(attempts)
         start = time.perf_counter()
         failed = True
         try:
@@ -130,7 +230,10 @@ class CountingLLM:
             failed = False
             return result
         finally:
-            self.report.llm_call(method, time.perf_counter() - start, failed)
+            end = time.perf_counter()
+            _attempts.reset(token)
+            waited, problems = api_wait(attempts, end)
+            self.report.llm_call(method, end - start, failed, waited, problems)
 
 
 # --- Подготовка окружения ---
@@ -423,7 +526,7 @@ async def run_turn(orchestrator, args, question: str, db, report: Report, number
         turn["selected_columns"] = show_planner_view(args.session, question, db)
 
     request = ChatRequest(session_id=args.session, question=question)
-    start = time.perf_counter()
+    start, waited, problems = time.perf_counter(), report.api_wait, report.api_problems.copy()
     while request is not None:
         pending, request = request, None
         first = True
@@ -482,6 +585,9 @@ async def run_turn(orchestrator, args, question: str, db, report: Report, number
                 turn["status"] = "done"
             first = False
     turn["seconds"] = round(time.perf_counter() - start, 3)
+    turn["api_wait_s"] = round(report.api_wait - waited, 3)
+    turn["clean_seconds"] = round(turn["seconds"] - turn["api_wait_s"], 3)
+    turn["api_problems"] = dict(report.api_problems - problems)
 
     if turn["status"] == "done" and not args.no_export:
         with report.measure("export"):
@@ -512,13 +618,42 @@ def export_result(session_id: str, db, run_dir: Path, number: int) -> str | None
 
 def print_summary(report: Report) -> None:
     section("Итог прогона")
-    print("  Этапы:")
+    print("  Чистое время = всё время минус ожидание API (429, 5xx, таймауты, обрывы связи")
+    print("  и паузы перед повтором) — то, чего нет при локальном запуске модели.\n")
+    print(f"    {'этап':<16} {'всего':>9} {'чистое':>9}")
     for name, seconds in report.stages.items():
+        details = []
         llm = report.llm.get(name)
-        calls = f", LLM {llm['calls']} вызовов ({llm['seconds']:.1f}s)" if llm else ""
-        print(f"    {name:<16} {seconds:8.2f}s{calls}")
+        if llm:
+            details.append(
+                f"LLM {llm['calls']} вызовов ({llm['seconds'] - llm['api_wait_s']:.1f}s чистых)"
+            )
+        waited = report.stages_api_wait.get(name, 0.0)
+        if waited:
+            problems = format_problems(llm["api_problems"]) if llm else ""
+            details.append(f"ожидание API {waited:.1f}s" + (f": {problems}" if problems else ""))
+        line = f"    {name:<16} {seconds:8.2f}s {report.clean(name):8.2f}s  {', '.join(details)}"
+        print(line.rstrip())
+
     for number, turn in enumerate(report.turns, 1):
-        print(f"  Ход {number}: {turn['status']}, {turn['seconds']}s — {turn['question']}")
+        timing = f"{turn['seconds']}s"
+        if turn.get("api_wait_s"):
+            timing = (
+                f"{turn['clean_seconds']}s чистых (всего {turn['seconds']}s, ожидание API "
+                f"{turn['api_wait_s']}s: {format_problems(turn['api_problems'])})"
+            )
+        print(f"  Ход {number}: {turn['status']}, {timing} — {turn['question']}")
+
+    total = sum(seconds for name, seconds in report.stages.items() if name not in NESTED_STAGES)
+    if report.api_wait:
+        share = report.api_wait / total * 100 if total else 0.0
+        print(
+            f"\n  [!] Ожидание API: {report.api_wait:.1f}s из {total:.1f}s ({share:.0f}%) — "
+            f"{format_problems(report.api_problems)}. Сравнивать с локальным запуском "
+            f"по чистому времени: {total - report.api_wait:.1f}s."
+        )
+    else:
+        print(f"\n  Ожидания API не было: {total:.1f}s — чистое время.")
     for warning in report.warnings:
         print(f"  [!] {warning}")
     print(f"\n  Каталог прогона: {report.run_dir}")
@@ -528,10 +663,13 @@ def print_summary(report: Report) -> None:
 
 
 async def run(args: argparse.Namespace, report: Report) -> int:
+    from openai import DefaultAsyncHttpxClient
+
     from app.core.data.duckdb_manager import DuckDBManager
     from app.core.llm.client import LLMClient
 
-    llm = CountingLLM(LLMClient(), report)
+    http_client = DefaultAsyncHttpxClient(transport=ApiTransport())
+    llm = CountingLLM(LLMClient(http_client=http_client), report)
     with report.measure("llm_check"):
         if not await check_llm(llm):
             return 2

@@ -25,8 +25,23 @@ class Settings(BaseSettings):
     llm_model: str = "qwen2.5-coder:14b"
     # Ключ провайдера (OpenRouter и т.п.); локальным Ollama/vLLM не нужен.
     llm_api_key: SecretStr = SecretStr("not-needed")
-    llm_timeout_s: int = 120
+    # План на CPU строится 90-180 с (docs/reports/llm_perf); 120 с обрывали ход.
+    llm_timeout_s: int = 600
     llm_temperature: float = 0.0
+    # Как просить structured output (docs/reports/llm_perf, П2-П4):
+    # json_schema — response_format=json_schema (грамматика на стороне
+    # Ollama/vLLM) + толерантный разбор + один переспрос с ошибкой;
+    # tools — instructor TOOLS с fallback-цепочкой. Локальный Qwen
+    # tool_call не возвращает, и каждый ответ стоил три вызова.
+    llm_structured_mode: str = "json_schema"
+    # Предел токенов ответа (None — без предела; Ollama тогда может
+    # генерировать до конца контекста).
+    llm_max_tokens: int | None = None
+    # Исправления качества плана и инсайта (app/core/agent/quality_fixes.py).
+    agent_quality_fixes: bool = True
+    # H-R1: в промпт планировщика — только релевантные вопросу тулы.
+    # Быстрее вдвое, но сломал вопрос про тренд (П8) — выключено.
+    agent_tool_topk: bool = False
 
     # Хранилище
     storage_dir: str = "backend/storage"

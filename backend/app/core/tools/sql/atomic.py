@@ -227,15 +227,22 @@ class GroupByTool(BaseTool):
     Args = GroupByArgs
 
     def execute(self, db, input_table: str, args: GroupByArgs) -> str:
+        from app.config import settings
+
         by = [args.by] if isinstance(args.by, str) else args.by
-        if not by:
-            raise ValueError("group_by requires at least one grouping column")
         metrics = args.metrics or [Metric(function=args.function, column=args.column)]
         selected = [
             f"{aggregate_sql(m.function, m.column)} AS "
             f"{identifier(m.alias or aggregate_alias(m.function, m.column))}"
             for m in metrics
         ]
+        if not by and settings.agent_quality_fixes:
+            # by=[] — один итог по всей таблице (H-T1, agent/quality_fixes.py).
+            return db.save_step_result(
+                input_table, f"SELECT {', '.join(selected)} FROM {identifier(input_table)}"
+            )
+        if not by:
+            raise ValueError("group_by requires at least one grouping column")
         keys = ", ".join(identifier(column) for column in by)
         return db.save_step_result(
             input_table,
@@ -283,6 +290,14 @@ class TimeBucketArgs(ToolArgs):
             if isinstance(data.get("by"), str):
                 data["by"] = [data["by"]]
         return data
+
+    @model_validator(mode="after")
+    def _metric_for_function(self) -> "TimeBucketArgs":
+        # Проверка до выполнения: validate_plan ловит её и переспрашивает план
+        # (дёшево, префикс промпта в кеше), а не step_fix после падения шага.
+        if self.metric_column is None and self.function != "COUNT":
+            raise ValueError(f"time_bucket: {self.function} requires metric_column")
+        return self
 
 
 class TimeBucketTool(BaseTool):

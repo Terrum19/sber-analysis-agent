@@ -97,7 +97,14 @@ class ToolRegistry:
 
     def describe(self) -> str:
         """Описания тулов для LLM (по одному на строку)."""
-        return "\n".join(f"- {tool.describe()}" for tool in self.planner_tools())
+        from app.config import settings
+
+        hints: dict[str, str] = {}
+        if settings.agent_quality_fixes:
+            from app.core.agent.quality_fixes import TOOL_HINTS as hints
+        return "\n".join(
+            f"- {tool.describe()}{hints.get(tool.name, '')}" for tool in self.planner_tools()
+        )
 
 
 tool_registry = ToolRegistry()

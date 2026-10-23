@@ -37,16 +37,31 @@ class StepPlanner:
                 question, columns, profile=profile, titles=context.get("titles")
             )
         start = int(context.get("next_step_id", 0))
+        from app.config import settings
+
+        summary = context.get("summary", "")
+        if settings.agent_quality_fixes:
+            from app.core.agent.quality_fixes import frame_context
+
+            summary = frame_context(summary, question)
+        if settings.agent_tool_topk:
+            from app.core.agent.quality_fixes import select_tools
+
+            tools = select_tools(question)
         prompt = STEP_PLANNER.format(
             tools=tools,
             columns=describe_columns(
                 columns, profile, context.get("descriptions"), context.get("titles")
             ),
-            context=context.get("summary", ""),
+            context=summary,
             executed=context.get("executed", "нет"),
             next_step_id=start,
             question=question,
         )
+        if settings.agent_quality_fixes:
+            from app.core.agent.quality_fixes import PLANNER_RULES
+
+            prompt += PLANNER_RULES
         logger.info(">>> StepPlanner.plan() вопрос=%r", question)
         logger.debug("    промпт=%r", prompt)
         plan = await self._ask(prompt, start)

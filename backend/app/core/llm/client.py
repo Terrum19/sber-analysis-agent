@@ -13,6 +13,7 @@ import re
 import time
 from typing import Any, TypeVar
 
+import httpx
 import instructor
 import openai
 from openai import AsyncOpenAI
@@ -73,18 +74,22 @@ def _strip_code_fences(text: str) -> str:
 class LLMClient:
     """Обёртка над AsyncOpenAI для локального инференса Qwen."""
 
-    def __new__(cls) -> "LLMClient":  # noqa: PYI034 — в режиме USE_FAKE_LLM отдаёт FakeLLM
+    def __new__(  # noqa: PYI034 — в режиме USE_FAKE_LLM отдаёт FakeLLM
+        cls, http_client: httpx.AsyncClient | None = None
+    ) -> "LLMClient":
         if os.getenv("USE_FAKE_LLM", "false").lower() == "true":
             from app.core.llm.fake_client import FakeLLM
 
             return FakeLLM()
         return super().__new__(cls)
 
-    def __init__(self) -> None:
+    def __init__(self, http_client: httpx.AsyncClient | None = None) -> None:
+        """http_client — свой HTTP-клиент; бенчмарк так засекает 429 и таймауты."""
         self._client = AsyncOpenAI(
             base_url=settings.llm_base_url,
             api_key=settings.llm_api_key.get_secret_value() or "not-needed",
             timeout=settings.llm_timeout_s,
+            http_client=http_client,
         )
         self.model = settings.llm_model
         self._instructor = instructor.from_openai(self._client)
@@ -137,6 +142,8 @@ class LLMClient:
         fallback: список объектов, затем JSON-режим без tools.
         """
         schema_name = getattr(schema, "__name__", str(schema))
+        if settings.llm_structured_mode == "json_schema":
+            return await self._complete_json_schema(system, user, schema)
         t0 = time.time()
         try:
             result = await self._instructor.chat.completions.create(
@@ -237,6 +244,44 @@ class LLMClient:
             )
 
         return result
+
+    async def _complete_json_schema(self, system: str, user: str, schema: type[T]) -> T:
+        """Один запрос с response_format=json_schema, толерантный разбор, один переспрос.
+
+        Грамматика на стороне сервера не даёт модели уйти в прозу или в
+        несколько tool_calls; оставшиеся огрехи (обёртки, список вместо
+        объекта) чинит structured.parse_structured. Переспрос несёт текст
+        ошибки — модели есть что исправлять, а префикс промпта тот же
+        (KV-кеш Ollama переиспользуется).
+        """
+        from app.core.llm.structured import StructuredParseError, parse_structured, repair_prompt
+
+        response_format = {
+            "type": "json_schema",
+            "json_schema": {"name": schema.__name__, "schema": schema.model_json_schema()},
+        }
+        extra: dict[str, Any] = {"response_format": response_format}
+        if settings.llm_max_tokens:
+            extra["max_tokens"] = settings.llm_max_tokens
+        prompt = user
+        error: Exception | None = None
+        for attempt in range(2):
+            t0 = time.time()
+            raw = await self.complete(system, prompt, **extra)
+            try:
+                result = parse_structured(schema, raw)
+            except StructuredParseError as exc:
+                error = exc
+                logger.warning("complete_structured() json_schema попытка %d: %s", attempt + 1, exc)
+                prompt = user + repair_prompt(raw, exc)
+                continue
+            logger.info(
+                "<<< complete_structured() json_schema OK за %.2fs схему=%s",
+                time.time() - t0,
+                schema.__name__,
+            )
+            return result
+        raise ValueError(f"LLM не вернул валидный JSON для схемы {schema.__name__}: {error}")
 
 
 def _extract_json_block(text: str) -> str | None:
