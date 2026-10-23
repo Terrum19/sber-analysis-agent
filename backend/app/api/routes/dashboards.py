@@ -111,7 +111,9 @@ async def recalculate_dashboard(dashboard_id: str, request: Request) -> dict:
                                 if isinstance(col, dict) and col.get("field") and col.get("title")
                             }
                             tile.spec = build_vega_spec(
-                                usermeta.get("chart_type") or usermeta.get("requested_type") or "bar",
+                                usermeta.get("chart_type")
+                                or usermeta.get("requested_type")
+                                or "bar",
                                 result_table=tile.result_table,
                                 data=records,
                                 titles=titles,
