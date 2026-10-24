@@ -13,7 +13,7 @@
 import re
 
 from app.config import settings
-from app.core.data.profiling import ColumnStats, TableProfile
+from app.core.data.profiling import ColumnStats, TableProfile, flag_notes
 
 TOKEN_WEIGHT = 2
 KIND_WEIGHT = 1
@@ -23,6 +23,8 @@ STEM_LENGTH = 5
 # Сколько частых значений категории показать модели и до какой длины их резать.
 PROMPT_TOP_VALUES = 10
 PROMPT_VALUE_CHARS = 40
+# Подсказка к флагу качества: как считать такую колонку.
+FLAG_HINTS = {"numeric_as_text": "считай через TRY_CAST(... AS DOUBLE)"}
 AGGREGATION_HINTS = (
     "сумм",
     "средн",
@@ -144,8 +146,20 @@ def describe_columns(
         facts = column_facts(column, top_values) if column is not None else ""
         if facts:
             line += f"; {facts}"
+        marks = _flag_marks(column) if column is not None else ""
+        if marks:
+            line += f"; {marks}"
         lines.append(line)
     return "\n".join(lines) or "неизвестно"
+
+
+def _flag_marks(column: ColumnStats) -> str:
+    """Флаги качества короткими метками: «⚠ числа записаны текстом, считай через TRY_CAST»."""
+    marks = []
+    for flag, note in zip(column.flags, flag_notes(column), strict=True):
+        hint = FLAG_HINTS.get(flag)
+        marks.append(f"⚠ {note}, {hint}" if hint else f"⚠ {note}")
+    return "; ".join(marks)
 
 
 def column_facts(column: ColumnStats, top_values: int = PROMPT_TOP_VALUES) -> str:

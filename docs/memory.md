@@ -78,7 +78,7 @@
 
 | Таблица | Строка | Содержимое |
 |---|---|---|
-| `_meta.table_passport` | таблица | `row_count`, `column_count`, `glossary` (JSON), `summary` и `summary_fingerprint` (описание «что передо мной», см. ниже), `profiled_at`, `enriched_at`, `description_status`, `description_run` |
+| `_meta.table_passport` | таблица | `row_count`, `column_count`, `empty_rows`, `glossary` (JSON), `summary` и `summary_fingerprint` (описание «что передо мной», см. ниже), `profiled_at`, `enriched_at`, `description_status`, `description_run` |
 | `_meta.column_passport` | колонка, PK `(table_name, column_name)` | `position` (порядок как в `DESCRIBE`), `dtype`, `kind`, статистика `ColumnStats`, название, описание, `fingerprint`, `enriched_at` |
 
 Полный DDL — `SCHEMA` в `profile_memory.py`. Статистика колонки — поля
@@ -86,7 +86,8 @@
 но `min`, `max`, `mode` и `distinct` — зарезервированные слова SQL, поэтому
 колонки называются `min_value`, `max_value`, `mode_value`, `distinct_count`.
 Значения без фиксированного типа (`min_value`, `max_value`, `mode_value`,
-`min_date`, `max_date`, `top_values` — `[{value, count}]`) хранятся как `JSON`;
+`min_date`, `max_date`, `top_values` — `[{value, count}]`) и флаги качества `flags`
+(список строк) хранятся как `JSON`;
 при загрузке тип восстанавливается по `dtype`: `DATE` -> `date`, `TIMESTAMP*` ->
 `datetime` (у `TIMESTAMPTZ` смещение сохраняется), `UUID` -> `uuid.UUID`.
 Бывший блок `outliers` — `lower_fence`/`upper_fence` (границы Тьюки, 1,5·IQR) и
@@ -103,7 +104,9 @@
 
 В паспортах, созданных до появления названий, остаются колонки `aliases` и
 `description_original`: конструктор `ProfileMemory` добавляет `title`
-(`ADD COLUMN IF NOT EXISTS`), старые колонки больше не читаются.
+(`ADD COLUMN IF NOT EXISTS`), старые колонки больше не читаются. Так же
+добавляются `flags` и `empty_rows`: до перепрофилирования они `NULL` и
+читаются как `[]` и `0`.
 
 `description_status` в `_meta.table_passport` — статус переноса описания:
 `none` (по умолчанию: описания нет), `pending` (ставит `ingest.mark_pending`, он же сбрасывает в `none`
