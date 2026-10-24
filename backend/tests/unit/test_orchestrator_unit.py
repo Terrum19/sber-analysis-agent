@@ -258,6 +258,11 @@ def test_small_talk_is_answered_without_the_planner(orchestrator):
     assert "Здравствуйте" in events[0]["data"]["headline"]
 
 
+def test_small_talk_needs_no_table(orchestrator):
+    events = list(_drain(orchestrator, "привет", session_id="no-table"))
+    assert [event["type"] for event in events] == ["text", "done"]
+
+
 def test_single_number_result_is_shown_as_kpi(orchestrator):
     from app.models.research_step import ResearchPlan, ResearchStep
 
@@ -273,11 +278,11 @@ def test_single_number_result_is_shown_as_kpi(orchestrator):
     assert chart["data"]["spec"]["usermeta"]["chart_type"] == "kpi"
 
 
-def _drain(orchestrator, question: str):
+def _drain(orchestrator, question: str, session_id: str = "s1"):
     import asyncio
 
     async def run():
-        request = ChatRequest(session_id="s1", question=question)
+        request = ChatRequest(session_id=session_id, question=question)
         return [event async for event in orchestrator.run(request)]
 
     return asyncio.run(run())

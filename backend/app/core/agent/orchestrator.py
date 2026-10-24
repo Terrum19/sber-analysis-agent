@@ -172,18 +172,6 @@ class AgentOrchestrator:
         """Выполнить исследование и вернуть поток событий для фронта."""
         logger.info(">>> run() session_id=%s question=%r", request.session_id, request.question)
         memory = SessionMemory(request.session_id, db=self.db)
-        table = memory.table
-        if table is None:
-            yield {"type": "error", "data": {"message": NO_TABLE_MESSAGE}}
-            yield {"type": "done", "data": {}}
-            return
-        titles = column_aliases(
-            {
-                "glossary": self.profiles.load_glossary(table),
-                "titles": {row.column: row.title for row in self.profiles.load_enrichment(table)},
-            }
-        )
-
         pending = memory.get_pending_recovery()
         if pending is not None and not request.recovery_response:
             # Новый вопрос вместо ответа на уточнение — прошлый сбой забываем,
@@ -197,6 +185,19 @@ class AgentOrchestrator:
             yield {"type": "text", "data": {"headline": reply, "details": []}}
             yield {"type": "done", "data": {}}
             return
+
+        # Small talk выше: «привет» отвечается и без подключённой таблицы.
+        table = memory.table
+        if table is None:
+            yield {"type": "error", "data": {"message": NO_TABLE_MESSAGE}}
+            yield {"type": "done", "data": {}}
+            return
+        titles = column_aliases(
+            {
+                "glossary": self.profiles.load_glossary(table),
+                "titles": {row.column: row.title for row in self.profiles.load_enrichment(table)},
+            }
+        )
 
         if pending is None:
             # Смена вида прошлого графика — из кеша, без планировщика и SQL.
