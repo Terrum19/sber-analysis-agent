@@ -9,7 +9,7 @@ from typing import Literal
 
 from pydantic import Field, model_validator
 
-from app.core.tools.base import BaseTool, Ident, ToolArgs, identifier
+from app.core.tools.base import BaseTool, Ident, MetricArgs, identifier
 from app.core.tools.sql.atomic import Interval
 from app.core.tools.stats._common import rows_result
 
@@ -25,7 +25,7 @@ def shift(value: date, interval: str, steps: int) -> date:
     return value.replace(year=value.year + months // 12, month=months % 12 + 1, day=1)
 
 
-class ForecastArgs(ToolArgs):
+class ForecastArgs(MetricArgs):
     date_column: Ident
     metric_column: Ident
     periods: int = Field(default=3, ge=1, le=100)

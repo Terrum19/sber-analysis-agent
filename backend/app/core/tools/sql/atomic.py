@@ -5,7 +5,16 @@ from typing import Literal
 
 from pydantic import Field, model_validator
 
-from app.core.tools.base import BaseTool, Expr, Ident, TableRef, ToolArgs, identifier, literal
+from app.core.tools.base import (
+    BaseTool,
+    Expr,
+    Ident,
+    MetricArgs,
+    TableRef,
+    ToolArgs,
+    identifier,
+    literal,
+)
 
 Scalar = str | int | float | bool
 
@@ -272,7 +281,7 @@ class PivotTool(BaseTool):
         )
 
 
-class TimeBucketArgs(ToolArgs):
+class TimeBucketArgs(MetricArgs):
     date_column: Ident
     interval: Interval = "month"
     metric_column: Ident | None = None
