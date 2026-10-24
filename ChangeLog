@@ -1,3 +1,43 @@
+2026-10-24  dmitriy-ya  <dmitriyyakushonok@yandex.ru>
+
+	Экспорт аналитического отчёта по ответу агента в PDF (#62, E-01).
+	* backend/app/core/export/pdf.py (PdfExporter): Новый класс генерации
+	представительского отчёта в формате Executive Business Memo (Platypus).
+	(ensure_fonts_registered): Регистрация TrueType шрифта DejaVu Sans
+	для корректного рендеринга кириллицы.
+	(sanitize_text): XML-экранирование спецсимволов (<, >, &) через
+	xml.sax.saxutils.escape и нормализация символа рубля (₽ -> руб.).
+	(truncate_text): Защитное усечение сверхдлинных текстовых полей для
+	предотвращения LayoutError.
+	(NumberedCanvas): Двухпроходный канвас с динамической нумерацией
+	страниц («Страница X из Y») и корпоративным колонтитулом.
+	(export_answer): Сборка отчёта: шапка, вопрос исследования, блок
+	ключевых выводов (многострочная карточка), автономный график, таблица
+	результатов (до 50 строк) с переносом текста ячеек.
+	* backend/app/core/export/charts.py (render_chart_png, normalize_spec):
+	Новый модуль: offline-рендеринг Vega-Lite графиков в PNG с помощью
+	vl-convert-python без браузера и сетевых запросов.
+	* backend/app/api/routes/artifacts.py (export_artifact): Поддержка
+	format="pdf", валидация и проверка существования session_id, изоляция
+	результатов temp_result_vN через memory.owns_result, строгая обработка
+	ошибок чтения DuckDB (404 вместо неполного отчёта).
+	* backend/app/core/memory/session_memory.py (SessionMemory.owns_result):
+	Новый метод проверки принадлежности промежуточной таблицы шагам,
+	графикам или состоянию восстановления текущей сессии.
+	(record_step, record_chart): Принудительный persist состояния.
+	* backend/app/api/schemas/chat.py (ExportRequest): Поля question,
+	headline, details, spec с валидацией длины max_length.
+	* backend/requirements.txt, backend/pyproject.toml: Зависимости
+	reportlab, vl-convert-python, pypdf.
+	* backend/Dockerfile: Установка пакета fonts-dejavu-core.
+	* backend/tests/unit/test_export_pdf.py: Новый набор unit-тестов
+	(15 тестов): рендеринг графиков, структура PDF (pypdf), кириллица,
+	картинки, экранирование XML, защита от LayoutError, изоляция сессий.
+	* backend/tests/unit/test_session_memory.py: Тесты owns_result со 100%
+	покрытием.
+	* docs/repo_structure.md, docs/roadmap.md, docs/architecture.md:
+	Актуализация документации по экспорту.
+
 2026-10-22  thebulkapro  <saitbatalovbulat200@gmail.com>
 
 	Исправления API сессий по ревью #111.
