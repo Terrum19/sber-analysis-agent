@@ -26,6 +26,8 @@
 	* backend/app/core/llm/client.py (LLMClient.__init__): max_retries
 	из настроек.
 	* .env.example, docs/prompts.md: То же.
+	* CHANGELOG.md, docs/reports/architecture_compliance_report.md:
+	Удалены, устарели (историю ведёт ChangeLog).
 
 2026-10-24  Alexander Yurits  <terruwork@gmail.com>
 
