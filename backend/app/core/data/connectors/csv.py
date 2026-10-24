@@ -66,7 +66,10 @@ class CSVReport:
             tokens_summary = ", ".join(
                 f"«{token}» ({count})" for token, count in self.null_tokens.items()
             )
-            notes.append(f"Литералы пропусков заменены на NULL: {tokens_summary}.")
+            if self.retyped:
+                notes.append(f"Литералы пропусков заменены на NULL: {tokens_summary}.")
+            else:
+                notes.append(f"Обнаружены литералы пропусков: {tokens_summary}.")
         if self.numeric_text_columns:
             names = ", ".join(f"«{column}»" for column in self.numeric_text_columns)
             notes.append(f"Числа, записанные текстом, приведены к числам в колонках {names}.")
@@ -196,26 +199,41 @@ def scan(
         is_filled = f"({quoted} IS NOT NULL AND {trimmed} <> '')"
         is_candidate = f"({is_filled} AND NOT {is_token})"
 
+        c_num = f"({trimmed}[1] BETWEEN '0' AND '9' OR {trimmed}[1] IN ('+', '-', '.'))"
+        c_digit = f"({trimmed}[1] BETWEEN '0' AND '9')"
+        c_lz = f"({trimmed}[1] IN ('0', '+', '-'))"
+
         cleaned_double = trimmed
         for separator in GROUP_SEPARATORS:
             cleaned_double = f"replace({cleaned_double}, '{separator}', '')"
         cleaned_double = f"replace({cleaned_double}, ',', '.')"
+        has_separator = " OR ".join(
+            f"contains({trimmed}, '{sep}')" for sep in (",", *GROUP_SEPARATORS)
+        )
+        dbl_expr = f"CASE WHEN {has_separator} THEN {cleaned_double} ELSE {trimmed} END"
 
         probes += [
             f"count({quoted}) FILTER (WHERE {trimmed} <> '') AS filled_{position}",
             f"count_if({is_filled} AND {is_token}) AS tokens_{position}",
-            f"count_if({is_candidate} AND regexp_matches({trimmed}, '^[+-]?0[0-9]+$')) AS leading_zero_{position}",
-            f"count_if({is_candidate} AND regexp_full_match({trimmed}, '^[+-]?[0-9]+$') AND TRY_CAST({trimmed} AS BIGINT) IS NOT NULL) AS bigint_{position}",
-            f"count_if({is_candidate} AND TRY_CAST({cleaned_double} AS DOUBLE) IS NOT NULL) AS double_{position}",
-            f"count_if({is_candidate} AND regexp_full_match({trimmed}, '^[0-9]{{4}}-[0-9]{{2}}-[0-9]{{2}}$') AND TRY_CAST({trimmed} AS DATE) IS NOT NULL) AS date_{position}",
-            f"count_if({is_candidate} AND NOT regexp_full_match({trimmed}, '^[0-9]{{4}}-[0-9]{{2}}-[0-9]{{2}}$') AND TRY_CAST({trimmed} AS TIMESTAMP) IS NOT NULL) AS timestamp_{position}",
+            f"count_if(CASE WHEN {is_candidate} AND {c_lz} THEN regexp_matches({trimmed}, '^[+-]?0[0-9]+$') END) AS leading_zero_{position}",
+            f"count_if(CASE WHEN {is_candidate} AND {c_num} THEN regexp_full_match({trimmed}, '^[+-]?[0-9]+$') AND TRY_CAST({trimmed} AS BIGINT) IS NOT NULL END) AS bigint_{position}",
+            f"count_if(CASE WHEN {is_candidate} AND {c_num} THEN TRY_CAST({dbl_expr} AS DOUBLE) IS NOT NULL END) AS double_{position}",
+            f"count_if(CASE WHEN {is_candidate} AND {c_digit} AND length({trimmed}) = 10 AND {trimmed}[5] = '-' AND {trimmed}[8] = '-' THEN regexp_full_match({trimmed}, '^[0-9]{{4}}-[0-9]{{2}}-[0-9]{{2}}$') AND TRY_CAST({trimmed} AS DATE) IS NOT NULL END) AS date_{position}",
+            f"count_if(CASE WHEN {is_candidate} AND {c_digit} AND length({trimmed}) >= 19 AND {trimmed}[5] = '-' AND contains({trimmed}, ':') THEN NOT regexp_full_match({trimmed}, '^[0-9]{{4}}-[0-9]{{2}}-[0-9]{{2}}$') AND TRY_CAST({trimmed} AS TIMESTAMP) IS NOT NULL END) AS timestamp_{position}",
         ]
+
+    if tokens:
+        for i, token in enumerate(tokens):
+            sub = [
+                f"count_if(trim({quote_identifier(col)}) = {quote_literal(token)})"
+                for col in text_columns
+            ]
+            probes.append(f"({' + '.join(sub)}) AS token_{i}")
 
     row = db.query(f"SELECT {', '.join(probes)} FROM {source}")[0]
 
     retyped: dict[str, str] = {}
     unconverted: dict[str, int] = {}
-    columns_with_tokens: list[str] = []
 
     for position, column in enumerate(text_columns):
         filled = row[f"filled_{position}"] or 0
@@ -223,9 +241,6 @@ def scan(
         candidates = filled - tokens_cnt
         if candidates <= 0:
             continue
-
-        if tokens_cnt > 0:
-            columns_with_tokens.append(column)
 
         leading_zero = row[f"leading_zero_{position}"] or 0
         bigint_cnt = row[f"bigint_{position}"] or 0
@@ -250,22 +265,9 @@ def scan(
             if timestamp_cnt < candidates:
                 unconverted[column] = candidates - timestamp_cnt
 
-    counted_tokens: dict[str, int] = {}
-    retyped_with_tokens = [col for col in retyped if col in columns_with_tokens]
-    if retyped_with_tokens and tokens:
-        token_probes = []
-        for i, token in enumerate(tokens):
-            sub = [
-                f"count_if(trim({quote_identifier(col)}) = {quote_literal(token)})"
-                for col in retyped_with_tokens
-            ]
-            token_probes.append(f"({' + '.join(sub)}) AS token_{i}")
-        token_row = db.query(f"SELECT {', '.join(token_probes)} FROM {source}")[0]
-        counted_tokens = {
-            tokens[i]: token_row[f"token_{i}"]
-            for i in range(len(tokens))
-            if token_row[f"token_{i}"] > 0
-        }
+    counted_tokens = {
+        tokens[i]: row[f"token_{i}"] for i in range(len(tokens)) if (row.get(f"token_{i}") or 0) > 0
+    }
 
     return retyped, counted_tokens, unconverted
 

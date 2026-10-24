@@ -142,7 +142,7 @@ def test_type_drift_after_sniff_sample_falls_back_to_text(tmp_path, db) -> None:
     assert report.all_text
     assert report.rows == 300001
     assert db.query("SELECT amount FROM drift WHERE id = '300000'") == [{"amount": "нет данных"}]
-    assert column_types(db, "drift") == {"id": "VARCHAR", "amount": "VARCHAR"}
+    assert column_types(db, "drift") == {"id": "BIGINT", "amount": "VARCHAR"}
 
 
 def test_single_column_and_header_only_files(tmp_path, db) -> None:
@@ -262,3 +262,184 @@ def test_column_comments_come_from_duckdb_catalog(tmp_path, db) -> None:
     db.execute("COMMENT ON COLUMN other.items.y IS 'чужая таблица'")
     assert connector.column_comments(db, "items") == {"x": "Количество, шт."}
     assert connector.column_comments(db, "missing") == {}
+
+
+def test_stitched_csv_with_repeated_header_and_null_literals(tmp_path, db) -> None:
+    content = "id,amount,score\n1,100,5\nid,amount,score\nNULL,NULL,NULL\n2,200,10\n"
+    path = write(tmp_path, "stitched.csv", content.encode())
+    report = load_csv(db, "stitched", path)
+
+    assert report.header_rows_removed == 1
+    assert report.rows == 3
+    assert report.null_tokens == {"NULL": 3}
+    assert column_types(db, "stitched") == {
+        "id": "BIGINT",
+        "amount": "BIGINT",
+        "score": "BIGINT",
+    }
+    rows = db.query("SELECT * FROM stitched ORDER BY id NULLS LAST")
+    assert rows[0] == {"id": 1, "amount": 100, "score": 5}
+    assert rows[1] == {"id": 2, "amount": 200, "score": 10}
+    assert rows[2] == {"id": None, "amount": None, "score": None}
+    assert any("Удалено строк с повторным заголовком: 1" in w for w in report.warnings())
+    assert any("Литералы пропусков заменены на NULL" in w for w in report.warnings())
+
+
+def test_country_column_with_na_stays_text(tmp_path, db) -> None:
+    content = "country,users\nUS,100\nNA,24\nDE,50\n"
+    path = write(tmp_path, "countries.csv", content.encode())
+    load_csv(db, "countries", path)
+
+    assert column_types(db, "countries")["country"] == "VARCHAR"
+    assert column_types(db, "countries")["users"] == "BIGINT"
+    rows = db.query("SELECT country FROM countries ORDER BY users")
+    assert [r["country"] for r in rows] == ["NA", "DE", "US"]
+
+
+def test_leading_zero_codes_stay_text(tmp_path, db) -> None:
+    content = "code,rank\n007,1\n08,2\n15,3\n"
+    path = write(tmp_path, "codes_leading.csv", content.encode())
+    load_csv(db, "codes_leading", path)
+
+    assert column_types(db, "codes_leading")["code"] == "VARCHAR"
+    assert column_types(db, "codes_leading")["rank"] == "BIGINT"
+    rows = db.query("SELECT code FROM codes_leading ORDER BY rank")
+    assert [r["code"] for r in rows] == ["007", "08", "15"]
+
+
+def test_decimal_comma_numbers_converted_to_double(tmp_path, db) -> None:
+    content = "val;factor\n1 234,56;2\n-78,90;3\n0,5;4\n"
+    path = write(tmp_path, "decimals.csv", content.encode())
+    load_csv(db, "decimals", path)
+
+    assert column_types(db, "decimals")["val"] == "DOUBLE"
+    assert column_types(db, "decimals")["factor"] == "BIGINT"
+    rows = db.query("SELECT val FROM decimals ORDER BY factor")
+    assert [r["val"] for r in rows] == [1234.56, -78.9, 0.5]
+
+
+def test_rejected_rows_counted_with_store_rejects(tmp_path, db) -> None:
+    lines = [f"{i},{i}" for i in range(25000)]
+    lines.append("1,drift_to_trigger_strategy_3")
+    lines.append("bad_line,\xff\xfe\xfd")
+    lines.append("99999,99999")
+    content = codecs.BOM_UTF8 + ("a,b\n" + "\n".join(lines) + "\n").encode("latin1")
+    path = tmp_path / "broken_rows.csv"
+    path.write_bytes(content)
+    report = load_csv(db, "broken_rows", path)
+
+    assert report.all_text
+    assert report.rejected_rows == 1
+    assert any("Отброшено строк с ошибками структуры: 1" in w for w in report.warnings())
+
+
+def test_iso_dates_and_timestamps_retyped(tmp_path, db) -> None:
+    content = (
+        "dt,ts,note\n"
+        "2024-01-02,2024-01-02 10:15:00,a\n"
+        "2024-03-15,2024-03-15 11:00:00,b\n"
+        "NULL,None,c\n"
+    )
+    path = write(tmp_path, "dates.csv", content.encode())
+    report = load_csv(db, "dates", path)
+
+    assert column_types(db, "dates")["dt"] == "DATE"
+    assert column_types(db, "dates")["ts"] == "TIMESTAMP"
+    assert column_types(db, "dates")["note"] == "VARCHAR"
+    assert report.rows == 3
+
+
+def test_retype_min_share_threshold(tmp_path, db, monkeypatch) -> None:
+    from app.config import settings
+
+    monkeypatch.setattr(settings, "csv_retype_min_share", 0.75)
+    # 4 значения: 3 числа и 1 опечатка 'xyz' (доля 75%)
+    content = "col\n10\n20\n30\nxyz\n"
+    path = write(tmp_path, "share.csv", content.encode())
+    report = load_csv(db, "share", path)
+
+    assert column_types(db, "share")["col"] == "BIGINT"
+    assert report.unconverted == {"col": 1}
+    rows = db.query("SELECT col FROM share ORDER BY col NULLS LAST")
+    assert [r["col"] for r in rows] == [10, 20, 30, None]
+    assert any("1 значений не удалось привести к BIGINT" in w for w in report.warnings())
+
+
+def test_null_in_text_column_counted_in_report(tmp_path, db) -> None:
+    content = "country,note\nNA,NULL\nUS,comment\n"
+    path = write(tmp_path, "text_nulls.csv", content.encode())
+    report = load_csv(db, "text_nulls", path)
+
+    assert column_types(db, "text_nulls")["country"] == "VARCHAR"
+    assert column_types(db, "text_nulls")["note"] == "VARCHAR"
+    assert report.null_tokens == {"NULL": 1}
+    assert report.retyped == {}
+    rows = db.query("SELECT note FROM text_nulls ORDER BY country")
+    assert [r["note"] for r in rows] == ["NULL", "comment"]
+    assert any("Обнаружены литералы пропусков: «NULL» (1)" in w for w in report.warnings())
+
+
+def test_nbsp_and_narrow_nbsp_without_decimal_comma_converted_to_double(tmp_path, db) -> None:
+    content = "val;rank\n1\u00a0234;1\n5\u202f678;2\n"
+    path = write(tmp_path, "nbsp_nums.csv", content.encode())
+    load_csv(db, "nbsp_nums", path)
+
+    assert column_types(db, "nbsp_nums")["val"] == "DOUBLE"
+    assert column_types(db, "nbsp_nums")["rank"] == "BIGINT"
+    rows = db.query("SELECT val FROM nbsp_nums ORDER BY rank")
+    assert [r["val"] for r in rows] == [1234.0, 5678.0]
+
+
+def test_openpsych_structure_simulation(tmp_path, db) -> None:
+    # Полная симуляция структуры openPsych: ровно 105 колонок,
+    # QA/QI/QE/VCL/метаданные/age, country с NA, повторный заголовок, строки NULL
+    qa = [f"Q{i}A" for i in range(1, 21)]
+    qi = [f"Q{i}I" for i in range(1, 21)]
+    qe = [f"Q{i}E" for i in range(1, 21)]
+    vcl = [f"VCL{i}" for i in range(1, 17)]
+    meta = [
+        "introelapse",
+        "testelapse",
+        "surveyelapse",
+        "age",
+        "gender",
+        "engnat",
+        "hand",
+        "religion",
+        "orientation",
+        "race",
+        "voted",
+        "married",
+        "familysize",
+    ]
+    extra = [f"scale_{i}" for i in range(15)]
+    cols = qa + qi + qe + vcl + meta + extra + ["country"]
+    assert len(cols) == 105
+
+    header = ",".join(cols)
+    rows_data = [
+        ",".join(["1"] * 104 + ["US"]),
+        ",".join(["2"] * 104 + ["NA"]),
+        header,  # повторный заголовок
+        ",".join(["NULL"] * 104 + ["DE"]),  # строка с литералами NULL
+        ",".join(["5"] * 104 + ["GB"]),
+    ]
+    content = "\n".join([header] + rows_data) + "\n"
+    path = write(tmp_path, "openpsych_105.csv", content.encode())
+    report = load_csv(db, "openpsych_105", path)
+
+    assert report.header_rows_removed == 1
+    assert report.rows == 4
+    types = column_types(db, "openpsych_105")
+    assert types["Q1A"] == "BIGINT"
+    assert types["Q1I"] == "BIGINT"
+    assert types["Q1E"] == "BIGINT"
+    assert types["VCL2"] == "BIGINT"
+    assert types["age"] == "BIGINT"
+    assert types["country"] == "VARCHAR"
+    assert len(report.retyped) == 104
+    assert report.null_tokens.get("NULL") == 104
+    max_vcl2 = db.query("SELECT max(VCL2) AS m FROM openpsych_105")[0]["m"]
+    assert max_vcl2 == 5
+    rows = db.query("SELECT country FROM openpsych_105 ORDER BY country")
+    assert [r["country"] for r in rows] == ["DE", "GB", "NA", "US"]
