@@ -113,3 +113,45 @@ def test_describe_columns_shows_quality_flags() -> None:
         "⚠ литералы пропусков в тексте: 6; ⚠ среди значений есть имя колонки"
     )
     assert region == "- region [text, ]"
+
+
+def test_other_columns_are_listed_by_name_title_and_kind() -> None:
+    from app.core.data.semantic_select import describe_other_columns
+
+    text = describe_other_columns(["comment", "created_at"], PROFILE, {"created_at": "Дата"})
+    assert text == (
+        "Остальные колонки таблицы (без выжимки): comment [text], created_at «Дата» [temporal]"
+    )
+
+
+def test_other_columns_are_capped_and_can_be_disabled() -> None:
+    from app.core.data.semantic_select import describe_other_columns
+
+    assert describe_other_columns(NAMES, PROFILE, limit=2).endswith("и ещё 2")
+    assert describe_other_columns(NAMES, PROFILE, limit=0) == ""
+    assert describe_other_columns([], PROFILE) == ""
+
+
+def test_planner_prompt_lists_columns_outside_the_top_k(monkeypatch) -> None:
+    import asyncio
+
+    from app.config import settings
+
+    monkeypatch.setattr(settings, "semantic_top_k", 1)
+
+    from app.core.agent.planner import StepPlanner
+    from app.models.research_step import ResearchPlan, ResearchStep
+
+    class LLM:
+        prompt = ""
+
+        async def complete_structured(self, system, user, schema):
+            LLM.prompt = user
+            return ResearchPlan(
+                steps=[ResearchStep(tool="aggregate", arguments={"column": "region"})]
+            )
+
+    context = {"columns": NAMES, "profile": PROFILE}
+    asyncio.run(StepPlanner(llm=LLM()).plan("Какая средняя выручка?", context))
+    others = LLM.prompt.split("Остальные колонки таблицы (без выжимки): ", 1)[1].split("\n")[0]
+    assert {"region", "comment", "created_at"} <= {e.split(" ")[0] for e in others.split(", ")}

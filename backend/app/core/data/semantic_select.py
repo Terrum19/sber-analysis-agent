@@ -152,6 +152,35 @@ def describe_columns(
     return "\n".join(lines) or "неизвестно"
 
 
+def describe_other_columns(
+    columns: list[str],
+    profile: TableProfile | None = None,
+    titles: dict[str, str] | None = None,
+    limit: int | None = None,
+) -> str:
+    """Колонки вне топ-K одной строкой: имя, название и вид, без выжимки паспорта.
+
+    Отбор по словам вопроса промахивается, когда вопрос называет колонку
+    иначе («деньги» — revenue, «когда» — order_date): без этого списка
+    планировщик о такой колонке не узнаёт вовсе.
+    """
+    limit = settings.semantic_other_columns if limit is None else limit
+    if not columns or limit <= 0:
+        return ""
+    kinds = {column.name: column.kind for column in profile.columns} if profile else {}
+    entries = []
+    for name in columns[:limit]:
+        entry = name
+        if (titles or {}).get(name):
+            entry += f" «{titles[name]}»"
+        if kinds.get(name):
+            entry += f" [{kinds[name]}]"
+        entries.append(entry)
+    rest = len(columns) - limit
+    tail = f" и ещё {rest}" if rest > 0 else ""
+    return "Остальные колонки таблицы (без выжимки): " + ", ".join(entries) + tail
+
+
 def _flag_marks(column: ColumnStats) -> str:
     """Флаги качества короткими метками: «⚠ числа записаны текстом, считай через TRY_CAST»."""
     marks = []
