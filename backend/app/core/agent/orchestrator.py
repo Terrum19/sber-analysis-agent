@@ -11,6 +11,9 @@
 а уходят в инсайт как сопутствующие. После lookup-шага (разведка
 данных) план достраивается с учётом увиденного.
 
+Реплика без запроса к данным («привет», «спасибо», «что ты умеешь»)
+получает готовый ответ без планировщика (agent/triage.py).
+
 Просьба сменить вид прошлого графика («покажи в другом виде», «сделай
 таблицей») обслуживается без планировщика и без повторного SQL: спека
 перестраивается chart_morph из кешированной temp_result_vN.
@@ -45,6 +48,7 @@ from app.core.agent.insight import InsightGenerator
 from app.core.agent.planner import StepPlanner
 from app.core.agent.recovery import STEP_FIX_ATTEMPTS, fixable
 from app.core.agent.step_executor import StepExecutor, resolve_input, tool_kind
+from app.core.agent.triage import small_talk_reply
 from app.core.data.duckdb_manager import DuckDBManager
 from app.core.memory.profile_memory import ProfileMemory
 from app.core.memory.session_memory import SessionMemory
@@ -168,6 +172,21 @@ class AgentOrchestrator:
         """Выполнить исследование и вернуть поток событий для фронта."""
         logger.info(">>> run() session_id=%s question=%r", request.session_id, request.question)
         memory = SessionMemory(request.session_id, db=self.db)
+        pending = memory.get_pending_recovery()
+        if pending is not None and not request.recovery_response:
+            # Новый вопрос вместо ответа на уточнение — прошлый сбой забываем,
+            # иначе сессия навсегда застрянет в ожидании recovery_response.
+            memory.clear_pending_recovery()
+            pending = None
+
+        if pending is None and (reply := small_talk_reply(request.question)) is not None:
+            # «Привет», «спасибо», «что ты умеешь» — без плана, LLM и графика.
+            memory.record_answer(reply)
+            yield {"type": "text", "data": {"headline": reply, "details": []}}
+            yield {"type": "done", "data": {}}
+            return
+
+        # Small talk выше: «привет» отвечается и без подключённой таблицы.
         table = memory.table
         if table is None:
             yield {"type": "error", "data": {"message": NO_TABLE_MESSAGE}}
@@ -179,13 +198,6 @@ class AgentOrchestrator:
                 "titles": {row.column: row.title for row in self.profiles.load_enrichment(table)},
             }
         )
-
-        pending = memory.get_pending_recovery()
-        if pending is not None and not request.recovery_response:
-            # Новый вопрос вместо ответа на уточнение — прошлый сбой забываем,
-            # иначе сессия навсегда застрянет в ожидании recovery_response.
-            memory.clear_pending_recovery()
-            pending = None
 
         if pending is None:
             # Смена вида прошлого графика — из кеша, без планировщика и SQL.
@@ -244,7 +256,9 @@ class AgentOrchestrator:
 
             stage = "chart"
             yield _progress_event("chart", "started")
-            chart_type = select_chart(question, result_table, execution.final_viz)
+            # Две строки хватает, чтобы узнать ответ одним числом (kpi).
+            records = self.db.to_records(result_table, limit=2)
+            chart_type = select_chart(question, result_table, execution.final_viz, records)
             logger.info(">>> run() построение графика chart_type=%s", chart_type)
             spec = build_vega_spec(chart_type, result_table, db=self.db, titles=titles)
             logger.info(
