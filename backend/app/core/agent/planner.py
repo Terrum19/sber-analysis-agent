@@ -7,11 +7,18 @@
 import json
 import logging
 
+from app.config import settings
+from app.core.agent.quality_fixes import frame_context, select_tools
 from app.core.llm.client import LLMClient
 
 logger = logging.getLogger(__name__)
 from app.core.agent.step_executor import tool_kind
-from app.core.data.semantic_select import describe_columns, select_columns
+from app.core.data.semantic_select import (
+    describe_columns,
+    describe_other_columns,
+    select_columns,
+)
+from app.core.llm.prompts.quality_rules import PLANNER_RULES
 from app.core.llm.prompts.step_planner import PLAN_ERRORS, STEP_FIX, STEP_PLANNER
 from app.core.tools.registry import tool_registry
 from app.models.research_step import PREVIOUS, SOURCE, ResearchPlan, ResearchStep
@@ -29,7 +36,7 @@ class StepPlanner:
     async def plan(self, question: str, context: dict) -> ResearchPlan:
         """Сгенерировать план шагов под вопрос."""
         tools = tool_registry.describe()
-        columns = context.get("columns", [])
+        columns = all_columns = context.get("columns", [])
         profile = context.get("profile")
         if profile is not None:
             # Отбираем топ-5 релевантных колонок (семантический отбор, docs/architecture.md)
@@ -37,16 +44,27 @@ class StepPlanner:
                 question, columns, profile=profile, titles=context.get("titles")
             )
         start = int(context.get("next_step_id", 0))
+        summary = context.get("summary", "")
+        if settings.agent_quality_fixes:
+            summary = frame_context(summary, question)
+        if settings.agent_tool_topk:
+            tools = select_tools(question)
+        described = describe_columns(
+            columns, profile, context.get("descriptions"), context.get("titles")
+        )
+        others = describe_other_columns(
+            [name for name in all_columns if name not in columns], profile, context.get("titles")
+        )
         prompt = STEP_PLANNER.format(
             tools=tools,
-            columns=describe_columns(
-                columns, profile, context.get("descriptions"), context.get("titles")
-            ),
-            context=context.get("summary", ""),
+            columns=f"{described}\n{others}" if others else described,
+            context=summary,
             executed=context.get("executed", "нет"),
             next_step_id=start,
             question=question,
         )
+        if settings.agent_quality_fixes:
+            prompt += PLANNER_RULES
         logger.info(">>> StepPlanner.plan() вопрос=%r", question)
         logger.debug("    промпт=%r", prompt)
         plan = await self._ask(prompt, start)

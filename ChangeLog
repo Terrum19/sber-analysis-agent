@@ -1,5 +1,71 @@
+2026-10-25  Alexander Yurits  <143354682+Terrum19@users.noreply.github.com>
+
+	Исправления по ревью #144.
+	* backend/app/core/agent/quality_fixes.py (insight_facts): Числовые
+	типы сверяются точно (INTERVAL больше не попадает в SUM), имена
+	через identifier(), итоги всех колонок одним запросом.
+	(ungrounded_numbers): Сверка только с вопросом, результатом и
+	фактами; допускается округление до точности заголовка; проценты не
+	проверяются.
+	(FOLLOW_UP): Вопрос с «а»/«и» в начале — продолжение; «прошлый» и
+	«предыдущий» сами по себе — нет.
+	* backend/app/core/agent/insight.py (InsightGenerator.generate):
+	Если факты не посчитались, инсайт строится без них.
+	* backend/app/core/llm/structured.py (parse_structured): Ошибка во
+	вложенных "arguments" тоже даёт переспрос.
+	(merge_tool_calls): Удалена, не использовалась.
+	* backend/app/core/llm/prompts/quality_rules.py,
+	backend/app/core/llm/prompts/structured_repair.py: Новые.  Промпты
+	из quality_fixes.py и structured.py.
+	* backend/app/core/tools/sql/atomic.py (GroupByTool.execute): by=[]
+	работает и без agent_quality_fixes.
+	(TimeBucketTool.execute): Убрана проверка, которую уже делает
+	TimeBucketArgs.
+	* backend/app/config.py: llm_max_retries (1); llm_structured_mode —
+	Literal.
+	* backend/app/core/llm/client.py (LLMClient.__init__): max_retries
+	из настроек.
+	* .env.example, docs/prompts.md: То же.
+	* CHANGELOG.md, docs/reports/architecture_compliance_report.md:
+	Удалены, устарели (историю ведёт ChangeLog).
+
 2026-10-24  Alexander Yurits  <terruwork@gmail.com>
 
+	JSON по схеме и исправления качества агента по умолчанию (#143).
+	* backend/app/core/llm/client.py (LLMClient.complete_structured): В
+	режиме json_schema — один запрос с response_format=json_schema,
+	толерантный разбор и один переспрос с текстом ошибки.
+	(LLMClient.__init__): Необязательный http_client.
+	* backend/app/core/llm/structured.py: Новый.  Толерантный разбор
+	ответа по схеме Pydantic и промпт переспроса.
+	* backend/app/core/agent/quality_fixes.py: Новый.  Факты для
+	инсайта, посчитанные SQL; проверка чисел заголовка; подсказки к
+	тулам и правила планировщика; прошлые шаги только для
+	вопроса-продолжения; отбор тулов под вопрос.
+	* backend/app/core/agent/planner.py (StepPlanner.plan): Правила и
+	обрамление контекста при agent_quality_fixes, отбор тулов при
+	agent_tool_topk.
+	* backend/app/core/agent/insight.py (InsightGenerator.generate):
+	Факты и проверка чисел при agent_quality_fixes.
+	* backend/app/core/tools/registry.py (ToolRegistry.describe):
+	Подсказки к описаниям тулов при agent_quality_fixes.
+	* backend/app/core/tools/sql/atomic.py (GroupByTool.execute):
+	by=[] — один итог по таблице при agent_quality_fixes.
+	(TimeBucketArgs): AVG/SUM без metric_column отклоняются при
+	проверке плана.
+	* backend/app/config.py: llm_structured_mode (json_schema),
+	llm_max_tokens, agent_quality_fixes (вкл.), agent_tool_topk
+	(выкл.); llm_timeout_s 120 -> 600.
+	* .env.example: То же.
+	* scripts/run_full_llm_cycle.py: Ожидание API (429, 5xx, таймауты)
+	отдельно от чистого времени.
+	* scripts/llm_bench: Новый.  Записывающий прокси, прогон варианта,
+	сводка вызовов, бенчмарк потоков; сырые логи вне git.
+	* docs/reports/llm_perf: Новый.  Гипотезы и журнал прогонов V1-V5.
+	* backend/tests/unit/test_llm_structured.py,
+	backend/tests/unit/test_quality_fixes.py: Новые.
+	* backend/tests/unit/test_llm_client_retries.py
+	(test_invalid_answer_is_asked_again): Режим tools задан явно.
 	Карточки таблиц после подключения (#69).
 	* frontend/src/types/datasource.ts (TableBrief, DescriptionStatus):
 	Новые типы по api/schemas/datasource.py; Datasource.profiles.

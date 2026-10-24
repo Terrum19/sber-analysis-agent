@@ -19,7 +19,7 @@ from functools import cache
 from typing import TYPE_CHECKING, Annotated, Any, Literal
 
 import duckdb
-from pydantic import AfterValidator, BaseModel, ConfigDict, ValidationError
+from pydantic import AfterValidator, BaseModel, ConfigDict, ValidationError, model_validator
 
 if TYPE_CHECKING:
     from app.core.llm.client import LLMClient
@@ -143,6 +143,22 @@ class ToolArgs(BaseModel):
     """Базовая модель аргументов тула."""
 
     model_config = ConfigDict(extra="forbid")
+
+
+class MetricArgs(ToolArgs):
+    """Аргументы с metric_column и без своего column.
+
+    Модель переносит column из group_by/aggregate (#150): принимаем как синоним,
+    если metric_column не задан. Описание тула для модели не меняется.
+    """
+
+    @model_validator(mode="before")
+    @classmethod
+    def _column_as_metric(cls, data: Any) -> Any:
+        if isinstance(data, dict) and "column" in data and "metric_column" not in data:
+            data = dict(data)
+            data["metric_column"] = data.pop("column")
+        return data
 
 
 class NoArgs(ToolArgs):
