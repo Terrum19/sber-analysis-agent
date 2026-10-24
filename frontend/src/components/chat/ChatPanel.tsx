@@ -16,6 +16,7 @@ import { useOpenArtifact } from "@/hooks/useOpenArtifact";
 import Icon from "@/components/ui/Icon";
 import ClarificationCard from "@/components/chat/ClarificationCard";
 import StepProgress from "@/components/chat/StepProgress";
+import TableBriefCard from "@/components/chat/TableBriefCard";
 import { useT } from "@/i18n/useT";
 import type { DashboardTile as DashboardTileType } from "@/types/dashboard";
 import { RECOVERY_SKIP_STEP, applyProgress, type TurnProgress } from "@/types/chat";
@@ -64,6 +65,7 @@ export default function ChatPanel({ sessionId }: Props) {
   const sessionTitle = database?.sessions.find((x) => x.id === sessionId)?.title;
 
   const activeTable = useSessionStore((s) => s.sessionActiveTable[sessionId]);
+  const activeBrief = database?.profiles?.find((brief) => brief.table === activeTable);
   const switchSessionTable = useSessionStore((s) => s.switchSessionTable);
   const bindSession = useSessionStore((s) => s.bindSession);
 
@@ -397,6 +399,11 @@ export default function ChatPanel({ sessionId }: Props) {
                   </span>
                 )}
               </p>
+            )}
+            {activeBrief && (
+              <div className="mt-4">
+                <TableBriefCard brief={activeBrief} />
+              </div>
             )}
             <div className="mt-6 flex flex-col items-start gap-1">
               {[t("chat.suggest1"), t("chat.suggest2")].map((q) => (

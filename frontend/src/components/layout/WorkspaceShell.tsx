@@ -52,6 +52,7 @@ export default function WorkspaceShell({ tab, children }: { tab: WorkspaceTab; c
           isOpen={Boolean(tableModalTarget)}
           databaseTitle={tableModalTarget.title}
           tables={tableModalTarget.tables}
+          briefs={tableModalTarget.profiles}
           onClose={() => setTableModalTarget(null)}
           onSelect={async (table) => {
             setTableModalTarget(null);

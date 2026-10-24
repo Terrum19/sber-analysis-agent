@@ -1,14 +1,18 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import TableBriefCard from "@/components/chat/TableBriefCard";
 import Icon from "@/components/ui/Icon";
 import { useT } from "@/i18n/useT";
+import type { TableBrief } from "@/types/datasource";
 
 interface TableSelectModalProps {
   isOpen: boolean;
   onClose: () => void;
   databaseTitle: string;
   tables: string[];
+  /** Паспорта таблиц из ответа подключения (у старых баз их нет). */
+  briefs?: TableBrief[];
   onSelect: (table: string) => Promise<void> | void;
 }
 
@@ -17,6 +21,7 @@ export default function TableSelectModal({
   onClose,
   databaseTitle,
   tables,
+  briefs,
   onSelect,
 }: TableSelectModalProps) {
   const t = useT();
@@ -75,6 +80,7 @@ export default function TableSelectModal({
           <div className="max-h-60 overflow-y-auto space-y-1.5 pr-1">
             {tables.map((table) => {
               const isSelected = selectedTable === table;
+              const brief = briefs?.find((b) => b.table === table);
               return (
                 <label
                   key={table}
@@ -92,7 +98,10 @@ export default function TableSelectModal({
                     onChange={() => setSelectedTable(table)}
                     className="accent-graphite-100 cursor-pointer"
                   />
-                  <span className="font-mono flex-1 truncate">{table}</span>
+                  <div className="min-w-0 flex-1">
+                    <div className="font-mono truncate">{table}</div>
+                    {brief && <TableBriefCard brief={brief} compact />}
+                  </div>
                 </label>
               );
             })}

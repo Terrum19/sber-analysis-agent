@@ -3,10 +3,27 @@
  */
 export type DbKind = "postgres" | "clickhouse";
 
+export type DescriptionStatus = "none" | "pending" | "ready" | "failed";
+
+/** Сводка паспорта таблицы для карточки (TableBrief). */
+export interface TableBrief {
+  table: string;
+  rows: number;
+  columns: number;
+  period_from?: string | null;
+  period_to?: string | null;
+  /** pending — описание колонок переносится в паспорт после ответа. */
+  description_status: DescriptionStatus;
+  summary?: string | null;
+  /** Что загрузчик исправил в данных или не смог исправить. */
+  warnings: string[];
+}
+
 export interface Datasource {
   datasource_id: string;
   kind: "csv" | DbKind;
   tables: string[];
+  profiles?: TableBrief[];
   profile_summary?: string;
 }
 
