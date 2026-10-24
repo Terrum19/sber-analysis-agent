@@ -299,3 +299,14 @@ async def test_steps_of_failed_turn_stay_out_of_next_plan(db) -> None:
 
 def test_chart_without_step_result_has_no_result_table() -> None:
     assert "result_table" not in _chart_event({}, "caption", "raw")["data"]
+
+
+async def test_reply_to_morphs_chart_of_the_chosen_turn(agent, db) -> None:
+    first = await collect(agent, "Сравни выручку по регионам")
+    await collect(agent, "Сравни выручку по регионам ещё раз")
+    request = ChatRequest(
+        session_id="s1", question="Сделай таблицей", reply_to=first[-1]["data"]["turn_id"]
+    )
+    events = [event async for event in agent.run(request)]
+    assert chart_of(events)["result_table"] == "temp_result_v1"
+    assert SessionMemory("s1")._state["turns"][-1]["reply_to"] == first[-1]["data"]["turn_id"]

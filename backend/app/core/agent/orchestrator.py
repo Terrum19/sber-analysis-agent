@@ -231,7 +231,7 @@ class AgentOrchestrator:
             pending = None
         # Ответ на уточнение продолжает ход, в котором упал шаг.
         if pending is None or not memory.resume_turn(pending.get("turn_id")):
-            memory.start_turn(request.question)
+            memory.start_turn(request.question, reply_to=request.reply_to)
         turn_id = memory.turn_id
 
         if pending is None and (reply := small_talk_reply(request.question)) is not None:

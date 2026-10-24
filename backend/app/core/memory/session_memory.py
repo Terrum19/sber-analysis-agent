@@ -9,6 +9,10 @@
 с планом: вопрос, шаги с аргументами, итог и колонки результата. Размер
 контекста не растёт с числом ходов, шаги упавших ходов в него не попадают.
 
+Ход-ответ на прошлое сообщение (``reply_to``) вместо прошлых ходов получает
+цепочку ответов: выбранный ход и его предков по ``reply_to``. План выбранного
+хода планировщик правит как черновик, смена вида берёт его график.
+
 ``datasource`` — таблица по умолчанию (``$source``), пока агент не выбирает
 таблицу сам (#165); её смена ходы не сбрасывает. Метаданные сессии
 (``title``, ``datasource_id``, ``created_at``) лежат в том же состоянии,
@@ -201,7 +205,7 @@ class SessionMemory:
         """id текущего хода (None — ход не начат)."""
         return self._turn["turn_id"] if self._turn is not None else None
 
-    def start_turn(self, question: str) -> str:
+    def start_turn(self, question: str, reply_to: str | None = None) -> str:
         """Начать ход по вопросу пользователя и вернуть его turn_id.
 
         Ход сохраняется сразу со статусом failed: ход, не дошедший до
@@ -217,6 +221,7 @@ class SessionMemory:
             "headline": None,
             "chart": None,
             "status": "failed",
+            "reply_to": reply_to,
         }
         self._state["turns"].append(self._turn)
         self._persist()
@@ -224,11 +229,34 @@ class SessionMemory:
 
     def resume_turn(self, turn_id: str | None) -> bool:
         """Продолжить ход после уточнения; False — такого хода нет."""
+        turn = self._find(turn_id)
+        if turn is None:
+            return False
+        self._turn = turn
+        return True
+
+    def _find(self, turn_id: str | None) -> dict | None:
         for turn in self._state["turns"]:
             if turn["turn_id"] == turn_id:
-                self._turn = turn
-                return True
-        return False
+                return turn
+        return None
+
+    def reply_chain(self) -> list[dict]:
+        """Ход, на который отвечает текущий, и его предки по reply_to, старые первыми.
+
+        Пусто, если текущий ход не ответ или выбранный ход не успешный ход
+        с планом: тогда планировщик получает обычные прошлые ходы.
+        """
+        target = self._find(self._turn.get("reply_to")) if self._turn is not None else None
+        if target is None or target["status"] != "ok" or not target["steps"]:
+            return []
+        chain = [target]
+        while len(chain) < CONTEXT_TURNS:
+            parent = self._find(chain[-1].get("reply_to"))
+            if parent is None or parent["status"] != "ok":
+                break
+            chain.append(parent)
+        return chain[::-1]
 
     def record_step(self, step) -> None:
         """Записать выполненный шаг в текущий ход (сохраняется в finish_turn)."""
@@ -264,7 +292,10 @@ class SessionMemory:
         self._persist()
 
     def last_chart(self) -> dict | None:
-        """График последнего успешного хода, в котором был график, или None."""
+        """График хода, на который отвечает текущий, иначе последнего успешного с графиком."""
+        target = self._find(self._turn.get("reply_to")) if self._turn is not None else None
+        if target is not None and target["status"] == "ok" and target["chart"] is not None:
+            return target["chart"]
         for turn in reversed(self._state["turns"]):
             if turn["status"] == "ok" and turn["chart"] is not None:
                 return turn["chart"]
@@ -276,7 +307,7 @@ class SessionMemory:
         return done[-CONTEXT_TURNS:]
 
     def build_context(self, question: str) -> dict:
-        """Собрать контекст: прошлые ходы + колонки + паспорт таблицы по умолчанию."""
+        """Собрать контекст: прошлые ходы или цепочка ответа + колонки + паспорт таблицы."""
         datasource = self.table
 
         # Профиль данных (паспорт таблицы) для долгосрочного контекста;
@@ -298,8 +329,10 @@ class SessionMemory:
                 except duckdb.Error:
                     columns = []
 
+        reply = self.reply_chain()
         return {
-            "turns": self.recent_turns(),
+            "turns": [] if reply else self.recent_turns(),
+            "reply": reply,
             "question": question,
             "columns": columns,
             "datasource": datasource,

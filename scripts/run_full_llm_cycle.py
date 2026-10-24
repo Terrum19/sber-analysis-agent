@@ -30,7 +30,8 @@ SQLite сессий и дашбордов, спеки графиков, xlsx, л
     USE_FAKE_LLM=true python3 scripts/run_full_llm_cycle.py --csv data.csv --questions q.txt
 
 С --questions скрипт работает без диалога и возвращает ненулевой код,
-если хоть один ход не дошёл до done (e2e-критерий).
+если хоть один ход не дошёл до done (e2e-критерий). Вопрос, начинающийся
+с «↩», — ответ на прошлый ход (reply_to = turn_id его события done).
 """
 
 import argparse
@@ -296,6 +297,10 @@ def prepare_environment(args: argparse.Namespace) -> Path:
     return run_dir
 
 
+# Вопрос с этим префиксом — ответ на прошлый ход (reply_to).
+REPLY_MARK = "↩"
+
+
 def read_questions(path: Path | None):
     """Вопросы из файла или из stdin."""
     if path is not None:
@@ -541,17 +546,27 @@ def ask_recovery(data: dict, interactive: bool) -> str | None:
     return choice
 
 
-async def run_turn(orchestrator, args, question: str, db, report: Report, number: int) -> dict:
+async def run_turn(
+    orchestrator,
+    args,
+    question: str,
+    db,
+    report: Report,
+    number: int,
+    reply_to: str | None = None,
+) -> dict:
     """Один ход диалога, включая повторы после уточнений."""
     from app.api.schemas.chat import ChatEvent, ChatRequest
     from app.core.dashboards.store import DashboardStore
 
     turn = {"question": question, "events": {}, "charts": [], "status": "no_done"}
+    if reply_to is not None:
+        turn["reply_to"] = reply_to
     interactive = args.questions is None
     with report.measure("select_columns"):
         turn["selected_columns"] = show_planner_view(args.session, question, db)
 
-    request = ChatRequest(session_id=args.session, question=question)
+    request = ChatRequest(session_id=args.session, question=question, reply_to=reply_to)
     start, waited, problems = time.perf_counter(), report.api_wait, report.api_problems.copy()
     while request is not None:
         pending, request = request, None
@@ -609,6 +624,7 @@ async def run_turn(orchestrator, args, question: str, db, report: Report, number
                     print(f"  -> повтор хода с recovery_response={answer!r}")
             elif kind == "done":
                 turn["status"] = "done"
+                turn["turn_id"] = data.get("turn_id")
             if data.get("prompt_truncated"):
                 turn["prompt_truncated"] = (
                     turn.get("prompt_truncated", 0) + data["prompt_truncated"]
@@ -725,11 +741,18 @@ async def run(args: argparse.Namespace, report: Report) -> int:
         if not sandbox_ok:
             report.warnings.append("WASM-песочница недоступна: codegen-шаги упадут")
 
+        last_turn_id = None
         for number, question in enumerate(read_questions(args.questions), 1):
             print(LINE)
+            reply_to = None
+            if question.startswith(REPLY_MARK):
+                question = question.removeprefix(REPLY_MARK).strip()
+                reply_to = last_turn_id
             with report.measure("turns"):
                 try:
-                    turn = await run_turn(orchestrator, args, question, db, report, number)
+                    turn = await run_turn(
+                        orchestrator, args, question, db, report, number, reply_to
+                    )
                 except Exception as error:  # noqa: BLE001 — ход падает, прогон идёт дальше
                     traceback.print_exc()
                     turn = {
@@ -739,6 +762,7 @@ async def run(args: argparse.Namespace, report: Report) -> int:
                         "seconds": 0,
                     }
             report.turns.append(turn)
+            last_turn_id = turn.get("turn_id")
             print(LINE)
     finally:
         db.close()

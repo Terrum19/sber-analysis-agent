@@ -1,5 +1,21 @@
 2026-10-25  Alexander Yurits  <143354682+Terrum19@users.noreply.github.com>
 
+	Вопрос по конкретному прошлому ответу: reply_to (бэкенд #166).
+	* backend/app/api/schemas/chat.py (ChatRequest): reply_to.
+	* backend/app/core/memory/session_memory.py (start_turn): Ход хранит
+	reply_to.
+	(reply_chain, _find): Новые.
+	(build_context): При ответе — цепочка ответа вместо прошлых ходов.
+	(last_chart): График хода, на который отвечают.
+	* backend/app/core/agent/planner.py (describe_history): Новая.
+	* backend/app/core/llm/prompts/step_planner.py (PAST_TURNS,
+	REPLY_DRAFT): Новые; план выбранного хода — черновик.
+	* backend/app/core/agent/orchestrator.py (AgentOrchestrator._turn):
+	reply_to в ход.
+	* scripts/run_full_llm_cycle.py: Вопрос с «↩» — ответ на прошлый ход.
+
+2026-10-25  Alexander Yurits  <143354682+Terrum19@users.noreply.github.com>
+
 	Память сессии по ходам вместо памяти по таблице (#163).
 	* backend/app/core/memory/session_memory.py (SessionMemory): Сессия —
 	список ходов.  start_turn, resume_turn, finish_turn, turn_id,

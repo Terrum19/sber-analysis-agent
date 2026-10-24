@@ -19,7 +19,13 @@ from app.core.data.semantic_select import (
     select_columns,
 )
 from app.core.llm.prompts.quality_rules import PLANNER_RULES
-from app.core.llm.prompts.step_planner import PLAN_ERRORS, STEP_FIX, STEP_PLANNER
+from app.core.llm.prompts.step_planner import (
+    PAST_TURNS,
+    PLAN_ERRORS,
+    REPLY_DRAFT,
+    STEP_FIX,
+    STEP_PLANNER,
+)
 from app.core.tools.registry import tool_registry
 from app.models.research_step import PREVIOUS, SOURCE, ResearchPlan, ResearchStep
 
@@ -55,7 +61,7 @@ class StepPlanner:
         prompt = STEP_PLANNER.format(
             tools=tools,
             columns=f"{described}\n{others}" if others else described,
-            history=describe_turns(context.get("turns", [])),
+            history=describe_history(context),
             executed=context.get("executed", "нет"),
             next_step_id=start,
             question=question,
@@ -114,17 +120,38 @@ class StepPlanner:
         return plan
 
 
+def describe_history(context: dict) -> str:
+    """Блок истории промпта: черновик из цепочки ответа или прошлые ходы."""
+    chain = context.get("reply") or []
+    if not chain:
+        return PAST_TURNS.format(turns=describe_turns(context.get("turns", [])))
+    draft = chain[-1]
+    outcome = []
+    if draft.get("headline"):
+        outcome.append(f"Ответ на него: {draft['headline']}")
+    if draft.get("result_columns"):
+        outcome.append(f"Колонки результата: {', '.join(draft['result_columns'])}")
+    return REPLY_DRAFT.format(
+        chain="\n".join(f"- {turn['question']}" for turn in chain),
+        draft=json.dumps(_turn_steps(draft), ensure_ascii=False, default=str),
+        outcome="\n".join(outcome),
+    )
+
+
+def _turn_steps(turn: dict) -> list[dict]:
+    return [
+        {key: value for key, value in step.items() if value not in (None, [], {})}
+        for step in turn["steps"]
+    ]
+
+
 def describe_turns(turns: list[dict]) -> str:
     """Прошлые ходы для промпта: вопрос, план с аргументами, ответ, колонки результата."""
     blocks = []
     for number, turn in enumerate(turns, 1):
-        steps = [
-            {key: value for key, value in step.items() if value not in (None, [], {})}
-            for step in turn["steps"]
-        ]
         lines = [
             f"{number}. Вопрос: {turn['question']}",
-            f"   План: {json.dumps(steps, ensure_ascii=False, default=str)}",
+            f"   План: {json.dumps(_turn_steps(turn), ensure_ascii=False, default=str)}",
         ]
         if turn.get("headline"):
             lines.append(f"   Ответ: {turn['headline']}")

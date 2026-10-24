@@ -197,3 +197,49 @@ def test_state_before_turns_still_opens(memory):
     assert old.last_chart() is None
     answered(old, "Новый вопрос")
     assert len(SessionMemory("old").build_context("?")["turns"]) == 1
+
+
+def replied(memory, question: str, reply_to: str | None, chart: str | None = None) -> str:
+    turn_id = memory.start_turn(question, reply_to=reply_to)
+    memory.record_step(step(by=["month"]))
+    if chart is not None:
+        memory.record_chart("line", chart, question)
+    memory.finish_turn("ok", headline=f"Ответ: {question}")
+    return turn_id
+
+
+def test_reply_gets_chain_instead_of_recent_turns(memory):
+    first = answered(memory, "Выручка по регионам")
+    answered(memory, "Сколько пользователей?")
+    second = replied(memory, "А только Москва?", reply_to=first)
+    memory.start_turn("А за 2023?", reply_to=second)
+    context = memory.build_context("А за 2023?")
+    assert [t["question"] for t in context["reply"]] == ["Выручка по регионам", "А только Москва?"]
+    assert context["turns"] == []
+
+
+def test_reply_chain_is_limited_to_three_turns(memory):
+    turn_id = answered(memory, "Вопрос 0")
+    for number in range(1, 5):
+        turn_id = replied(memory, f"Вопрос {number}", reply_to=turn_id)
+    memory.start_turn("Дальше", reply_to=turn_id)
+    assert [t["question"] for t in memory.reply_chain()] == ["Вопрос 2", "Вопрос 3", "Вопрос 4"]
+
+
+def test_reply_to_unknown_or_failed_turn_falls_back_to_recent_turns(memory):
+    answered(memory, "Выручка по регионам")
+    failed = answered(memory, "Упал", status="failed")
+    for reply_to in ["unknown", failed]:
+        memory.start_turn("А только Москва?", reply_to=reply_to)
+        context = memory.build_context("А только Москва?")
+        assert context["reply"] == []
+        assert [t["question"] for t in context["turns"]] == ["Выручка по регионам"]
+
+
+def test_reply_takes_chart_of_the_chosen_turn(memory):
+    first = answered(memory, "Выручка", chart="temp_result_v1")
+    answered(memory, "Пользователи", chart="temp_result_v2")
+    memory.start_turn("Покажи таблицей", reply_to=first)
+    assert memory.last_chart()["result_table"] == "temp_result_v1"
+    memory.start_turn("Покажи таблицей")
+    assert memory.last_chart()["result_table"] == "temp_result_v2"
