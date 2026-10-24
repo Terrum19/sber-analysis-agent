@@ -11,10 +11,11 @@
   Без таблицы оркестратор отвечает событием `error` «Сначала подключите
   данные». Таблица задаётся при создании сессии (`POST /api/sessions`,
   поле `table` обязательно, неизвестная таблица — 404) и меняется через
-  `PATCH /api/sessions/{id}`; колонки берутся из `DuckDBManager.columns()`.
+  `PATCH /api/sessions/{id}` (`{table}`); колонки берутся из `DuckDBManager.columns()`.
 - **Метаданные и список:** `set_meta(title, datasource_id)` при
   `POST /api/sessions` пишет в состояние сессии название, id источника и
-  `created_at` (ISO, UTC). Источник правды — SQLite: `GET /api/sessions/{id}`
+  `created_at` (ISO, UTC). Переименование — `PATCH /api/sessions/{id}`
+  с `{title}` (`set_title`; можно вместе с `table`, пустое тело — 422). Источник правды — SQLite: `GET /api/sessions/{id}`
   собирает ответ из `SessionMemory` (404, если `exists()` ложно), сессия и
   её метаданные переживают перезапуск. `GET /api/sessions` — по 30 сессий
   для сайдбара по `updated_at`, недавно изменённые первыми (`?offset=` —

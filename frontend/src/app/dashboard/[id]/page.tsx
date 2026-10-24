@@ -144,7 +144,9 @@ export default function DashboardPage({ params }: { params: { id: string } }) {
     setIsExporting(format);
     setExportMenuOpen(false);
     try {
-      const blob = await exportArtifact(config.session_id || params.id, format);
+      // Excel — по таблице результата последнего графика с ней (temp_result_vN)
+      const resultRef = [...config.tiles].reverse().find((tile) => tile.result_table)?.result_table;
+      const blob = await exportArtifact(config.session_id || params.id, format, resultRef);
       const url = URL.createObjectURL(blob);
       const a = document.createElement("a");
       a.href = url;
