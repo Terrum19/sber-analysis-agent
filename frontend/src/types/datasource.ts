@@ -15,7 +15,7 @@ export interface TableBrief {
   /** pending — описание колонок переносится в паспорт после ответа. */
   description_status: DescriptionStatus;
   summary?: string | null;
-  /** Что загрузчик исправил в данных или не смог исправить. */
+  /** Замечания о данных (исправления при загрузке и предупреждения профилировщика). */
   warnings: string[];
 }
 
