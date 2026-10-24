@@ -9,7 +9,7 @@
    висячие запятые, комментарии, Python-литералы True/False/None.
 2. ``coerce`` — привести найденное к форме схемы: снять обёртку
    ``{"ResearchPlan": {...}}``, список шагов -> ``{"steps": [...]}``,
-   один шаг -> план из одного шага, несколько tool_calls -> слить шаги.
+   один шаг -> план из одного шага.
 3. Схема валидируется как обычно; ошибку валидации можно вернуть модели
    текстом (``repair_prompt``) — это дешевле, чем менять режим запроса.
 """
@@ -18,7 +18,9 @@ import json
 import re
 from typing import Any, TypeVar
 
-from pydantic import BaseModel, ValidationError
+from pydantic import BaseModel
+
+from app.core.llm.prompts.structured_repair import REPAIR_PROMPT
 
 T = TypeVar("T", bound=BaseModel)
 
@@ -112,7 +114,7 @@ def coerce(schema: type[BaseModel], data: Any) -> Any:
         if isinstance(data, list):
             return {"steps": [_step(item) for item in data]}
     elif isinstance(data, list) and data:
-        # Схема — один объект, а пришёл список: берём первый подходящий.
+        # Схема — один объект, а пришёл список: берём первый элемент.
         return data[0]
     return data
 
@@ -127,52 +129,14 @@ def _step(item: Any) -> Any:
     return item
 
 
-def merge_tool_calls(schema: type[T], calls: list[tuple[str, str]]) -> T:
-    """Несколько tool_calls вместо одного (Qwen так делает) -> один объект схемы.
-
-    calls — (имя функции, arguments JSON). Для плана шаги всех вызовов
-    сливаются по порядку; для прочих схем берётся первый валидный.
-    """
-    parsed = [(fn, loads_lenient(args) if isinstance(args, str) else args) for fn, args in calls]
-    if "steps" in schema.model_fields:
-        steps: list = []
-        meta: dict = {}
-        for fn, args in parsed:
-            if fn == schema.__name__ and isinstance(args, dict) and "steps" in args:
-                steps.extend(args["steps"])
-                meta |= {k: v for k, v in args.items() if k != "steps"}
-            elif isinstance(args, dict):
-                # Вызов «тула» шага напрямую: имя функции = имя инструмента.
-                steps.append(args if "tool" in args else {"tool": fn, "arguments": args})
-        return schema.model_validate({**meta, "steps": steps})
-    errors = []
-    for _, args in parsed:
-        try:
-            return schema.model_validate(coerce(schema, args))
-        except ValidationError as exc:
-            errors.append(str(exc))
-    raise StructuredParseError("; ".join(errors) or "нет tool_calls")
-
-
 def parse_structured(schema: type[T], text: str) -> T:
     """Текст ответа -> объект схемы (StructuredParseError с причиной)."""
     try:
-        data = loads_lenient(text)
+        # ValueError — и нет JSON (в том числе во вложенных "arguments"),
+        # и ValidationError схемы: на всё это отвечает переспрос.
+        return schema.model_validate(coerce(schema, loads_lenient(text)))
     except ValueError as exc:
         raise StructuredParseError(str(exc)) from exc
-    try:
-        return schema.model_validate(coerce(schema, data))
-    except ValidationError as exc:
-        raise StructuredParseError(str(exc)) from exc
-
-
-REPAIR_PROMPT = """
-
-Твой предыдущий ответ не подошёл по формату:
-{answer}
-
-Ошибка разбора: {error}
-Верни исправленный ответ — только JSON-объект по схеме, без пояснений."""
 
 
 def repair_prompt(answer: str, error: Exception, limit: int = 1500) -> str:

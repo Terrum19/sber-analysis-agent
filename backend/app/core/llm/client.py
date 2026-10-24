@@ -89,6 +89,7 @@ class LLMClient:
             base_url=settings.llm_base_url,
             api_key=settings.llm_api_key.get_secret_value() or "not-needed",
             timeout=settings.llm_timeout_s,
+            max_retries=settings.llm_max_retries,
             http_client=http_client,
         )
         self.model = settings.llm_model

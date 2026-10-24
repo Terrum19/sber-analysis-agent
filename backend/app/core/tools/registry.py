@@ -4,6 +4,8 @@
 регистрируется здесь, оркестратор о нём не знает.
 """
 
+from app.config import settings
+from app.core.llm.prompts.quality_rules import TOOL_HINTS
 from app.core.tools.base import BaseTool
 from app.core.tools.codegen import CodegenTool
 from app.core.tools.domain.avg_order_value import AverageOrderValueTool
@@ -97,11 +99,7 @@ class ToolRegistry:
 
     def describe(self) -> str:
         """Описания тулов для LLM (по одному на строку)."""
-        from app.config import settings
-
-        hints: dict[str, str] = {}
-        if settings.agent_quality_fixes:
-            from app.core.agent.quality_fixes import TOOL_HINTS as hints
+        hints = TOOL_HINTS if settings.agent_quality_fixes else {}
         return "\n".join(
             f"- {tool.describe()}{hints.get(tool.name, '')}" for tool in self.planner_tools()
         )

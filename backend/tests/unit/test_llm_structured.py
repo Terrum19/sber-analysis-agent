@@ -7,7 +7,6 @@ import pytest
 from app.core.llm.structured import (
     StructuredParseError,
     loads_lenient,
-    merge_tool_calls,
     parse_structured,
 )
 from app.models.insight import Insight
@@ -76,21 +75,10 @@ def test_invalid_schema_raises_parse_error() -> None:
         parse_structured(Insight, json.dumps({"details": ["нет headline"]}))
 
 
-def test_merge_multiple_plan_tool_calls() -> None:
-    calls = [
-        ("ResearchPlan", json.dumps({"steps": [STEP], "final_viz": "bar"})),
-        ("ResearchPlan", json.dumps({"steps": [{"tool": "sort_limit"}]})),
-    ]
-    plan = merge_tool_calls(ResearchPlan, calls)
-    assert [s.tool for s in plan.steps] == ["group_by", "sort_limit"]
-    assert plan.final_viz == "bar"
-
-
-def test_merge_tool_calls_named_after_tools() -> None:
-    calls = [("filter_rows", json.dumps({"column": "amount", "operator": ">", "value": 150}))]
-    plan = merge_tool_calls(ResearchPlan, calls)
-    assert plan.steps[0].tool == "filter_rows"
-    assert plan.steps[0].arguments["value"] == 150
+def test_broken_nested_arguments_raise_parse_error() -> None:
+    # Ошибка внутри "arguments" тоже даёт переспрос, а не голый ValueError.
+    with pytest.raises(StructuredParseError):
+        parse_structured(Insight, json.dumps({"name": "Insight", "arguments": "не JSON"}))
 
 
 # --- LLMClient в режиме llm_structured_mode=json_schema ---
@@ -134,3 +122,16 @@ async def test_json_schema_mode_one_call_and_repair(monkeypatch) -> None:
     # Переспрос несёт ошибку разбора, префикс промпта прежний.
     second_user = json.loads(requests[1].content)["messages"][1]["content"]
     assert second_user.startswith("u") and "headline" in second_user
+
+
+async def test_json_schema_mode_gives_up_after_one_repair(monkeypatch) -> None:
+    import httpx
+
+    from app.config import settings
+    from tests.unit.test_llm_client_retries import client_with
+
+    monkeypatch.setattr(settings, "llm_structured_mode", "json_schema")
+    llm, requests = client_with([httpx.Response(200, json=_text_response("не JSON"))])
+    with pytest.raises(ValueError, match="Insight"):
+        await llm.complete_structured("s", "u", Insight)
+    assert len(requests) == 2

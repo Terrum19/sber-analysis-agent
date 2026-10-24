@@ -236,8 +236,6 @@ class GroupByTool(BaseTool):
     Args = GroupByArgs
 
     def execute(self, db, input_table: str, args: GroupByArgs) -> str:
-        from app.config import settings
-
         by = [args.by] if isinstance(args.by, str) else args.by
         metrics = args.metrics or [Metric(function=args.function, column=args.column)]
         selected = [
@@ -245,13 +243,11 @@ class GroupByTool(BaseTool):
             f"{identifier(m.alias or aggregate_alias(m.function, m.column))}"
             for m in metrics
         ]
-        if not by and settings.agent_quality_fixes:
+        if not by:
             # by=[] — один итог по всей таблице (H-T1, agent/quality_fixes.py).
             return db.save_step_result(
                 input_table, f"SELECT {', '.join(selected)} FROM {identifier(input_table)}"
             )
-        if not by:
-            raise ValueError("group_by requires at least one grouping column")
         keys = ", ".join(identifier(column) for column in by)
         return db.save_step_result(
             input_table,
@@ -318,8 +314,6 @@ class TimeBucketTool(BaseTool):
     Args = TimeBucketArgs
 
     def execute(self, db, input_table: str, args: TimeBucketArgs) -> str:
-        if args.metric_column is None and args.function != "COUNT":
-            raise ValueError(f"time_bucket: {args.function} requires metric_column")
         metric = (
             f"{aggregate_sql(args.function, args.metric_column)} AS "
             f"{identifier(aggregate_alias(args.function, args.metric_column))}"

@@ -7,6 +7,8 @@
 import json
 import logging
 
+from app.config import settings
+from app.core.agent.quality_fixes import frame_context, select_tools
 from app.core.llm.client import LLMClient
 
 logger = logging.getLogger(__name__)
@@ -16,6 +18,7 @@ from app.core.data.semantic_select import (
     describe_other_columns,
     select_columns,
 )
+from app.core.llm.prompts.quality_rules import PLANNER_RULES
 from app.core.llm.prompts.step_planner import PLAN_ERRORS, STEP_FIX, STEP_PLANNER
 from app.core.tools.registry import tool_registry
 from app.models.research_step import PREVIOUS, SOURCE, ResearchPlan, ResearchStep
@@ -41,16 +44,10 @@ class StepPlanner:
                 question, columns, profile=profile, titles=context.get("titles")
             )
         start = int(context.get("next_step_id", 0))
-        from app.config import settings
-
         summary = context.get("summary", "")
         if settings.agent_quality_fixes:
-            from app.core.agent.quality_fixes import frame_context
-
             summary = frame_context(summary, question)
         if settings.agent_tool_topk:
-            from app.core.agent.quality_fixes import select_tools
-
             tools = select_tools(question)
         described = describe_columns(
             columns, profile, context.get("descriptions"), context.get("titles")
@@ -67,8 +64,6 @@ class StepPlanner:
             question=question,
         )
         if settings.agent_quality_fixes:
-            from app.core.agent.quality_fixes import PLANNER_RULES
-
             prompt += PLANNER_RULES
         logger.info(">>> StepPlanner.plan() вопрос=%r", question)
         logger.debug("    промпт=%r", prompt)
