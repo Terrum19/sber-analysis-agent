@@ -214,3 +214,46 @@ def test_old_passport_gets_title_column(tmp_path) -> None:
         assert "title" in {row["column_name"] for row in columns}
     finally:
         db.close()
+
+
+def test_quality_flags_and_empty_rows_survive_save(db) -> None:
+    db.execute(
+        "CREATE TABLE dirty AS SELECT * FROM (VALUES ('1', 'a'), ('NULL', 'b'), (NULL, NULL)) "
+        "AS rows(score, note)"
+    )
+    memory = ProfileMemory(db)
+    profile = profile_table(db, "dirty", approx=False)
+    memory.save_profile(profile)
+    loaded = memory.load_profile("dirty")
+    assert loaded == profile
+    assert loaded.empty_rows == 1
+    assert loaded.column("score").flags == ["numeric_as_text", "null_tokens:1"]
+
+
+def test_old_passport_gets_quality_columns(tmp_path) -> None:
+    path = str(tmp_path / "main.duckdb")
+    old = DuckDBManager(path)
+    old.execute("CREATE SCHEMA _meta")
+    old.execute(
+        "CREATE TABLE _meta.table_passport (table_name VARCHAR PRIMARY KEY, "
+        "row_count BIGINT NOT NULL, column_count INTEGER NOT NULL, glossary JSON, "
+        "summary VARCHAR, profiled_at TIMESTAMPTZ NOT NULL, enriched_at TIMESTAMPTZ)"
+    )
+    old.execute(
+        "INSERT INTO _meta.table_passport (table_name, row_count, column_count, profiled_at) "
+        "VALUES ('sales', 0, 0, now())"
+    )
+    old.close()
+    db = DuckDBManager(path)
+    try:
+        ProfileMemory(db)
+        columns = db.query(
+            "SELECT table_name, column_name FROM information_schema.columns "
+            "WHERE table_schema = '_meta'"
+        )
+        names = {(row["table_name"], row["column_name"]) for row in columns}
+        assert ("table_passport", "empty_rows") in names
+        assert ("column_passport", "flags") in names
+        assert ProfileMemory(db).load_profile("sales").empty_rows == 0
+    finally:
+        db.close()

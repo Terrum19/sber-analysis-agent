@@ -1,0 +1,7 @@
+# Надстройка для CI (#79): docker compose -f docker-compose.yml -f docker-compose.ci.yml
+# Без профиля Ollama не поднимается (это и есть профиль ci из #79), а бэкенд
+# отвечает фейковой LLM — смоук не зависит от модели.
+services:
+  backend:
+    environment:
+      USE_FAKE_LLM: "true"
