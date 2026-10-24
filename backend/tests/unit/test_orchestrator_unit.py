@@ -245,3 +245,39 @@ def test_dashboard_failure_keeps_the_answer(orchestrator, monkeypatch):
     assert stages(events)[-4:] == ["chart:started", "chart", "dashboard:failed", "done"]
     assert "error" not in stages(events)
     assert events[-2]["data"]["error"] == "SQLite недоступна"
+
+
+def test_small_talk_is_answered_without_the_planner(orchestrator):
+    class NoPlanner:
+        async def plan(self, question, context):
+            raise AssertionError("планировщик не нужен для «привет»")
+
+    orchestrator.planner = NoPlanner()
+    events = list(_drain(orchestrator, "привет"))
+    assert [event["type"] for event in events] == ["text", "done"]
+    assert "Здравствуйте" in events[0]["data"]["headline"]
+
+
+def test_single_number_result_is_shown_as_kpi(orchestrator):
+    from app.models.research_step import ResearchPlan, ResearchStep
+
+    class OneNumberPlanner:
+        async def plan(self, question, context):
+            step = ResearchStep(step_id=0, tool="aggregate", columns=["a"], purpose="Итог")
+            return ResearchPlan(steps=[step], final_viz="auto")
+
+    orchestrator.db.execute("CREATE OR REPLACE TABLE temp_result_v1 AS SELECT 3 AS total")
+    orchestrator.planner = OneNumberPlanner()
+    events = list(_drain(orchestrator, "Какая общая сумма?"))
+    chart = next(event for event in events if event["type"] == "chart")
+    assert chart["data"]["spec"]["usermeta"]["chart_type"] == "kpi"
+
+
+def _drain(orchestrator, question: str):
+    import asyncio
+
+    async def run():
+        request = ChatRequest(session_id="s1", question=question)
+        return [event async for event in orchestrator.run(request)]
+
+    return asyncio.run(run())
