@@ -154,12 +154,16 @@ export const useUiStore = create<UiState>()(
       storage: createJSONStorage(() => (typeof window !== "undefined" ? localStorage : ({} as any))),
       partialize: (s) => ({
         theme: s.theme,
-        locale: s.locale,
         tabs: s.tabs,
         canvasOpen: s.canvasOpen,
         sidebarWidth: s.sidebarWidth,
         panelWidth: s.panelWidth,
         zoom: s.zoom,
+      }),
+      merge: (persistedState, currentState) => ({
+        ...currentState,
+        ...(persistedState as any),
+        locale: "ru",
       }),
     },
   ),
