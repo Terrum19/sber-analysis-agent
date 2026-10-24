@@ -6,6 +6,7 @@ from pathlib import Path
 
 import duckdb
 
+from app.config import settings
 from app.core.data.connectors.base import BaseConnector
 from app.core.data.connectors.postgres import quote_identifier, quote_literal
 
@@ -31,6 +32,7 @@ STRATEGIES = (
         "null_padding": "true",
         "strict_mode": "false",
         "ignore_errors": "true",
+        "store_rejects": "true",
     },
 )
 
@@ -48,20 +50,47 @@ class CSVReport:
     numeric_text_columns: list[str] = field(default_factory=list)
     tolerant: bool = False
     all_text: bool = False
+    header_rows_removed: int = 0
+    null_tokens: dict[str, int] = field(default_factory=dict)
+    retyped: dict[str, str] = field(default_factory=dict)
+    rejected_rows: int = 0
+    unconverted: dict[str, int] = field(default_factory=dict)
 
     def warnings(self) -> list[str]:
         notes = []
         if self.encoding != "utf-8":
             notes.append(f"Файл в кодировке {self.encoding} перекодирован в UTF-8.")
+        if self.header_rows_removed > 0:
+            notes.append(f"Удалено строк с повторным заголовком: {self.header_rows_removed}.")
+        if self.null_tokens:
+            tokens_summary = ", ".join(
+                f"«{token}» ({count})" for token, count in self.null_tokens.items()
+            )
+            notes.append(f"Литералы пропусков заменены на NULL: {tokens_summary}.")
         if self.numeric_text_columns:
             names = ", ".join(f"«{column}»" for column in self.numeric_text_columns)
             notes.append(f"Числа, записанные текстом, приведены к числам в колонках {names}.")
-        if self.all_text:
+        other_retyped = [
+            column for column, kind in self.retyped.items() if kind in ("DATE", "TIMESTAMP")
+        ]
+        if other_retyped:
+            names = ", ".join(f"«{column}»" for column in other_retyped)
+            notes.append(f"Даты и время приведены к типам в колонках {names}.")
+        if self.unconverted:
+            for column, count in self.unconverted.items():
+                target = self.retyped.get(column, "")
+                notes.append(
+                    f"В колонке «{column}» {count} значений не удалось привести к {target}, "
+                    "они заменены на NULL."
+                )
+        if self.rejected_rows > 0:
+            notes.append(f"Отброшено строк с ошибками структуры: {self.rejected_rows}.")
+        if self.all_text and not self.retyped:
             notes.append(
                 "Типы колонок определить не удалось: все колонки загружены как текст, "
                 "нечитаемые строки отброшены."
             )
-        elif self.tolerant:
+        elif self.tolerant and not self.all_text:
             notes.append(
                 "В строках с неполным числом полей недостающие значения оставлены пустыми."
             )
@@ -145,25 +174,123 @@ def column_types(db, source: str) -> list[tuple[str, str]]:
     return [(row["column_name"], row["column_type"]) for row in rows]
 
 
-def scan(db, source: str, text_columns: list[str]) -> tuple[int, list[str]]:
-    probes = ["count(row(*COLUMNS(*))) AS total"]
+def scan(
+    db,
+    source: str,
+    text_columns: list[str],
+    null_tokens: list[str] | None = None,
+    min_share: float | None = None,
+) -> tuple[dict[str, str], dict[str, int], dict[str, int]]:
+    if not text_columns:
+        return {}, {}, {}
+
+    tokens = settings.csv_null_tokens if null_tokens is None else null_tokens
+    share_threshold = settings.csv_retype_min_share if min_share is None else min_share
+    quoted_tokens = ", ".join(quote_literal(t) for t in tokens)
+
+    probes = []
     for position, column in enumerate(text_columns):
         quoted = quote_identifier(column)
         trimmed = f"trim({quoted})"
+        is_token = f"({trimmed} IN ({quoted_tokens}))" if quoted_tokens else "FALSE"
+        is_filled = f"({quoted} IS NOT NULL AND {trimmed} <> '')"
+        is_candidate = f"({is_filled} AND NOT {is_token})"
+
+        cleaned_double = trimmed
+        for separator in GROUP_SEPARATORS:
+            cleaned_double = f"replace({cleaned_double}, '{separator}', '')"
+        cleaned_double = f"replace({cleaned_double}, ',', '.')"
+
         probes += [
             f"count({quoted}) FILTER (WHERE {trimmed} <> '') AS filled_{position}",
-            f"count_if(regexp_full_match({trimmed}, '{NUMBER_PATTERN}')) AS numeric_{position}",
-            f"count_if(regexp_matches({trimmed}, '{NUMBER_MARKERS}')) AS marked_{position}",
+            f"count_if({is_filled} AND {is_token}) AS tokens_{position}",
+            f"count_if({is_candidate} AND regexp_matches({trimmed}, '^[+-]?0[0-9]+$')) AS leading_zero_{position}",
+            f"count_if({is_candidate} AND regexp_full_match({trimmed}, '^[+-]?[0-9]+$') AND TRY_CAST({trimmed} AS BIGINT) IS NOT NULL) AS bigint_{position}",
+            f"count_if({is_candidate} AND TRY_CAST({cleaned_double} AS DOUBLE) IS NOT NULL) AS double_{position}",
+            f"count_if({is_candidate} AND regexp_full_match({trimmed}, '^[0-9]{{4}}-[0-9]{{2}}-[0-9]{{2}}$') AND TRY_CAST({trimmed} AS DATE) IS NOT NULL) AS date_{position}",
+            f"count_if({is_candidate} AND NOT regexp_full_match({trimmed}, '^[0-9]{{4}}-[0-9]{{2}}-[0-9]{{2}}$') AND TRY_CAST({trimmed} AS TIMESTAMP) IS NOT NULL) AS timestamp_{position}",
         ]
+
     row = db.query(f"SELECT {', '.join(probes)} FROM {source}")[0]
-    numeric = [
-        column
-        for position, column in enumerate(text_columns)
-        if row[f"filled_{position}"]
-        and row[f"numeric_{position}"] == row[f"filled_{position}"]
-        and row[f"marked_{position}"]
-    ]
-    return row["total"], numeric
+
+    retyped: dict[str, str] = {}
+    unconverted: dict[str, int] = {}
+    columns_with_tokens: list[str] = []
+
+    for position, column in enumerate(text_columns):
+        filled = row[f"filled_{position}"] or 0
+        tokens_cnt = row[f"tokens_{position}"] or 0
+        candidates = filled - tokens_cnt
+        if candidates <= 0:
+            continue
+
+        if tokens_cnt > 0:
+            columns_with_tokens.append(column)
+
+        leading_zero = row[f"leading_zero_{position}"] or 0
+        bigint_cnt = row[f"bigint_{position}"] or 0
+        double_cnt = row[f"double_{position}"] or 0
+        date_cnt = row[f"date_{position}"] or 0
+        timestamp_cnt = row[f"timestamp_{position}"] or 0
+
+        if leading_zero == 0 and bigint_cnt / candidates >= share_threshold:
+            retyped[column] = "BIGINT"
+            if bigint_cnt < candidates:
+                unconverted[column] = candidates - bigint_cnt
+        elif leading_zero == 0 and double_cnt / candidates >= share_threshold:
+            retyped[column] = "DOUBLE"
+            if double_cnt < candidates:
+                unconverted[column] = candidates - double_cnt
+        elif date_cnt / candidates >= share_threshold:
+            retyped[column] = "DATE"
+            if date_cnt < candidates:
+                unconverted[column] = candidates - date_cnt
+        elif timestamp_cnt / candidates >= share_threshold:
+            retyped[column] = "TIMESTAMP"
+            if timestamp_cnt < candidates:
+                unconverted[column] = candidates - timestamp_cnt
+
+    counted_tokens: dict[str, int] = {}
+    retyped_with_tokens = [col for col in retyped if col in columns_with_tokens]
+    if retyped_with_tokens and tokens:
+        token_probes = []
+        for i, token in enumerate(tokens):
+            sub = [
+                f"count_if(trim({quote_identifier(col)}) = {quote_literal(token)})"
+                for col in retyped_with_tokens
+            ]
+            token_probes.append(f"({' + '.join(sub)}) AS token_{i}")
+        token_row = db.query(f"SELECT {', '.join(token_probes)} FROM {source}")[0]
+        counted_tokens = {
+            tokens[i]: token_row[f"token_{i}"]
+            for i in range(len(tokens))
+            if token_row[f"token_{i}"] > 0
+        }
+
+    return retyped, counted_tokens, unconverted
+
+
+def retype_expression(column: str, target_type: str, null_tokens: list[str]) -> str:
+    quoted = quote_identifier(column)
+    trimmed = f"trim({quoted})"
+    quoted_tokens = ", ".join(quote_literal(t) for t in null_tokens)
+    null_cond = (
+        f"{trimmed} = '' OR {trimmed} IN ({quoted_tokens})" if quoted_tokens else f"{trimmed} = ''"
+    )
+
+    if target_type == "BIGINT":
+        return f"TRY_CAST(CASE WHEN {null_cond} THEN NULL ELSE {trimmed} END AS BIGINT)"
+    if target_type == "DOUBLE":
+        cleaned = trimmed
+        for separator in GROUP_SEPARATORS:
+            cleaned = f"replace({cleaned}, '{separator}', '')"
+        cleaned = f"replace({cleaned}, ',', '.')"
+        return f"TRY_CAST(CASE WHEN {null_cond} THEN NULL ELSE {cleaned} END AS DOUBLE)"
+    if target_type == "DATE":
+        return f"TRY_CAST(CASE WHEN {null_cond} THEN NULL ELSE {trimmed} END AS DATE)"
+    if target_type == "TIMESTAMP":
+        return f"TRY_CAST(CASE WHEN {null_cond} THEN NULL ELSE {trimmed} END AS TIMESTAMP)"
+    return quoted
 
 
 def number_expression(column: str) -> str:
@@ -173,7 +300,9 @@ def number_expression(column: str) -> str:
     return f"TRY_CAST(replace({cleaned}, ',', '.') AS DOUBLE)"
 
 
-def materialize(db, name: str, source: str, marker: str) -> tuple[int, list[str]]:
+def materialize(
+    db, name: str, source: str, marker: str
+) -> tuple[int, dict[str, str], int, dict[str, int], int, dict[str, int]]:
     table = quote_identifier(name)
     with db.lock:
         db.execute("BEGIN TRANSACTION")
@@ -186,20 +315,56 @@ def materialize(db, name: str, source: str, marker: str) -> tuple[int, list[str]
             if legacy:
                 db.execute(f"DROP VIEW {table}")
             db.execute(f"CREATE OR REPLACE TABLE {table} AS SELECT * FROM {source}")
+
+            rejected_rows = 0
+            try:
+                has_rejects = db.query(
+                    "SELECT table_name FROM duckdb_tables() WHERE table_name = 'reject_errors'"
+                )
+                if has_rejects:
+                    rejected_rows = db.query("SELECT count(*) AS cnt FROM reject_errors")[0]["cnt"]
+                    db.execute(
+                        "DROP TABLE IF EXISTS reject_errors; DROP TABLE IF EXISTS reject_scans"
+                    )
+            except duckdb.Error:
+                pass
+
+            types = column_types(db, table)
+            all_columns = [col for col, _ in types]
+            header_rows_removed = 0
+            if all_columns:
+                header_condition = " AND ".join(
+                    f"trim(lower(CAST({quote_identifier(col)} AS VARCHAR))) = {quote_literal(col.strip().lower())}"
+                    for col in all_columns
+                )
+                header_rows_removed = db.query(
+                    f"SELECT count(*) AS cnt FROM {table} WHERE {header_condition}"
+                )[0]["cnt"]
+                if header_rows_removed > 0:
+                    db.execute(f"DELETE FROM {table} WHERE {header_condition}")
+
+            rows = db.query(f"SELECT count(*) AS total FROM {table}")[0]["total"]
+
             types = column_types(db, table)
             text_columns = [column for column, kind in types if kind == "VARCHAR"]
-            rows, numeric = scan(db, table, text_columns)
-            for column in numeric:
+            tokens = settings.csv_null_tokens
+            retyped, null_tokens_map, unconverted = scan(
+                db, table, text_columns, null_tokens=tokens
+            )
+
+            for column, target_type in retyped.items():
+                expr = retype_expression(column, target_type, tokens)
                 db.execute(
                     f"ALTER TABLE {table} ALTER {quote_identifier(column)} "
-                    f"TYPE DOUBLE USING {number_expression(column)}"
+                    f"TYPE {target_type} USING {expr}"
                 )
+
             db.execute(f"COMMENT ON TABLE {table} IS {quote_literal(marker)}")
             db.execute("COMMIT")
         except duckdb.Error:
             db.execute("ROLLBACK")
             raise
-    return rows, numeric
+    return rows, retyped, header_rows_removed, null_tokens_map, rejected_rows, unconverted
 
 
 def load_csv(db, name: str, path: str | Path) -> CSVReport:
@@ -216,10 +381,18 @@ def load_csv(db, name: str, path: str | Path) -> CSVReport:
     for strategy_index, strategy in enumerate(STRATEGIES):
         source = reader_sql(readable, base | strategy)
         try:
-            rows, numeric = materialize(db, name, source, marker)
+            (
+                rows,
+                retyped,
+                header_rows_removed,
+                null_tokens_map,
+                rejected_rows,
+                unconverted,
+            ) = materialize(db, name, source, marker)
         except duckdb.Error as error:
             failure = error
             continue
+        numeric = [col for col, kind in retyped.items() if kind in ("DOUBLE", "BIGINT")]
         report = CSVReport(
             table=name,
             encoding=encoding,
@@ -228,16 +401,25 @@ def load_csv(db, name: str, path: str | Path) -> CSVReport:
             numeric_text_columns=numeric,
             tolerant=strategy_index > 0,
             all_text=strategy_index == len(STRATEGIES) - 1,
+            header_rows_removed=header_rows_removed,
+            null_tokens=null_tokens_map,
+            retyped=retyped,
+            rejected_rows=rejected_rows,
+            unconverted=unconverted,
         )
         log = logger.warning if report.tolerant else logger.info
         log(
-            "CSV «%s» -> %s: %d строк, кодировка %s, разделитель %r, числа из текста %s, режим %d",
+            "CSV «%s» -> %s: %d строк, кодировка %s, разделитель %r, приведено типов %s, "
+            "удалено заголовков %d, литералов %s, отброшено строк %d, режим %d",
             original.name,
             name,
             rows,
             encoding,
             delimiter,
-            numeric,
+            retyped,
+            header_rows_removed,
+            null_tokens_map,
+            rejected_rows,
             strategy_index,
         )
         return report
