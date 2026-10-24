@@ -6,9 +6,12 @@
 источнику есть описание — комментарии колонок или приложенный документ, —
 названия и описания колонок переносятся в паспорт в фоне (ingest.describe).
 Источник БД запоминается и переподключается после рестарта (core/data/restore.py).
+CSV-источник — это файлы в storage/uploads/<id> и постоянные таблицы DuckDB,
+помеченные комментарием «csv:<id>/<файл>»; DELETE удаляет и то и другое.
 """
 
 import logging
+import re
 import shutil
 from pathlib import Path
 from typing import Annotated
@@ -26,11 +29,17 @@ from app.core.data.connectors.clickhouse import (
     ClickHouseConnectionError,
     ClickHouseExtensionUnavailableError,
 )
-from app.core.data.connectors.csv import CSVConnector, CSVLoadError, table_name
+from app.core.data.connectors.csv import (
+    CSVConnector,
+    CSVLoadError,
+    datasource_tables,
+    table_name,
+)
 from app.core.data.connectors.factory import build_connector
 from app.core.data.connectors.postgres import (
     PostgresConnectionError,
     PostgresExtensionUnavailableError,
+    quote_identifier,
 )
 from app.core.data.duckdb_manager import DuckDBManager
 from app.core.data.profiling import TableProfile
@@ -41,6 +50,11 @@ router = APIRouter()
 
 UPLOAD_CHUNK = 1 << 20
 DESCRIPTION_MAX_BYTES = 1 << 20
+CSV_DATASOURCE = re.compile(r"csv_[0-9a-f]+")
+
+
+def uploads_dir() -> Path:
+    return Path(settings.storage_dir, "uploads").resolve()
 
 
 def store_upload(upload: UploadFile, target: Path, limit: int) -> None:
@@ -116,7 +130,7 @@ def attach_csv(
 ) -> DatasourceOut:
     document = read_description(description)
     datasource_id = f"csv_{uuid4().hex[:10]}"
-    folder = Path(settings.storage_dir, "uploads", datasource_id).resolve()
+    folder = uploads_dir() / datasource_id
     folder.mkdir(parents=True, exist_ok=True)
     limit = settings.csv_max_upload_mb * 1024 * 1024
     paths: dict[str, str] = {}
@@ -131,7 +145,7 @@ def attach_csv(
             target = folder / f"{name}.csv"
             store_upload(upload, target, limit)
             paths[name] = str(target)
-        connector = CSVConnector(paths)
+        connector = CSVConnector(paths, datasource_id)
         with db.lock:
             profiles = ingest.attach(connector, db)
             tables = list(profiles)
@@ -186,8 +200,53 @@ def attach_db(
     )
 
 
+def legacy_files(folder: Path) -> list[str]:
+    """Файлы источника, таблицы которых могли загрузиться без id в комментарии.
+
+    Имя файла, которое есть и в другом источнике, пропускается: по комментарию
+    «csv:<файл>» не понять, чья это таблица.
+    """
+    others = {
+        path.name
+        for path in folder.parent.glob("*/*.csv")
+        if path.parent != folder and not path.name.endswith(".utf8.csv")
+    }
+    return sorted(
+        path.name
+        for path in folder.glob("*.csv")
+        if not path.name.endswith(".utf8.csv") and path.name not in others
+    )
+
+
+def forget_csv(db: DuckDBManager, datasource_id: str) -> list[str] | None:
+    """Удалить CSV-источник: таблицы, их паспорта и загруженные файлы.
+
+    Возвращает удалённые таблицы; None — такого источника нет.
+    """
+    if not CSV_DATASOURCE.fullmatch(datasource_id):
+        return None
+    folder = uploads_dir() / datasource_id
+    with db.lock:
+        tables = datasource_tables(
+            db, datasource_id, legacy_files(folder) if folder.is_dir() else []
+        )
+        if not tables and not folder.is_dir():
+            return None
+        memory = ProfileMemory(db)
+        for table in tables:
+            db.execute(f"DROP TABLE IF EXISTS {quote_identifier(table)}")
+            memory.delete(table)
+    shutil.rmtree(folder, ignore_errors=True)
+    return tables
+
+
 @router.delete("/{datasource_id}", status_code=204)
-def detach_db(datasource_id: str, db: Annotated[DuckDBManager, Depends(get_db)]) -> None:
-    """Отключить источник БД и забыть его: после рестарта он не переподключится."""
-    if restore.forget(db, datasource_id) is None:
+def detach(datasource_id: str, db: Annotated[DuckDBManager, Depends(get_db)]) -> None:
+    """Удалить источник: БД отключить и забыть, CSV — удалить таблицы и файлы.
+
+    После рестарта удалённый источник не возвращается.
+    """
+    if restore.forget(db, datasource_id) is not None:
+        return
+    if forget_csv(db, datasource_id) is None:
         raise HTTPException(status_code=404, detail=f"Источник «{datasource_id}» не найден.")
