@@ -15,7 +15,7 @@ import type {
   RefusalEvent,
   TurnProgress,
 } from "@/types/chat";
-import type { Datasource, SessionResponse } from "@/types/datasource";
+import type { Datasource, SessionResponse, TableBrief } from "@/types/datasource";
 import { useCanvasStore } from "@/store/canvasStore";
 
 export interface ChatMessage {
@@ -53,6 +53,8 @@ export interface DatabaseFolder {
   tables: string[];
   /** Одно предложение о том, что за данные (profile_summary бэкенда). */
   description?: string;
+  /** Паспорта таблиц из ответа подключения. */
+  profiles?: TableBrief[];
   sessions: SessionItem[];
   /** Демо-база без настоящего datasource на бэкенде. */
   demo?: boolean;
@@ -351,6 +353,7 @@ export const useSessionStore = create<SessionState>()(
           kind: datasource.kind,
           tables: datasource.tables,
           description: datasource.profile_summary,
+          profiles: datasource.profiles,
           sessions: [],
         };
         set((s) => ({
