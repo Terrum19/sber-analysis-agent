@@ -286,3 +286,78 @@ def test_clarification_counts_truncated_prompts(orchestrator):
 
     assert events[-1]["type"] == "clarification_needed"
     assert events[-1]["data"]["prompt_truncated"] == 1
+
+
+def ask(orchestrator, question: str) -> list[dict]:
+    import asyncio
+
+    async def _collect():
+        request = ChatRequest(session_id="s1", question=question)
+        return [event async for event in orchestrator.run(request)]
+
+    return asyncio.run(_collect())
+
+
+class OverviewLLM:
+    def __init__(self, error: Exception | None = None) -> None:
+        self.error = error
+        self.calls = 0
+
+    async def complete(self, system, user, **kwargs):
+        self.calls += 1
+        if self.error is not None:
+            raise self.error
+        return "Передо мной числа.\n\nПропусков нет."
+
+
+class NoPlanner:
+    def __init__(self, llm) -> None:
+        self.llm = llm
+
+    async def plan(self, question, context):
+        raise AssertionError("обзорный вопрос не идёт в планировщик")
+
+
+OVERVIEW_STAGES = ["insight:started", "text", "chart:started", "chart", "done"]
+
+
+def test_overview_question_skips_planner(orchestrator):
+    llm = OverviewLLM()
+    orchestrator.planner = NoPlanner(llm)
+    events = ask(orchestrator, "Что передо мной?")
+
+    assert stages(events) == OVERVIEW_STAGES
+    assert events[1]["data"] == {
+        "headline": "raw: 2 строки, 1 колонка, колонок с датами нет — период не определить",
+        "details": ["Передо мной числа.", "Пропусков нет."],
+    }
+    spec = events[3]["data"]["spec"]
+    assert spec["usermeta"]["chart_type"] == "table"
+    assert [row["Колонка"] for row in spec["data"]["values"]] == ["a"]
+    assert stages(ask(orchestrator, "Сколько строк?")) == OVERVIEW_STAGES
+    assert llm.calls == 1
+    assert SessionMemory("s1").last_chart() is None
+
+
+def test_overview_without_llm_still_answers(orchestrator):
+    from app.core.agent.orchestrator import SUMMARY_UNAVAILABLE
+
+    orchestrator.planner = NoPlanner(OverviewLLM(RuntimeError("LLM недоступна")))
+    events = ask(orchestrator, "Что за данные?")
+
+    assert stages(events) == OVERVIEW_STAGES
+    assert events[1]["data"]["details"] == [SUMMARY_UNAVAILABLE]
+
+
+def test_overview_failure_ends_the_stream(orchestrator, monkeypatch):
+    from app.core.data import overview
+
+    def broken(db, table):
+        raise RuntimeError("профиль не построен")
+
+    monkeypatch.setattr(overview, "passport", broken)
+    orchestrator.planner = NoPlanner(OverviewLLM())
+    events = ask(orchestrator, "Что передо мной?")
+
+    assert stages(events) == ["insight:started", "insight:failed", "error", "done"]
+    assert events[1]["data"]["error"] == "профиль не построен"

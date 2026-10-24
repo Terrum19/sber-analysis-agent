@@ -42,6 +42,12 @@ CODE_MIN_WIDTH = 4
 CODE_MIN_DISTINCT = 10
 CODE_MIN_DENSITY = 0.5
 UNIQUE_KEY_MIN_ROWS = 100
+NUMERIC_TEXT_MIN_SHARE = 0.95
+FLAG_NOTES = {
+    "numeric_as_text": "числа записаны текстом",
+    "null_tokens": "литералы пропусков в тексте",
+    "header_value": "среди значений есть имя колонки",
+}
 MEASURE_PREFIXES = (
     "сумм",
     "цен",
@@ -144,6 +150,7 @@ class ColumnStats:
     is_unique: bool = False
     outlier_count: int | None = None
     identifier_by: str | None = None
+    flags: list[str] = field(default_factory=list)
 
     def fences(self) -> tuple[float, float] | None:
         if self.q1 is None or self.q3 is None:
@@ -155,13 +162,13 @@ class ColumnStats:
         """Строка _meta.column_passport (без table_name и position).
 
         Поля с зарезервированными в SQL именами переименовываются (ROW_NAMES),
-        значения без фиксированного типа и top_values сериализуются в JSON.
+        значения без фиксированного типа, top_values и flags сериализуются в JSON.
         """
         row = {}
         for name, value in asdict(self).items():
             if name in JSON_FIELDS:
                 value = dump_json(value)
-            elif name == "top_values":
+            elif name in ("top_values", "flags"):
                 value = json.dumps(to_json(value), ensure_ascii=False)
             row[ROW_NAMES.get(name, name)] = value
         row["lower_fence"], row["upper_fence"] = self.fences() or (None, None)
@@ -181,6 +188,8 @@ class ColumnStats:
                     {"value": restore(entry["value"], dtype), "count": entry["count"]}
                     for entry in json.loads(value)
                 ]
+            elif item.name == "flags":
+                value = load_json(value) or []
             values[item.name] = value
         return cls(**values)
 
@@ -192,9 +201,14 @@ class TableProfile:
     column_count: int
     columns: list[ColumnStats]
     profiled_at: str
+    empty_rows: int = 0
 
     def column(self, name: str) -> ColumnStats | None:
         return next((column for column in self.columns if column.name == name), None)
+
+    def temporal_column(self) -> ColumnStats | None:
+        """Колонка периода данных: первая temporal-колонка (None, если дат нет)."""
+        return next((column for column in self.columns if column.kind == "temporal"), None)
 
     def to_dict(self) -> dict:
         return {
@@ -203,6 +217,7 @@ class TableProfile:
             "column_count": self.column_count,
             "columns": [to_json(asdict(column)) for column in self.columns],
             "profiled_at": self.profiled_at,
+            "empty_rows": self.empty_rows,
         }
 
     @classmethod
@@ -215,6 +230,7 @@ class TableProfile:
             column_count=table_row["column_count"],
             columns=[ColumnStats.from_row(row) for row in ordered],
             profiled_at=table_row["profiled_at"],
+            empty_rows=table_row.get("empty_rows") or 0,
         )
 
 
@@ -335,6 +351,10 @@ def quote_identifier(name: str) -> str:
     return '"' + name.replace('"', '""') + '"'
 
 
+def quote_literal(value: str) -> str:
+    return "'" + value.replace("'", "''") + "'"
+
+
 def quote_table(table: str) -> str:
     return ".".join(quote_identifier(part) for part in table.split("."))
 
@@ -384,6 +404,95 @@ def stats_expressions(index: int, column: ColumnStats, approx: bool) -> list[str
     return expressions
 
 
+def has_quality_flags(column: ColumnStats) -> bool:
+    return column.kind == "text" and column.dtype.upper() == "VARCHAR"
+
+
+def quality_fields(column: ColumnStats) -> str:
+    """Счётчики флагов качества текстовой колонки (см. quality_flags).
+
+    Считаются по различным значениям частотного подзапроса с весом frequency:
+    у колонки с несколькими значениями это почти бесплатно.
+    """
+    trimmed = "trim(value)"
+    tokens = ", ".join(quote_literal(token) for token in settings.csv_null_tokens)
+    is_token = f"{trimmed} IN ({tokens})" if tokens else "false"
+    is_number = f"isfinite(TRY_CAST({trimmed} AS DOUBLE)) AND NOT ({is_token})"
+    is_header = f"lower({trimmed}) = {quote_literal(column.name.strip().lower())}"
+    is_digits = f"regexp_full_match({trimmed}, '[0-9]+')"
+    weighted = {
+        "null_tokens": is_token,
+        "headers": is_header,
+        "numbers": is_number,
+        "digits": is_digits,
+        "leading_zeros": f"regexp_full_match({trimmed}, '0[0-9]+')",
+    }
+    entries = [
+        f"'{name}': COALESCE(sum(frequency) FILTER (WHERE {condition}), 0)"
+        for name, condition in weighted.items()
+    ]
+    entries += [
+        f"'digits_min_len': MIN(LENGTH({trimmed})) FILTER (WHERE {is_digits})",
+        f"'digits_max_len': MAX(LENGTH({trimmed})) FILTER (WHERE {is_digits})",
+    ]
+    return ", ".join(entries)
+
+
+def is_text_code(column: ColumnStats, values: int, counts: dict) -> bool:
+    """Числа в тексте, которые на деле коды: признаки те же, что у числовых
+    идентификаторов (имя, unique, fixed_width), плюс ведущие нули («007»)."""
+    if counts["leading_zeros"] or is_identifier_name(column.name):
+        return True
+    if is_measure_name(column.name):
+        return False
+    if values >= UNIQUE_KEY_MIN_ROWS and (column.distinct or 0) >= values:
+        return True
+    width = counts["digits_min_len"]
+    return (
+        counts["digits"] == counts["numbers"]
+        and width is not None
+        and width >= CODE_MIN_WIDTH
+        and width == counts["digits_max_len"]
+        and (column.distinct or 0) >= CODE_MIN_DISTINCT
+    )
+
+
+def quality_flags(column: ColumnStats, frequency: dict | None) -> list[str]:
+    """Флаги качества текстовой колонки по счётчикам частотного подзапроса.
+
+    numeric_as_text — не меньше NUMERIC_TEXT_MIN_SHARE значений (без NULL,
+    литералов пропусков и значений-заголовков) приводятся к DOUBLE, и это не коды;
+    null_tokens:N — N литералов из settings.csv_null_tokens;
+    header_value — среди значений есть имя колонки.
+    """
+    if not frequency or "numbers" not in frequency:
+        return []
+    tokens = frequency["null_tokens"]
+    headers = frequency["headers"]
+    values = column.total - column.nulls - tokens - headers
+    flags = []
+    if (
+        values > 0
+        and frequency["numbers"] >= NUMERIC_TEXT_MIN_SHARE * values
+        and not is_text_code(column, values, frequency)
+    ):
+        flags.append("numeric_as_text")
+    if tokens:
+        flags.append(f"null_tokens:{tokens}")
+    if headers:
+        flags.append("header_value")
+    return flags
+
+
+def flag_notes(column: ColumnStats) -> list[str]:
+    """Флаги качества колонки словами: «литералы пропусков в тексте: 6»."""
+    notes = []
+    for flag in column.flags:
+        name, _, count = flag.partition(":")
+        notes.append(f"{FLAG_NOTES[name]}: {count}" if count else FLAG_NOTES[name])
+    return notes
+
+
 def apply_stats(index: int, column: ColumnStats, row: dict, row_count: int) -> None:
     prefix = f"c{index}"
     column.total = row_count
@@ -421,9 +530,11 @@ def frequency_expression(
     condition = f"{identifier} IS NOT NULL"
     if is_float(column):
         condition += f" AND NOT isnan({identifier})"
+    quality = f", {quality_fields(column)}" if has_quality_flags(column) else ""
     return (
         "(SELECT {'distinct': COUNT(*), "
-        f"'top': max_by({{'value': value, 'count': frequency}}, frequency, {top_values_limit})}} "
+        f"'top': max_by({{'value': value, 'count': frequency}}, frequency, {top_values_limit})"
+        f"{quality}}} "
         f"FROM (SELECT {identifier} AS value, COUNT(*) AS frequency FROM {source} "
         f'WHERE {condition} GROUP BY 1)) AS "c{index}_frequency"'
     )
@@ -496,11 +607,13 @@ def profile_table(
     if approx and any(column.kind == "numeric" for column in columns):
         counted = db.query(f"SELECT COUNT(*) AS row_count FROM {source}")
         use_approx = counted[0]["row_count"] >= settings.profile_approx_min_rows
-    expressions = ["COUNT(*) AS row_count"]
+    all_null = " AND ".join(f"{quote_identifier(column.name)} IS NULL" for column in columns)
+    expressions = ["COUNT(*) AS row_count", f"COALESCE(count_if({all_null}), 0) AS empty_rows"]
     for index, column in enumerate(columns):
         expressions += stats_expressions(index, column, use_approx)
     stats = db.query(f"SELECT {', '.join(expressions)} FROM {source}")[0]
     profile.row_count = stats["row_count"]
+    profile.empty_rows = stats["empty_rows"]
     for index, column in enumerate(columns):
         apply_stats(index, column, stats, profile.row_count)
     if profile.row_count == 0:
@@ -519,6 +632,7 @@ def profile_table(
         evidence = identifier_evidence(column)
         if evidence:
             mark_identifier(column, evidence)
+        column.flags = quality_flags(column, frequencies.get(f"c{index}_frequency"))
     return profile
 
 
@@ -549,6 +663,8 @@ def quality_notes(profile: TableProfile) -> list[str]:
     if profile.row_count == 0:
         return ["таблица пуста"]
     notes = []
+    if profile.empty_rows and profile.column_count > 1:
+        notes.append(f"пустых строк (все колонки NULL): {profile.empty_rows}")
     for column in profile.columns:
         label = f"«{column.name}»"
         if column.nulls == column.total:
@@ -556,6 +672,7 @@ def quality_notes(profile: TableProfile) -> list[str]:
             continue
         if column.nulls:
             notes.append(f"{label}: пропусков {column.null_pct:g}%")
+        notes += [f"{label}: {note}" for note in flag_notes(column)]
         if column.nan_pct:
             notes.append(f"{label}: NaN {column.nan_pct:g}%")
         if column.is_constant and profile.row_count > 1:

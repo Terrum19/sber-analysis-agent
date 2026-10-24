@@ -36,7 +36,24 @@ bash infra/local-dev.sh
 # backend: http://localhost:8000  frontend: http://localhost:3000
 ```
 
-Или одной командой: `make up` (см. Makefile).
+Или одной командой в Docker — Ollama с моделью поднимается вместе с платформой:
+
+```bash
+cp .env.example .env
+make up        # Ollama на CPU, модель LLM_MODEL
+make up-gpu    # или Ollama на GPU NVIDIA (нужен NVIDIA Container Toolkit), модель LLM_MODEL_GPU
+make down
+```
+
+Нужны Docker Engine 25+ и Docker Compose 2.20+ (`start_interval` в healthcheck,
+`depends_on.required`): `docker version`, `docker compose version`.
+
+Первый запуск скачивает модель в том `ollama-models` (несколько минут, несколько ГБ);
+backend ждёт, пока Ollama не станет healthy: скачаны `LLM_MODEL` и `EMBED_MODEL`,
+если он задан. Дальше модели берутся из тома. Ollama доступна только с этой
+машины: `http://localhost:${OLLAMA_PORT:-11434}`.
+
+Переменные окружения перекрывают `.env`: `LLM_MODEL_GPU=qwen2.5-coder:32b make up-gpu`.
 
 ### Длина контекста LLM
 

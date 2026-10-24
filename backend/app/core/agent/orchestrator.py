@@ -15,6 +15,10 @@
 таблицей») обслуживается без планировщика и без повторного SQL: спека
 перестраивается chart_morph из кешированной temp_result_vN.
 
+Вопрос про таблицу целиком («что передо мной?», «сколько строк и за какой
+период?») тоже идёт без планировщика: факты и таблица колонок — из
+паспорта, описание — из кеша паспорта или от LLM (core/data/overview.py).
+
 О ходе работы фронт узнаёт из событий ``progress``: планирование
 (started/finished), каждый шаг (started/finished/failed), начало
 инсайта и графика.
@@ -46,6 +50,7 @@ from app.core.agent.insight import InsightGenerator
 from app.core.agent.planner import StepPlanner
 from app.core.agent.recovery import STEP_FIX_ATTEMPTS, fixable
 from app.core.agent.step_executor import StepExecutor, resolve_input, tool_kind
+from app.core.data import overview
 from app.core.data.duckdb_manager import DuckDBManager
 from app.core.llm.budget import track_truncations
 from app.core.memory.profile_memory import ProfileMemory
@@ -60,6 +65,8 @@ from app.models.research_step import ResearchPlan, ResearchStep
 NO_TABLE_MESSAGE = "Сначала подключите данные"
 # Ход упал вне шагов (планировщик, инсайт, график): текст ошибки — в progress.
 FAILURE_MESSAGE = "Не удалось ответить на вопрос, попробуйте ещё раз"
+SUMMARY_UNAVAILABLE = "Описание данных сейчас недоступно: модель не ответила."
+OVERVIEW_CAPTION = "Колонки таблицы"
 # Событие, которым кончается ход: после него поток закрывается.
 TURN_END_EVENTS = ("done", "clarification_needed")
 
@@ -206,6 +213,11 @@ class AgentOrchestrator:
             # иначе сессия навсегда застрянет в ожидании recovery_response.
             memory.clear_pending_recovery()
             pending = None
+
+        if pending is None and overview.is_overview_question(request.question):
+            async for event in self._overview(memory, table):
+                yield event
+            return
 
         if pending is None:
             # Смена вида прошлого графика — из кеша, без планировщика и SQL.
@@ -679,6 +691,44 @@ class AgentOrchestrator:
             source_table=source_table,
             emit=emit,
         )
+
+    async def _overview(self, memory: SessionMemory, table: str) -> AsyncIterator[dict]:
+        """Ответ на «что передо мной?»: факты, описание и таблица колонок, без планировщика.
+
+        Описание не построилось (LLM недоступна) — факты и таблица всё равно
+        отдаются. Таблица колонок не становится last_chart: «покажи в другом
+        виде» относится к прошлому графику исследования.
+        """
+        stage = "insight"
+        try:
+            yield _progress_event("insight", "started")
+            profile = overview.passport(self.db, table)
+            enrichment = self.profiles.load_enrichment(table)
+            headline = overview.facts(profile)
+            try:
+                summary = await overview.describe_dataset(
+                    self.db, table, getattr(self.planner, "llm", None)
+                )
+            except Exception:
+                logger.exception("<<< run() описание таблицы %s не построено", table)
+                summary = ""
+            details = overview.paragraphs(summary) or [SUMMARY_UNAVAILABLE]
+            yield {"type": "text", "data": {"headline": headline, "details": details}}
+
+            stage = "chart"
+            yield _progress_event("chart", "started")
+            spec = build_vega_spec(
+                "table", data=overview.profile_rows(profile, enrichment), title=OVERVIEW_CAPTION
+            )
+            yield {"type": "chart", "data": {"spec": spec, "caption": OVERVIEW_CAPTION}}
+        except Exception as exc:
+            logger.exception("<<< run() обзор таблицы: этап %s упал", stage)
+            yield _progress_event(stage, "failed", error=str(exc))
+            yield _failure_event()
+            yield {"type": "done", "data": {}}
+            return
+        memory.record_answer(headline)
+        yield {"type": "done", "data": {}}
 
     def _morph(self, memory: SessionMemory, question: str, titles: dict[str, str]) -> dict | None:
         """Сменить вид прошлого графика из кеша (None — нужен новый план).

@@ -59,6 +59,8 @@ jobs:
           docker save "sber-backend:$VERSION" | gzip > "$dist/sber-backend-$VERSION.tar.gz"
           docker save "sber-frontend:$VERSION" | gzip > "$dist/sber-frontend-$VERSION.tar.gz"
           cp docker-compose.release.yml .env.example "$bundle/"
+          # Монтируется в сервисы Ollama; без него Docker создаёт на его месте каталог.
+          cp --parents infra/ollama/entrypoint.sh "$bundle/"
           cp -r data "$bundle/data"
           tar -czf "$dist/sber-analytical-agent-$VERSION.tar.gz" -C "$RUNNER_TEMP" \
             "sber-analytical-agent-$VERSION"

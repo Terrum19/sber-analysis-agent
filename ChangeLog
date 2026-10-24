@@ -69,6 +69,252 @@
 	* backend/tests/unit/test_orchestrator_unit.py
 	(test_done_counts_truncated_prompts): Новый тест.
 
+2026-10-23  thebulkapro  <saitbatalovbulat200@gmail.com>
+
+	«Что передо мной?»: описание таблицы от LLM в паспорте (#54).
+	* backend/app/core/data/overview.py: Новый модуль.
+	(describe_dataset): Промпт SCHEMA_DESCRIBE из паспорта; LLM только
+	при новом отпечатке промпта, описание сохраняется в паспорте.
+	(build_prompt, profile_lines, family_line, clip): Промпт с системным
+	не длиннее PROMPT_MAX_CHARS (контекст 4096 токенов при 1,5 символа
+	на токен, ответ до 600 токенов): однотипные колонки (Q1A…Q35A) одной
+	строкой, 5 частых значений, остальное — «… и ещё N».
+	(quality_block, grouped_notes, split_note, group_line): «Качество
+	данных» до 1000 символов, по строке на вид замечания со списком
+	колонок («пропуски: «A» (10%), «B» (15%)»); каждому виду хватает
+	места хотя бы на число колонок.
+	(facts, profile_rows): Объём, период и таблица колонок без LLM.
+	(is_overview_question): Вопрос целиком из обзорных фраз.
+	(passport): Нет паспорта — профиль строится и сохраняется.
+	(cached_summary): Сохранённое описание по текущему паспорту, без LLM.
+	* backend/app/core/memory/profile_memory.py (SCHEMA): Колонка
+	summary_fingerprint (ADD COLUMN IF NOT EXISTS).
+	(save_summary, load_summary): Новые методы.
+	* backend/app/core/data/ingest.py (summarize): Новая функция:
+	описание таблиц после переноса описания колонок; без LLM прогон
+	прекращается.
+	* backend/app/api/routes/datasources.py (describe_tables): После
+	describe — summarize; сбой только в лог.
+	(briefs): TableBrief.summary — описание, сохранённое по тем же
+	данным.  (table_brief): Новый GET /api/datasources/tables/{table}:
+	TableBrief по паспорту с итогом переноса и описанием, 404 без
+	паспорта.
+	* backend/app/api/schemas/datasource.py (TableBrief.from_profile):
+	Параметр summary; период через TableProfile.temporal_column.
+	(DatasourceOut.profile_summary): Удалено, описание — в TableBrief.
+	* backend/app/core/data/profiling.py (TableProfile.temporal_column):
+	Новый метод: колонка периода, общая для TableBrief и overview.facts.
+	* backend/app/core/agent/orchestrator.py (AgentOrchestrator._overview):
+	Обзорный вопрос без планировщика: insight started, text (факты и
+	описание), chart started, chart table, done.  LLM не ответила —
+	факты и таблица без описания.
+	* backend/app/core/data/semantic_select.py (column_facts): Бывшая
+	_column_facts; параметр top_values, как у describe_columns.
+	* backend/app/core/llm/prompts/schema_describe.py
+	(SCHEMA_DESCRIBE_SYSTEM): Новый системный промпт.  (SCHEMA_DESCRIBE):
+	Не пересчитывать объём и период, строки семейств, 3-6 предложений.
+	* backend/tests/unit/test_overview.py: Новые тесты: кеш, смена
+	профиля и названий, сбой и пустой ответ LLM, лимит промпта, семейства,
+	замечания по видам, детектор вопросов, summarize.
+	* backend/tests/unit/test_profile_memory.py,
+	backend/tests/unit/test_orchestrator_unit.py,
+	backend/tests/unit/test_datasources_api.py,
+	backend/tests/unit/test_datasource_restore.py: Тесты сводки в
+	паспорте, обзорного хода и фоновой задачи, GET сводки таблицы и
+	описание при повторном подключении; summarize подменён.
+	* backend/tests/e2e/test_scenarios.py (test_scenario_1): Новый тест:
+	ответ содержит число строк и период.  Колонка date — DATE.
+	* backend/tests/benchmark/test_orchestrator_benchmark.py: Вопрос с
+	планом вместо обзорного.
+	* docs/memory.md, docs/architecture.md, docs/prompts.md,
+	docs/repo_structure.md, docs/data_connectors.md: Описание таблицы,
+	обзорный ход, TableBrief.summary и GET сводки таблицы.
+
+	Флаги качества в профиле (#105).
+	* backend/app/core/data/profiling.py (ColumnStats.flags): Новое поле:
+	numeric_as_text, null_tokens:N, header_value для VARCHAR-колонок.
+	Считаются в частотном подзапросе по различным значениям, без нового
+	запроса.  numeric_as_text не ставится кодам: ведущие нули, имя-
+	идентификатор, unique, fixed_width.
+	(TableProfile.empty_rows): Новое поле: строки, где все колонки NULL.
+	(quality_notes): Флаги и пустые строки в «Качество данных»: раньше
+	по грязному CSV паспорт писал «пропусков нет».
+	(flag_notes): Новая функция: флаги словами.
+	* backend/app/core/memory/profile_memory.py (SCHEMA): Колонки flags и
+	empty_rows, миграция ADD COLUMN IF NOT EXISTS.
+	* backend/app/core/data/semantic_select.py (describe_columns): Метки ⚠
+	в строке колонки; у numeric_as_text подсказка про TRY_CAST.
+	* backend/app/config.py (Settings.csv_null_tokens): Новая настройка,
+	общая с очисткой CSV (#103).
+	* .env.example: CSV_NULL_TOKENS.
+	* backend/tests/unit/test_profiling.py,
+	backend/tests/unit/test_profile_memory.py,
+	backend/tests/unit/test_semantic_select.py: Три флага на грязной
+	колонке, коды без numeric_as_text, NaN и inf, порог 95 %, настройка
+	литералов, сохранение и миграция паспорта, метки в выжимке.
+	* docs/data_connectors.md, docs/memory.md: Флаги качества, empty_rows.
+
+2026-10-22  mb6ockatf  <smokenmirror@tutamail.com>
+
+	Сводка паспорта в ответе подключения (#96).
+	* backend/app/api/schemas/datasource.py (TableBrief): Новая схема:
+	строки, колонки, период по первой temporal-колонке, статус описания,
+	summary и предупреждения загрузчика.
+	(DatasourceOut.profiles): Сводки подключённых таблиц.
+	* backend/app/api/routes/datasources.py (briefs): Помечает pending
+	таблицы с описанием и собирает сводки из профилей ingest.attach.
+	(describe_tables): Если перенос описания упал, pending становится
+	failed.
+	* backend/app/core/data/ingest.py (mark_pending): Новая функция: pending для таблиц с описанием, none
+	для остальных; новый запуск переноса (DescribeJob) с прочитанными
+	комментариями колонок.
+	(describe): Ставит статус ready или failed. С job не перечитывает
+	комментарии и пропускает таблицу, подключённую заново.
+	* backend/app/core/data/schema_enrichment.py (Superseded)
+	(SchemaEnricher.enrich): С run не вызывает LLM и не пишет описания,
+	если таблицу подключили заново.
+	* backend/app/core/memory/profile_memory.py (SCHEMA): Колонка
+	_meta.table_passport.description_status и description_run (ADD
+	COLUMN IF NOT EXISTS).
+	(set_description_status, load_description_status, fail_pending)
+	(begin_description, load_description_run): Новые методы.
+	* backend/app/main.py (lifespan): При старте pending становится
+	failed: фоновый перенос описания не пережил рестарт.
+	* backend/app/core/data/connectors/base.py (BaseConnector.warnings):
+	Новый метод, по умолчанию пустой список.
+	* backend/app/core/data/connectors/csv.py (CSVReport.warnings)
+	(CSVConnector.warnings): Перекодировка, числа из текста, нестрогий
+	разбор и загрузка всех колонок текстом.
+	* backend/tests/unit/test_datasources_api.py: Тесты сводок и статусов.
+	* docs/data_connectors.md, docs/memory.md: Описание полей.
+
+2026-10-23  Alexander Yurits  <terruwork@gmail.com>
+
+	Ollama из compose: релиз, доступ и готовность моделей.
+	* .github/workflows/release.yml (Assemble bundle): В архив релиза
+	кладётся infra/ollama/entrypoint.sh; без него Docker создавал на его
+	месте каталог, и Ollama не стартовала.
+	* infra/ollama/entrypoint.sh (check): Новый режим для healthcheck:
+	скачаны LLM_MODEL и EMBED_MODEL, если задан; имена сравниваются так
+	же, как при скачивании.
+	* docker-compose.yml (x-ollama): Healthcheck — entrypoint.sh check.
+	Порт Ollama публикуется только на 127.0.0.1.
+	* docker-compose.release.yml (x-ollama): Healthcheck — то же.
+	* Makefile (env_or_file): Новая функция: переменная окружения или
+	командной строки перекрывает .env.  .env больше не подключается
+	через include.  (up-gpu): Модель через env_or_file.
+	* README.md: Docker Engine 25+ и Compose 2.20+, готовность моделей,
+	порт Ollama, переопределение .env окружением.
+
+	Контекст LLM в compose задаётся одним числом (#102).
+	* docker-compose.yml (backend): LLM_NUM_CTX из OLLAMA_CONTEXT_LENGTH.
+	* docker-compose.release.yml (backend): То же.
+
+2026-10-22  mb6ockatf  <smokenmirror@tutamail.com>
+
+	Smoke-тест чистого запуска в CI (#79).
+	* scripts/smoke.sh: Новый.  Ждёт /health, загружает demo_events.csv,
+	создаёт сессию над tables[0] из ответа, читает SSE чата до done
+	(error, обрыв или таймаут — провал), проверяет GET / фронтенда.
+	* docker-compose.ci.yml: Новый.  USE_FAKE_LLM=true для backend.
+	* .github/workflows/smoke.yml: Новый.  Compose без профиля с
+	docker-compose.ci.yml и smoke.sh на каждый PR и push в dev/main.
+	* backend/app/core/llm/fake_client.py (FakeLLM.complete_structured):
+	План агрегирует по category или, если её нет в промпте, по user_id,
+	чтобы фейковый план работал и на demo_events.
+	* Makefile (smoke): Новая цель.
+	* CONTRIBUTING.md: Smoke-тест чистого запуска.
+
+	Ollama с моделью в docker compose (#78).
+	* docker-compose.yml (ollama-cpu, ollama-gpu): Новые сервисы Ollama
+	(ollama/ollama:0.35.1) в профилях cpu и gpu, оба с сетевым именем
+	ollama и общим томом ollama-models.  Healthcheck ждёт, пока модель
+	LLM_MODEL появится в ollama list; start_period — час, на первое
+	скачивание модели.  OLLAMA_CONTEXT_LENGTH по умолчанию 16384 (#102).
+	(backend): LLM_BASE_URL — http://ollama:11434/v1, LLM_MODEL — тот же,
+	что у Ollama; ждёт healthy Ollama из активного профиля, без профиля
+	стартует без неё.
+	* docker-compose.release.yml: Те же сервисы Ollama для запуска из
+	архива релиза.
+	* infra/ollama/entrypoint.sh: Новый.  Сервер Ollama, скачивание
+	LLM_MODEL и EMBED_MODEL, если их ещё нет в томе, корректная остановка.
+	* Makefile (up): Профиль cpu.  (up-gpu): Новая цель: профиль gpu и
+	модель LLM_MODEL_GPU.  (down): Останавливает и сервисы Ollama.
+	* .env.example: LLM_BASE_URL и LLM_MODEL заполнены; новые
+	LLM_MODEL_GPU, OLLAMA_CONTEXT_LENGTH, EMBED_MODEL, OLLAMA_PORT.
+	* README.md: Запуск в Docker.
+	* docs/repo_structure.md: infra/ollama, make up-gpu.
+
+2026-10-23  Alexander Yurits  <terruwork@gmail.com>
+
+	Плитки дашборда из запроса не ломают вставку и не читают чужие таблицы.
+	* backend/app/api/schemas/dashboard.py (DashboardTileIn): Новая
+	входная схема плитки: result_table только temp_result_vN, иначе 422.
+	DashboardCreate и DashboardUpdate принимают её.
+	* backend/app/api/routes/dashboards.py (own_tiles): Новая функция.
+	POST даёт плиткам новые id; PUT сохраняет id плиток этого дашборда,
+	чужие и повторные заменяет.  (update_dashboard): 404 до замены плиток.
+	* backend/app/core/dashboards/recalculate.py (recalculate): Проверка
+	таблицы и чтение под одним db.lock.
+	* backend/tests/unit/test_dashboards_api.py
+	(test_create_with_tiles_of_another_dashboard)
+	(test_create_with_duplicate_tile_ids)
+	(test_update_keeps_own_tile_ids_and_replaces_foreign)
+	(test_result_table_must_be_a_step_result): Новые тесты.
+	* docs/memory.md: Входная схема плитки и id плиток.
+
+2026-10-22  mb6ockatf  <smokenmirror@tutamail.com>
+
+	Типизированное событие dashboard и KPI-плитка (#48).
+	* backend/app/api/schemas/chat.py (DashboardPayload): tiles — список
+	DashboardTileOut вместо словарей.  (DashboardPayload.from_dashboard):
+	Событие из дашборда; snapshot_data в SSE не отправляется, данные уже в
+	spec.data.values.
+	* backend/app/core/viz/vega_spec_builder.py (CHART_TYPES, _MARKS)
+	(_kpi): Новый вид kpi: первая метрика первой строки крупным текстом
+	(fontSize 48) в формате ,.2~f, подпись — title спеки, без него —
+	название метрики; без чисел строится таблица.
+	* backend/app/core/viz/chart_selector.py (select_chart): Новый
+	аргумент records: одна строка с одним конечным числом — kpi.  TODO
+	удалён.  (is_single_number): Новая функция.
+	* backend/app/core/viz/chart_morph.py (MORPH_MAP): Из kpi — в table и
+	bar.
+	* backend/app/core/llm/prompts/step_planner.py (STEP_PLANNER): kpi в
+	списке final_viz, для ответа одним числом — kpi.
+	* backend/app/models/research_step.py (ResearchPlan.final_viz): Только
+	известные виды и auto, без учёта регистра.
+	* backend/tests/contract/test_chat_event_schema.py: Событие dashboard
+	проверяется по DashboardPayload.
+	* backend/tests/unit/test_chart_selector.py: Новые тесты.
+	* backend/tests/unit/test_vega_spec_builder.py: Тесты KPI.
+	* backend/tests/unit/test_chart_morph.py,
+	backend/tests/unit/test_research_step.py,
+	backend/tests/unit/test_dashboards_api.py: Морфинг KPI, final_viz,
+	KPI после пересчёта.
+	* docs/visualization.md: KPI-спека, выбор вида, событие dashboard.
+
+2026-10-22  mb6ockatf  <smokenmirror@tutamail.com>
+
+	REST API дашбордов и пересчёт плиток (#47).
+	* backend/app/api/routes/dashboards.py: Эндпоинты GET (список,
+	session_id необязателен), GET по id, POST (201), PUT, DELETE (204) и
+	POST /{id}/recalculate.  На неизвестный id — 404 вместо пустого
+	объекта.
+	* backend/app/api/schemas/dashboard.py (DashboardTileOut, DashboardOut)
+	(DashboardCreate, DashboardUpdate): Новые схемы вместо неиспользуемых
+	DashboardTile и DashboardConfig; DashboardSummary берётся из модели.
+	* backend/app/core/dashboards/recalculate.py (recalculate): Новый
+	модуль.  Плитка с result_table перечитывает таблицу, пересобирает
+	спеку запрошенным типом графика (usermeta.requested_type, иначе
+	chart_type) с прежними подписями колонок и заголовком и обновляет
+	снимок.  В спеке без usermeta, собранной не построителем, меняются
+	только данные.  Если таблицы нет, снимок остаётся, а плитка
+	помечается stale.
+	* backend/tests/unit/test_dashboards_api.py: Тесты всех эндпоинтов,
+	404 и пересчёта.
+	* docs/memory.md: Таблица эндпоинтов и пересчёт.
+	* docs/repo_structure.md: recalculate.py, схемы и маршруты дашбордов.
+
 2026-10-23  Alexander Yurits  <terruwork@gmail.com>
 
 	Восстановление источника пропускает таблицу без прав, как attach.

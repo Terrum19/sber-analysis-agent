@@ -99,3 +99,17 @@ def test_describe_columns_shows_titles_from_passport() -> None:
         ["revenue", "flag"], profile, {"revenue": "Сумма"}, {"revenue": "Выручка"}
     )
     assert text.splitlines() == ["- revenue «Выручка» [numeric, ] — Сумма", "- flag [boolean, ]"]
+
+
+def test_describe_columns_shows_quality_flags() -> None:
+    from app.core.data.semantic_select import describe_columns
+
+    profile = make_profile({"Q1A": "text", "region": "text"})
+    profile.columns[0].flags = ["numeric_as_text", "null_tokens:6", "header_value"]
+    text = describe_columns(["Q1A", "region"], profile)
+    q1a, region = text.splitlines()
+    assert q1a == (
+        "- Q1A [text, ]; ⚠ числа записаны текстом, считай через TRY_CAST(... AS DOUBLE); "
+        "⚠ литералы пропусков в тексте: 6; ⚠ среди значений есть имя колонки"
+    )
+    assert region == "- region [text, ]"

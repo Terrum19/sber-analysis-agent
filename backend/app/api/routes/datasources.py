@@ -4,7 +4,9 @@
 грузятся в DuckDB, вся трансформация внутри платформы (см. core/data/).
 Сразу после подключения таблицы профилируются (ingest.attach); если к
 источнику есть описание — комментарии колонок или приложенный документ, —
-названия и описания колонок переносятся в паспорт в фоне (ingest.describe).
+названия и описания колонок переносятся в паспорт в фоне (ingest.describe),
+затем там же строится описание «что передо мной» (ingest.summarize).
+Готовое описание и итог переноса отдаёт GET /tables/{table}.
 Источник БД запоминается и переподключается после рестарта (core/data/restore.py).
 """
 
@@ -18,9 +20,9 @@ import duckdb
 from fastapi import APIRouter, BackgroundTasks, Depends, File, HTTPException, UploadFile
 
 from app.api.deps import get_db
-from app.api.schemas.datasource import DatasourceCreate, DatasourceOut
+from app.api.schemas.datasource import DatasourceCreate, DatasourceOut, TableBrief
 from app.config import settings
-from app.core.data import ingest, restore
+from app.core.data import ingest, overview, restore
 from app.core.data.connectors.base import BaseConnector
 from app.core.data.connectors.clickhouse import (
     ClickHouseConnectionError,
@@ -33,6 +35,8 @@ from app.core.data.connectors.postgres import (
     PostgresExtensionUnavailableError,
 )
 from app.core.data.duckdb_manager import DuckDBManager
+from app.core.data.profiling import TableProfile
+from app.core.memory.profile_memory import ProfileMemory
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -60,6 +64,22 @@ def list_tables(db: Annotated[DuckDBManager, Depends(get_db)]) -> list[str]:
     return db.user_tables()
 
 
+@router.get("/tables/{table}", response_model=TableBrief)
+def table_brief(table: str, db: Annotated[DuckDBManager, Depends(get_db)]) -> TableBrief:
+    """Сводка паспорта таблицы: итог фонового переноса описания и описание «что передо мной».
+
+    Предупреждения загрузчика (warnings) есть только в ответе подключения:
+    в паспорте они не хранятся.
+    """
+    memory = ProfileMemory(db)
+    profile = memory.load_profile(table)
+    if profile is None:
+        raise HTTPException(status_code=404, detail=f"Паспорта таблицы «{table}» нет.")
+    return TableBrief.from_profile(
+        profile, memory.load_description_status(table), [], overview.cached_summary(db, table)
+    )
+
+
 def too_large(name: str) -> HTTPException:
     return HTTPException(
         status_code=413, detail=f"Описание «{name}» больше {DESCRIPTION_MAX_BYTES >> 20} МБ."
@@ -77,13 +97,47 @@ def read_description(upload: UploadFile | None) -> str | None:
 
 
 async def describe_tables(
-    connector: BaseConnector, db: DuckDBManager, tables: list[str], document: str | None
+    connector: BaseConnector,
+    db: DuckDBManager,
+    tables: list[str],
+    document: str | None,
+    job: ingest.DescribeJob,
 ) -> None:
-    """Фоновый перенос описания в паспорт: сбой не затрагивает подключение."""
+    """Фоновый перенос описания в паспорт, затем описание «что передо мной».
+
+    Сбой не затрагивает подключение; описание таблицы строится и после
+    сбоя переноса — без названий колонок из документа.
+    """
     try:
-        await ingest.describe(connector, db, tables, document)
+        await ingest.describe(connector, db, tables, document, job=job)
     except Exception:
         logger.exception("Описание таблиц %s не перенесено в паспорт", tables)
+        with db.lock:
+            ProfileMemory(db).fail_pending(job.run)
+    try:
+        await ingest.summarize(db, tables)
+    except Exception:
+        logger.exception("Описание «что передо мной» для таблиц %s не построено", tables)
+
+
+def briefs(
+    connector: BaseConnector, db: DuckDBManager, profiles: dict[str, TableProfile]
+) -> list[TableBrief]:
+    """Сводки паспортов подключённых таблиц. Под db.lock, после ingest.mark_pending.
+
+    summary — описание, сохранённое по тем же данным (повторное подключение);
+    новое строится в фоне, его отдаёт GET /tables/{table}.
+    """
+    memory = ProfileMemory(db)
+    return [
+        TableBrief.from_profile(
+            profile,
+            memory.load_description_status(table),
+            connector.warnings(table),
+            overview.cached_summary(db, table),
+        )
+        for table, profile in profiles.items()
+    ]
 
 
 @router.post("/csv", response_model=DatasourceOut)
@@ -112,15 +166,18 @@ def attach_csv(
             paths[name] = str(target)
         connector = CSVConnector(paths)
         with db.lock:
-            tables = list(ingest.attach(connector, db))
+            profiles = ingest.attach(connector, db)
+            tables = list(profiles)
+            job = ingest.mark_pending(connector, db, tables, document)
+            summaries = briefs(connector, db, profiles)
     except CSVLoadError as error:
         shutil.rmtree(folder, ignore_errors=True)
         raise HTTPException(status_code=400, detail=str(error)) from None
     except BaseException:
         shutil.rmtree(folder, ignore_errors=True)
         raise
-    background.add_task(describe_tables, connector, db, tables, document)
-    return DatasourceOut(datasource_id=datasource_id, kind="csv", tables=tables)
+    background.add_task(describe_tables, connector, db, tables, document, job)
+    return DatasourceOut(datasource_id=datasource_id, kind="csv", tables=tables, profiles=summaries)
 
 
 @router.post("/db", response_model=DatasourceOut)
@@ -134,7 +191,10 @@ def attach_db(
     try:
         connector = build_connector(payload.kind, payload.dsn, payload.db_schema)
         with db.lock:
-            tables = list(ingest.attach(connector, db))
+            profiles = ingest.attach(connector, db)
+            tables = list(profiles)
+            job = ingest.mark_pending(connector, db, tables, payload.description)
+            summaries = briefs(connector, db, profiles)
     except ValueError as error:
         raise HTTPException(status_code=400, detail=str(error)) from None
     except (PostgresConnectionError, ClickHouseConnectionError) as error:
@@ -152,9 +212,11 @@ def attach_db(
             status_code=501, detail=f"Коннектор «{payload.kind}» пока не реализован."
         ) from None
     restore.remember(connector, payload.description)
-    background.add_task(describe_tables, connector, db, tables, payload.description)
+    background.add_task(describe_tables, connector, db, tables, payload.description, job)
     datasource_id = getattr(connector, "identity", f"{payload.kind}_{uuid4().hex[:10]}")
-    return DatasourceOut(datasource_id=datasource_id, kind=payload.kind, tables=tables)
+    return DatasourceOut(
+        datasource_id=datasource_id, kind=payload.kind, tables=tables, profiles=summaries
+    )
 
 
 @router.delete("/{datasource_id}", status_code=204)

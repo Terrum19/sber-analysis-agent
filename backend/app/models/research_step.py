@@ -1,6 +1,6 @@
 """Схемы плана исследования: ResearchStep и ResearchPlan."""
 
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
@@ -75,7 +75,9 @@ class ResearchPlan(BaseModel):
     """Полный план исследования: упорядоченные шаги + мета."""
 
     steps: list[ResearchStep] = Field(default_factory=list)
-    final_viz: str = "auto"  # bar, line, scatter, histogram, table, auto
+    final_viz: Literal[
+        "bar", "line", "area", "scatter", "histogram", "box", "heatmap", "table", "kpi", "auto"
+    ] = "auto"
     dashboard_requested: bool = False
     # Шаг, чей результат идёт в ответ и на график (None — последний шаг).
     result_step: int | None = None
@@ -87,3 +89,8 @@ class ResearchPlan(BaseModel):
         if value is None:
             return cls.model_fields[info.field_name].default
         return value
+
+    @field_validator("final_viz", mode="before")
+    @classmethod
+    def normalize_final_viz(cls, value: Any) -> Any:
+        return value.strip().lower() if isinstance(value, str) else value
