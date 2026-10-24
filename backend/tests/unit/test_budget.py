@@ -15,6 +15,7 @@ def context(monkeypatch):
     monkeypatch.setattr(settings, "llm_num_ctx", 1000)
     monkeypatch.setattr(settings, "llm_chars_per_token", 2.5)
     monkeypatch.setattr(budget, "_server_ctx", {})
+    monkeypatch.setattr(budget, "_server_ctx_asked", {})
 
 
 def test_budget_is_counted_from_num_ctx() -> None:
@@ -31,6 +32,19 @@ def test_budget_follows_smaller_server_context() -> None:
 def test_bigger_server_context_does_not_raise_budget() -> None:
     budget.remember_server_context("http://llm.test/v1", "m", 32768)
     assert budget.num_ctx() == 1000
+
+
+def test_unknown_server_context_is_asked_again_later(monkeypatch) -> None:
+    assert budget.should_ask_server_context("http://llm.test/v1", "m")
+    budget.remember_server_context("http://llm.test/v1", "m", None)  # таймаут, перезапуск
+    assert budget.server_context() is None
+    assert not budget.should_ask_server_context("http://llm.test/v1", "m")  # не чаще раза в минуту
+
+    monkeypatch.setattr(budget, "SERVER_CTX_RETRY_S", 0)
+    assert budget.should_ask_server_context("http://llm.test/v1", "m")
+    budget.remember_server_context("http://llm.test/v1", "m", 600)
+    assert budget.num_ctx() == 600
+    assert not budget.should_ask_server_context("http://llm.test/v1", "m")
 
 
 def test_budget_is_never_negative() -> None:

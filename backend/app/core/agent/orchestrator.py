@@ -60,6 +60,8 @@ from app.models.research_step import ResearchPlan, ResearchStep
 NO_TABLE_MESSAGE = "Сначала подключите данные"
 # Ход упал вне шагов (планировщик, инсайт, график): текст ошибки — в progress.
 FAILURE_MESSAGE = "Не удалось ответить на вопрос, попробуйте ещё раз"
+# Событие, которым кончается ход: после него поток закрывается.
+TURN_END_EVENTS = ("done", "clarification_needed")
 
 # Отправка события фронту из глубины плана (progress), пока run() стримит.
 Emit = Callable[[dict], None]
@@ -169,14 +171,16 @@ class AgentOrchestrator:
     async def run(self, request: ChatRequest) -> AsyncIterator[dict]:
         """Выполнить исследование и вернуть поток событий для фронта.
 
-        Если сервер LLM обрезал промпты хода, done несёт их число в
-        prompt_truncated: eval (#58) отбрасывает такие прогоны.
+        Если сервер LLM обрезал промпты хода, последнее событие хода (done или
+        clarification_needed) несёт их число в prompt_truncated: eval (#58)
+        отбрасывает такие прогоны. Обрезанный промпт чаще всего и кончается
+        уточнением: модель без списка тулов строит план, шаг падает.
         """
         truncations = track_truncations()
         # aclosing: клиент отключился — ход закрывается сразу, с отменой задачи плана.
         async with aclosing(self._turn(request)) as events:
             async for event in events:
-                if event["type"] == "done" and truncations:
+                if event["type"] in TURN_END_EVENTS and truncations:
                     event["data"]["prompt_truncated"] = len(truncations)
                 yield event
 

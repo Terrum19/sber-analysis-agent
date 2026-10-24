@@ -109,26 +109,31 @@ class LLMClient:
     async def _check_context(self, response: httpx.Response) -> None:
         """Сверить prompt_tokens ответа с длиной промпта: не обрезал ли его сервер.
 
-        При первом ответе спрашивает у сервера его контекст (модель к этому
-        моменту загружена — Ollama показывает его в /api/ps). Сбой проверки
-        запрос не роняет.
+        Пока сервер не назвал свой контекст, спрашивает его после ответа (модель
+        к этому моменту загружена — Ollama показывает его в /api/ps). В длину
+        промпта входит и схема тулов от instructor: сервер считает её токены в
+        prompt_tokens. Сбой проверки запрос не роняет.
         """
         if response.status_code != 200 or not response.url.path.endswith("/chat/completions"):
             return
         try:
             await response.aread()
             prompt_tokens = (response.json().get("usage") or {}).get("prompt_tokens")
-            messages = json.loads(response.request.content).get("messages") or []
+            body = json.loads(response.request.content)
             self.last_prompt_tokens = prompt_tokens
             if not prompt_tokens:
                 return
             base_url = str(self._client.base_url)
-            if not budget.known_server_context(base_url, self.model):
+            if budget.should_ask_server_context(base_url, self.model):
                 ctx = await self._server_context()
                 budget.remember_server_context(base_url, self.model, ctx)
             prompt_chars = sum(
-                len(m["content"]) for m in messages if isinstance(m.get("content"), str)
+                len(m["content"])
+                for m in body.get("messages") or []
+                if isinstance(m.get("content"), str)
             )
+            if body.get("tools"):
+                prompt_chars += len(json.dumps(body["tools"], ensure_ascii=False))
             ctx = budget.server_context(base_url, self.model) or settings.llm_num_ctx
             logger.debug("LLM промпт: %d символов, %d токенов", prompt_chars, prompt_tokens)
             reason = budget.check_prompt(prompt_chars, prompt_tokens, ctx)
@@ -156,6 +161,25 @@ class LLMClient:
             ps = await fetch(root.removesuffix("/v1") + "/api/ps")
             ctx = budget.parse_server_context(None, ps, self.model)
         return ctx
+
+    async def warm_up(self) -> None:
+        """Короткий запрос при старте бэкенда, чтобы узнать контекст сервера заранее.
+
+        Иначе бюджет первого промпта (планировщик) считался бы от LLM_NUM_CTX, а
+        не от реального контекста. Ollama показывает контекст только загруженной
+        модели, поэтому сначала запрос, а контекст спрашивает хук ответа.
+        Недоступная LLM старт не роняет: контекст узнаем при первом ответе.
+        """
+        if budget.server_context(str(self._client.base_url), self.model) is not None:
+            return
+        try:
+            await self._client.chat.completions.create(
+                model=self.model,
+                messages=[{"role": "user", "content": "ok"}],
+                max_tokens=1,
+            )
+        except Exception as error:  # noqa: BLE001 — LLM может ещё не подняться
+            logger.warning("LLM недоступна при старте, контекст сервера узнаем позже: %s", error)
 
     async def complete(self, system: str, user: str, **kwargs: Any) -> str:
         """Одиночный completion (без structured output)."""

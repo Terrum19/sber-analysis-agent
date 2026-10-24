@@ -506,12 +506,14 @@ async def run_turn(orchestrator, args, question: str, db, report: Report, number
                     print(f"  -> повтор хода с recovery_response={answer!r}")
             elif kind == "done":
                 turn["status"] = "done"
-                if data.get("prompt_truncated"):
-                    turn["prompt_truncated"] = data["prompt_truncated"]
-                    print(f"  [WARN] сервер LLM обрезал промптов: {data['prompt_truncated']}")
-                    report.warnings.append(
-                        f"«{question}»: сервер LLM обрезал промптов: {data['prompt_truncated']}"
-                    )
+            if data.get("prompt_truncated"):
+                turn["prompt_truncated"] = (
+                    turn.get("prompt_truncated", 0) + data["prompt_truncated"]
+                )
+                print(f"  [WARN] сервер LLM обрезал промптов: {data['prompt_truncated']}")
+                report.warnings.append(
+                    f"«{question}»: сервер LLM обрезал промптов: {data['prompt_truncated']}"
+                )
             first = False
     turn["seconds"] = round(time.perf_counter() - start, 3)
 

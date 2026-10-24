@@ -7,10 +7,12 @@
 в контекст сервера, а у 0.35.1 — около половины контекста (12 тыс. символов при
 контексте 4096 — 2050 токенов). Поэтому признаков два: упёрся в контекст и
 намного меньше оценки по символам. llm_num_ctx в конфиге — сколько контекста мы ждём; реальный контекст
-клиент спрашивает у сервера после первого ответа, бюджет считается от меньшего.
+клиент спрашивает у сервера при старте (LLMClient.warm_up) и после ответов, пока
+сервер его не назовёт; бюджет считается от меньшего.
 """
 
 import logging
+import time
 from contextvars import ContextVar
 from typing import Any
 
@@ -26,8 +28,14 @@ TRUNCATION_MARGIN_TOKENS = 16
 LOW_TOKENS_SHARE = 0.7
 LOW_TOKENS_CHARS_PER_TOKEN = 3.0
 
-# Реальный контекст сервера по (base_url, model); None — сервер его не сообщает.
-_server_ctx: dict[tuple[str, str], int | None] = {}
+# Сервер не назвал контекст (таймаут, перезапуск, модель не загружена) — через
+# столько секунд спросим снова, а не берём LLM_NUM_CTX до перезапуска бэкенда.
+SERVER_CTX_RETRY_S = 60.0
+
+# Реальный контекст сервера по (base_url, model); только числа, «не знаю» не кешируется.
+_server_ctx: dict[tuple[str, str], int] = {}
+# Когда последний раз спрашивали контекст, которого ещё нет в _server_ctx.
+_server_ctx_asked: dict[tuple[str, str], float] = {}
 # Обрезанные промпты текущего хода; список ставит оркестратор.
 _truncations: ContextVar[list[dict] | None] = ContextVar("llm_truncations", default=None)
 
@@ -46,17 +54,33 @@ def server_context(base_url: str | None = None, model: str | None = None) -> int
     return _server_ctx.get(_key(base_url, model))
 
 
-def known_server_context(base_url: str, model: str) -> bool:
-    return _key(base_url, model) in _server_ctx
+def should_ask_server_context(base_url: str, model: str) -> bool:
+    """Пора ли спросить контекст у сервера: числа ещё нет, а прошлый вопрос был давно.
+
+    Отмечает вопрос сразу: параллельные ответы и сбой самого вопроса не
+    переспрашивают сервер чаще раза в SERVER_CTX_RETRY_S.
+    """
+    key = _key(base_url, model)
+    if key in _server_ctx:
+        return False
+    now = time.monotonic()
+    asked = _server_ctx_asked.get(key)
+    if asked is not None and now - asked < SERVER_CTX_RETRY_S:
+        return False
+    _server_ctx_asked[key] = now
+    return True
 
 
 def remember_server_context(base_url: str, model: str, ctx: int | None) -> None:
-    _server_ctx[_key(base_url, model)] = ctx
     if ctx is None:
         logger.info(
-            "Сервер LLM не сообщает длину контекста, берём LLM_NUM_CTX=%d", settings.llm_num_ctx
+            "Сервер LLM не сообщает длину контекста, берём LLM_NUM_CTX=%d, спросим через %.0f с",
+            settings.llm_num_ctx,
+            SERVER_CTX_RETRY_S,
         )
-    elif ctx < settings.llm_num_ctx:
+        return
+    _server_ctx[_key(base_url, model)] = ctx
+    if ctx < settings.llm_num_ctx:
         logger.warning(
             "Контекст сервера LLM %d токенов меньше LLM_NUM_CTX=%d: длинные промпты "
             "будут обрезаны. Ollama — OLLAMA_CONTEXT_LENGTH, vLLM — --max-model-len",

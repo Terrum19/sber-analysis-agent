@@ -17,19 +17,22 @@ from app.config import settings
 from app.core.data.duckdb_manager import DuckDBManager
 from app.core.data.restore import restore_saved_sources
 from app.core.data.result_retention import cleanup, cleanup_forever
+from app.core.llm.client import LLMClient
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
-    """Инициализация ресурсов при старте (DuckDB, реестр, песочница), очистка temp_result_vN
-    и переподключение источников БД."""
+    """Инициализация ресурсов при старте (DuckDB, реестр, песочница), очистка temp_result_vN,
+    переподключение источников БД и запрос контекста сервера LLM."""
     # TODO(round-2): инициализация ToolRegistry, WASMRuntime
     app.state.db = DuckDBManager(settings.duckdb_path)
     cleanup(app.state.db)
     cleaner = asyncio.create_task(cleanup_forever(app.state.db))
     restorer = asyncio.create_task(restore_saved_sources(app.state.db))
+    # Контекст сервера LLM — до первого вопроса: от него считается бюджет промпта.
+    warmer = asyncio.create_task(LLMClient().warm_up())
     yield
-    for task in (cleaner, restorer):
+    for task in (cleaner, restorer, warmer):
         task.cancel()
         with suppress(asyncio.CancelledError):
             await task

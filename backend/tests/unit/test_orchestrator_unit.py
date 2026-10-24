@@ -269,3 +269,20 @@ def test_done_counts_truncated_prompts(orchestrator):
     # Следующий ход без обрезок — done снова пустой.
     orchestrator.planner, orchestrator.insight_gen = FakePlanner(), FakeInsightGen()
     assert collect(orchestrator, "s2")[-1] == {"type": "done", "data": {}}
+
+
+def test_clarification_counts_truncated_prompts(orchestrator):
+    from app.core.llm.budget import report_truncation
+    from app.models.research_step import ResearchPlan
+
+    class TruncatedEmptyPlanner:
+        async def plan(self, question, context):
+            # Обрезанный промпт: модель без списка тулов не построила план — ход кончится уточнением.
+            report_truncation(12_000, 4096, "упёрся в контекст")
+            return ResearchPlan(steps=[], final_viz="bar", dashboard_requested=False)
+
+    orchestrator.planner = TruncatedEmptyPlanner()
+    events = collect(orchestrator, "s1")
+
+    assert events[-1]["type"] == "clarification_needed"
+    assert events[-1]["data"]["prompt_truncated"] == 1
