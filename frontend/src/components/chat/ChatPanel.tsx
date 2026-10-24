@@ -17,9 +17,10 @@ import Icon from "@/components/ui/Icon";
 import ClarificationCard from "@/components/chat/ClarificationCard";
 import StepProgress from "@/components/chat/StepProgress";
 import TableBriefCard from "@/components/chat/TableBriefCard";
+import DashboardPreviewCard from "@/components/chat/DashboardPreviewCard";
 import { useT } from "@/i18n/useT";
 import type { DashboardTile as DashboardTileType } from "@/types/dashboard";
-import { RECOVERY_SKIP_STEP, applyProgress, type TurnProgress } from "@/types/chat";
+import { RECOVERY_SKIP_STEP, applyProgress, type DashboardEvent, type TurnProgress } from "@/types/chat";
 
 /** Плитка панели из события «chart»; id хранится в самом событии. */
 function chartTile(chartData: any, fallbackTitle: string): DashboardTileType {
@@ -272,16 +273,16 @@ export default function ChatPanel({ sessionId }: Props) {
           });
         } else if (event.type === "dashboard") {
           answerStarted = false;
-          const dashData = (event.data || (event as any)) as any;
+          const dashData = (event.data || (event as any)) as DashboardEvent["data"];
           addMessage({
             role: "agent",
             content: t("chat.dashboardDone", { name: dashData.title || t("chat.dashboardDefault") }),
             dashboard: dashData,
           });
-          // Дашборд открывается на правой панели
+          // Превью уже в ленте: панель не открываем автоматически, чтобы не
+          // перекрывать чат. Пустые tiles не затирают текущий канвас.
           if (dashData.tiles && dashData.tiles.length > 0) {
             setCanvasDashboard(dashData.dashboard_id, dashData.title || t("chat.dashboardDefault"), dashData.tiles);
-            setCanvasOpen(true);
           }
         } else if (event.type === "error") {
           answerStarted = false;
@@ -328,12 +329,16 @@ export default function ChatPanel({ sessionId }: Props) {
     router.push(`/dashboard/${dashboardId}`);
   }
 
-  function handleLoadToCanvas(dashboardData: any) {
-    setCanvasDashboard(
-      dashboardData.dashboard_id,
-      dashboardData.title || t("chat.dashboardDefault"),
-      dashboardData.tiles || [],
-    );
+  function handleLoadToCanvas(dashboardData: DashboardEvent["data"]) {
+    const tiles = dashboardData.tiles ?? [];
+    // Пустой набор не затирает уже собранный канвас — просто открываем панель
+    if (tiles.length > 0) {
+      setCanvasDashboard(
+        dashboardData.dashboard_id,
+        dashboardData.title || t("chat.dashboardDefault"),
+        tiles,
+      );
+    }
     setCanvasOpen(true);
   }
 
@@ -518,39 +523,42 @@ export default function ChatPanel({ sessionId }: Props) {
                   </div>
                 )}
 
-                {/* Артефакт (график или дашборд) — только ссылка: сам он на правой панели */}
-                {(m.chart || m.dashboard) && (
+                {/* График — только ссылка: сам он на правой панели */}
+                {m.chart && (
                   <div className="mt-2 flex max-w-md items-center gap-2.5 rounded-lg border border-graphite-800 bg-graphite-850 py-1.5 pl-3 pr-1.5">
-                    <Icon name={m.chart ? "chart" : "layout"} className="shrink-0 text-graphite-400" />
+                    <Icon name="chart" className="shrink-0 text-graphite-400" />
                     <span className="min-w-0 flex-1">
                       <span className="block truncate text-[12.5px] text-graphite-100">
-                        {m.chart
-                          ? m.chart.caption || t("chat.chartDefault")
-                          : m.dashboard!.title || t("chat.dashboardDefault")}
+                        {m.chart.caption || t("chat.chartDefault")}
                       </span>
                       <span className="block text-[11px] text-graphite-500">
-                        {m.chart ? t("chat.chartOnPanel") : t("chat.dashboardOnPanel")}
+                        {t("chat.chartOnPanel")}
                       </span>
                     </span>
                     <button
-                      onClick={() => (m.dashboard ? handleLoadToCanvas(m.dashboard) : setCanvasOpen(true))}
+                      onClick={() => setCanvasOpen(true)}
                       className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-graphite-400 hover:bg-graphite-800 hover:text-graphite-100"
                       title={t("chat.showOnPanel")}
                     >
                       <Icon name="panelRight" size={15} />
                     </button>
                     <button
-                      onClick={() =>
-                        m.dashboard
-                          ? handleOpenDashboard(m.dashboard.dashboard_id)
-                          : openArtifact(chartTile(m.chart, t("chat.chartDefault")), sessionId)
-                      }
+                      onClick={() => openArtifact(chartTile(m.chart, t("chat.chartDefault")), sessionId)}
                       className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-graphite-400 hover:bg-graphite-800 hover:text-graphite-100"
                       title={t("chat.openInTab")}
                     >
                       <Icon name="maximize" size={14} />
                     </button>
                   </div>
+                )}
+
+                {/* Дашборд — компактная сетка плиток прямо из SSE-события */}
+                {m.dashboard && (
+                  <DashboardPreviewCard
+                    dashboard={m.dashboard}
+                    onOpenDashboard={() => handleOpenDashboard(m.dashboard!.dashboard_id)}
+                    onOpenCanvas={() => handleLoadToCanvas(m.dashboard!)}
+                  />
                 )}
               </div>
               <span className="mt-1 text-[10px] text-graphite-500 px-1">
