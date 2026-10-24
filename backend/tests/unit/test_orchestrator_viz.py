@@ -4,7 +4,7 @@ import pytest
 
 from app.api.schemas.chat import ChatRequest
 from app.config import settings
-from app.core.agent.orchestrator import AgentOrchestrator
+from app.core.agent.orchestrator import AgentOrchestrator, _chart_event
 from app.core.dashboards.store import DashboardStore
 from app.core.data.duckdb_manager import DuckDBManager
 from app.core.data.profiling import profile_table
@@ -111,6 +111,7 @@ async def test_first_answer_builds_filled_spec(agent, db) -> None:
     chart = chart_of(events)
     spec = chart["spec"]
     assert chart["caption"] == "Москва лидирует"
+    assert chart["result_table"] == "temp_result_v1"
     assert spec["mark"] == "bar"
     assert spec["data"]["values"] == [
         {"region": "msk", "revenue": 12.5},
@@ -132,6 +133,7 @@ async def test_view_change_is_served_from_cache(agent, db) -> None:
     events = await collect(agent, "А теперь покажи то же самое в другом виде")
 
     assert [event["type"] for event in events] == ["chart", "done"]
+    assert chart_of(events)["result_table"] == "temp_result_v1"
     spec = chart_of(events)["spec"]
     assert spec["usermeta"]["chart_type"] == "line"
     assert spec["data"]["values"][0] == {"region": "msk", "revenue": 12.5}
@@ -237,3 +239,7 @@ async def test_recovery_answers_the_original_question(db) -> None:
         event["data"]["stage"] if event["type"] == "progress" else event["type"] for event in events
     ] == ["step", "step", "insight", "text", "chart", "chart", "done"]
     assert insight.question == "Сравни выручку по регионам"
+
+
+def test_chart_without_step_result_has_no_result_table() -> None:
+    assert "result_table" not in _chart_event({}, "caption", "raw")["data"]
