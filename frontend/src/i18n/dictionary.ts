@@ -70,9 +70,6 @@ const ru = {
 
   "header.welcome": "Приветствие",
   "header.database": "База данных",
-  "header.mockOn": "Mock: Вкл",
-  "header.modeAuto": "Режим: Авто",
-  "header.mockTitle": "Переключение между режимом заглушек (Mock) и реальным бэкендом",
   "header.showPanel": "Показать панель дашборда",
   "header.hidePanel": "Скрыть панель дашборда",
 
@@ -349,9 +346,6 @@ const en: Record<MessageKey, string> = {
 
   "header.welcome": "Welcome",
   "header.database": "Database",
-  "header.mockOn": "Mock: On",
-  "header.modeAuto": "Mode: Auto",
-  "header.mockTitle": "Switch between mock data and the real backend",
   "header.showPanel": "Show dashboard panel",
   "header.hidePanel": "Hide dashboard panel",
 

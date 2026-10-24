@@ -83,13 +83,6 @@ export function isMockMode(): boolean {
   return false;
 }
 
-export function setMockMode(enabled: boolean): void {
-  if (typeof window !== "undefined") {
-    localStorage.setItem("sber_force_mock", enabled ? "true" : "false");
-    window.location.reload();
-  }
-}
-
 export async function createSession(
   table: string,
   datasourceId?: string | null,
