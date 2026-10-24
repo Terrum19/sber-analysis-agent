@@ -61,6 +61,8 @@ class Settings(BaseSettings):
     codegen_max_rows: int = 200_000
     agent_max_steps: int = 12
     semantic_top_k: int = 5
+    # Сколько колонок вне топ-K перечислить планировщику по именам (0 — не показывать).
+    semantic_other_columns: int = 80
 
     # POSTGRES_MAX_TABLES — прежнее имя; DB_MAX_TABLES важнее, если заданы оба.
     db_max_tables: int = Field(
