@@ -307,6 +307,14 @@ export function mockPatchSession(sessionId: string, table: string): SessionRespo
   };
 }
 
+export function mockRenameSession(sessionId: string, title: string): SessionResponse {
+  return {
+    session_id: sessionId,
+    table: "mock_table",
+    title: title.trim(),
+  };
+}
+
 /**
  * Эмуляция стриминга ответов агента с текстом, инсайтами и карточкой дашборда.
  */
