@@ -122,3 +122,41 @@ def test_persist_and_load(tmp_path):
         assert "Первый ответ" in ctx["messages"][-1]["content"]
     finally:
         settings.sqlite_path = old_path
+
+
+def test_owns_result_all_branches(memory):
+    """Проверка всех ветвей метода owns_result в SessionMemory."""
+    from app.models.research_step import ResearchStep
+
+    # 1. Пустая строка или None
+    assert not memory.owns_result("")
+    assert not memory.owns_result(None)
+
+    # 2. Шаги плана
+    memory.set_table("raw", ["col"])
+    step = ResearchStep(step_id=1, tool="aggregate", purpose="step 1")
+    memory.record_step(step, "temp_result_v1")
+    # Шаг есть, но имя не совпадает (ветка 256->255)
+    assert not memory.owns_result("temp_result_v999")
+    # Шаг совпадает
+    assert memory.owns_result("temp_result_v1")
+
+    # 3. Графики (last_chart)
+    memory.record_chart("bar", "temp_result_v2", "Диаграмма")
+    assert memory.owns_result("temp_result_v2")
+    # Переключение на другую таблицу
+    memory.set_table("other", ["col2"])
+    assert memory.owns_result("temp_result_v2")  # сохранён из таблицы raw
+
+    # 4. pending_recovery со step_tables и input_table
+    memory.set_pending_recovery(
+        {"step_tables": {"1": "temp_result_v3"}, "input_table": "temp_result_v4"}
+    )
+    assert memory.owns_result("temp_result_v3")
+    assert memory.owns_result("temp_result_v4")
+    assert not memory.owns_result("temp_result_unknown")
+
+    # 5. Очистка pending_recovery
+    memory.clear_pending_recovery()
+    assert memory.get_pending_recovery() is None
+    assert not memory.owns_result("temp_result_v3")

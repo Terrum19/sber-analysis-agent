@@ -206,6 +206,14 @@ def test_api_export_pdf_validation_errors(client: TestClient) -> None:
     )
     assert resp.status_code == 404
 
+    # Экспорт в xlsx без result_ref
+    resp = client.post(
+        "/api/artifacts/export",
+        json={"session_id": "s1", "format": "xlsx"},
+    )
+    assert resp.status_code == 400
+    assert "result_ref" in resp.json()["detail"]
+
 
 def test_api_export_xlsx_endpoint(client: TestClient, tmp_path: Path) -> None:
     """Тест экспорта в Excel через эндпоинт /api/artifacts/export."""
@@ -382,10 +390,57 @@ def test_pdf_exporter_edge_cases(tmp_path: Path) -> None:
     # Битое изображение
     assert exporter._build_image(b"not an image", 500, 200) is None
 
+    # Отчёт только с headline (без details)
+    h_only_pdf = str(tmp_path / "h_only.pdf")
+    exporter.export_answer(h_only_pdf, headline="Только заголовок")
+    assert Path(h_only_pdf).exists()
+
+    # Отчёт только с details (без headline) и пробельным вопросом
+    d_only_pdf = str(tmp_path / "d_only.pdf")
+    exporter.export_answer(
+        d_only_pdf, question="   \n   ", details=["Только деталь 1", "Только деталь 2"]
+    )
+    assert Path(d_only_pdf).exists()
+
     # Полностью пустой отчёт
     empty_pdf = str(tmp_path / "empty.pdf")
     exporter.export_answer(empty_pdf)
     assert Path(empty_pdf).exists()
+
+
+def test_api_export_empty_result_ref_is_404(client: TestClient) -> None:
+    """Проверка ошибки 404, если результат DuckDB пуст (0 записей)."""
+    db: DuckDBManager = client.app.dependency_overrides[get_db]()
+    db.execute("CREATE TABLE temp_result_v77 AS SELECT 1 AS id WHERE 1=0")
+    memory = SessionMemory("s_empty_test", db)
+    memory.set_table("raw", ["id"])
+    memory.record_step({"step_id": 1, "purpose": "step"}, "temp_result_v77")
+
+    resp = client.post(
+        "/api/artifacts/export",
+        json={"session_id": "s_empty_test", "format": "pdf", "result_ref": "temp_result_v77"},
+    )
+    assert resp.status_code == 404
+    assert "пуст" in resp.json()["detail"]
+
+
+def test_api_export_pdf_insight_only(client: TestClient) -> None:
+    """Проверка успешного экспорта отчёта только с инсайтом (без result_ref)."""
+    db: DuckDBManager = client.app.dependency_overrides[get_db]()
+    memory = SessionMemory("s_insight_only", db)
+    memory.set_table("raw", ["id"])
+
+    resp = client.post(
+        "/api/artifacts/export",
+        json={
+            "session_id": "s_insight_only",
+            "format": "pdf",
+            "headline": "Ключевой инсайт",
+            "details": ["Пункт 1"],
+        },
+    )
+    assert resp.status_code == 200
+    assert resp.headers["content-type"] == "application/pdf"
 
 
 def test_truncate_text_helper() -> None:
