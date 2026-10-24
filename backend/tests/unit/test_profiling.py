@@ -13,6 +13,7 @@ from app.core.data.profiling import (
     outlier_summary,
     plain,
     profile_table,
+    profile_warnings,
     quality_notes,
     quote_table,
     schema_overview,
@@ -591,3 +592,49 @@ def test_flags_survive_rows(db) -> None:
     assert TableProfile.from_rows(table_row, rows) == profile
     assert profile.to_dict()["empty_rows"] == 1
     assert ColumnStats.from_row(rows[1] | {"flags": None}).flags == []
+
+
+def flagged_profile(flags: dict[str, list[str]], empty_rows: int = 0) -> TableProfile:
+    columns = [
+        ColumnStats(name=name, dtype="VARCHAR", kind="text", flags=marks)
+        for name, marks in flags.items()
+    ]
+    return TableProfile("survey", 10, len(columns), columns, "2026-10-24T00:00:00", empty_rows)
+
+
+def test_profile_warnings_one_phrase_per_flag() -> None:
+    profile = flagged_profile(
+        {
+            "Q1A": ["numeric_as_text", "null_tokens:2", "header_value"],
+            "Q1I": ["numeric_as_text", "null_tokens:6"],
+            "country": ["header_value"],
+        },
+        empty_rows=6,
+    )
+    assert profile_warnings(profile) == [
+        "Числа записаны текстом в колонках «Q1A», «Q1I».",
+        "Литералы пропусков (NULL, N/A и т. п.) в колонках «Q1I» (6), «Q1A» (2).",
+        (
+            "Значение, равное имени колонки (похоже на повторённый заголовок), "
+            "в колонках «Q1A», «country»."
+        ),
+        "Пустых строк (все колонки пустые): 6.",
+    ]
+
+
+def test_profile_warnings_name_five_columns() -> None:
+    profile = flagged_profile({f"c{index}": ["numeric_as_text"] for index in range(1, 9)})
+    assert profile_warnings(profile) == [
+        "Числа записаны текстом в колонках «c1», «c2», «c3», «c4», «c5» и ещё 3."
+    ]
+
+
+def test_clean_profile_has_no_warnings() -> None:
+    assert profile_warnings(flagged_profile({"a": [], "b": []})) == []
+
+
+def test_single_column_has_no_empty_rows_warning() -> None:
+    profile = flagged_profile({"value": ["null_tokens:3"]}, empty_rows=2)
+    assert profile_warnings(profile) == [
+        "Литералы пропусков (NULL, N/A и т. п.) в колонках «value» (3)."
+    ]

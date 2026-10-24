@@ -4,7 +4,7 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from app.core.data.profiling import TableProfile
+from app.core.data.profiling import TableProfile, profile_warnings
 
 
 class DatasourceCreate(BaseModel):
@@ -34,7 +34,10 @@ class TableBrief(BaseModel):
     def from_profile(
         cls, profile: TableProfile, description_status: str, warnings: list[str]
     ) -> "TableBrief":
-        """Период — min_date/max_date первой temporal-колонки профиля."""
+        """Период — min_date/max_date первой temporal-колонки профиля.
+
+        warnings — что исправил загрузчик, за ними флаги качества профиля (profile_warnings).
+        """
         temporal = next((column for column in profile.columns if column.kind == "temporal"), None)
         return cls(
             table=profile.table,
@@ -43,7 +46,7 @@ class TableBrief(BaseModel):
             period_from=None if temporal is None else iso(temporal.min_date),
             period_to=None if temporal is None else iso(temporal.max_date),
             description_status=description_status,
-            warnings=warnings,
+            warnings=warnings + profile_warnings(profile),
         )
 
 

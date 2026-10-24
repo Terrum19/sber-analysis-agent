@@ -1,3 +1,19 @@
+2026-10-24  thebulkapro  <saitbatalovbulat200@gmail.com>
+
+	Флаги качества профиля в TableBrief.warnings (#139).
+	* backend/app/core/data/profiling.py (profile_warnings): Новая
+	функция: флаги и empty_rows фразами для карточки таблицы, одна фраза
+	на вид флага, не больше WARNING_COLUMNS колонок, остальные «и ещё N».
+	Литералы пропусков — по убыванию их числа.
+	(column_list): Новая функция.
+	* backend/app/api/schemas/datasource.py (TableBrief.from_profile):
+	После предупреждений загрузчика — флаги профиля: у PostgreSQL и
+	ClickHouse карточка была без предупреждений.
+	* backend/tests/unit/test_profiling.py,
+	backend/tests/unit/test_datasources_api.py: Фразы по флагам, «и ещё
+	N», чистый профиль, одна колонка, грязный CSV и источник БД.
+	* docs/data_connectors.md: Поле warnings, profile_warnings.
+
 2026-10-23  thebulkapro  <saitbatalovbulat200@gmail.com>
 
 	Флаги качества в профиле (#105).
