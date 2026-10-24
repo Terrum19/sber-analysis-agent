@@ -7,6 +7,7 @@
 """
 
 import asyncio
+import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager, suppress
 
@@ -17,15 +18,21 @@ from app.config import settings
 from app.core.data.duckdb_manager import DuckDBManager
 from app.core.data.restore import restore_saved_sources
 from app.core.data.result_retention import cleanup, cleanup_forever
+from app.core.memory.profile_memory import ProfileMemory
+
+logger = logging.getLogger(__name__)
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
-    """Инициализация ресурсов при старте (DuckDB, реестр, песочница), очистка temp_result_vN
-    и переподключение источников БД."""
+    """Инициализация ресурсов при старте (DuckDB, реестр, песочница), очистка temp_result_vN,
+    сброс недоделанных описаний (pending → failed) и переподключение источников БД."""
     # TODO(round-2): инициализация ToolRegistry, WASMRuntime
     app.state.db = DuckDBManager(settings.duckdb_path)
     cleanup(app.state.db)
+    interrupted = ProfileMemory(app.state.db).fail_pending()
+    if interrupted:
+        logger.warning("Перенос описания прерван рестартом: %s", ", ".join(interrupted))
     cleaner = asyncio.create_task(cleanup_forever(app.state.db))
     restorer = asyncio.create_task(restore_saved_sources(app.state.db))
     yield
