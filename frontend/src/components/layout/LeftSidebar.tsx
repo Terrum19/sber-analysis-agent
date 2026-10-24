@@ -11,7 +11,13 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { useParams, useRouter } from "next/navigation";
-import { attachDb, deleteSessionApi, listSessions, SESSIONS_PAGE } from "@/api/client";
+import {
+  attachDb,
+  deleteDatasourceApi,
+  deleteSessionApi,
+  listSessions,
+  SESSIONS_PAGE,
+} from "@/api/client";
 import { useSessionStore, type DatabaseFolder, type SessionItem } from "@/store/sessionStore";
 import { useArtifactStore } from "@/store/artifactStore";
 import { tabHref, useUiStore } from "@/store/uiStore";
@@ -385,9 +391,12 @@ export default function LeftSidebar() {
     artStore.removeArtifactsBySessionIds(sessionIds);
     const nextTab = useUiStore.getState().closeTabsForSessions(sessionIds, artIdsToRemove);
     deleteDatabase(databaseId);
-    for (const sid of sessionIds) {
-      deleteSessionApi(sid).catch(() => undefined);
-    }
+    // Сначала сессии источника, затем сам источник: его таблицы уходят из DuckDB,
+    // и список таблиц в шапке чата перечитывается.
+    Promise.allSettled(sessionIds.map((sid) => deleteSessionApi(sid)))
+      .then(() => deleteDatasourceApi(databaseId))
+      .catch(() => undefined)
+      .finally(() => useUiStore.getState().refreshTables());
     if (currentSessionId && sessionIds.includes(currentSessionId)) {
       router.push(nextTab ? tabHref(nextTab) : "/");
     }
