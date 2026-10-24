@@ -107,3 +107,34 @@ async def test_insight_without_facts_when_they_fail(db, monkeypatch) -> None:
     insight = await module.InsightGenerator(llm=llm, db=db).generate("Сколько строк?", "t")
     assert insight.headline == "Данных достаточно"
     assert len(llm.prompts) == 1
+
+
+def test_insight_facts_name_the_rows_of_min_and_max(db) -> None:
+    db.query(
+        "CREATE TABLE m AS SELECT * FROM (VALUES "
+        "(TIMESTAMP '2024-01-01', 26484), (TIMESTAMP '2024-08-01', 19362), "
+        "(TIMESTAMP '2024-10-01', 21833)) AS v(period, sum_amount)"
+    )
+    facts = insight_facts(db, "m", shown=50)
+    assert "мин 19362 (period = 2024-08-01)" in facts
+    assert "макс 26484 (period = 2024-01-01)" in facts
+
+
+def test_single_row_facts_have_no_labels(db) -> None:
+    db.query("CREATE TABLE one AS SELECT 'all' AS k, 5 AS n")
+    assert "(k =" not in insight_facts(db, "one", shown=50)
+
+
+def test_rows_are_shown_as_compact_table() -> None:
+    from datetime import date, datetime
+
+    from app.core.agent.quality_fixes import format_rows
+
+    rows = [
+        {"period": datetime(2024, 1, 1), "avg": 542.1666, "day": date(2024, 3, 5)},
+        {"period": datetime(2024, 2, 1, 12, 30), "avg": 7, "day": date(2024, 3, 6)},
+    ]
+    assert format_rows(rows) == (
+        "period | avg | day\n2024-01-01 | 542.17 | 2024-03-05\n2024-02-01 12:30:00 | 7 | 2024-03-06"
+    )
+    assert format_rows([]) == "пусто"

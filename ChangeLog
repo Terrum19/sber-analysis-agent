@@ -1,5 +1,17 @@
 2026-10-25  Alexander Yurits  <143354682+Terrum19@users.noreply.github.com>
 
+	Вывод отвечает на вопрос по форме результата.
+	* backend/app/core/agent/quality_fixes.py (insight_facts): У мин и
+	макс подписана строка (arg_min/arg_max по первой нечисловой колонке).
+	(format_value, format_rows): Новые.  Строки результата компактной
+	таблицей с ISO-датами вместо repr Python-объектов.
+	* backend/app/core/llm/prompts/quality_rules.py (INSIGHT_RULES): Без
+	примера «Выручка за квартал — 12 345», его копировала модель.
+	(SINGLE_ROW, MANY_ROWS): Новые.  Правило headline по форме результата.
+	* backend/app/core/agent/insight.py (InsightGenerator.generate): То же.
+
+2026-10-25  Alexander Yurits  <143354682+Terrum19@users.noreply.github.com>
+
 	Вопрос по конкретному прошлому ответу: reply_to (бэкенд #166).
 	* backend/app/api/schemas/chat.py (ChatRequest): reply_to.
 	* backend/app/core/memory/session_memory.py (start_turn): Ход хранит

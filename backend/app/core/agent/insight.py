@@ -7,11 +7,16 @@
 import logging
 
 from app.config import settings
-from app.core.agent.quality_fixes import insight_facts, ungrounded_numbers
+from app.core.agent.quality_fixes import format_rows, insight_facts, ungrounded_numbers
 from app.core.data.duckdb_manager import DuckDBManager
 from app.core.llm.client import LLMClient
 from app.core.llm.prompts.insight_summary import INSIGHT_SUMMARY
-from app.core.llm.prompts.quality_rules import INSIGHT_RULES, NUMBER_FIX
+from app.core.llm.prompts.quality_rules import (
+    INSIGHT_RULES,
+    MANY_ROWS,
+    NUMBER_FIX,
+    SINGLE_ROW,
+)
 from app.models.insight import Insight
 
 logger = logging.getLogger(__name__)
@@ -46,20 +51,29 @@ class InsightGenerator:
 
         db = self.db or DuckDBManager()
         result = db.to_records(result_table, limit=SHOWN_ROWS)
-        extra = "\n".join(
-            f"- {purpose}: {db.to_records(table, limit=10)}" for purpose, table in supporting or []
-        )
-        prompt = INSIGHT_SUMMARY.format(question=question, result=result, supporting=extra or "нет")
+        supporting = [
+            (purpose, db.to_records(table, limit=10)) for purpose, table in supporting or []
+        ]
         if not settings.agent_quality_fixes:
+            extra = "\n".join(f"- {purpose}: {rows}" for purpose, rows in supporting)
+            prompt = INSIGHT_SUMMARY.format(
+                question=question, result=result, supporting=extra or "нет"
+            )
             return await self.llm.complete_structured("Ты — аналитик.", prompt, Insight)
+        # Строки — компактной таблицей с ISO-датами: repr datetime мешает модели читать ряд.
+        shown = format_rows(result)
+        extra = "\n".join(f"- {purpose}:\n{format_rows(rows)}" for purpose, rows in supporting)
+        prompt = INSIGHT_SUMMARY.format(question=question, result=shown, supporting=extra or "нет")
         try:
             facts = insight_facts(db, result_table, shown=SHOWN_ROWS)
         except Exception:
             # Факты — подсказка, а не условие ответа: без них инсайт строится как раньше.
             logger.warning("инсайт: факты по %s не посчитались", result_table, exc_info=True)
             facts = "нет"
-        prompt += INSIGHT_RULES.format(facts=facts)
-        return await self._grounded(prompt, "\n".join([question, str(result), extra, facts]))
+        # Одна строка — ответ числом; ряд — лидер, минимум или число строк, а не одно значение.
+        shape = SINGLE_ROW if len(result) <= 1 else MANY_ROWS.format(rows=len(result))
+        prompt += INSIGHT_RULES.format(facts=facts, shape=shape)
+        return await self._grounded(prompt, f"{question}\n{shown}\n{extra}\n{facts}")
 
     async def _grounded(self, prompt: str, sources: str) -> Insight:
         """H-Q3: число в headline, которого нет в sources, — один переспрос."""
