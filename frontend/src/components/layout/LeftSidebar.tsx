@@ -11,7 +11,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { useParams, useRouter } from "next/navigation";
-import { attachDb, deleteSessionApi, listSessions, SESSIONS_PAGE } from "@/api/client";
+import { attachDb, deleteSessionApi, listSessions, renameSessionApi, SESSIONS_PAGE } from "@/api/client";
 import { useSessionStore, type DatabaseFolder, type SessionItem } from "@/store/sessionStore";
 import { useArtifactStore } from "@/store/artifactStore";
 import { tabHref, useUiStore } from "@/store/uiStore";
@@ -88,6 +88,25 @@ function DatabaseRow({
   const togglePinDatabase = useSessionStore((s) => s.togglePinDatabase);
   const renameSession = useSessionStore((s) => s.renameSession);
   const togglePinSession = useSessionStore((s) => s.togglePinSession);
+
+  /** Оптимистичное переименование: стор сразу, затем PATCH; при ошибке — откат. */
+  async function handleRenameSession(session: SessionItem, newTitle: string) {
+    const previousTitle = session.title;
+    renameSession(session.id, newTitle);
+    const optimisticTitle = newTitle.trim() || previousTitle;
+    try {
+      await renameSessionApi(session.id, optimisticTitle);
+    } catch {
+      // Откатываем, только если имя с тех пор не меняли ещё раз.
+      const current = useSessionStore
+        .getState()
+        .databases.flatMap((d) => d.sessions)
+        .find((x) => x.id === session.id);
+      if (current?.title === optimisticTitle) {
+        renameSession(session.id, previousTitle);
+      }
+    }
+  }
 
   const startSession = useStartSession();
   const isCurrent = useSessionStore((s) => (currentSessionId ? s.sessionDatabase[currentSessionId] === database.id : false));
@@ -283,7 +302,7 @@ function DatabaseRow({
           anchorRect={menuAnchor.rect}
           onClose={() => setMenuAnchor(null)}
           onTogglePin={() => togglePinSession(menuAnchor.session.id)}
-          onRename={(newTitle) => renameSession(menuAnchor.session.id, newTitle)}
+          onRename={(newTitle) => void handleRenameSession(menuAnchor.session, newTitle)}
           onDelete={() => onDeleteSession(menuAnchor.session.id)}
         />
       )}
