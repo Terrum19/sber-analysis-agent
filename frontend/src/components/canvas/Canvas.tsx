@@ -8,7 +8,7 @@
  * - Кнопка «Сохранить» (PUT /api/dashboards/{id})
  * - Режим редактирования (переименование, удаление плиток)
  */
-import React, { useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import type { Layout } from "react-grid-layout";
 import { useCanvasStore } from "@/store/canvasStore";
 import { useSessionStore } from "@/store/sessionStore";
@@ -21,9 +21,11 @@ import {
 import DashboardTile, { isKpiTile } from "@/components/canvas/DashboardTile";
 import Icon from "@/components/ui/Icon";
 import ZoomControl from "@/components/ui/ZoomControl";
-import { STACK_BELOW, tileGridLayout } from "@/lib/tileLayout";
+import { MIN_SIZE, STACK_BELOW, applyGridLayout, tileGridLayout } from "@/lib/tileLayout";
+import { CHART_TYPES, chartTypeOf, withChartType, type ChartType } from "@/lib/chartTypes";
 import { useElementSize } from "@/hooks/useElementSize";
 import FitGrid from "@/components/canvas/FitGrid";
+import ItemActionMenu from "@/components/layout/ItemActionMenu";
 import { useOpenArtifact } from "@/hooks/useOpenArtifact";
 import { useT } from "@/i18n/useT";
 import { useUiStore } from "@/store/uiStore";
@@ -39,6 +41,7 @@ export default function Canvas({ sessionId }: Props) {
   const [saveStatus, setSaveStatus] = useState<string | null>(null);
   const [exportMenuOpen, setExportMenuOpen] = useState(false);
   const [isExporting, setIsExporting] = useState<"xlsx" | "pdf" | null>(null);
+  const [menu, setMenu] = useState<{ index: number; rect: DOMRect } | null>(null);
   const setCanvasOpen = useUiStore((s) => s.setCanvasOpen);
   const tr = useT();
   const zoom = useUiStore((s) => s.zoom);
@@ -63,6 +66,24 @@ export default function Canvas({ sessionId }: Props) {
   const updateTile = useCanvasStore((s) => s.updateTile);
   const addTile = useCanvasStore((s) => s.addTile);
   const setTiles = useCanvasStore((s) => s.setTiles);
+  const updateTileLayouts = useCanvasStore((s) => s.updateTileLayouts);
+  const layoutRevision = useCanvasStore((s) => s.layoutRevision);
+  const saveState = useCanvasStore((s) => s.saveState);
+  const saveError = useCanvasStore((s) => s.saveError);
+  const setSaveState = useCanvasStore((s) => s.setSaveState);
+  const mountedRef = useRef(true);
+  const saveSeqRef = useRef(0);
+  const layoutReadyRef = useRef(false);
+
+  // Первый onLayoutChange после (пере)монтирования сетки — служебный: RGL
+  // нормализует координаты, это не действие пользователя и не повод для PUT.
+  useEffect(() => {
+    layoutReadyRef.current = false;
+    const timer = setTimeout(() => {
+      layoutReadyRef.current = true;
+    }, 250);
+    return () => clearTimeout(timer);
+  }, [dashboardId]);
 
   // Session store tiles (backup if canvas store has no active dashboard yet)
   const sessionTiles = useSessionStore((s) => s.tiles);
@@ -75,24 +96,114 @@ export default function Canvas({ sessionId }: Props) {
   const stack = bodyWidth > 0 && bodyWidth * zoom < STACK_BELOW;
   const gridLayout: Layout[] = tileGridLayout(displayTiles, isKpiTile, { stack });
 
+  // Запись плиток: сохранённый дашборд живёт в canvasStore, черновик сессии —
+  // в sessionStore (он же синхронизирует canvasStore, пока dashboardId === null).
+  function writeTiles(next: DashboardTileType[]) {
+    if (dashboardId) setTiles(next);
+    else useSessionStore.getState().setTiles(next);
+  }
+
   function handleLayoutChange(newLayout: Layout[]) {
     // Одна колонка в узкой панели — только отображение, сохранённую раскладку не трогаем
-    if (!isEditing || stack) return;
-    const updatedTiles = displayTiles.map((tile, i) => {
-      const tileId = tile.id || `tile-${i}`;
-      const item = newLayout.find((l) => l.i === tileId);
-      if (!item) return tile;
-      return {
-        ...tile,
-        layout: {
-          x: item.x,
-          y: item.y,
-          w: item.w,
-          h: item.h,
-        },
-      };
+    if (!isEditing || stack || !layoutReadyRef.current) return;
+    const next = applyGridLayout(displayTiles, newLayout);
+    const changed: Record<number, DashboardTileType["layout"]> = {};
+    next.forEach((tile, i) => {
+      const before = displayTiles[i]?.layout;
+      const after = tile.layout;
+      if (
+        !before ||
+        before.x !== after.x ||
+        before.y !== after.y ||
+        before.w !== after.w ||
+        before.h !== after.h
+      ) {
+        changed[i] = after;
+      }
     });
-    setTiles(updatedTiles);
+    if (Object.keys(changed).length === 0) return;
+    if (dashboardId) updateTileLayouts(changed);
+    else useSessionStore.getState().setTiles(next);
+  }
+
+  // Автосохранение раскладки: только для сохранённого дашборда, debounce 800 мс.
+  useEffect(() => {
+    if (!dashboardId || layoutRevision === 0 || stack) return;
+    const timer = setTimeout(async () => {
+      const snapshot = useCanvasStore.getState().tiles;
+      if (!snapshot.length) return;
+      const seq = ++saveSeqRef.current;
+      setSaveState("saving");
+      try {
+        await updateDashboard(dashboardId, { tiles: snapshot });
+        if (!mountedRef.current || seq !== saveSeqRef.current) return;
+        setSaveState("saved");
+      } catch (err) {
+        if (!mountedRef.current || seq !== saveSeqRef.current) return;
+        setSaveState("error", err);
+      }
+    }, 800);
+    return () => clearTimeout(timer);
+  }, [layoutRevision, dashboardId, stack, setSaveState]);
+
+  // «Сохранено» гаснет через 2 секунды; «Ошибка» остаётся до повтора.
+  useEffect(() => {
+    if (saveState !== "saved") return;
+    const timer = setTimeout(() => setSaveState("idle"), 2000);
+    return () => clearTimeout(timer);
+  }, [saveState, setSaveState]);
+
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+    };
+  }, []);
+
+  async function handleRetrySave() {
+    if (!dashboardId) return;
+    const snapshot = useCanvasStore.getState().tiles;
+    if (!snapshot.length) return;
+    const seq = ++saveSeqRef.current;
+    setSaveState("saving");
+    try {
+      await updateDashboard(dashboardId, { tiles: snapshot });
+      if (!mountedRef.current || seq !== saveSeqRef.current) return;
+      setSaveState("saved");
+    } catch (err) {
+      if (!mountedRef.current || seq !== saveSeqRef.current) return;
+      setSaveState("error", err);
+    }
+  }
+
+  // Смена типа графика без LLM: локальный spec, PUT и (если есть данные) recalculate.
+  async function handleChartTypeChange(index: number, type: ChartType) {
+    const tile = displayTiles[index];
+    if (!tile) return;
+    const prevTiles = displayTiles;
+    const nextTiles = displayTiles.map((item, i) =>
+      i === index ? withChartType(item, type) : item,
+    );
+    writeTiles(nextTiles);
+
+    if (!dashboardId) return;
+
+    try {
+      setSaveState("saving");
+      await updateDashboard(dashboardId, { tiles: nextTiles });
+      if (nextTiles[index].result_table) {
+        const updated = await recalculateDashboard(dashboardId);
+        setTiles(updated.tiles);
+        setSaveState("saved");
+      } else {
+        setSaveState("saved");
+        setSaveStatus(tr("canvas.chartTypeLocalOnly"));
+        setTimeout(() => setSaveStatus(null), 3500);
+      }
+    } catch (err) {
+      writeTiles(prevTiles);
+      setSaveState("error", err);
+    }
   }
 
   // Пересчёт данных
@@ -147,6 +258,7 @@ export default function Canvas({ sessionId }: Props) {
 
     try {
       setIsSaving(true);
+      setSaveState("saving");
       if (dashboardId) {
         const updated = await updateDashboard(dashboardId, {
           title: dashboardTitle,
@@ -168,9 +280,11 @@ export default function Canvas({ sessionId }: Props) {
         useCanvasStore.getState().setDashboard(created.id, created.title, created.tiles, created.updated_at);
         setSaveStatus(tr("canvas.savedRegistry", { id: created.id }));
       }
+      setSaveState("saved");
       setIsEditing(false);
       setTimeout(() => setSaveStatus(null), 3500);
     } catch (err: any) {
+      setSaveState("error", err);
       setSaveStatus(tr("canvas.saveError", { msg: err?.detail || err?.message || String(err) }));
       setTimeout(() => setSaveStatus(null), 4000);
     } finally {
@@ -235,6 +349,45 @@ export default function Canvas({ sessionId }: Props) {
         </div>
 
         <div className="flex shrink-0 items-center gap-0.5">
+          {/* Статус автосохранения раскладки */}
+          {saveState !== "idle" && (
+            <span
+              className={`mr-0.5 inline-flex h-7 items-center gap-1 rounded-md px-1.5 text-[11px] ${
+                saveState === "error"
+                  ? "text-bad"
+                  : saveState === "saving"
+                    ? "text-graphite-400"
+                    : "text-good"
+              }`}
+              title={saveState === "error" ? saveError ?? tr("canvas.saveStateError") : undefined}
+            >
+              {saveState === "saving" && (
+                <>
+                  <Icon name="refresh" size={13} className="animate-spin" />
+                  <span className="hidden sm:inline">{tr("canvas.saveStateSaving")}</span>
+                </>
+              )}
+              {saveState === "saved" && (
+                <>
+                  <Icon name="check" size={13} />
+                  <span className="hidden sm:inline">{tr("canvas.saveStateSaved")}</span>
+                </>
+              )}
+              {saveState === "error" && (
+                <>
+                  <Icon name="alertTriangle" size={13} />
+                  <span className="hidden sm:inline">{tr("canvas.saveStateError")}</span>
+                  <button
+                    onClick={handleRetrySave}
+                    className="rounded p-0.5 hover:bg-graphite-800"
+                    title={tr("canvas.saveStateRetry")}
+                  >
+                    <Icon name="refresh" size={12} />
+                  </button>
+                </>
+              )}
+            </span>
+          )}
           <ZoomControl />
           <span className="mx-1 h-4 w-px bg-graphite-800" />
           <button
@@ -383,6 +536,7 @@ export default function Canvas({ sessionId }: Props) {
 
             {/* Сетка плиток: масштаб меняет ширину сетки и высоту рядов */}
             <FitGrid
+                  responsive
                   zoom={zoom}
                   className="layout"
                   layout={gridLayout}
@@ -397,14 +551,17 @@ export default function Canvas({ sessionId }: Props) {
                 >
                   {displayTiles.map((tile, i) => {
                     const tileId = tile.id || `tile-${i}`;
+                    const dense = (gridLayout[i]?.h ?? 0) <= MIN_SIZE.chart.h;
                     return (
                       <div key={tileId} className="h-full">
                         <DashboardTile
                           tile={tile}
                           isEditing={isEditing}
+                          dense={dense}
                           onRename={(newTitle) => updateTile(i, { title: newTitle })}
                           onDelete={() => removeTile(i)}
                           onOpen={() => openArtifact(tile, sessionId)}
+                          onMenu={(rect) => setMenu({ index: i, rect })}
                         />
                       </div>
                     );
@@ -461,6 +618,22 @@ export default function Canvas({ sessionId }: Props) {
           )
         )}
       </div>
+
+      {/* Меню действий плитки (fixed, вне скролла канваса) */}
+      {menu && displayTiles[menu.index] && (
+        <ItemActionMenu
+          target="tile"
+          title={displayTiles[menu.index].title}
+          anchorRect={menu.rect}
+          chartType={chartTypeOf(displayTiles[menu.index])}
+          chartTypes={CHART_TYPES}
+          onClose={() => setMenu(null)}
+          onRename={(newTitle) => updateTile(menu.index, { title: newTitle })}
+          onDelete={() => removeTile(menu.index)}
+          onChartTypeChange={(type) => handleChartTypeChange(menu.index, type as ChartType)}
+          onOpen={() => openArtifact(displayTiles[menu.index], sessionId)}
+        />
+      )}
     </div>
   );
 }

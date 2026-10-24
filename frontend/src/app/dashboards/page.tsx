@@ -6,9 +6,9 @@
  * - Карточка: ID, база данных, небольшое превью плиток
  * - Клик открывает дашборд во вкладке, «✕» удаляет
  */
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
-import { deleteDashboard, fetchDashboard, fetchDashboards } from "@/api/client";
+import { deleteDashboard, fetchDashboard, fetchDashboards, isNotFound } from "@/api/client";
 import WorkspaceShell from "@/components/layout/WorkspaceShell";
 import DashboardTile, { isKpiTile } from "@/components/canvas/DashboardTile";
 import Icon from "@/components/ui/Icon";
@@ -56,28 +56,54 @@ export default function DashboardsListPage() {
   const [searchQuery, setSearchQuery] = useState("");
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const mountedRef = useRef(true);
 
   useEffect(() => {
-    loadList();
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+    };
+  }, []);
+
+  useEffect(() => {
+    const controller = new AbortController();
+    void loadList(controller.signal);
+    return () => controller.abort();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  async function loadList() {
+  /** Превью грузим пачками по 4: 20 дашбордов не открывают 20 запросов сразу. */
+  async function loadPreviews(list: DashboardListItem[], signal?: AbortSignal) {
+    const concurrency = 4;
+    for (let start = 0; start < list.length; start += concurrency) {
+      if (signal?.aborted) return;
+      const chunk = list.slice(start, start + concurrency);
+      const results = await Promise.allSettled(chunk.map((item) => fetchDashboard(item.id)));
+      if (signal?.aborted || !mountedRef.current) return;
+      const next: Record<string, DashboardConfig> = {};
+      results.forEach((result, i) => {
+        if (result.status === "fulfilled") next[chunk[i].id] = result.value;
+      });
+      if (Object.keys(next).length > 0) {
+        setConfigs((prev) => ({ ...prev, ...next }));
+      }
+    }
+  }
+
+  async function loadList(signal?: AbortSignal) {
     setLoading(true);
     setError(null);
     try {
-      const data = await fetchDashboards();
+      const data = await fetchDashboards(undefined, signal);
+      if (signal?.aborted || !mountedRef.current) return;
       setDashboards(data);
-      // Плитки для превью подгружаются по каждому дашборду
-      data.forEach((d) =>
-        fetchDashboard(d.id)
-          .then((cfg) => setConfigs((prev) => ({ ...prev, [d.id]: cfg })))
-          .catch(() => undefined),
-      );
+      setConfigs({});
+      void loadPreviews(data, signal);
     } catch (err: any) {
+      if (signal?.aborted || !mountedRef.current) return;
       setError(err.message || t("registry.loadError"));
     } finally {
-      setLoading(false);
+      if (!signal?.aborted && mountedRef.current) setLoading(false);
     }
   }
 
@@ -86,10 +112,20 @@ export default function DashboardsListPage() {
     if (!confirm(t("registry.deleteConfirm"))) return;
     try {
       await deleteDashboard(id);
-      setDashboards((prev) => prev.filter((d) => d.id !== id));
-    } catch (err: any) {
-      alert(t("registry.deleteError", { msg: err?.detail || err?.message || String(err) }));
+    } catch (err) {
+      // 404 — дашборд уже удалён: убираем его из списка, не пугаем пользователя
+      if (!isNotFound(err)) {
+        alert(t("registry.deleteError", { msg: (err as any)?.detail || (err as any)?.message || String(err) }));
+        return;
+      }
     }
+    setDashboards((prev) => prev.filter((d) => d.id !== id));
+    setConfigs((prev) => {
+      const next = { ...prev };
+      delete next[id];
+      return next;
+    });
+    window.dispatchEvent(new Event("dashboards:changed"));
   }
 
   function databaseOf(d: DashboardListItem) {
@@ -164,7 +200,7 @@ export default function DashboardsListPage() {
             <div className="space-y-2 rounded-xl border border-bad/30 bg-bad/10 p-5 text-center text-[13px] text-bad">
               <p className="font-medium">{t("registry.loadError")}</p>
               <p className="text-graphite-400">{error}</p>
-              <button onClick={loadList} className="rounded-lg bg-graphite-800 px-3 py-1.5 text-graphite-100 hover:bg-graphite-700">
+              <button onClick={() => void loadList()} className="rounded-lg bg-graphite-800 px-3 py-1.5 text-graphite-100 hover:bg-graphite-700">
                 {t("registry.retry")}
               </button>
             </div>
@@ -214,7 +250,8 @@ export default function DashboardsListPage() {
                   </div>
 
                   <div className="flex items-center justify-between gap-2 text-[11px] text-graphite-500">
-                    <span className="truncate text-graphite-300">{dash.title}</span>
+                    <span className="min-w-0 truncate text-graphite-300">{dash.title}</span>
+                    <span className="shrink-0">{t("registry.tilesCount", { n: dash.tiles_count ?? 0 })}</span>
                     <span className="shrink-0">{formatDate(dash)}</span>
                   </div>
                 </div>

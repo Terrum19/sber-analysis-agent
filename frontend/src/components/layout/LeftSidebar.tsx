@@ -29,6 +29,7 @@ import { describeDatabase } from "@/lib/describeDatabase";
 import Icon, { type IconName } from "@/components/ui/Icon";
 import type { DbKind } from "@/types/datasource";
 import ItemActionMenu from "./ItemActionMenu";
+import RecentDashboards from "./RecentDashboards";
 
 const DSN_PLACEHOLDER: Record<DbKind, string> = {
   postgres: "postgresql://analyst:pass@host:5432/db",
@@ -548,6 +549,7 @@ export default function LeftSidebar() {
           title={isGenerating ? t("chat.cannotSwitchWhileGenerating") : undefined}
           disabled={isGenerating}
         />
+        <RecentDashboards />
         {isBusy && <p className="px-2.5 pt-1 text-[11px] text-graphite-400 animate-pulse">{t("sidebar.processing")}</p>}
         {errorMsg && !dbModalOpen && <p className="px-2.5 pt-1 text-[11px] leading-tight text-bad">{errorMsg}</p>}
       </div>

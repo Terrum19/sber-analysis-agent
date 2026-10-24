@@ -7,15 +7,24 @@
  * - «Обновить данные» -> recalculateDashboard(id)
  * - Редактирование названий, раскладки и удаление плиток с сохранением (updateDashboard)
  */
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import type { Layout } from "react-grid-layout";
-import { exportArtifact, fetchDashboard, recalculateDashboard, updateDashboard } from "@/api/client";
+import {
+  exportArtifact,
+  fetchDashboard,
+  isNotFound,
+  recalculateDashboard,
+  updateDashboard,
+} from "@/api/client";
 import WorkspaceShell from "@/components/layout/WorkspaceShell";
-import DashboardTile, { isKpiTile } from "@/components/canvas/DashboardTile";
+import DashboardTile from "@/components/canvas/DashboardTile";
 import Icon from "@/components/ui/Icon";
 import ZoomControl from "@/components/ui/ZoomControl";
-import { tileGridLayout } from "@/lib/tileLayout";
+import ItemActionMenu from "@/components/layout/ItemActionMenu";
+import { MIN_SIZE, applyGridLayout, isKpiTile, tileGridLayout } from "@/lib/tileLayout";
+import { CHART_TYPES, chartTypeOf, withChartType, type ChartType } from "@/lib/chartTypes";
+import { dashboardSnapshotAt } from "@/lib/dashboard";
 import FitGrid from "@/components/canvas/FitGrid";
 import { useOpenArtifact } from "@/hooks/useOpenArtifact";
 import { useSessionStore } from "@/store/sessionStore";
@@ -34,6 +43,7 @@ export default function DashboardPage({ params }: { params: { id: string } }) {
   const openArtifact = useOpenArtifact();
   const [config, setConfig] = useState<DashboardConfig | null>(null);
   const [loading, setLoading] = useState(true);
+  const [notFound, setNotFound] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [recalculating, setRecalculating] = useState(false);
   const [isEditing, setIsEditing] = useState(false);
@@ -41,32 +51,123 @@ export default function DashboardPage({ params }: { params: { id: string } }) {
   const [statusMessage, setStatusMessage] = useState<string | null>(null);
   const [exportMenuOpen, setExportMenuOpen] = useState(false);
   const [isExporting, setIsExporting] = useState<"xlsx" | "pdf" | null>(null);
+  const [menu, setMenu] = useState<{ index: number; rect: DOMRect } | null>(null);
+  const [saveState, setSaveState] = useState<"idle" | "saving" | "saved" | "error">("idle");
+  const [saveError, setSaveError] = useState<string | null>(null);
+  const [revision, setRevision] = useState(0);
+  const configRef = useRef<DashboardConfig | null>(null);
+  const saveSeqRef = useRef(0);
+  configRef.current = config;
+
+  function markDirty() {
+    setRevision((value) => value + 1);
+  }
 
   const databaseTitle = useSessionStore((s) => {
     const dbId = config ? s.sessionDatabase[config.session_id] : undefined;
     return s.databases.find((d) => d.id === dbId)?.title;
   });
 
-  useEffect(() => {
-    async function load() {
-      setLoading(true);
-      setError(null);
-      try {
-        const data = await fetchDashboard(params.id);
-        if (!data || !data.id) {
-          setError(t("dashboard.notFound"));
-        } else {
-          setConfig(data);
-        }
-      } catch (err: any) {
-        setError(err.message || t("dashboard.notFound"));
-      } finally {
-        setLoading(false);
+  const load = useCallback(async () => {
+    setLoading(true);
+    setConfig(null);
+    setNotFound(false);
+    setError(null);
+    setRevision(0);
+    setSaveState("idle");
+    setSaveError(null);
+    try {
+      const data = await fetchDashboard(params.id);
+      if (!data || !data.id) {
+        setNotFound(true);
+        return;
       }
+      setConfig(data);
+    } catch (err: any) {
+      if (isNotFound(err)) {
+        setNotFound(true);
+      } else {
+        setError(err?.detail || err?.message || t("dashboard.loadError"));
+      }
+    } finally {
+      setLoading(false);
     }
-    load();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [params.id]);
+  }, [params.id, t]);
+
+  useEffect(() => {
+    void load();
+  }, [load]);
+
+  // Автосохранение правок страницы (раскладка, название плитки/дашборда,
+  // удаление и добавление плиток): debounce 800 мс, последний запрос выигрывает.
+  useEffect(() => {
+    if (revision === 0) return;
+    const timer = setTimeout(async () => {
+      const snapshot = configRef.current;
+      if (!snapshot) return;
+      const seq = ++saveSeqRef.current;
+      setSaveState("saving");
+      setSaveError(null);
+      try {
+        const updated = await updateDashboard(params.id, {
+          title: snapshot.title,
+          tiles: snapshot.tiles,
+        });
+        if (seq !== saveSeqRef.current) return;
+        // Метаданные сервера; локальные tiles не заменяем — они могли измениться
+        // за время запроса и должны попасть в следующий PUT.
+        setConfig((prev) =>
+          prev
+            ? {
+                ...prev,
+                updated_at: updated.updated_at,
+                snapshot_at: updated.snapshot_at ?? prev.snapshot_at,
+              }
+            : prev,
+        );
+        setSaveState("saved");
+      } catch (err: any) {
+        if (seq !== saveSeqRef.current) return;
+        if (isNotFound(err)) {
+          setConfig(null);
+          setNotFound(true);
+          return;
+        }
+        setSaveError(err?.detail || err?.message || String(err));
+        setSaveState("error");
+      }
+    }, 800);
+    return () => clearTimeout(timer);
+  }, [revision, params.id]);
+
+  // «Сохранено» гаснет через 2 секунды; «Ошибка» остаётся до повтора.
+  useEffect(() => {
+    if (saveState !== "saved") return;
+    const timer = setTimeout(() => setSaveState("idle"), 2000);
+    return () => clearTimeout(timer);
+  }, [saveState]);
+
+  async function handleRetrySave() {
+    const snapshot = configRef.current;
+    if (!snapshot) return;
+    const seq = ++saveSeqRef.current;
+    setSaveState("saving");
+    setSaveError(null);
+    try {
+      await updateDashboard(params.id, { title: snapshot.title, tiles: snapshot.tiles });
+      if (seq !== saveSeqRef.current) return;
+      setSaveState("saved");
+    } catch (err: any) {
+      if (seq !== saveSeqRef.current) return;
+      if (isNotFound(err)) {
+        setConfig(null);
+        setNotFound(true);
+        return;
+      }
+      setSaveError(err?.detail || err?.message || String(err));
+      setSaveState("error");
+    }
+  }
 
   function flash(message: string, ms = 3000) {
     setStatusMessage(message);
@@ -78,8 +179,14 @@ export default function DashboardPage({ params }: { params: { id: string } }) {
     try {
       const updated = await recalculateDashboard(params.id);
       setConfig(updated);
+      setRevision(0);
       flash(t("dashboard.recalculated"));
     } catch (err: any) {
+      if (isNotFound(err)) {
+        setConfig(null);
+        setNotFound(true);
+        return;
+      }
       const msg = err?.detail || err?.message;
       flash(msg ? `${t("canvas.refreshError")}: ${msg}` : t("canvas.refreshError"), 4000);
     } finally {
@@ -90,13 +197,24 @@ export default function DashboardPage({ params }: { params: { id: string } }) {
   async function handleSave() {
     if (!config) return;
     setIsSaving(true);
+    setSaveState("saving");
+    setSaveError(null);
     try {
       const updated = await updateDashboard(params.id, { title: config.title, tiles: config.tiles });
       setConfig(updated);
+      setRevision(0);
+      setSaveState("saved");
       setIsEditing(false);
       flash(t("dashboard.saved"));
     } catch (err: any) {
-      flash(t("canvas.saveError", { msg: err?.detail || err?.message || String(err) }), 4000);
+      const msg = err?.detail || err?.message || String(err);
+      setSaveError(msg);
+      setSaveState(isNotFound(err) ? "idle" : "error");
+      if (isNotFound(err)) {
+        setConfig(null);
+        setNotFound(true);
+      }
+      flash(t("canvas.saveError", { msg }), 4000);
     } finally {
       setIsSaving(false);
     }
@@ -107,11 +225,13 @@ export default function DashboardPage({ params }: { params: { id: string } }) {
     const newTiles = [...config.tiles];
     newTiles[index] = { ...newTiles[index], title: newTitle };
     setConfig({ ...config, tiles: newTiles });
+    markDirty();
   }
 
   function handleDeleteTile(index: number) {
     if (!config) return;
     setConfig({ ...config, tiles: config.tiles.filter((_, i) => i !== index) });
+    markDirty();
   }
 
   function handleAddKpi() {
@@ -126,17 +246,56 @@ export default function DashboardPage({ params }: { params: { id: string } }) {
       insight: t("canvas.newKpiInsight"),
     };
     setConfig({ ...config, tiles: [...config.tiles, newKpi] });
+    markDirty();
   }
 
   const gridLayout: Layout[] = tileGridLayout(config?.tiles || [], isKpiTile);
 
   function handleLayoutChange(newLayout: Layout[]) {
     if (!isEditing || !config) return;
-    const updatedTiles = config.tiles.map((tile, i) => {
-      const item = newLayout.find((l) => l.i === (tile.id || `tile-${i}`));
-      return item ? { ...tile, layout: { x: item.x, y: item.y, w: item.w, h: item.h } } : tile;
+    const tiles = applyGridLayout(config.tiles, newLayout);
+    const changed = tiles.some((tile, i) => {
+      const before = config.tiles[i]?.layout;
+      return (
+        !before ||
+        before.x !== tile.layout.x ||
+        before.y !== tile.layout.y ||
+        before.w !== tile.layout.w ||
+        before.h !== tile.layout.h
+      );
     });
-    setConfig({ ...config, tiles: updatedTiles });
+    if (changed) {
+      setConfig({ ...config, tiles });
+      markDirty();
+    }
+  }
+
+  /** Смена типа графика без LLM: PUT + recalculate (если есть result_table). */
+  async function handleChartTypeChange(index: number, type: ChartType) {
+    if (!config) return;
+    const prevConfig = config;
+    const nextTiles = config.tiles.map((tile, i) =>
+      i === index ? withChartType(tile, type) : tile,
+    );
+    setConfig({ ...config, tiles: nextTiles });
+    try {
+      await updateDashboard(params.id, { tiles: nextTiles });
+      if (nextTiles[index].result_table) {
+        const updated = await recalculateDashboard(params.id);
+        setConfig(updated);
+      } else {
+        flash(t("canvas.chartTypeLocalOnly"), 4000);
+      }
+      setRevision(0);
+    } catch (err: any) {
+      if (isNotFound(err)) {
+        setConfig(null);
+        setNotFound(true);
+        return;
+      }
+      setConfig(prevConfig);
+      flash(t("canvas.saveError", { msg: err?.detail || err?.message || String(err) }), 4000);
+    }
   }
 
   async function handleExport(format: "xlsx" | "pdf") {
@@ -184,13 +343,13 @@ export default function DashboardPage({ params }: { params: { id: string } }) {
     );
   }
 
-  if (error || !config) {
+  if (notFound) {
     return (
       <WorkspaceShell tab={tab}>
         <div className="flex flex-1 flex-col items-center justify-center gap-3 p-6 text-center">
           <Icon name="search" size={24} className="text-graphite-500" />
           <h1 className="text-lg font-medium text-graphite-100">{t("dashboard.notFound")}</h1>
-          <p className="max-w-sm text-[13px] text-graphite-400">{error || t("dashboard.notFoundText")}</p>
+          <p className="max-w-sm text-[13px] text-graphite-400">{t("dashboard.notFoundText")}</p>
           <Link href="/dashboards" className="rounded-lg bg-graphite-100 px-4 py-2 text-[12px] font-medium text-graphite-950 hover:bg-graphite-50">
             {t("dashboard.back")}
           </Link>
@@ -198,6 +357,33 @@ export default function DashboardPage({ params }: { params: { id: string } }) {
       </WorkspaceShell>
     );
   }
+
+  if (error || !config) {
+    return (
+      <WorkspaceShell tab={tab}>
+        <div className="flex flex-1 flex-col items-center justify-center gap-3 p-6 text-center">
+          <Icon name="alertTriangle" size={24} className="text-bad" />
+          <h1 className="text-lg font-medium text-graphite-100">{t("dashboard.loadError")}</h1>
+          <p className="max-w-md text-[13px] text-graphite-400">{error || t("dashboard.loadError")}</p>
+          <div className="flex items-center gap-2">
+            <button
+              onClick={() => void load()}
+              className="flex items-center gap-1.5 rounded-lg bg-graphite-100 px-4 py-2 text-[12px] font-medium text-graphite-950 hover:bg-graphite-50"
+            >
+              <Icon name="refresh" size={13} />
+              {t("dashboard.retry")}
+            </button>
+            <Link href="/dashboards" className="rounded-lg border border-graphite-700 px-4 py-2 text-[12px] text-graphite-300 hover:bg-graphite-800">
+              {t("dashboard.back")}
+            </Link>
+          </div>
+        </div>
+      </WorkspaceShell>
+    );
+  }
+
+  const snapshotAt = dashboardSnapshotAt(config);
+  const staleCount = config.tiles.filter((tile) => tile.stale).length;
 
   return (
     <WorkspaceShell tab={tab}>
@@ -224,7 +410,10 @@ export default function DashboardPage({ params }: { params: { id: string } }) {
                 <input
                   type="text"
                   value={config.title}
-                  onChange={(e) => setConfig({ ...config, title: e.target.value })}
+                  onChange={(e) => {
+                    setConfig({ ...config, title: e.target.value });
+                    markDirty();
+                  }}
                   className="w-full max-w-xl rounded-lg border border-graphite-600 bg-graphite-950 px-3 py-1 text-xl text-graphite-50 outline-none focus:border-graphite-400"
                 />
               ) : (
@@ -239,13 +428,59 @@ export default function DashboardPage({ params }: { params: { id: string } }) {
                 )}
                 <span className="inline-flex items-center gap-1.5">
                   <span className="h-1.5 w-1.5 rounded-full bg-good" />
-                  {t("dashboard.snapshotAt", { date: formatDate(config.updated_at || config.created_at) })}
+                  {t("dashboard.snapshotAt", {
+                    date: snapshotAt ? formatDate(snapshotAt) : t("dashboard.snapshotMissing"),
+                  })}
                 </span>
+                {staleCount > 0 && (
+                  <span
+                    className="inline-flex items-center gap-1.5 text-amber-400"
+                    title={t("tile.staleTooltip")}
+                  >
+                    <Icon name="alertTriangle" size={13} />
+                    {t("dashboard.staleCount", { n: staleCount })}
+                  </span>
+                )}
                 <span className="font-mono text-[11px] text-graphite-500">ID: {config.id}</span>
               </div>
             </div>
 
             <div className="flex shrink-0 items-center gap-1">
+              {/* Статус автосохранения правок */}
+              {saveState !== "idle" && (
+                <span
+                  className={`mr-0.5 inline-flex h-8 items-center gap-1 rounded-md px-1.5 text-[11px] ${
+                    saveState === "error" ? "text-bad" : saveState === "saving" ? "text-graphite-400" : "text-good"
+                  }`}
+                  title={saveState === "error" ? saveError ?? t("canvas.saveStateError") : undefined}
+                >
+                  {saveState === "saving" && (
+                    <>
+                      <Icon name="refresh" size={13} className="animate-spin" />
+                      <span className="hidden sm:inline">{t("canvas.saveStateSaving")}</span>
+                    </>
+                  )}
+                  {saveState === "saved" && (
+                    <>
+                      <Icon name="check" size={13} />
+                      <span className="hidden sm:inline">{t("canvas.saveStateSaved")}</span>
+                    </>
+                  )}
+                  {saveState === "error" && (
+                    <>
+                      <Icon name="alertTriangle" size={13} />
+                      <span className="hidden sm:inline">{t("canvas.saveStateError")}</span>
+                      <button
+                        onClick={() => void handleRetrySave()}
+                        className="rounded p-0.5 hover:bg-graphite-800"
+                        title={t("canvas.saveStateRetry")}
+                      >
+                        <Icon name="refresh" size={12} />
+                      </button>
+                    </>
+                  )}
+                </span>
+              )}
               <ZoomControl />
               <span className="mx-1 h-4 w-px bg-graphite-800" />
               <button onClick={handleRecalculate} disabled={recalculating} className={iconButton}>
@@ -322,11 +557,12 @@ export default function DashboardPage({ params }: { params: { id: string } }) {
             </div>
           ) : (
             <FitGrid
+                  responsive
                   zoom={zoom}
                   className="layout"
                   layout={gridLayout}
                   cols={12}
-                  rowHeight={Math.round(65 * zoom)}
+                  rowHeight={Math.round(60 * zoom)}
                   margin={[16, 16]}
                   containerPadding={[0, 0]}
                   isDraggable={isEditing}
@@ -334,21 +570,42 @@ export default function DashboardPage({ params }: { params: { id: string } }) {
                   onLayoutChange={handleLayoutChange}
                   useCSSTransforms
                 >
-                  {config.tiles.map((tile, i) => (
-                    <div key={tile.id || `tile-${i}`} className="h-full">
-                      <DashboardTile
-                        tile={tile}
-                        isEditing={isEditing}
-                        onRename={(newTitle) => handleRenameTile(i, newTitle)}
-                        onDelete={() => handleDeleteTile(i)}
-                        onOpen={() => openArtifact(tile, config.session_id)}
-                      />
-                    </div>
-                  ))}
+                  {config.tiles.map((tile, i) => {
+                    const dense = (gridLayout[i]?.h ?? 0) <= MIN_SIZE.chart.h;
+                    return (
+                      <div key={tile.id || `tile-${i}`} className="h-full">
+                        <DashboardTile
+                          tile={tile}
+                          isEditing={isEditing}
+                          dense={dense}
+                          onRename={(newTitle) => handleRenameTile(i, newTitle)}
+                          onDelete={() => handleDeleteTile(i)}
+                          onOpen={() => openArtifact(tile, config.session_id)}
+                          onMenu={(rect) => setMenu({ index: i, rect })}
+                        />
+                      </div>
+                    );
+                  })}
             </FitGrid>
           )}
         </div>
       </div>
+
+      {/* Меню действий плитки */}
+      {menu && config.tiles[menu.index] && (
+        <ItemActionMenu
+          target="tile"
+          title={config.tiles[menu.index].title}
+          anchorRect={menu.rect}
+          chartType={chartTypeOf(config.tiles[menu.index])}
+          chartTypes={CHART_TYPES}
+          onClose={() => setMenu(null)}
+          onRename={(newTitle) => handleRenameTile(menu.index, newTitle)}
+          onDelete={() => handleDeleteTile(menu.index)}
+          onChartTypeChange={(type) => handleChartTypeChange(menu.index, type as ChartType)}
+          onOpen={() => openArtifact(config.tiles[menu.index], config.session_id)}
+        />
+      )}
     </WorkspaceShell>
   );
 }
