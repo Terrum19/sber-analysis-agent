@@ -217,6 +217,7 @@ def test_registry_is_extensible_without_orchestrator_changes(db: DuckDBManager) 
         ("time_bucket", {"date_column": "event_date", "function": "SUM"}),
         ("time_series", {"date_column": "event_date"}),
         ("seasonality", {"date_column": "event_date"}),
+        ("forecast", {"date_column": "event_date"}),
         ("cohort_analysis", {"cohort_column": "category", "period_column": "event_date"}),
         ("product_performance", {"group_column": "category"}),
     ],
