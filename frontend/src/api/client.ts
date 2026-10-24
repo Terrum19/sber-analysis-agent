@@ -216,6 +216,22 @@ export async function listSessions(offset = 0): Promise<SessionResponse[]> {
   }
 }
 
+/** Удаляет источник на бэкенде: его таблицы, паспорта и файлы (CSV) или подключение (БД). */
+export async function deleteDatasourceApi(datasourceId: string): Promise<{ ok: boolean }> {
+  if (isMockMode()) {
+    return { ok: true };
+  }
+  try {
+    const res = await fetch(`${API}/datasources/${encodeURIComponent(datasourceId)}`, {
+      method: "DELETE",
+    });
+    if (!res.ok) throw await parseApiError(res);
+    return { ok: true };
+  } catch (err) {
+    throw toApiError(err);
+  }
+}
+
 /** Таблицы пользователя по алфавиту (CSV и PostgreSQL). */
 export async function listTables(): Promise<string[]> {
   if (isMockMode()) {
