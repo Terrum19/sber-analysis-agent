@@ -47,6 +47,11 @@ class Settings(BaseSettings):
     # H-R1: в промпт планировщика — только релевантные вопросу тулы.
     # Быстрее вдвое, но сломал вопрос про тренд (П8) — выключено.
     agent_tool_topk: bool = False
+    # Контекст модели в токенах. Задаётся на сервере (Ollama — OLLAMA_CONTEXT_LENGTH,
+    # vLLM — --max-model-len), здесь — сколько ждём; от него считается бюджет промпта.
+    llm_num_ctx: int = 16384
+    # Символов на токен для оценки длины промпта: с запасом под кириллицу (~2,6).
+    llm_chars_per_token: float = 2.5
 
     # Хранилище
     storage_dir: str = "backend/storage"

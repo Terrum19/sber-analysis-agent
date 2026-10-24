@@ -32,10 +32,14 @@ class TableBrief(BaseModel):
 
     @classmethod
     def from_profile(
-        cls, profile: TableProfile, description_status: str, warnings: list[str]
+        cls,
+        profile: TableProfile,
+        description_status: str,
+        warnings: list[str],
+        summary: str | None = None,
     ) -> "TableBrief":
         """Период — min_date/max_date первой temporal-колонки профиля."""
-        temporal = next((column for column in profile.columns if column.kind == "temporal"), None)
+        temporal = profile.temporal_column()
         return cls(
             table=profile.table,
             rows=profile.row_count,
@@ -43,6 +47,7 @@ class TableBrief(BaseModel):
             period_from=None if temporal is None else iso(temporal.min_date),
             period_to=None if temporal is None else iso(temporal.max_date),
             description_status=description_status,
+            summary=summary,
             warnings=warnings,
         )
 
@@ -58,4 +63,3 @@ class DatasourceOut(BaseModel):
     kind: Literal["csv", "postgres", "clickhouse"]
     tables: list[str]
     profiles: list[TableBrief] = Field(default_factory=list)
-    profile_summary: str = ""  # «передо мной X Y Z» от LLM

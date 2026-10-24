@@ -110,6 +110,20 @@ class SessionMemory:
             conn.close()
         return row is not None
 
+    @staticmethod
+    def delete(session_id: str) -> bool:
+        """Удалить сессию из SQLite."""
+        conn = _connect(Path(settings.sqlite_path))
+        try:
+            cursor = conn.execute(
+                "DELETE FROM session_state WHERE session_id = ?",
+                (session_id,),
+            )
+            conn.commit()
+            return cursor.rowcount > 0
+        finally:
+            conn.close()
+
     def _persist(self) -> None:
         """Сохранить состояние сессии в SQLite."""
         conn = self._connect()
@@ -150,6 +164,11 @@ class SessionMemory:
         self._state["title"] = title
         self._state["datasource_id"] = datasource_id
         self._state.setdefault("created_at", datetime.now(UTC).isoformat())
+        self._persist()
+
+    def set_title(self, title: str) -> None:
+        """Переименовать сессию; остальные метаданные не меняются."""
+        self._state["title"] = title
         self._persist()
 
     def set_table(self, table: str, columns: list[str]) -> None:

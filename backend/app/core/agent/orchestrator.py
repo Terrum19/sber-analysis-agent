@@ -18,6 +18,10 @@
 таблицей») обслуживается без планировщика и без повторного SQL: спека
 перестраивается chart_morph из кешированной temp_result_vN.
 
+Вопрос про таблицу целиком («что передо мной?», «сколько строк и за какой
+период?») тоже идёт без планировщика: факты и таблица колонок — из
+паспорта, описание — из кеша паспорта или от LLM (core/data/overview.py).
+
 О ходе работы фронт узнаёт из событий ``progress``: планирование
 (started/finished), каждый шаг (started/finished/failed), начало
 инсайта и графика.
@@ -35,21 +39,25 @@ SessionMemory состояние ожидания уточнения (``pending_
 import asyncio
 import json
 import logging
+import re
 import time
 from collections.abc import AsyncIterator, Callable
+from contextlib import aclosing
 from dataclasses import dataclass, field
 
 logger = logging.getLogger(__name__)
 
 import duckdb
 
-from app.api.schemas.chat import ChatRequest, ProgressPayload
+from app.api.schemas.chat import ChatRequest, DashboardPayload, ProgressPayload
 from app.core.agent.insight import InsightGenerator
 from app.core.agent.planner import StepPlanner
 from app.core.agent.recovery import STEP_FIX_ATTEMPTS, fixable
 from app.core.agent.step_executor import StepExecutor, resolve_input, tool_kind
 from app.core.agent.triage import small_talk_reply
+from app.core.data import overview
 from app.core.data.duckdb_manager import DuckDBManager
+from app.core.llm.budget import track_truncations
 from app.core.memory.profile_memory import ProfileMemory
 from app.core.memory.session_memory import SessionMemory
 from app.core.memory.state_cache import StateCache
@@ -62,6 +70,13 @@ from app.models.research_step import ResearchPlan, ResearchStep
 NO_TABLE_MESSAGE = "Сначала подключите данные"
 # Ход упал вне шагов (планировщик, инсайт, график): текст ошибки — в progress.
 FAILURE_MESSAGE = "Не удалось ответить на вопрос, попробуйте ещё раз"
+# Плитка дашборда и экспорт принимают только результаты шагов (temp_result_vN).
+RESULT_TABLE = re.compile(r"temp_result_v\d+")
+
+SUMMARY_UNAVAILABLE = "Описание данных сейчас недоступно: модель не ответила."
+OVERVIEW_CAPTION = "Колонки таблицы"
+# Событие, которым кончается ход: после него поток закрывается.
+TURN_END_EVENTS = ("done", "clarification_needed")
 
 # Отправка события фронту из глубины плана (progress), пока run() стримит.
 Emit = Callable[[dict], None]
@@ -139,6 +154,17 @@ def _fixing_event(step: ResearchStep, attempt: int, error: Exception) -> dict:
     return _step_event(step, "fixing", attempt=attempt, error=str(error))
 
 
+def _chart_event(spec: dict, caption: str, result_table: str) -> dict:
+    """График с таблицей результата: из неё фронт пересчитывает плитку и выгружает Excel.
+
+    Ответ без шагов строится по исходной таблице — её не отдаём.
+    """
+    data = {"spec": spec, "caption": caption}
+    if RESULT_TABLE.fullmatch(result_table):
+        data["result_table"] = result_table
+    return {"type": "chart", "data": data}
+
+
 def _failure_event() -> dict:
     return {"type": "error", "data": {"message": FAILURE_MESSAGE}}
 
@@ -169,7 +195,23 @@ class AgentOrchestrator:
         self.profiles = ProfileMemory(self.db)
 
     async def run(self, request: ChatRequest) -> AsyncIterator[dict]:
-        """Выполнить исследование и вернуть поток событий для фронта."""
+        """Выполнить исследование и вернуть поток событий для фронта.
+
+        Если сервер LLM обрезал промпты хода, последнее событие хода (done или
+        clarification_needed) несёт их число в prompt_truncated: eval (#58)
+        отбрасывает такие прогоны. Обрезанный промпт чаще всего и кончается
+        уточнением: модель без списка тулов строит план, шаг падает.
+        """
+        truncations = track_truncations()
+        # aclosing: клиент отключился — ход закрывается сразу, с отменой задачи плана.
+        async with aclosing(self._turn(request)) as events:
+            async for event in events:
+                if event["type"] in TURN_END_EVENTS and truncations:
+                    event["data"]["prompt_truncated"] = len(truncations)
+                yield event
+
+    async def _turn(self, request: ChatRequest) -> AsyncIterator[dict]:
+        """Один ход: события для фронта до done или clarification_needed."""
         logger.info(">>> run() session_id=%s question=%r", request.session_id, request.question)
         memory = SessionMemory(request.session_id, db=self.db)
         pending = memory.get_pending_recovery()
@@ -199,11 +241,16 @@ class AgentOrchestrator:
             }
         )
 
+        if pending is None and overview.is_overview_question(request.question):
+            async for event in self._overview(memory, table):
+                yield event
+            return
+
         if pending is None:
             # Смена вида прошлого графика — из кеша, без планировщика и SQL.
             morphed = self._morph(memory, request.question, titles)
             if morphed is not None:
-                yield {"type": "chart", "data": morphed}
+                yield morphed
                 yield {"type": "done", "data": {}}
                 return
 
@@ -267,7 +314,7 @@ class AgentOrchestrator:
                 len(spec.get("data", {}).get("values", [])),
             )
             memory.record_chart(spec["usermeta"]["chart_type"], result_table, insight.headline)
-            yield {"type": "chart", "data": {"spec": spec, "caption": insight.headline}}
+            yield _chart_event(spec, insight.headline, result_table)
         except Exception as exc:
             logger.exception("<<< run() этап %s упал", stage)
             yield _progress_event(stage, "failed", error=str(exc))
@@ -295,7 +342,11 @@ class AgentOrchestrator:
                 logger.exception("<<< run() дашборд не собран")
                 yield _progress_event("dashboard", "failed", error=str(exc))
             else:
-                yield {"type": "dashboard", "data": {"dashboard_id": dashboard.id}}
+                # Плитки уходят сразу в событии: фронт рисует превью без GET.
+                # exclude_none убирает snapshot_data (в payload он None) и другие
+                # пустые поля — снимок данных в SSE не передаётся.
+                payload = DashboardPayload.from_dashboard(dashboard)
+                yield {"type": "dashboard", "data": payload.model_dump(exclude_none=True)}
 
         memory.record_answer(insight.headline)
         yield {"type": "done", "data": {}}
@@ -674,6 +725,44 @@ class AgentOrchestrator:
             emit=emit,
         )
 
+    async def _overview(self, memory: SessionMemory, table: str) -> AsyncIterator[dict]:
+        """Ответ на «что передо мной?»: факты, описание и таблица колонок, без планировщика.
+
+        Описание не построилось (LLM недоступна) — факты и таблица всё равно
+        отдаются. Таблица колонок не становится last_chart: «покажи в другом
+        виде» относится к прошлому графику исследования.
+        """
+        stage = "insight"
+        try:
+            yield _progress_event("insight", "started")
+            profile = overview.passport(self.db, table)
+            enrichment = self.profiles.load_enrichment(table)
+            headline = overview.facts(profile)
+            try:
+                summary = await overview.describe_dataset(
+                    self.db, table, getattr(self.planner, "llm", None)
+                )
+            except Exception:
+                logger.exception("<<< run() описание таблицы %s не построено", table)
+                summary = ""
+            details = overview.paragraphs(summary) or [SUMMARY_UNAVAILABLE]
+            yield {"type": "text", "data": {"headline": headline, "details": details}}
+
+            stage = "chart"
+            yield _progress_event("chart", "started")
+            spec = build_vega_spec(
+                "table", data=overview.profile_rows(profile, enrichment), title=OVERVIEW_CAPTION
+            )
+            yield {"type": "chart", "data": {"spec": spec, "caption": OVERVIEW_CAPTION}}
+        except Exception as exc:
+            logger.exception("<<< run() обзор таблицы: этап %s упал", stage)
+            yield _progress_event(stage, "failed", error=str(exc))
+            yield _failure_event()
+            yield {"type": "done", "data": {}}
+            return
+        memory.record_answer(headline)
+        yield {"type": "done", "data": {}}
+
     def _morph(self, memory: SessionMemory, question: str, titles: dict[str, str]) -> dict | None:
         """Сменить вид прошлого графика из кеша (None — нужен новый план).
 
@@ -693,7 +782,7 @@ class AgentOrchestrator:
         chart_type = spec["usermeta"]["chart_type"]
         memory.record_chart(chart_type, last["result_table"], last["caption"])
         memory.record_answer(f"График перестроен: {chart_type}")
-        return {"spec": spec, "caption": last["caption"]}
+        return _chart_event(spec, last["caption"], last["result_table"])
 
 
 def _next_step_id(tables: dict[int, str]) -> int:

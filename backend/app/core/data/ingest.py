@@ -9,20 +9,27 @@
    источнике или документ-описание), SchemaEnricher переносит из него в
    паспорт названия и описания колонок. Описания нет — ничего не делается,
    LLM не вызывается.
+3. summarize() — описание таблицы «что передо мной» (core/data/overview.py)
+   в паспорт, после describe(): так оно видит названия колонок из документа.
 """
 
+import logging
 from dataclasses import dataclass
 from uuid import uuid4
 
 import duckdb
+import openai
 
 from app.config import settings
+from app.core.data import overview
 from app.core.data.connectors.base import BaseConnector
 from app.core.data.profiling import TableProfile, profile_table
 from app.core.data.schema_enrichment import SchemaEnricher, Superseded
 from app.core.llm.client import LLMClient
 from app.core.memory.profile_memory import ProfileMemory
 from app.models.enrichment import ColumnEnrichment
+
+logger = logging.getLogger(__name__)
 
 
 def attach(connector: BaseConnector, db) -> dict[str, TableProfile]:
@@ -161,3 +168,21 @@ def mark_pending(
         described = document is not None or bool(job.comments[table])
         memory.begin_description(table, job.run, described)
     return job
+
+
+async def summarize(db, tables: list[str], llm: LLMClient | None = None) -> None:
+    """Описание «что передо мной» для каждой таблицы в паспорт (overview.describe_dataset).
+
+    Сбой одной таблицы пишется в лог, остальные описываются. LLM недоступна
+    (таймаут, нет соединения) — остальные таблицы не ждут её по очереди:
+    описание построится при первом вопросе.
+    """
+    llm = llm or LLMClient()
+    for table in tables:
+        try:
+            await overview.describe_dataset(db, table, llm)
+        except openai.APIConnectionError:
+            logger.warning("LLM недоступна, описание таблиц %s отложено до вопроса", tables)
+            return
+        except Exception:
+            logger.exception("Описание таблицы %s не построено", table)
