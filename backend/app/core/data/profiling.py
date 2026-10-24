@@ -719,6 +719,8 @@ def profile_warnings(profile: TableProfile) -> list[str]:
     for column in profile.columns:
         for flag in column.flags:
             name, _, count = flag.partition(":")
+            if name not in found:
+                continue
             label = f"«{column.name}» ({count})" if count else f"«{column.name}»"
             found[name].append((int(count or 0), label))
     warnings = []

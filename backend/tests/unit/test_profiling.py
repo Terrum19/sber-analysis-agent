@@ -642,6 +642,11 @@ def test_clean_profile_has_no_warnings() -> None:
     assert profile_warnings(flagged_profile({"a": [], "b": []})) == []
 
 
+def test_profile_warnings_skip_unknown_flags() -> None:
+    profile = flagged_profile({"a": ["future_flag:4", "numeric_as_text"], "b": ["future_flag"]})
+    assert profile_warnings(profile) == ["Числа записаны текстом в колонках «a»."]
+
+
 def test_single_column_has_no_empty_rows_warning() -> None:
     profile = flagged_profile({"value": ["null_tokens:3"]}, empty_rows=2)
     assert profile_warnings(profile) == [
