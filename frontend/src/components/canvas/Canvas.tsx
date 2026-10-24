@@ -296,7 +296,9 @@ export default function Canvas({ sessionId }: Props) {
     setIsExporting(format);
     setExportMenuOpen(false);
     try {
-      const blob = await exportArtifact(sessionId, format);
+      // Excel — по таблице результата последнего графика с ней (temp_result_vN)
+      const resultRef = [...displayTiles].reverse().find((tile) => tile.result_table)?.result_table;
+      const blob = await exportArtifact(sessionId, format, resultRef);
       const url = URL.createObjectURL(blob);
       const a = document.createElement("a");
       a.href = url;

@@ -41,8 +41,10 @@ export interface SessionCreatePayload {
   title?: string | null;
 }
 
+/** Тело PATCH /api/sessions/{id}: хотя бы одно из полей (иначе 422). */
 export interface SessionPatchPayload {
-  table: string;
+  table?: string;
+  title?: string;
 }
 
 export interface SessionResponse {

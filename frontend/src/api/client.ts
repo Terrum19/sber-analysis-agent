@@ -23,6 +23,7 @@ import {
   mockListSessions,
   mockListTables,
   mockPatchSession,
+  mockRenameSession,
   mockRecalculateDashboard,
   mockStreamChat,
   mockUpdateDashboard,
@@ -177,6 +178,28 @@ export async function getSession(sessionId: string): Promise<SessionResponse> {
 /** PATCH /api/sessions/{id} {table}: сменить таблицу сессии (404 — «Таблица не найдена»). */
 export const setSessionTable = patchSession;
 
+/** PATCH /api/sessions/{id} {title}: переименовать сессию на бэкенде (404 — «Сессия не найдена»). */
+export async function renameSessionApi(sessionId: string, title: string): Promise<SessionResponse> {
+  if (isMockMode()) {
+    return mockRenameSession(sessionId, title);
+  }
+  try {
+    const res = await fetch(`${API}/sessions/${encodeURIComponent(sessionId)}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ title }),
+    });
+    if (!res.ok) throw await parseApiError(res);
+    return await res.json();
+  } catch (err) {
+    const apiErr = toApiError(err);
+    if (apiErr.status === 404) {
+      apiErr.detail = "Сессия не найдена";
+    }
+    throw apiErr;
+  }
+}
+
 /** Страница сессий (до SESSIONS_PAGE штук), недавно изменённые первыми. */
 export const SESSIONS_PAGE = 30;
 
@@ -188,6 +211,22 @@ export async function listSessions(offset = 0): Promise<SessionResponse[]> {
     const res = await fetch(`${API}/sessions?offset=${offset}`);
     if (!res.ok) throw await parseApiError(res);
     return await res.json();
+  } catch (err) {
+    throw toApiError(err);
+  }
+}
+
+/** Удаляет источник на бэкенде: его таблицы, паспорта и файлы (CSV) или подключение (БД). */
+export async function deleteDatasourceApi(datasourceId: string): Promise<{ ok: boolean }> {
+  if (isMockMode()) {
+    return { ok: true };
+  }
+  try {
+    const res = await fetch(`${API}/datasources/${encodeURIComponent(datasourceId)}`, {
+      method: "DELETE",
+    });
+    if (!res.ok) throw await parseApiError(res);
+    return { ok: true };
   } catch (err) {
     throw toApiError(err);
   }
