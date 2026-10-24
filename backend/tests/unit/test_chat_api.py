@@ -35,3 +35,34 @@ def test_chat_stream_forbids_proxy_buffering() -> None:
     assert "content-encoding" not in response.headers
     assert response.text.startswith("data: ")
     assert '"type":"error"' in response.text
+
+
+def test_chat_stream_accepts_recovery_response() -> None:
+    client = TestClient(app)
+    response = client.post(
+        "/api/chat",
+        json={
+            "session_id": "s1",
+            "question": "Повторный запрос",
+            "recovery_response": '{"action": "skip_step", "text": "Пропустить этот шаг"}',
+        },
+    )
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("text/event-stream")
+    assert response.text.startswith("data: ")
+
+
+def test_chat_stream_ends_with_done_when_orchestrator_raises(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def broken_run(self, payload):
+        raise RuntimeError("оркестратор упал")
+        yield  # pragma: no cover
+
+    monkeypatch.setattr("app.core.agent.orchestrator.AgentOrchestrator.run", broken_run)
+    client = TestClient(app)
+    response = client.post("/api/chat", json={"session_id": "s1", "question": "Что в данных?"})
+    events = [line for line in response.text.splitlines() if line.startswith("data: ")]
+    assert '"type":"error"' in events[0]
+    assert "оркестратор упал" in events[0]
+    assert events[-1] == 'data: {"type":"done","data":{}}'

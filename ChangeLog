@@ -1,3 +1,23 @@
+2026-10-24  Alexander Yurits  <terruwork@gmail.com>
+
+	Карточки таблиц после подключения (#69).
+	* frontend/src/types/datasource.ts (TableBrief, DescriptionStatus):
+	Новые типы по api/schemas/datasource.py; Datasource.profiles.
+	* frontend/src/components/chat/TableBriefCard.tsx: Новый компонент:
+	строки и колонки, период, summary, бейдж pending/failed описания
+	колонок, предупреждения загрузчика.
+	* frontend/src/store/sessionStore.ts (DatabaseFolder.profiles):
+	Паспорта из ответа подключения.
+	* frontend/src/components/chat/ChatPanel.tsx: Карточка активной
+	таблицы на пустом экране сессии.
+	* frontend/src/components/modals/TableSelectModal.tsx (briefs):
+	Краткая карточка под каждой таблицей.
+	* frontend/src/api/mockData.ts: profiles в мок-ответах подключения.
+	* backend/app/api/routes/chat.py (chat): Сбой вне оркестратора
+	завершает стрим событием done после error.
+	* backend/app/core/dashboards/models.py (DashboardTile): layout —
+	целые, snapshot_data — строки или словарь KPI вместо Any.
+
 2026-10-24  thebulkapro  <saitbatalovbulat200@gmail.com>
 
 	Длина контекста LLM: исправления по ревью #136.

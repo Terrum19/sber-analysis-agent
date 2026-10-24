@@ -1,9 +1,9 @@
 """Pydantic-схемы API диалога (контракт фронтенд <-> бэкенд)."""
 
 from datetime import datetime
-from typing import Any, Literal, Self
+from typing import Annotated, Any, Literal, Self
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, StringConstraints, model_validator
 
 from app.api.schemas.dashboard import DashboardTileOut
 from app.core.dashboards.models import Dashboard
@@ -15,8 +15,26 @@ class SessionCreate(BaseModel):
     title: str | None = None
 
 
-class SessionTable(BaseModel):
-    table: str
+SessionTitle = Annotated[
+    str, StringConstraints(strip_whitespace=True, min_length=1, max_length=200)
+]
+
+
+class SessionUpdate(BaseModel):
+    """Тело PATCH /sessions/{id}: новая таблица и/или новое название.
+
+    Оба поля необязательны, но хотя бы одно должно быть задано (иначе 422).
+    Тело ``{"table": ...}`` прежнего контракта остаётся валидным.
+    """
+
+    table: str | None = None
+    title: SessionTitle | None = None
+
+    @model_validator(mode="after")
+    def require_field(self) -> Self:
+        if self.table is None and self.title is None:
+            raise ValueError("Нужно указать table или title.")
+        return self
 
 
 class SessionOut(BaseModel):

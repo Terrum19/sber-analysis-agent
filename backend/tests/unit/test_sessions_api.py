@@ -1,5 +1,5 @@
 """API сессий: создание только над подключённой таблицей, смена таблицы,
-список и чтение после перезапуска приложения."""
+переименование, список и чтение после перезапуска приложения."""
 
 import itertools
 from collections.abc import Callable, Iterator
@@ -91,6 +91,19 @@ def test_get_unknown_session_is_404(client) -> None:
     assert client.get("/api/sessions/nope").status_code == 404
 
 
+def test_delete_session_removes_session(client) -> None:
+    session_id = client.post("/api/sessions", json={"table": "sales"}).json()["session_id"]
+    assert client.get(f"/api/sessions/{session_id}").status_code == 200
+    res = client.delete(f"/api/sessions/{session_id}")
+    assert res.status_code == 200
+    assert res.json() == {"ok": True}
+    assert client.get(f"/api/sessions/{session_id}").status_code == 404
+
+
+def test_delete_session_not_found_is_404(client) -> None:
+    assert client.delete("/api/sessions/nope").status_code == 404
+
+
 def test_session_survives_new_app(new_client) -> None:
     body = {"table": "sales", "title": "Продажи", "datasource_id": "csv_1"}
     created = new_client().post("/api/sessions", json=body).json()
@@ -180,3 +193,53 @@ def test_list_sessions_offset_reaches_older(client, clock, monkeypatch: pytest.M
     page = client.get("/api/sessions", params={"offset": 2}).json()
     assert [s["session_id"] for s in page] == [ids[0]]
     assert client.get("/api/sessions", params={"offset": -1}).status_code == 422
+
+
+def test_patch_title_renames_session_after_restart(new_client) -> None:
+    body = {"table": "sales", "title": "Продажи", "datasource_id": "csv_1"}
+    created = new_client().post("/api/sessions", json=body).json()
+    session_id = created["session_id"]
+    response = new_client().patch(f"/api/sessions/{session_id}", json={"title": "  Выручка  "})
+    assert response.status_code == 200
+    assert response.json() == {**created, "title": "Выручка"}
+    fresh = new_client()
+    assert fresh.get(f"/api/sessions/{session_id}").json()["title"] == "Выручка"
+    assert fresh.get("/api/sessions").json()[0]["title"] == "Выручка"
+
+
+def test_patch_title_keeps_table_and_steps(client) -> None:
+    session_id = client.post("/api/sessions", json={"table": "sales"}).json()["session_id"]
+    SessionMemory(session_id).set_pending_recovery({"step_id": 1})
+    response = client.patch(f"/api/sessions/{session_id}", json={"title": "Новое имя"})
+    assert response.json()["table"] == "sales"
+    assert SessionMemory(session_id).get_pending_recovery() == {"step_id": 1}
+
+
+def test_patch_title_and_table_together(client) -> None:
+    session_id = client.post("/api/sessions", json={"table": "sales"}).json()["session_id"]
+    response = client.patch(
+        f"/api/sessions/{session_id}", json={"table": "users", "title": "Возраст"}
+    )
+    assert response.status_code == 200
+    assert response.json()["table"] == "users"
+    assert response.json()["title"] == "Возраст"
+
+
+def test_patch_unknown_table_keeps_title(client) -> None:
+    body = {"table": "sales", "title": "Продажи"}
+    session_id = client.post("/api/sessions", json=body).json()["session_id"]
+    response = client.patch(f"/api/sessions/{session_id}", json={"table": "missing", "title": "X"})
+    assert response.status_code == 404
+    assert SessionMemory(session_id).title == "Продажи"
+
+
+@pytest.mark.parametrize(
+    "body", [{}, {"title": None}, {"table": None, "title": None}, {"title": "   "}]
+)
+def test_patch_without_table_or_title_is_422(client, body) -> None:
+    session_id = client.post("/api/sessions", json={"table": "sales"}).json()["session_id"]
+    assert client.patch(f"/api/sessions/{session_id}", json=body).status_code == 422
+
+
+def test_patch_title_unknown_session_is_404(client) -> None:
+    assert client.patch("/api/sessions/nope", json={"title": "X"}).status_code == 404

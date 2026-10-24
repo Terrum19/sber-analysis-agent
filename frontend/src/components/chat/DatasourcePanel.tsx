@@ -54,26 +54,26 @@ export default function DatasourcePanel() {
   }
 
   return (
-    <div className="mb-4 space-y-2 border-b border-slate-200 pb-4 text-sm">
+    <div className="mb-4 space-y-2 border-b border-graphite-200 pb-4 text-sm">
       <div className="flex flex-wrap items-center gap-2">
         <input ref={fileInput} type="file" accept=".csv,text/csv" multiple hidden onChange={onFiles} />
         <button
           onClick={() => fileInput.current?.click()}
           disabled={busy}
-          className="rounded-lg border border-slate-300 px-3 py-1.5 hover:bg-slate-50 disabled:opacity-50"
+          className="rounded-lg border border-graphite-300 px-3 py-1.5 hover:bg-graphite-50 disabled:opacity-50"
         >
           Загрузить CSV
         </button>
         <button
           onClick={() => setDbFormOpen((open) => !open)}
           disabled={busy}
-          className="rounded-lg border border-slate-300 px-3 py-1.5 hover:bg-slate-50 disabled:opacity-50"
+          className="rounded-lg border border-graphite-300 px-3 py-1.5 hover:bg-graphite-50 disabled:opacity-50"
         >
           Подключить БД
         </button>
-        {busy && <span className="text-slate-500">Подключение...</span>}
+        {busy && <span className="text-graphite-500">Подключение...</span>}
         {!busy && datasource && (
-          <span className="text-slate-600">
+          <span className="text-graphite-600">
             {datasource.kind}: {datasource.tables.join(", ") || "таблиц нет"}
           </span>
         )}
@@ -83,7 +83,7 @@ export default function DatasourcePanel() {
           <select
             value={kind}
             onChange={(e) => setKind(e.target.value as DbKind)}
-            className="rounded-lg border border-slate-300 px-2 py-1.5"
+            className="rounded-lg border border-graphite-300 px-2 py-1.5"
           >
             <option value="postgres">PostgreSQL</option>
             <option value="clickhouse">ClickHouse</option>
@@ -92,22 +92,22 @@ export default function DatasourcePanel() {
             value={dsn}
             onChange={(e) => setDsn(e.target.value)}
             placeholder={DSN_PLACEHOLDER[kind]}
-            className="min-w-0 flex-1 rounded-lg border border-slate-300 px-3 py-1.5"
+            className="min-w-0 flex-1 rounded-lg border border-graphite-300 px-3 py-1.5"
           />
           {kind === "postgres" && (
             <input
               value={schema}
               onChange={(e) => setSchema(e.target.value)}
               placeholder="схема (необязательно)"
-              className="w-40 rounded-lg border border-slate-300 px-3 py-1.5"
+              className="w-40 rounded-lg border border-graphite-300 px-3 py-1.5"
             />
           )}
-          <button type="submit" disabled={busy || !dsn.trim()} className="rounded-lg bg-blue-600 px-3 py-1.5 text-white disabled:opacity-50">
+          <button type="submit" disabled={busy || !dsn.trim()} className="rounded-lg bg-graphite-600 px-3 py-1.5 text-graphite-50 disabled:opacity-50">
             Подключить
           </button>
         </form>
       )}
-      {error && <p className="text-red-600">Не удалось подключить источник: {error}</p>}
+      {error && <p className="text-bad">Не удалось подключить источник: {error}</p>}
     </div>
   );
 }
