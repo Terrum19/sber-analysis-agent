@@ -318,47 +318,23 @@ function DatabaseRow({
   );
 }
 
-/** Нижняя строка: тема и язык интерфейса. */
+/** Нижняя строка: тема оформления интерфейса. */
 function PreferencesBar() {
   const t = useT();
   const theme = useUiStore((s) => s.theme);
   const setTheme = useUiStore((s) => s.setTheme);
-  const locale = useUiStore((s) => s.locale);
-  const setLocale = useUiStore((s) => s.setLocale);
 
   return (
-    <div className="flex items-center justify-between gap-2 border-t border-graphite-800 px-3 py-2.5">
+    <div className="flex items-center justify-center border-t border-graphite-800 px-3 py-2.5">
       <button
         type="button"
         onClick={() => setTheme(theme === "dark" ? "light" : "dark")}
-        className="flex items-center gap-2 rounded-lg px-2 py-1.5 text-[12px] text-graphite-300 hover:bg-graphite-900 hover:text-graphite-100 transition"
+        className="flex w-full items-center justify-center gap-2 rounded-lg px-2 py-1.5 text-[12px] text-graphite-300 hover:bg-graphite-900 hover:text-graphite-100 transition"
         title={theme === "dark" ? t("sidebar.themeLight") : t("sidebar.themeDark")}
       >
         <Icon name={theme === "dark" ? "moon" : "sun"} />
         <span>{theme === "dark" ? t("sidebar.themeDark") : t("sidebar.themeLight")}</span>
       </button>
-
-      <div
-        role="radiogroup"
-        aria-label={t("sidebar.language")}
-        title={t("sidebar.language")}
-        className="flex items-center rounded-lg border border-graphite-800 p-0.5 text-[11px] font-medium"
-      >
-        {(["ru", "en"] as const).map((l) => (
-          <button
-            key={l}
-            type="button"
-            role="radio"
-            aria-checked={locale === l}
-            onClick={() => setLocale(l)}
-            className={`rounded-md px-2 py-0.5 uppercase transition ${
-              locale === l ? "bg-graphite-800 text-graphite-50" : "text-graphite-500 hover:text-graphite-200"
-            }`}
-          >
-            {l}
-          </button>
-        ))}
-      </div>
     </div>
   );
 }

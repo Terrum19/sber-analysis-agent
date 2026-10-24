@@ -161,8 +161,6 @@ export default function TopHeader({ active }: { active: WorkspaceTab }) {
   // Активная вкладка видна, даже если её закрыли и открыли по прямой ссылке
   const shown = tabs.some((x) => tabKey(x) === activeKey) ? tabs : [...tabs, active];
 
-  const isMock = typeof window !== "undefined" && localStorage.getItem("sber_force_mock") === "true";
-
   return (
     <header className="relative flex h-10 w-full shrink-0 items-stretch border-b border-graphite-800 bg-graphite-950 text-graphite-300 select-none">
       {/* Вкладки: прокрутка колесом, перетаскивание для порядка */}
@@ -170,7 +168,7 @@ export default function TopHeader({ active }: { active: WorkspaceTab }) {
         onWheel={(e) => {
           if (Math.abs(e.deltaY) > Math.abs(e.deltaX)) e.currentTarget.scrollLeft += e.deltaY;
         }}
-        className="flex min-w-0 flex-1 items-stretch overflow-x-auto pr-24 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
+        className="flex min-w-0 flex-1 items-stretch overflow-x-auto pr-14 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
       >
         {shown.map((tab) => {
           const key = tabKey(tab);
@@ -194,25 +192,8 @@ export default function TopHeader({ active }: { active: WorkspaceTab }) {
       </nav>
 
       {/* Панель справа: вкладки уходят под неё (сплошной фон и мягкий край) */}
-      <div className="absolute inset-y-0 right-0 flex items-center gap-1.5 bg-graphite-950 pl-2 pr-3 before:pointer-events-none before:absolute before:inset-y-0 before:right-full before:w-10 before:bg-gradient-to-l before:from-graphite-950 before:to-transparent">
-        <button
-          onClick={() => {
-            localStorage.setItem("sber_force_mock", isMock ? "false" : "true");
-            window.location.reload();
-          }}
-          className={`flex items-center gap-1.5 rounded-full border px-2.5 py-0.5 text-[11px] font-medium transition ${
-            isMock
-              ? "bg-warn/10 border-warn/30 text-warn hover:bg-warn/20"
-              : "border-graphite-700 text-graphite-400 hover:text-graphite-200"
-          }`}
-          title={t("header.mockTitle")}
-          suppressHydrationWarning
-        >
-          <span className={`h-1.5 w-1.5 rounded-full ${isMock ? "bg-current" : "bg-good"}`} />
-          <span suppressHydrationWarning>{isMock ? t("header.mockOn") : t("header.modeAuto")}</span>
-        </button>
-
-        {active.kind === "session" && (
+      {active.kind === "session" && (
+        <div className="absolute inset-y-0 right-0 flex items-center gap-1.5 bg-graphite-950 pl-2 pr-3 before:pointer-events-none before:absolute before:inset-y-0 before:right-full before:w-10 before:bg-gradient-to-l before:from-graphite-950 before:to-transparent">
           <button
             onClick={() => setCanvasOpen(!canvasOpen)}
             className={`flex h-7 w-7 items-center justify-center rounded-lg transition ${
@@ -222,8 +203,8 @@ export default function TopHeader({ active }: { active: WorkspaceTab }) {
           >
             <Icon name="panelRight" />
           </button>
-        )}
-      </div>
+        </div>
+      )}
     </header>
   );
 }
