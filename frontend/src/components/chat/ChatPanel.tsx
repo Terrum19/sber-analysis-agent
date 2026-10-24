@@ -70,6 +70,7 @@ export default function ChatPanel({ sessionId }: Props) {
   const bindSession = useSessionStore((s) => s.bindSession);
 
   const [remoteTables, setRemoteTables] = useState<string[]>([]);
+  const tablesVersion = useUiStore((s) => s.tablesVersion);
   useEffect(() => {
     let cancelled = false;
     listTables()
@@ -80,7 +81,7 @@ export default function ChatPanel({ sessionId }: Props) {
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [tablesVersion]);
 
   const availableTables = useMemo(() => {
     const list = [...(database?.tables ?? []), ...remoteTables];
