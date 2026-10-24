@@ -13,40 +13,21 @@ V1 с эталоном (experiment_log.md, П3):
 - H-T1: `aggregate` — это частоты значений, а итога по всей таблице в
   реестре нет -> group_by с by=[] даёт один итог, описания тулов уточнены;
 - H-T2: «по месяцам» планировалось как group_by по дате -> правило и
-  пример с time_bucket;
-- H-C1: модель копировала фильтры прошлых вопросов -> прошлые шаги видит
-  только вопрос-продолжение.
+  пример с time_bucket.
+
+H-C1 (прошлые шаги видел только вопрос-продолжение по regex) заменён
+прошлыми ходами в промпте с правилом «самостоятельному вопросу фильтры
+не переноси» (#163).
 """
 
 import re
 
 from app.core.data.duckdb_manager import DuckDBManager
-from app.core.llm.prompts.quality_rules import PAST_CONTEXT
 from app.core.tools.base import identifier
 from app.core.tools.registry import tool_registry
 
 # Число: «12345», «12 345» (разряды через пробел), «12,5», «12.5».
 _NUMBER = re.compile(r"\d{1,3}(?:[   ]\d{3})+(?:[.,]\d+)?|\d+(?:[.,]\d+)?")
-
-# H-C1b: признаки того, что вопрос продолжает предыдущий. Вопрос с «а»/«и» в
-# начале («А в Москве?», «И по регионам?») — почти всегда продолжение;
-# «прошлый»/«предыдущий» сами по себе — нет («за прошлый месяц»).
-FOLLOW_UP = re.compile(
-    r"^\s*[аи]\s|\b(?:из них|из этих|среди них|теперь|там же|то же|эти\w*|этот|этого|"
-    r"дальше|ещё|еще|предыдущ\w* (?:вопрос|ответ|результат|шаг))",
-    re.IGNORECASE,
-)
-
-
-def frame_context(summary: str, question: str = "") -> str:
-    """H-C1/H-C1b: прошлые шаги — только для вопроса-продолжения и с пометкой «справка».
-
-    Инструкция «не повторяй» в V4 не помогла (модель всё равно копировала
-    фильтр), поэтому самостоятельному вопросу прошлые шаги не показываются вовсе.
-    """
-    if not summary or not FOLLOW_UP.search(question):
-        return "нет"
-    return PAST_CONTEXT.format(summary=summary)
 
 
 def ungrounded_numbers(headline: str, sources: str) -> list[str]:

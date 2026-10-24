@@ -81,3 +81,42 @@ def test_run_python_step_is_valid_only_when_the_tool_is_available(monkeypatch):
     assert validate_plan(plan) == []
     monkeypatch.setattr(settings, "codegen_enabled", False)
     assert validate_plan(plan) == ["шаг 0: неизвестный инструмент 'run_python'"]
+
+
+def test_prompt_shows_previous_turns_with_plan_arguments():
+    import asyncio
+
+    class PromptSpy(FakeLLM):
+        async def complete_structured(self, system, user, schema):
+            self.prompt = user
+            return await super().complete_structured(system, user, schema)
+
+    llm = PromptSpy()
+    turn = {
+        "question": "Выручка по месяцам",
+        "steps": [
+            {
+                "step_id": 0,
+                "tool": "time_bucket",
+                "input": "$source",
+                "arguments": {"date_column": "date", "column": "revenue", "function": "SUM"},
+                "columns": [],
+                "purpose": "Выручка по месяцам",
+            }
+        ],
+        "headline": "Пик в июле",
+        "result_columns": ["bucket", "sum_revenue"],
+    }
+    context = {"columns": ["date", "revenue"], "turns": [turn]}
+    asyncio.run(StepPlanner(llm=llm).plan("А теперь только для Одежды", context))
+    assert "1. Вопрос: Выручка по месяцам" in llm.prompt
+    assert '"date_column": "date"' in llm.prompt
+    assert '"columns"' not in llm.prompt.split("Прошлые ходы")[1].split("Уже выполненные")[0]
+    assert "Ответ: Пик в июле" in llm.prompt
+    assert "Колонки результата: bucket, sum_revenue" in llm.prompt
+
+
+def test_prompt_without_previous_turns_says_none():
+    from app.core.agent.planner import describe_turns
+
+    assert describe_turns([]) == "нет"

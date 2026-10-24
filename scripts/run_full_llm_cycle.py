@@ -462,7 +462,7 @@ def bind_session(session_id: str, table: str, db) -> None:
                 {"tbl": table},
             )
         ]
-    SessionMemory(session_id, db=db).set_table(table, columns)
+    SessionMemory(session_id, db=db).set_table(table)
     print(f"\n  Сессия «{session_id}» привязана к таблице «{table}» ({len(columns)} колонок)")
 
 
@@ -511,8 +511,8 @@ def show_planner_view(session_id: str, question: str, db) -> list[str]:
     for column in selected:
         title = context["titles"].get(column)
         print(f"    - {column}" + (f" «{title}»" if title else ""))
-    if context["summary"]:
-        print(f"  [память] {context['summary']}")
+    for turn in context["turns"]:
+        print(f"  [память] {turn['question']}: {[step['tool'] for step in turn['steps']]}")
     return selected
 
 

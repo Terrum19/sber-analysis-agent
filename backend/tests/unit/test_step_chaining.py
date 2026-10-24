@@ -63,7 +63,7 @@ async def test_steps_after_a_report_still_see_the_data(db) -> None:
         ResearchStep(step_id=4, tool="pearson_corr", columns=["price", "qty"]),
     ]
     insight = RecordingInsight()
-    SessionMemory("chain").set_table("raw", db.columns("raw"))
+    SessionMemory("chain").set_table("raw")
     agent = AgentOrchestrator(
         planner=FixedPlanner(steps), executor=StepExecutor(db), insight_gen=insight
     )

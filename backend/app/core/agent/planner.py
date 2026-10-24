@@ -8,7 +8,7 @@ import json
 import logging
 
 from app.config import settings
-from app.core.agent.quality_fixes import frame_context, select_tools
+from app.core.agent.quality_fixes import select_tools
 from app.core.llm.client import LLMClient
 
 logger = logging.getLogger(__name__)
@@ -44,9 +44,6 @@ class StepPlanner:
                 question, columns, profile=profile, titles=context.get("titles")
             )
         start = int(context.get("next_step_id", 0))
-        summary = context.get("summary", "")
-        if settings.agent_quality_fixes:
-            summary = frame_context(summary, question)
         if settings.agent_tool_topk:
             tools = select_tools(question)
         described = describe_columns(
@@ -58,7 +55,7 @@ class StepPlanner:
         prompt = STEP_PLANNER.format(
             tools=tools,
             columns=f"{described}\n{others}" if others else described,
-            context=summary,
+            history=describe_turns(context.get("turns", [])),
             executed=context.get("executed", "нет"),
             next_step_id=start,
             question=question,
@@ -115,6 +112,26 @@ class StepPlanner:
         for i, step in enumerate(plan.steps):
             step.step_id = start + i
         return plan
+
+
+def describe_turns(turns: list[dict]) -> str:
+    """Прошлые ходы для промпта: вопрос, план с аргументами, ответ, колонки результата."""
+    blocks = []
+    for number, turn in enumerate(turns, 1):
+        steps = [
+            {key: value for key, value in step.items() if value not in (None, [], {})}
+            for step in turn["steps"]
+        ]
+        lines = [
+            f"{number}. Вопрос: {turn['question']}",
+            f"   План: {json.dumps(steps, ensure_ascii=False, default=str)}",
+        ]
+        if turn.get("headline"):
+            lines.append(f"   Ответ: {turn['headline']}")
+        if turn.get("result_columns"):
+            lines.append(f"   Колонки результата: {', '.join(turn['result_columns'])}")
+        blocks.append("\n".join(lines))
+    return "\n".join(blocks) or "нет"
 
 
 def _step_dict(step: ResearchStep) -> dict:

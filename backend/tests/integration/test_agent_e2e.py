@@ -63,7 +63,7 @@ async def test_full_research_flow(fake_llm: FakeLLM, test_orchestrator: AgentOrc
     """Полный цикл исследования с FakeLLM."""
     from app.api.schemas.chat import ChatRequest
 
-    SessionMemory("test-session-1").set_table("raw", test_orchestrator.db.columns("raw"))
+    SessionMemory("test-session-1").set_table("raw")
     events = []
     async for event in test_orchestrator.run(
         ChatRequest(session_id="test-session-1", question="Сколько категорий?")
