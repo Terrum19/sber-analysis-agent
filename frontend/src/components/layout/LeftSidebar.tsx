@@ -16,9 +16,9 @@ import {
   deleteDatasourceApi,
   deleteSessionApi,
   listSessions,
+  renameSessionApi,
   SESSIONS_PAGE,
 } from "@/api/client";
-import { attachDb, deleteSessionApi, listSessions, renameSessionApi, SESSIONS_PAGE } from "@/api/client";
 import { useSessionStore, type DatabaseFolder, type SessionItem } from "@/store/sessionStore";
 import { useArtifactStore } from "@/store/artifactStore";
 import { tabHref, useUiStore } from "@/store/uiStore";
