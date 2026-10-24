@@ -5,7 +5,13 @@
  * При ошибках сети или бэкенда выбрасывается ApiError.
  */
 import type { ChatStreamEvent } from "@/types/chat";
-import type { Datasource, DatasourceDbRequest, SessionResponse } from "@/types/datasource";
+import type {
+  Datasource,
+  DatasourceDbRequest,
+  Glossary,
+  SessionResponse,
+  TableBrief,
+} from "@/types/datasource";
 import type {
   DashboardConfig,
   DashboardCreatePayload,
@@ -20,9 +26,11 @@ import {
   mockDeleteDashboard,
   mockFetchDashboard,
   mockFetchDashboards,
+  mockGetGlossary,
   mockListSessions,
   mockListTables,
   mockPatchSession,
+  mockPutGlossary,
   mockRenameSession,
   mockRecalculateDashboard,
   mockStreamChat,
@@ -235,6 +243,38 @@ export async function listTables(): Promise<string[]> {
     if (!res.ok) throw await parseApiError(res);
     const body: Array<string | { table: string }> = await res.json();
     return body.map((item) => (typeof item === "string" ? item : item.table));
+  } catch (err) {
+    throw toApiError(err);
+  }
+}
+
+/** Получить бизнес-глоссарий для таблицы (GET /api/datasources/tables/{table}/glossary). */
+export async function getGlossary(table: string): Promise<Glossary> {
+  if (isMockMode()) {
+    return mockGetGlossary(table);
+  }
+  try {
+    const res = await fetch(`${API}/datasources/tables/${encodeURIComponent(table)}/glossary`);
+    if (!res.ok) throw await parseApiError(res);
+    return await res.json();
+  } catch (err) {
+    throw toApiError(err);
+  }
+}
+
+/** Сохранить бизнес-глоссарий для таблицы (PUT /api/datasources/tables/{table}/glossary). */
+export async function putGlossary(table: string, glossary: Glossary): Promise<TableBrief> {
+  if (isMockMode()) {
+    return mockPutGlossary(table, glossary);
+  }
+  try {
+    const res = await fetch(`${API}/datasources/tables/${encodeURIComponent(table)}/glossary`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(glossary),
+    });
+    if (!res.ok) throw await parseApiError(res);
+    return await res.json();
   } catch (err) {
     throw toApiError(err);
   }

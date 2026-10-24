@@ -8,7 +8,7 @@
  */
 import type { DashboardConfig, DashboardListItem, DashboardTile } from "@/types/dashboard";
 import type { ChatStreamEvent } from "@/types/chat";
-import type { Datasource, SessionResponse, TableBrief } from "@/types/datasource";
+import type { Datasource, Glossary, SessionResponse, TableBrief } from "@/types/datasource";
 
 const STORAGE_KEY = "sber_mock_dashboards_db";
 
@@ -398,5 +398,33 @@ export function mockStreamChat(
     isCancelled = true;
     timeouts.forEach(clearTimeout);
     onClose?.();
+  };
+}
+
+const MOCK_GLOSSARIES: Record<string, Glossary> = {
+  sales: {
+    note: "Бизнес-глоссарий для таблицы sales",
+    terms: {
+      amount: ["чек", "сумма покупки", "выручка"],
+      user_id: ["клиент", "пользователь"],
+      event_date: ["дата покупки", "день транзакции"],
+    },
+  },
+};
+
+export function mockGetGlossary(table: string): Glossary {
+  return MOCK_GLOSSARIES[table] || { terms: {} };
+}
+
+export function mockPutGlossary(table: string, glossary: Glossary): TableBrief {
+  MOCK_GLOSSARIES[table] = glossary;
+  return {
+    table,
+    rows: 1200,
+    columns: Math.max(Object.keys(glossary.terms).length, 4),
+    period_from: "2025-01-01",
+    period_to: "2025-12-31",
+    description_status: "pending",
+    warnings: [],
   };
 }
