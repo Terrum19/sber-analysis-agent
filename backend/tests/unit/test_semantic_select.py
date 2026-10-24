@@ -132,6 +132,13 @@ def test_other_columns_are_capped_and_can_be_disabled() -> None:
     assert describe_other_columns([], PROFILE) == ""
 
 
+def test_other_columns_without_profile_are_listed_by_name() -> None:
+    from app.core.data.semantic_select import describe_other_columns
+
+    text = describe_other_columns(["region", "ghost"], None, {"ghost": "Призрак"})
+    assert text == "Остальные колонки таблицы (без выжимки): region, ghost «Призрак»"
+
+
 def test_planner_prompt_lists_columns_outside_the_top_k(monkeypatch) -> None:
     import asyncio
 
