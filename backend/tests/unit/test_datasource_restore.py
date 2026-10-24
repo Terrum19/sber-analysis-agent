@@ -334,6 +334,10 @@ def test_attach_db_remembers_postgres_source(client, store, monkeypatch) -> None
             db.execute("CREATE OR REPLACE TABLE orders AS SELECT 1 AS id")
             return ["orders"]
 
+    async def summarize(db, tables, llm=None) -> None:
+        return None
+
+    monkeypatch.setattr(ingest, "summarize", summarize)
     monkeypatch.setattr(
         datasources, "build_connector", lambda kind, dsn, schema: Attached(dsn, schema)
     )
