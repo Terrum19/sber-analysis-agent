@@ -166,6 +166,11 @@ class SessionMemory:
         self._state.setdefault("created_at", datetime.now(UTC).isoformat())
         self._persist()
 
+    def set_title(self, title: str) -> None:
+        """Переименовать сессию; остальные метаданные не меняются."""
+        self._state["title"] = title
+        self._persist()
+
     def set_table(self, table: str, columns: list[str]) -> None:
         """Привязать сессию к таблице и её колонкам.
 

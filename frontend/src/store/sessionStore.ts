@@ -558,10 +558,9 @@ export const useSessionStore = create<SessionState>()(
                   ...db.sessions,
                 ];
               } else if (remote.title) {
+                // Название на бэкенде — источник правды (переименование, #147).
                 db.sessions = db.sessions.map((x) =>
-                  x.id === remote.session_id && (!x.title || x.title === "Новая сессия" || x.title === "Сессия")
-                    ? { ...x, title: remote.title || x.title }
-                    : x
+                  x.id === remote.session_id ? { ...x, title: remote.title || x.title } : x
                 );
               }
             }
