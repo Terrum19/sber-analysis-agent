@@ -333,8 +333,15 @@ export async function attachDb(payload: DatasourceDbRequest): Promise<Datasource
 /*                          API ДАШБОРДОВ                                     */
 /* ========================================================================= */
 
+export function isNotFound(err: unknown): boolean {
+  return err instanceof ApiError && err.status === 404;
+}
+
 /** Получить список дашбордов (всех или конкретной сессии). */
-export async function fetchDashboards(sessionId?: string): Promise<DashboardListItem[]> {
+export async function fetchDashboards(
+  sessionId?: string,
+  signal?: AbortSignal,
+): Promise<DashboardListItem[]> {
   if (isMockMode()) {
     return mockFetchDashboards(sessionId);
   }
@@ -342,7 +349,7 @@ export async function fetchDashboards(sessionId?: string): Promise<DashboardList
     const url = sessionId
       ? `${API}/dashboards?session_id=${encodeURIComponent(sessionId)}`
       : `${API}/dashboards`;
-    const res = await fetch(url);
+    const res = await fetch(url, { signal });
     if (!res.ok) throw await parseApiError(res);
     return await res.json();
   } catch (err) {

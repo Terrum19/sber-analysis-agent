@@ -40,7 +40,7 @@ logger = logging.getLogger(__name__)
 
 import duckdb
 
-from app.api.schemas.chat import ChatRequest, ProgressPayload
+from app.api.schemas.chat import ChatRequest, DashboardPayload, ProgressPayload
 from app.core.agent.insight import InsightGenerator
 from app.core.agent.planner import StepPlanner
 from app.core.agent.recovery import STEP_FIX_ATTEMPTS, fixable
@@ -281,7 +281,11 @@ class AgentOrchestrator:
                 logger.exception("<<< run() дашборд не собран")
                 yield _progress_event("dashboard", "failed", error=str(exc))
             else:
-                yield {"type": "dashboard", "data": {"dashboard_id": dashboard.id}}
+                # Плитки уходят сразу в событии: фронт рисует превью без GET.
+                # exclude_none убирает snapshot_data (в payload он None) и другие
+                # пустые поля — снимок данных в SSE не передаётся.
+                payload = DashboardPayload.from_dashboard(dashboard)
+                yield {"type": "dashboard", "data": payload.model_dump(exclude_none=True)}
 
         memory.record_answer(insight.headline)
         yield {"type": "done", "data": {}}

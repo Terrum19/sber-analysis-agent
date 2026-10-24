@@ -193,6 +193,13 @@ async def test_dashboard_request_saves_spec(db) -> None:
     agent.planner.plan = plan_with_dashboard
     events = await collect(agent, "Создай дашборд по регионам")
     dashboard = next(event for event in events if event["type"] == "dashboard")
+    # B-06: событие содержит плитки для превью в чате, но не снимок данных
+    assert dashboard["data"]["title"] == "Дашборд"
+    assert dashboard["data"]["tiles"]
+    sent = dashboard["data"]["tiles"][0]
+    assert sent["spec"]["mark"] == "bar"
+    assert sent["layout"]
+    assert "snapshot_data" not in sent
     saved = DashboardStore().get(dashboard["data"]["dashboard_id"])
     assert saved.tiles[0].spec["mark"] == "bar"
     assert saved.tiles[0].result_table is not None
