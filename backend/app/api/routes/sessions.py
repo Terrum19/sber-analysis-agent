@@ -2,8 +2,8 @@
 
 Сессия — единица памяти (память уровня 1): session_id -> история
 текстового диалога + история ResearchStep (см. core/memory/session_memory.py).
-Сессия создаётся только с подключённой таблицей; сменить таблицу можно
-через PATCH, история каждой таблицы хранится отдельно. Источник правды —
+Сессия создаётся только с подключённой таблицей; сменить таблицу и/или
+название можно через PATCH, история каждой таблицы хранится отдельно. Источник правды —
 SQLite SessionMemory: сессии и их метаданные переживают перезапуск.
 """
 
@@ -13,7 +13,7 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, HTTPException, Query
 
 from app.api.deps import get_db
-from app.api.schemas.chat import SessionCreate, SessionOut, SessionTable
+from app.api.schemas.chat import SessionCreate, SessionOut, SessionUpdate
 from app.core.data.duckdb_manager import DuckDBManager
 from app.core.memory.session_memory import SessionMemory
 
@@ -60,14 +60,20 @@ def create_session(
 
 
 @router.patch("/{session_id}", response_model=SessionOut)
-def set_session_table(
-    session_id: str, payload: SessionTable, db: Annotated[DuckDBManager, Depends(get_db)]
+def update_session(
+    session_id: str, payload: SessionUpdate, db: Annotated[DuckDBManager, Depends(get_db)]
 ) -> SessionOut:
-    """Переключить сессию на другую таблицу."""
+    """Переключить сессию на другую таблицу и/или переименовать её.
+
+    Неизвестная таблица — 404 до любых изменений: название тоже не меняется.
+    """
     memory = SessionMemory(session_id, db)
     if not memory.exists():
         raise HTTPException(status_code=404, detail="Сессия не найдена.")
-    memory.set_table(payload.table, table_columns(db, payload.table))
+    if payload.table is not None:
+        memory.set_table(payload.table, table_columns(db, payload.table))
+    if payload.title is not None:
+        memory.set_title(payload.title)
     return session_out(memory)
 
 

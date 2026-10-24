@@ -32,6 +32,7 @@ SessionMemory состояние ожидания уточнения (``pending_
 import asyncio
 import json
 import logging
+import re
 import time
 from collections.abc import AsyncIterator, Callable
 from dataclasses import dataclass, field
@@ -58,6 +59,8 @@ from app.models.research_step import ResearchPlan, ResearchStep
 NO_TABLE_MESSAGE = "Сначала подключите данные"
 # Ход упал вне шагов (планировщик, инсайт, график): текст ошибки — в progress.
 FAILURE_MESSAGE = "Не удалось ответить на вопрос, попробуйте ещё раз"
+# Плитка дашборда и экспорт принимают только результаты шагов (temp_result_vN).
+RESULT_TABLE = re.compile(r"temp_result_v\d+")
 
 # Отправка события фронту из глубины плана (progress), пока run() стримит.
 Emit = Callable[[dict], None]
@@ -135,6 +138,17 @@ def _fixing_event(step: ResearchStep, attempt: int, error: Exception) -> dict:
     return _step_event(step, "fixing", attempt=attempt, error=str(error))
 
 
+def _chart_event(spec: dict, caption: str, result_table: str) -> dict:
+    """График с таблицей результата: из неё фронт пересчитывает плитку и выгружает Excel.
+
+    Ответ без шагов строится по исходной таблице — её не отдаём.
+    """
+    data = {"spec": spec, "caption": caption}
+    if RESULT_TABLE.fullmatch(result_table):
+        data["result_table"] = result_table
+    return {"type": "chart", "data": data}
+
+
 def _failure_event() -> dict:
     return {"type": "error", "data": {"message": FAILURE_MESSAGE}}
 
@@ -191,7 +205,7 @@ class AgentOrchestrator:
             # Смена вида прошлого графика — из кеша, без планировщика и SQL.
             morphed = self._morph(memory, request.question, titles)
             if morphed is not None:
-                yield {"type": "chart", "data": morphed}
+                yield morphed
                 yield {"type": "done", "data": {}}
                 return
 
@@ -253,7 +267,7 @@ class AgentOrchestrator:
                 len(spec.get("data", {}).get("values", [])),
             )
             memory.record_chart(spec["usermeta"]["chart_type"], result_table, insight.headline)
-            yield {"type": "chart", "data": {"spec": spec, "caption": insight.headline}}
+            yield _chart_event(spec, insight.headline, result_table)
         except Exception as exc:
             logger.exception("<<< run() этап %s упал", stage)
             yield _progress_event(stage, "failed", error=str(exc))
@@ -683,7 +697,7 @@ class AgentOrchestrator:
         chart_type = spec["usermeta"]["chart_type"]
         memory.record_chart(chart_type, last["result_table"], last["caption"])
         memory.record_answer(f"График перестроен: {chart_type}")
-        return {"spec": spec, "caption": last["caption"]}
+        return _chart_event(spec, last["caption"], last["result_table"])
 
 
 def _next_step_id(tables: dict[int, str]) -> int:

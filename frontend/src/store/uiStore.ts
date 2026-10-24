@@ -57,6 +57,8 @@ interface UiState {
   panelWidth: number;
   /** Масштаб плиток в правой панели и на странице дашборда. */
   zoom: number;
+  /** Растёт, когда список таблиц на бэкенде изменился (удалён источник): шапка чата перечитывает его. */
+  tablesVersion: number;
   setTheme: (theme: Theme) => void;
   setLocale: (locale: Locale) => void;
   setDbModalOpen: (open: boolean) => void;
@@ -65,6 +67,7 @@ interface UiState {
   setSidebarWidth: (px: number) => void;
   setPanelWidth: (px: number) => void;
   setZoom: (zoom: number) => void;
+  refreshTables: () => void;
   openTab: (tab: WorkspaceTab) => void;
   /** Переносит вкладку fromKey на место вкладки toKey (перетаскивание). */
   moveTab: (fromKey: string, toKey: string) => void;
@@ -86,6 +89,7 @@ export const useUiStore = create<UiState>()(
       sidebarWidth: SIDEBAR_WIDTH.initial,
       panelWidth: PANEL_WIDTH.initial,
       zoom: 1,
+      tablesVersion: 0,
       setTheme: (theme) => {
         // Сразу, до перерисовки: цвета графиков читаются из CSS-переменных темы
         if (typeof document !== "undefined") document.documentElement.dataset.theme = theme;
@@ -98,6 +102,7 @@ export const useUiStore = create<UiState>()(
       setSidebarWidth: (px) => set({ sidebarWidth: clamp(Math.round(px), SIDEBAR_WIDTH.min, SIDEBAR_WIDTH.max) }),
       setPanelWidth: (px) => set({ panelWidth: clamp(Math.round(px), PANEL_WIDTH.min, PANEL_WIDTH.max) }),
       setZoom: (zoom) => set({ zoom: clamp(Math.round(zoom * 100) / 100, ZOOM.min, ZOOM.max) }),
+      refreshTables: () => set((s) => ({ tablesVersion: s.tablesVersion + 1 })),
       openTab: (tab) =>
         set((s) => {
           const index = s.tabs.findIndex((t) => tabKey(t) === tabKey(tab));
