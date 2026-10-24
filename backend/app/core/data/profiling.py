@@ -434,6 +434,7 @@ def quality_fields(column: ColumnStats) -> str:
         for name, condition in weighted.items()
     ]
     entries += [
+        f"'distinct_values': COUNT(*) FILTER (WHERE NOT ({is_token}) AND NOT ({is_header}))",
         f"'digits_min_len': MIN(LENGTH({trimmed})) FILTER (WHERE {is_digits})",
         f"'digits_max_len': MAX(LENGTH({trimmed})) FILTER (WHERE {is_digits})",
     ]
@@ -442,12 +443,16 @@ def quality_fields(column: ColumnStats) -> str:
 
 def is_text_code(column: ColumnStats, values: int, counts: dict) -> bool:
     """Числа в тексте, которые на деле коды: признаки те же, что у числовых
-    идентификаторов (имя, unique, fixed_width), плюс ведущие нули («007»)."""
+    идентификаторов (имя, unique, fixed_width), плюс ведущие нули («007»).
+
+    Различные значения считаются без литералов пропусков и значений-заголовков,
+    как и values: иначе «NULL» и повторённый заголовок делают колонку уникальной.
+    """
     if counts["leading_zeros"] or is_identifier_name(column.name):
         return True
     if is_measure_name(column.name):
         return False
-    if values >= UNIQUE_KEY_MIN_ROWS and (column.distinct or 0) >= values:
+    if values >= UNIQUE_KEY_MIN_ROWS and counts["distinct_values"] >= values:
         return True
     width = counts["digits_min_len"]
     return (
@@ -455,7 +460,7 @@ def is_text_code(column: ColumnStats, values: int, counts: dict) -> bool:
         and width is not None
         and width >= CODE_MIN_WIDTH
         and width == counts["digits_max_len"]
-        and (column.distinct or 0) >= CODE_MIN_DISTINCT
+        and counts["distinct_values"] >= CODE_MIN_DISTINCT
     )
 
 

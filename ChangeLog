@@ -6,12 +6,18 @@
 	на вид флага, не больше WARNING_COLUMNS колонок, остальные «и ещё N».
 	Литералы пропусков — по убыванию их числа.
 	(column_list): Новая функция.
+	(quality_fields): Счётчик distinct_values: различные значения без
+	литералов пропусков и значений-заголовков.
+	(is_text_code): unique и fixed_width сравнивают с distinct_values, а
+	не с distinct: «NULL» и повторённый заголовок делали почти
+	уникальную колонку кодом, и она не получала numeric_as_text.
 	* backend/app/api/schemas/datasource.py (TableBrief.from_profile):
 	После предупреждений загрузчика — флаги профиля: у PostgreSQL и
 	ClickHouse карточка была без предупреждений.
 	* backend/tests/unit/test_profiling.py,
 	backend/tests/unit/test_datasources_api.py: Фразы по флагам, «и ещё
-	N», чистый профиль, одна колонка, грязный CSV и источник БД.
+	N», чистый профиль, одна колонка, грязный CSV и источник БД,
+	литералы и заголовок не делают колонку уникальной.
 	* docs/data_connectors.md: Поле warnings, profile_warnings.
 
 2026-10-23  thebulkapro  <saitbatalovbulat200@gmail.com>

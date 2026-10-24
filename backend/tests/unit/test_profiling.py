@@ -547,6 +547,15 @@ def test_codes_are_not_numbers_written_as_text(db) -> None:
     }
 
 
+def test_null_tokens_and_headers_do_not_make_column_unique(db) -> None:
+    rows = [(str(7 * index), str(index)) for index in range(1, 119)]
+    rows += [("7", "119"), ("NULL", "NULL"), ("q1e", "ticket")]
+    make_table(db, "answers", "Q1E VARCHAR, ticket VARCHAR", rows)
+    profile = profile_table(db, "answers", approx=False)
+    assert profile.column("Q1E").flags == ["numeric_as_text", "null_tokens:1", "header_value"]
+    assert profile.column("ticket").flags == ["null_tokens:1", "header_value"]
+
+
 def test_non_finite_and_rare_numbers_are_not_flagged(db) -> None:
     make_table(
         db,
