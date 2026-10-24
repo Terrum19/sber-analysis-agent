@@ -247,6 +247,47 @@ def test_dashboard_failure_keeps_the_answer(orchestrator, monkeypatch):
     assert events[-2]["data"]["error"] == "SQLite недоступна"
 
 
+def test_done_counts_truncated_prompts(orchestrator):
+    from app.core.llm.budget import report_truncation
+
+    class TruncatedPlanner(FakePlanner):
+        async def plan(self, question, context):
+            # Планировщик работает в задаче хода: обрезка из неё тоже должна дойти до done.
+            report_truncation(12_000, 4096, "упёрся в контекст")
+            return await super().plan(question, context)
+
+    class TruncatedInsightGen(FakeInsightGen):
+        async def generate(self, question, result_table, **_):
+            report_truncation(9000, 4096, "упёрся в контекст")
+            return await super().generate(question, result_table)
+
+    orchestrator.planner = TruncatedPlanner()
+    orchestrator.insight_gen = TruncatedInsightGen()
+    events = collect(orchestrator, "s1")
+
+    assert events[-1] == {"type": "done", "data": {"prompt_truncated": 2}}
+    # Следующий ход без обрезок — done снова пустой.
+    orchestrator.planner, orchestrator.insight_gen = FakePlanner(), FakeInsightGen()
+    assert collect(orchestrator, "s2")[-1] == {"type": "done", "data": {}}
+
+
+def test_clarification_counts_truncated_prompts(orchestrator):
+    from app.core.llm.budget import report_truncation
+    from app.models.research_step import ResearchPlan
+
+    class TruncatedEmptyPlanner:
+        async def plan(self, question, context):
+            # Обрезанный промпт: модель без списка тулов не построила план — ход кончится уточнением.
+            report_truncation(12_000, 4096, "упёрся в контекст")
+            return ResearchPlan(steps=[], final_viz="bar", dashboard_requested=False)
+
+    orchestrator.planner = TruncatedEmptyPlanner()
+    events = collect(orchestrator, "s1")
+
+    assert events[-1]["type"] == "clarification_needed"
+    assert events[-1]["data"]["prompt_truncated"] == 1
+
+
 def ask(orchestrator, question: str) -> list[dict]:
     import asyncio
 
