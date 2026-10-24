@@ -9,11 +9,11 @@ from typing import Literal
 
 from pydantic import model_validator
 
-from app.core.tools.base import BaseTool, Ident, ToolArgs, identifier
+from app.core.tools.base import BaseTool, Ident, MetricArgs, identifier
 from app.core.tools.sql.atomic import Interval
 
 
-class TimeSeriesArgs(ToolArgs):
+class TimeSeriesArgs(MetricArgs):
     date_column: Ident
     metric_column: Ident
     interval: Interval = "month"

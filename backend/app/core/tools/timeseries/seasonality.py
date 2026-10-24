@@ -6,12 +6,12 @@
 
 from typing import Literal
 
-from app.core.tools.base import BaseTool, Ident, ToolArgs, identifier
+from app.core.tools.base import BaseTool, Ident, MetricArgs, identifier
 
 _PARTS = {"month": "month", "quarter": "quarter", "dayofweek": "isodow", "hour": "hour"}
 
 
-class SeasonalityArgs(ToolArgs):
+class SeasonalityArgs(MetricArgs):
     date_column: Ident
     metric_column: Ident
     period: Literal["month", "quarter", "dayofweek", "hour"] = "month"
