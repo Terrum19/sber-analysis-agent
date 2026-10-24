@@ -160,6 +160,14 @@ def parse_args() -> argparse.Namespace:
         "--cprofile", action="store_true", help="сохранить профиль Python в run.prof"
     )
     parser.add_argument("--log-level", default="INFO", help="уровень лога в agent.log")
+    parser.add_argument(
+        "--check-context",
+        type=int,
+        nargs="?",
+        const=12_000,
+        metavar="CHARS",
+        help="проверить, доходит ли до модели промпт CHARS символов (по умолчанию 12000)",
+    )
     return parser.parse_args()
 
 
@@ -213,8 +221,9 @@ def section(title: str) -> None:
 # --- Этапы ---
 
 
-async def check_llm(llm) -> bool:
+async def check_llm(llm, context_chars: int | None = None) -> bool:
     from app.config import settings
+    from app.core.llm import budget
 
     section("LLM")
     print(f"  Модель:   {llm.model}")
@@ -226,6 +235,23 @@ async def check_llm(llm) -> bool:
         print(f"\n  [ERROR] LLM недоступна: {error}")
         return False
     print(f"  Ответ:    {answer[:80]!r}")
+    server_ctx = budget.server_context()
+    print(f"  Контекст: сервер {server_ctx or '?'}, LLM_NUM_CTX {settings.llm_num_ctx}")
+    if server_ctx and server_ctx < settings.llm_num_ctx:
+        print("  [WARN] контекст сервера меньше LLM_NUM_CTX: длинные промпты будут обрезаны")
+    if context_chars:
+        print(f"  Проверка: промпт {context_chars} символов...")
+        try:
+            probe = await budget.probe_context(llm, context_chars)
+        except Exception as error:  # noqa: BLE001 — на длинный промпт сервер может ответить 400
+            print(f"  [ERROR] длинный промпт не прошёл: {error}")
+            return False
+        print(
+            f"  prompt_tokens={probe['prompt_tokens']}, символов на токен "
+            f"{probe['chars_per_token']}, пароль из начала виден: {probe['password_seen']}"
+        )
+        if probe["truncated"]:
+            print(f"  [WARN] промпт обрезан сервером: {probe['truncated']}")
     return True
 
 
@@ -480,6 +506,14 @@ async def run_turn(orchestrator, args, question: str, db, report: Report, number
                     print(f"  -> повтор хода с recovery_response={answer!r}")
             elif kind == "done":
                 turn["status"] = "done"
+            if data.get("prompt_truncated"):
+                turn["prompt_truncated"] = (
+                    turn.get("prompt_truncated", 0) + data["prompt_truncated"]
+                )
+                print(f"  [WARN] сервер LLM обрезал промптов: {data['prompt_truncated']}")
+                report.warnings.append(
+                    f"«{question}»: сервер LLM обрезал промптов: {data['prompt_truncated']}"
+                )
             first = False
     turn["seconds"] = round(time.perf_counter() - start, 3)
 
@@ -533,7 +567,7 @@ async def run(args: argparse.Namespace, report: Report) -> int:
 
     llm = CountingLLM(LLMClient(), report)
     with report.measure("llm_check"):
-        if not await check_llm(llm):
+        if not await check_llm(llm, args.check_context):
             return 2
 
     db = DuckDBManager()

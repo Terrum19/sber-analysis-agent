@@ -45,7 +45,9 @@ def test_orchestrator_cycle_time(db):
     events = []
 
     async def _collect():
-        async for event in orch.run(ChatRequest(session_id="bench", question="Сколько записей?")):
+        async for event in orch.run(
+            ChatRequest(session_id="bench", question="Выручка по категориям")
+        ):
             events.append(event)
 
     asyncio.run(_collect())

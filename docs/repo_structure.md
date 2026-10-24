@@ -79,6 +79,7 @@ backend/
 │   │   │   │   ├── postgres.py        — PostgreSQL -> DuckDB через postgres_scanner (готов)
 │   │   │   │   └── clickhouse.py      — ClickHouse -> DuckDB через clickhouse_scanner
 │   │   │   ├── ingest.py          — подключение: connect -> профиль -> описание таблицы в паспорт
+│   │   │   ├── overview.py        — «что передо мной?»: описание таблицы от LLM, кеш в паспорте
 │   │   │   ├── restore.py         — источники БД после рестарта: запомнить, переподключить, забыть
 │   │   │   ├── profiling.py       — метрики: NaN%, min/max, медиана, квартили, std
 │   │   │   ├── schema_enrichment.py — названия и описания колонок из описания таблицы -> паспорт
