@@ -78,7 +78,7 @@
 
 | Таблица | Строка | Содержимое |
 |---|---|---|
-| `_meta.table_passport` | таблица | `row_count`, `column_count`, `glossary` (JSON), `summary` (заполняется отдельной задачей), `profiled_at`, `enriched_at` |
+| `_meta.table_passport` | таблица | `row_count`, `column_count`, `empty_rows`, `glossary` (JSON), `summary` (заполняется отдельной задачей), `profiled_at`, `enriched_at`, `description_status`, `description_run` |
 | `_meta.column_passport` | колонка, PK `(table_name, column_name)` | `position` (порядок как в `DESCRIBE`), `dtype`, `kind`, статистика `ColumnStats`, название, описание, `fingerprint`, `enriched_at` |
 
 Полный DDL — `SCHEMA` в `profile_memory.py`. Статистика колонки — поля
@@ -86,7 +86,8 @@
 но `min`, `max`, `mode` и `distinct` — зарезервированные слова SQL, поэтому
 колонки называются `min_value`, `max_value`, `mode_value`, `distinct_count`.
 Значения без фиксированного типа (`min_value`, `max_value`, `mode_value`,
-`min_date`, `max_date`, `top_values` — `[{value, count}]`) хранятся как `JSON`;
+`min_date`, `max_date`, `top_values` — `[{value, count}]`) и флаги качества `flags`
+(список строк) хранятся как `JSON`;
 при загрузке тип восстанавливается по `dtype`: `DATE` -> `date`, `TIMESTAMP*` ->
 `datetime` (у `TIMESTAMPTZ` смещение сохраняется), `UUID` -> `uuid.UUID`.
 Бывший блок `outliers` — `lower_fence`/`upper_fence` (границы Тьюки, 1,5·IQR) и
@@ -103,7 +104,23 @@
 
 В паспортах, созданных до появления названий, остаются колонки `aliases` и
 `description_original`: конструктор `ProfileMemory` добавляет `title`
-(`ADD COLUMN IF NOT EXISTS`), старые колонки больше не читаются.
+(`ADD COLUMN IF NOT EXISTS`), старые колонки больше не читаются. Так же
+добавляются `flags` и `empty_rows`: до перепрофилирования они `NULL` и
+читаются как `[]` и `0`.
+
+`description_status` в `_meta.table_passport` — статус переноса описания:
+`none` (по умолчанию: описания нет), `pending` (ставит `ingest.mark_pending`, он же сбрасывает в `none`
+перед фоновым `ingest.describe`), `ready` или `failed` (ставит
+`ingest.describe`: `failed`, если у какой-либо колонки после переноса нет
+`fingerprint` или энричер упал). В старых паспортах колонку добавляет
+конструктор (`ADD COLUMN IF NOT EXISTS ... DEFAULT 'none'`). Фоновый
+`describe` не переживает рестарт, поэтому при старте приложения
+`fail_pending()` переводит оставшиеся `pending` в `failed`.
+
+`description_run` — запуск переноса: `ingest.mark_pending` при каждом
+подключении пишет новый. Фоновый `describe` от прошлого подключения той же
+таблицы сверяет его перед вызовом LLM и перед записью и, если таблицу
+подключили заново, не пишет ни описания колонок, ни статус.
 
 ### API `ProfileMemory(db)`
 
@@ -116,6 +133,14 @@ EXISTS`). Записи — одной транзакцией под `DuckDBManag
   статистика, `position`, `dtype`, `kind`; название, описание и `fingerprint`
   не затираются. Колонки, которых больше нет в таблице, удаляются.
   `glossary=None` оставляет сохранённый словарь.
+- `set_description_status(table, status, run=None)` / `load_description_status(table)` —
+  статус переноса описания (`none` / `pending` / `ready` / `failed`; без
+  паспорта — `none`). С `run` статус меняется, только если запуск всё ещё текущий.
+- `begin_description(table, run, described)` / `load_description_run(table)` —
+  новый запуск переноса (`pending` или `none`) и текущий запуск.
+- `fail_pending(run=None) -> list[str]` — `pending` → `failed` у всех таблиц
+  (при старте, `lifespan` в `main.py`) или только у таблиц запуска `run`
+  (фоновый перенос упал); возвращает имена таких таблиц.
 - `load_profile(table) -> TableProfile | None` — профиль, равный
   сохранённому (`None`, если паспорта нет). `profiled_at` — строка ISO в UTC.
 - `load_glossary(table) -> dict | None`.
@@ -189,3 +214,30 @@ EXISTS`). Записи — одной транзакцией под `DuckDBManag
   транзакции), `delete`, `update_snapshot(tile_id, records)`.
   `DashboardGenerator.generate` снимает данные плиток с `result_table` и
   сохраняет дашборд. Старые JSON из `storage/dashboards/` не мигрируются.
+- **REST (`api/routes/dashboards.py`):**
+
+  | Метод | Путь | Ответ |
+  |---|---|---|
+  | GET | `/api/dashboards?session_id=` (необязателен) | `list[DashboardSummary]`, новые по `updated_at` первыми |
+  | GET | `/api/dashboards/{id}` | `DashboardOut` / 404 |
+  | POST | `/api/dashboards` | `DashboardOut`, 201 |
+  | PUT | `/api/dashboards/{id}` | `DashboardOut` / 404 |
+  | DELETE | `/api/dashboards/{id}` | 204 / 404 |
+  | POST | `/api/dashboards/{id}/recalculate` | `DashboardOut` / 404 |
+
+  `DashboardCreate {session_id, title, tiles}` — `title` обязателен;
+  `DashboardUpdate {title?, tiles?}` — `tiles` заменяют все плитки.
+  Плитки на входе — `DashboardTileIn`: `result_table` только
+  `temp_result_vN` (оно идёт в SQL как имя таблицы), иначе 422. Id плиток
+  при POST всегда новые; при PUT id плитки этого дашборда сохраняется,
+  чужой или повторный id заменяется новым (`dashboard_tiles.id` —
+  глобальный ключ), так что GET → POST дублирует дашборд.
+  `recalculate` (`core/dashboards/recalculate.py`) перечитывает
+  `result_table` каждой плитки и пересобирает спеку запрошенным типом
+  графика (`usermeta.requested_type`, иначе `chart_type`: если в прошлый
+  раз построился запасной вид, на новых данных можно вернуться к
+  запрошенному), с прежними подписями колонок и заголовком. В спеке без
+  `usermeta` (собрана не `build_vega_spec`) заменяются только
+  `data.values`, остальное не трогается. Если таблицы уже нет, снимок и
+  спека остаются, а плитка приходит со
+  `stale: true`.  Флаг не хранится — он есть только в ответе пересчёта.

@@ -1,6 +1,53 @@
-# Локальный подъём в замкнутом контуре.
-# LLM (Qwen) — отдельно на хосте (Ollama/vLLM), чтобы не тащить веса в compose.
+# Локальный подъём в замкнутом контуре: make up (Ollama на CPU) или make up-gpu.
+# LLM — сервис Ollama в профиле cpu или gpu; оба отвечают по имени ollama, поэтому
+# backend ходит на http://ollama:11434/v1 в любом профиле. Модель скачивается при
+# первом запуске в том ollama-models (infra/ollama/entrypoint.sh).
+# Без профиля Ollama не поднимается: backend стартует и без неё (для CI, #79).
+
+x-ollama: &ollama
+  image: ollama/ollama:0.35.1
+  entrypoint: ["/bin/sh", "/entrypoint.sh"]
+  environment:
+    LLM_MODEL: ${LLM_MODEL:-qwen2.5-coder:7b}
+    EMBED_MODEL: ${EMBED_MODEL:-}
+    # Контекст модели в токенах: окончательное значение выбирают #58 и #102.
+    OLLAMA_CONTEXT_LENGTH: ${OLLAMA_CONTEXT_LENGTH:-16384}
+  volumes:
+    - ollama-models:/root/.ollama
+    - ./infra/ollama/entrypoint.sh:/entrypoint.sh:ro
+  # Только localhost: API Ollama без авторизации; backend ходит по сети compose.
+  ports:
+    - "127.0.0.1:${OLLAMA_PORT:-11434}:11434"
+  networks:
+    default:
+      aliases: [ollama]
+  # Первый запуск качает модели (минуты): пока идёт start_period, неудачные
+  # проверки не считаются, backend ждёт и LLM_MODEL, и EMBED_MODEL.
+  healthcheck:
+    test: ["CMD", "/bin/sh", "/entrypoint.sh", "check"]
+    interval: 15s
+    timeout: 10s
+    retries: 3
+    start_period: 1h
+    start_interval: 5s
+
 services:
+  ollama-cpu:
+    <<: *ollama
+    profiles: [cpu]
+
+  # GPU NVIDIA: нужен NVIDIA Container Toolkit на хосте.
+  ollama-gpu:
+    <<: *ollama
+    profiles: [gpu]
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+
   backend:
     build: ./backend
     image: sber-backend:local
@@ -11,10 +58,21 @@ services:
       STORAGE_DIR: /app/storage
       DUCKDB_PATH: /app/storage/duckdb/main.duckdb
       SQLITE_PATH: /app/storage/sessions/sessions.sqlite
+      LLM_BASE_URL: http://ollama:11434/v1
+      LLM_MODEL: ${LLM_MODEL:-qwen2.5-coder:7b}
+      # Бэкенд ждёт тот же контекст, что задан Ollama (#102).
+      LLM_NUM_CTX: ${OLLAMA_CONTEXT_LENGTH:-16384}
     ports:
       - "8000:8000"
     volumes:
       - ./backend/storage:/app/storage
+    depends_on:
+      ollama-cpu:
+        condition: service_healthy
+        required: false
+      ollama-gpu:
+        condition: service_healthy
+        required: false
     # В python:3.11-slim нет curl — проверяем /health самим Python.
     healthcheck:
       test:
@@ -56,6 +114,7 @@ services:
       CLICKHOUSE_DB: sber_demo
     ports:
       - "8123:8123"
+      - "9000:9000"
     healthcheck:
       test: ["CMD-SHELL", "wget --no-verbose --tries=1 --spider http://localhost:8123/ping"]
       interval: 10s
@@ -85,3 +144,4 @@ services:
 
 volumes:
   postgres-data:
+  ollama-models:

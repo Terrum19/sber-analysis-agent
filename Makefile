@@ -1,4 +1,9 @@
-.PHONY: help install dev up down test lint model seed hk-data
+.PHONY: help hooks install dev up up-gpu down test lint model seed hk-data smoke
+
+# Значение переменной: из окружения или командной строки make, иначе из .env.
+# .env не подключается через include: так его значения перекрыли бы окружение
+# (и ушли бы в окружение рецептов вместо него).
+env_or_file = $(if $(filter undefined,$(origin $(1))),$(shell sed -n 's/^$(1)=//p' .env 2>/dev/null | tail -n 1 | sed "s/^[\"']\(.*\)[\"']$$/\1/"),$($(1)))
 
 HK_REPO = https://gitverse.ru/kban/HK_Datasets
 
@@ -9,9 +14,12 @@ help:
 	@echo "make hk-data  — датасеты хакатона в DuckDB"
 	@echo "make model    — подсказки по запуску LLM"
 	@echo "make dev      — backend + frontend локально"
-	@echo "make up/down  — docker compose"
+	@echo "make up       — docker compose, Ollama на CPU (модель LLM_MODEL)"
+	@echo "make up-gpu   — docker compose, Ollama на GPU NVIDIA (модель LLM_MODEL_GPU)"
+	@echo "make down     — остановить compose, включая Ollama"
 	@echo "make test     — pytest"
 	@echo "make lint     — ruff + next lint"
+	@echo "make smoke    — smoke-тест поднятого стека (scripts/smoke.sh, как CI)"
 
 hooks:
 	git config core.hooksPath .githooks
@@ -34,10 +42,13 @@ dev:
 	bash infra/local-dev.sh
 
 up:
-	docker compose up --build
+	docker compose --profile cpu up --build
+
+up-gpu:
+	LLM_MODEL="$(or $(call env_or_file,LLM_MODEL_GPU),$(call env_or_file,LLM_MODEL))" docker compose --profile gpu up --build
 
 down:
-	docker compose down
+	docker compose --profile cpu --profile gpu down
 
 test:
 	cd backend && pytest -q
@@ -45,3 +56,6 @@ test:
 lint:
 	cd backend && ruff check app tests
 	cd frontend && npm run lint
+
+smoke:
+	bash scripts/smoke.sh

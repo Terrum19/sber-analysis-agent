@@ -7,5 +7,5 @@ def build_connector(kind: str, dsn: str, schema: str | None = None) -> BaseConne
     if kind == "postgres":
         return PostgresConnector(dsn, schema=schema)
     if kind == "clickhouse":
-        return ClickHouseConnector(dsn)
+        return ClickHouseConnector(dsn, database=schema)
     raise ValueError(f"Неизвестный тип источника данных: {kind}.")

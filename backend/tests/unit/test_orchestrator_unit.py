@@ -108,3 +108,140 @@ def test_run_error_in_step(orchestrator):
     assert clar_events[0]["data"]["step_id"] == 0
     assert "Таблица не найдена" in clar_events[0]["data"]["error"]
     assert "suggestions" in clar_events[0]["data"]
+
+
+def collect(orchestrator, session_id: str) -> list[dict]:
+    import asyncio
+
+    async def _collect():
+        request = ChatRequest(session_id=session_id, question="Тест")
+        return [event async for event in orchestrator.run(request)]
+
+    return asyncio.run(_collect())
+
+
+def stages(events: list[dict]) -> list[str]:
+    return [
+        f"{event['data']['stage']}:{event['data']['status']}"
+        if event["type"] == "progress"
+        else event["type"]
+        for event in events
+    ]
+
+
+def test_progress_events_precede_the_answer(orchestrator):
+    from app.api.schemas.chat import ChatEvent, ProgressPayload
+
+    events = collect(orchestrator, "s1")
+
+    assert stages(events) == [
+        "planning:started",
+        "planning:finished",
+        "step:started",
+        "step:finished",
+        "insight:started",
+        "text",
+        "chart:started",
+        "chart",
+        "done",
+    ]
+    for event in events:
+        ChatEvent(**event)
+        if event["type"] == "progress":
+            ProgressPayload(**event["data"])
+    progress = [event["data"] for event in events if event["type"] == "progress"]
+    assert progress[0] == {"stage": "planning", "status": "started"}
+    assert progress[1] == {"stage": "planning", "status": "finished", "total_steps": 1}
+    assert progress[2] == {
+        "stage": "step",
+        "status": "started",
+        "step_id": 0,
+        "tool": "aggregate",
+        "purpose": "Мок шаг",
+    }
+    assert progress[3]["status"] == "finished"
+    assert progress[3]["step_id"] == 0
+    assert progress[3]["elapsed_ms"] >= 0
+    assert progress[4] == {"stage": "insight", "status": "started"}
+    assert progress[5] == {"stage": "chart", "status": "started"}
+
+
+def test_failed_step_reports_progress(orchestrator):
+    class FailingExecutor:
+        async def execute(self, step, input_table, **_):
+            raise NotImplementedError("Инструмент недоступен")
+
+    orchestrator.executor = FailingExecutor()
+    events = collect(orchestrator, "s2")
+
+    assert stages(events) == [
+        "planning:started",
+        "planning:finished",
+        "step:started",
+        "step:failed",
+        "clarification_needed",
+    ]
+    failed = events[3]["data"]
+    assert failed["step_id"] == 0
+    assert failed["error"] == "Инструмент недоступен"
+    assert failed["elapsed_ms"] >= 0
+
+
+def test_empty_plan_reports_zero_steps(orchestrator):
+    from app.models.research_step import ResearchPlan
+
+    class EmptyPlanner:
+        async def plan(self, question, context):
+            return ResearchPlan(steps=[], final_viz="bar", dashboard_requested=False)
+
+    orchestrator.planner = EmptyPlanner()
+    events = collect(orchestrator, "s1")
+
+    assert stages(events) == ["planning:started", "planning:finished", "clarification_needed"]
+    assert events[1]["data"]["total_steps"] == 0
+
+
+def test_planner_failure_ends_the_stream(orchestrator):
+    class FailingPlanner:
+        async def plan(self, question, context):
+            raise RuntimeError("LLM timeout")
+
+    orchestrator.planner = FailingPlanner()
+    events = collect(orchestrator, "s1")
+
+    assert stages(events) == ["planning:started", "planning:failed", "error", "done"]
+    assert events[1]["data"]["error"] == "LLM timeout"
+    assert events[2]["data"]["message"]
+
+
+def test_insight_failure_ends_the_stream(orchestrator):
+    class FailingInsightGen:
+        async def generate(self, question, result_table, **_):
+            raise RuntimeError("LLM timeout")
+
+    orchestrator.insight_gen = FailingInsightGen()
+    events = collect(orchestrator, "s1")
+
+    assert stages(events)[-4:] == ["insight:started", "insight:failed", "error", "done"]
+    assert events[-3]["data"]["error"] == "LLM timeout"
+
+
+def test_dashboard_failure_keeps_the_answer(orchestrator, monkeypatch):
+    from app.core.dashboards.generator import DashboardGenerator
+    from app.models.research_step import ResearchPlan
+
+    class DashboardPlanner(FakePlanner):
+        async def plan(self, question, context):
+            plan = await super().plan(question, context)
+            return ResearchPlan(steps=plan.steps, final_viz="bar", dashboard_requested=True)
+
+    async def failing_generate(self, *args, **kwargs):
+        raise RuntimeError("SQLite недоступна")
+
+    orchestrator.planner = DashboardPlanner()
+    monkeypatch.setattr(DashboardGenerator, "generate", failing_generate)
+    events = collect(orchestrator, "s1")
+
+    assert stages(events)[-4:] == ["chart:started", "chart", "dashboard:failed", "done"]
+    assert "error" not in stages(events)
+    assert events[-2]["data"]["error"] == "SQLite недоступна"
