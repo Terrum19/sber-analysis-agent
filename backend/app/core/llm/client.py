@@ -27,7 +27,7 @@ except ImportError:  # instructor 1.3.x
     from instructor.retry import InstructorRetryException
 
 from app.config import settings
-from app.core.llm import budget
+from app.core.llm import budget, ollama_setup
 
 logger = logging.getLogger(__name__)
 
@@ -100,7 +100,7 @@ class LLMClient:
             max_retries=settings.llm_max_retries,
             http_client=http_client,
         )
-        self.model = settings.llm_model
+        self.model = ollama_setup.active_model()
         self.last_prompt_tokens: int | None = None
         self._instructor = instructor.from_openai(self._client)
         logger.info(

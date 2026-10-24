@@ -383,7 +383,7 @@ PostgreSQL 17): подключение с лимитом 50 занимает о�
   `postgres` из `docker-compose.yml`:
 
   ```bash
-  docker compose up -d postgres
+  docker compose --profile integration up -d postgres
   cd backend && pytest -q tests/integration/test_postgres_connector.py
   ```
 
