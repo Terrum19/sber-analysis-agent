@@ -146,7 +146,7 @@ class DashboardStore:
             cursor = connection.execute("DELETE FROM dashboards WHERE id = ?", (dashboard_id,))
         return cursor.rowcount > 0
 
-    def update_snapshot(self, tile_id: str, records: list[dict] | dict | Any) -> bool:
+    def update_snapshot(self, tile_id: str, records: list[dict] | dict) -> bool:
         with self._transaction() as connection:
             cursor = connection.execute(
                 "UPDATE dashboard_tiles SET snapshot_json = ?, snapshot_at = ? WHERE id = ?",
