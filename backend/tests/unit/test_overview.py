@@ -166,7 +166,10 @@ def test_prompt_never_exceeds_the_limit(db) -> None:
     assert "- … и ещё" in prompt
     assert "колонок" in prompt.split("Качество данных:")[0].splitlines()[-2]
     quality = prompt.split("Качество данных:\n")[1].strip()
-    assert quality.startswith("- все значения пустые: «colaa», «colab»")
+    # Замечания таблицы (#105) идут перед замечаниями колонок.
+    assert quality.startswith(
+        "- пустых строк (все колонки NULL): 1\n- все значения пустые: «colaa», «colab»"
+    )
     assert re.search(r" и ещё \d+ колон\w+$", quality)
     assert len(quality) <= overview.QUALITY_MAX_CHARS
 
