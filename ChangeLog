@@ -1,3 +1,33 @@
+2026-10-24  dmitriy-ya  <dmitriyyakushonok@yandex.ru>
+
+	Очистка CSV при загрузке: повторные заголовки, литералы пропусков, типы после all_varchar (#96, #103).
+	* backend/app/core/data/connectors/csv.py (CSVReport): Новые поля:
+	header_rows_removed, null_tokens, retyped, rejected_rows, unconverted.
+	(CSVReport.warnings): Предупреждения об удалённых заголовках, заменах
+	токенов пропусков, перетипизации и отклонённых строках.
+	(STRATEGIES): store_rejects=true для стратегии all_varchar + ignore_errors.
+	(scan): Одиночный агрегирующий запрос по всем VARCHAR-колонкам:
+	подсчёт заполненных ячеек, токенов пропусков (settings.csv_null_tokens),
+	BIGINT (с защитой ведущих нулей), DOUBLE (с нормализацией пробелов,
+	NBSP, narrow-NBSP и десятичной запятой), DATE (YYYY-MM-DD) и TIMESTAMP.
+	Оптимизация предикатами CASE WHEN.
+	(retype_expression): Выражение TRY_CAST с NULLIF для токенов пропусков.
+	(materialize): Удаление повторных заголовков в той же транзакции,
+	подсчёт отклонённых строк из таблиц reject, ALTER TABLE ... TYPE ... USING.
+	Сохранение литералов пропусков в колонках, остающихся текстом.
+	* backend/app/config.py (Settings.csv_retype_min_share): Новая настройка
+	минимальной доли валидных значений для перетипизации колонок.
+	* backend/tests/unit/test_csv_connector.py: 42 теста: удаление повторных
+	заголовков, защита 'NA' (Намибия) в country, защита кодов с ведущими
+	нулями, вещественные числа с запятой, целые числа с NBSP и narrow-NBSP,
+	подсчёт отклонённых строк с store_rejects, даты и таймстемпы, порог
+	csv_retype_min_share, подсчёт литералов в текстовых колонках и симуляция
+	105 колонок openPsych.
+	* backend/tests/benchmark/test_csv_benchmark.py: Бенчмарк на 1 млн строк
+	с замером базового времени read_csv и времени одиночного scan().
+	* docs/data_connectors.md: Документация очистки заголовков, сканирования,
+	автоприведения типов, токенов пропусков и store_rejects.
+
 2026-10-23  thebulkapro  <saitbatalovbulat200@gmail.com>
 
 	Флаги качества в профиле (#105).
