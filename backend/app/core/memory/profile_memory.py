@@ -78,6 +78,7 @@ SCHEMA = (
         "ADD COLUMN IF NOT EXISTS description_status VARCHAR DEFAULT 'none'"
     ),
     "ALTER TABLE _meta.table_passport ADD COLUMN IF NOT EXISTS description_run VARCHAR",
+    "ALTER TABLE _meta.table_passport ADD COLUMN IF NOT EXISTS summary_fingerprint VARCHAR",
 )
 
 DESCRIPTION_STATUSES = ("none", "pending", "ready", "failed")
@@ -212,6 +213,25 @@ class ProfileMemory:
             )
             for row in rows
         ]
+
+    def save_summary(self, table: str, text: str, fingerprint: str) -> None:
+        """Сохранить описание таблицы «что передо мной» и отпечаток его промпта."""
+        self.db.execute(
+            "UPDATE _meta.table_passport SET summary = $text, summary_fingerprint = $fingerprint "
+            "WHERE table_name = $table",
+            {"table": table, "text": text, "fingerprint": fingerprint},
+        )
+
+    def load_summary(self, table: str) -> tuple[str, str] | None:
+        """Описание таблицы и отпечаток его промпта (None, если описания нет)."""
+        rows = self.db.query(
+            "SELECT summary, summary_fingerprint FROM _meta.table_passport "
+            "WHERE table_name = $table",
+            {"table": table},
+        )
+        if not rows or rows[0]["summary"] is None:
+            return None
+        return rows[0]["summary"], rows[0]["summary_fingerprint"]
 
     def set_description_status(self, table: str, status: str, run: str | None = None) -> None:
         """Статус переноса описания в паспорт: none, pending, ready или failed.

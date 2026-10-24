@@ -30,6 +30,9 @@ class FakeLLM:
         )
         self._instructor = instructor.from_openai(self._client)
 
+    async def warm_up(self) -> None:
+        """Ничего: контекст сервера фейку не нужен."""
+
     async def complete(self, system: str, user: str, **kwargs: Any) -> str:
         """Возвращает фиксированную строку-ответ."""
         return "Fake LLM response"
