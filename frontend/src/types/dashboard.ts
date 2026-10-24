@@ -34,6 +34,8 @@ export interface DashboardConfig {
   tiles: DashboardTile[];
   created_at?: number | string;
   updated_at?: number | string;
+  /** Дата снимка на уровне дашборда; в B-05 приходит только у плиток. */
+  snapshot_at?: number | null;
   is_snapshot?: boolean;
 }
 

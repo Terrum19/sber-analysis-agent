@@ -18,7 +18,12 @@ import type { DashboardTile as DashboardTileType } from "@/types/dashboard";
 import { deltaSign, echartsBase, themeVegaSpec, useChartColors, type ChartColors } from "@/lib/chartTheme";
 import { useElementSize } from "@/hooks/useElementSize";
 import { useT } from "@/i18n/useT";
+import { isKpiTile } from "@/lib/tileLayout";
 import Icon from "@/components/ui/Icon";
+
+// isKpiTile живёт в lib/tileLayout (общая логика с раскладкой); реэкспорт —
+// чтобы существующие импорты из DashboardTile продолжали работать.
+export { isKpiTile };
 
 const ReactECharts = dynamic(() => import("echarts-for-react"), { ssr: false });
 
@@ -29,8 +34,14 @@ interface Props {
   onDelete?: () => void;
   /** Открыть плитку на весь экран (клик по плитке вне режима редактирования). */
   onOpen?: () => void;
+  /** Меню действий плитки: anchorRect — координаты кнопки «⋯». */
+  onMenu?: (anchorRect: DOMRect) => void;
   /** Маленькое превью без осей и инсайта. */
   mini?: boolean;
+  /** Компактная плитка в ленте чата: график/KPI + инсайт, без действий. */
+  preview?: boolean;
+  /** Плотный режим: минимальные KPI 2×2 и графики 4×3. */
+  dense?: boolean;
   /** Плитка во всю вкладку: крупнее цифра, инсайт целиком. */
   large?: boolean;
 }
@@ -60,11 +71,7 @@ function kpiFromTile(tile: DashboardTileType, fallbackLabel: string): { value: s
   return { value, label };
 }
 
-export function isKpiTile(tile: DashboardTileType): boolean {
-  return Boolean(tile.is_kpi || tile.spec?.mark === "text");
-}
-
-function isEChartsTile(tile: DashboardTileType): boolean {
+export function isEChartsTile(tile: DashboardTileType): boolean {
   return Boolean(
     !isKpiTile(tile) &&
       tile.spec &&
@@ -138,7 +145,10 @@ export default function DashboardTile({
   onRename,
   onDelete,
   onOpen,
+  onMenu,
   mini = false,
+  preview = false,
+  dense = false,
   large = false,
 }: Props) {
   const t = useT();
@@ -164,6 +174,56 @@ export default function DashboardTile({
   function handleCancelTitle() {
     setTitleInput(tile.title);
     setEditingTitle(false);
+  }
+
+  if (preview) {
+    return (
+      <div className="flex h-full min-w-0 flex-col overflow-hidden rounded-lg border border-graphite-800 bg-graphite-900 p-2">
+        <div className="mb-1 flex shrink-0 items-center gap-1.5">
+          {isKpi && (
+            <span className="shrink-0 rounded border border-kpi/30 bg-kpi/10 px-1 py-0.5 text-[9px] font-semibold text-kpi">
+              KPI
+            </span>
+          )}
+          {tile.stale && (
+            <span
+              className="shrink-0 rounded border border-amber-500/30 bg-amber-500/10 px-1 text-[8px] font-semibold uppercase tracking-wider text-amber-400"
+              title={t("tile.staleTooltip")}
+            >
+              {t("tile.stale")}
+            </span>
+          )}
+          <span
+            className="truncate text-[10px] font-medium uppercase tracking-wide text-graphite-400"
+            title={tile.title}
+          >
+            {tile.title}
+          </span>
+        </div>
+        {isKpi && kpi ? (
+          <div className="min-h-0 flex-1 overflow-hidden">
+            <div className="truncate text-xl font-bold leading-6 text-graphite-50">{kpi.value}</div>
+            <div className="mt-0.5 truncate text-[10px] text-graphite-400">{kpi.label}</div>
+          </div>
+        ) : hasChart ? (
+          <div className="flex min-h-0 flex-1 overflow-hidden">
+            <FittedChart tile={tile} colors={colors} />
+          </div>
+        ) : (
+          <div className="flex min-h-0 flex-1 items-center justify-center rounded bg-graphite-800/50 text-[10px] text-graphite-500">
+            {t("tile.noData")}
+          </div>
+        )}
+        {tile.insight && (
+          <p
+            className="mt-1 line-clamp-2 shrink-0 text-[10px] leading-snug text-graphite-300"
+            title={tile.insight}
+          >
+            {tile.insight}
+          </p>
+        )}
+      </div>
+    );
   }
 
   if (mini) {
@@ -196,12 +256,12 @@ export default function DashboardTile({
         if ((e.target as HTMLElement).closest("button, input, a")) return;
         onOpen?.();
       }}
-      className={`group relative flex h-full min-h-0 flex-col overflow-hidden rounded-xl border border-graphite-700/80 bg-graphite-900 p-4 shadow-sm transition-all duration-200 hover:border-graphite-600 hover:shadow-md ${
-        canOpen ? "cursor-zoom-in" : ""
-      }`}
+      className={`group relative flex h-full min-h-0 flex-col overflow-hidden rounded-xl border border-graphite-700/80 bg-graphite-900 shadow-sm transition-all duration-200 hover:border-graphite-600 hover:shadow-md ${
+        dense ? "p-3" : "p-4"
+      } ${canOpen ? "cursor-zoom-in" : ""}`}
     >
       {/* Верхняя строка плитки */}
-      <div className="mb-2 flex shrink-0 items-start justify-between gap-2">
+      <div className={`flex shrink-0 items-start justify-between gap-2 ${dense ? "mb-1.5" : "mb-2"}`}>
         <div className="min-w-0 flex-1">
           {editingTitle ? (
             <div className="flex items-center gap-1.5">
@@ -246,7 +306,9 @@ export default function DashboardTile({
                 </span>
               )}
               <h3
-                className={`truncate font-semibold uppercase tracking-wider text-graphite-300 ${large ? "text-sm" : "text-xs"}`}
+                className={`truncate font-semibold uppercase tracking-wider text-graphite-300 ${
+                  large ? "text-sm" : dense ? "text-[11px]" : "text-xs"
+                }`}
                 title={tile.title}
               >
                 {tile.title}
@@ -262,36 +324,51 @@ export default function DashboardTile({
               )}
             </div>
           )}
-          {tile.result_table && (
+          {tile.result_table && !dense && (
             <span className="mt-0.5 block truncate font-mono text-[10px] text-graphite-500">src: {tile.result_table}</span>
           )}
         </div>
 
-        {isEditing && onDelete ? (
-          <button
-            onClick={onDelete}
-            className="flex h-6 w-6 shrink-0 items-center justify-center rounded-md bg-bad/10 text-bad hover:bg-bad/20 transition"
-            title={t("tile.delete")}
-          >
-            <Icon name="x" size={13} />
-          </button>
-        ) : (
-          canOpen && (
+        <div className="flex shrink-0 items-center gap-1">
+          {isEditing && onMenu && (
             <button
-              onClick={onOpen}
-              className="flex h-6 w-6 shrink-0 items-center justify-center rounded-md text-graphite-500 opacity-0 transition hover:bg-graphite-800 hover:text-graphite-100 group-hover:opacity-100 focus:opacity-100"
-              title={t("artifact.open")}
+              onClick={(e) => onMenu(e.currentTarget.getBoundingClientRect())}
+              className="flex h-6 w-6 items-center justify-center rounded-md text-graphite-400 hover:bg-graphite-800 hover:text-graphite-100 transition"
+              title={t("canvas.tileMenu")}
             >
-              <Icon name="maximize" size={13} />
+              <Icon name="moreHorizontal" size={14} />
             </button>
-          )
-        )}
+          )}
+          {isEditing && onDelete ? (
+            <button
+              onClick={onDelete}
+              className="flex h-6 w-6 shrink-0 items-center justify-center rounded-md bg-bad/10 text-bad hover:bg-bad/20 transition"
+              title={t("tile.delete")}
+            >
+              <Icon name="x" size={13} />
+            </button>
+          ) : (
+            canOpen && (
+              <button
+                onClick={onOpen}
+                className="flex h-6 w-6 shrink-0 items-center justify-center rounded-md text-graphite-500 opacity-0 transition hover:bg-graphite-800 hover:text-graphite-100 group-hover:opacity-100 focus:opacity-100"
+                title={t("artifact.open")}
+              >
+                <Icon name="maximize" size={13} />
+              </button>
+            )
+          )}
+        </div>
       </div>
 
       {/* Основной контент: KPI или график по размеру оставшегося места */}
       {isKpi && kpi ? (
         <div className="flex min-h-0 flex-1 flex-col justify-start overflow-hidden pt-1">
-          <div className={`truncate font-extrabold tracking-tight text-graphite-50 ${large ? "text-6xl" : "text-3xl"}`}>
+          <div
+            className={`truncate font-extrabold tracking-tight text-graphite-50 ${
+              large ? "text-6xl" : dense ? "text-2xl" : "text-3xl"
+            }`}
+          >
             {kpi.value}
           </div>
           <div className="mt-1 flex flex-wrap items-center gap-x-2 text-xs text-graphite-400">
@@ -303,7 +380,7 @@ export default function DashboardTile({
               {sign !== 0 && <span aria-hidden="true">{sign > 0 ? "▲" : "▼"}</span>}
               {kpi.label}
             </span>
-            <span className="text-[11px] text-graphite-500">{t("tile.kpiSlice")}</span>
+            {!dense && <span className="text-[11px] text-graphite-500">{t("tile.kpiSlice")}</span>}
           </div>
         </div>
       ) : hasChart ? (
@@ -314,11 +391,20 @@ export default function DashboardTile({
         </div>
       )}
 
-      {/* Инсайт под графиком/KPI */}
-      {tile.insight && (
-        <div className="mt-2 flex shrink-0 items-start gap-2 rounded-lg border border-graphite-800 bg-graphite-950/60 p-2.5">
+      {/* Инсайт под графиком/KPI; в плотном KPI-режиме он не помещается */}
+      {tile.insight && !(dense && isKpi) && (
+        <div
+          className={`flex shrink-0 items-start gap-2 rounded-lg border border-graphite-800 bg-graphite-950/60 ${
+            dense ? "mt-1 p-1.5" : "mt-2 p-2.5"
+          }`}
+        >
           <Icon name="sparkle" size={14} className="mt-0.5 shrink-0 text-graphite-400" />
-          <p className={`text-[11px] leading-relaxed text-graphite-300 ${large ? "text-[13px]" : "line-clamp-2"}`} title={tile.insight}>
+          <p
+            className={`leading-relaxed text-graphite-300 ${
+              large ? "text-[13px]" : dense ? "line-clamp-1 text-[10px]" : "line-clamp-2 text-[11px]"
+            }`}
+            title={tile.insight}
+          >
             {tile.insight}
           </p>
         </div>

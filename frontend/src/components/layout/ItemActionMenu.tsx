@@ -4,7 +4,7 @@ import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { useT } from "@/i18n/useT";
 import Icon from "@/components/ui/Icon";
 
-export type ActionMenuTarget = "session" | "csv" | "db";
+export type ActionMenuTarget = "session" | "csv" | "db" | "tile";
 
 interface ItemActionMenuProps {
   target: ActionMenuTarget;
@@ -12,9 +12,15 @@ interface ItemActionMenuProps {
   isPinned?: boolean;
   anchorRect: DOMRect;
   onClose: () => void;
-  onTogglePin: () => void;
+  onTogglePin?: () => void;
   onRename: (newTitle: string) => void;
   onDelete: () => void;
+  /** Плитка: текущий тип графика и доступные варианты. */
+  chartType?: string;
+  chartTypes?: readonly string[];
+  onChartTypeChange?: (type: string) => void;
+  /** Плитка: открыть на весь экран во вкладке. */
+  onOpen?: () => void;
 }
 
 export default function ItemActionMenu({
@@ -26,12 +32,16 @@ export default function ItemActionMenu({
   onTogglePin,
   onRename,
   onDelete,
+  chartType,
+  chartTypes,
+  onChartTypeChange,
+  onOpen,
 }: ItemActionMenuProps) {
   const t = useT();
   const menuRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
 
-  const [view, setView] = useState<"menu" | "rename" | "confirm_delete">("menu");
+  const [view, setView] = useState<"menu" | "rename" | "confirm_delete" | "chart_type">("menu");
   const [nameInput, setNameInput] = useState(title);
   const [pos, setPos] = useState({ top: anchorRect.bottom + 4, left: anchorRect.left });
 
@@ -121,28 +131,36 @@ export default function ItemActionMenu({
       ? t("sidebar.renameSession")
       : target === "csv"
         ? t("sidebar.renameCsv")
-        : t("sidebar.renameDb");
+        : target === "tile"
+          ? t("tile.rename")
+          : t("sidebar.renameDb");
 
   const deleteLabel =
     target === "session"
       ? t("sidebar.deleteSession")
       : target === "csv"
         ? t("sidebar.deleteCsv")
-        : t("sidebar.disconnectDb");
+        : target === "tile"
+          ? t("tile.delete")
+          : t("sidebar.disconnectDb");
 
   const confirmTitle =
     target === "session"
       ? t("sidebar.confirmDeleteSession")
       : target === "csv"
         ? t("sidebar.confirmDeleteCsv")
-        : t("sidebar.confirmDisconnectDb");
+        : target === "tile"
+          ? t("tile.deleteConfirm")
+          : t("sidebar.confirmDisconnectDb");
 
   const warningText =
     target === "session"
       ? t("sidebar.deleteSessionWarning")
       : target === "csv"
         ? t("sidebar.deleteCsvWarning")
-        : t("sidebar.disconnectDbWarning");
+        : target === "tile"
+          ? t("tile.deleteWarning")
+          : t("sidebar.disconnectDbWarning");
 
   return (
     <div
@@ -155,17 +173,19 @@ export default function ItemActionMenu({
     >
       {view === "menu" && (
         <div className="space-y-0.5">
-          <button
-            type="button"
-            onClick={() => {
-              onTogglePin();
-              onClose();
-            }}
-            className="flex w-full items-center gap-2 rounded-lg px-2.5 py-1.5 text-left text-xs text-graphite-300 hover:bg-graphite-800 hover:text-graphite-100 transition"
-          >
-            <Icon name="pin" size={14} className="shrink-0 text-graphite-400" />
-            <span className="truncate">{pinLabel}</span>
-          </button>
+          {onTogglePin && target !== "tile" && (
+            <button
+              type="button"
+              onClick={() => {
+                onTogglePin();
+                onClose();
+              }}
+              className="flex w-full items-center gap-2 rounded-lg px-2.5 py-1.5 text-left text-xs text-graphite-300 hover:bg-graphite-800 hover:text-graphite-100 transition"
+            >
+              <Icon name="pin" size={14} className="shrink-0 text-graphite-400" />
+              <span className="truncate">{pinLabel}</span>
+            </button>
+          )}
 
           <button
             type="button"
@@ -176,6 +196,31 @@ export default function ItemActionMenu({
             <span className="truncate">{renameLabel}</span>
           </button>
 
+          {onChartTypeChange && chartTypes && chartTypes.length > 0 && (
+            <button
+              type="button"
+              onClick={() => setView("chart_type")}
+              className="flex w-full items-center gap-2 rounded-lg px-2.5 py-1.5 text-left text-xs text-graphite-300 hover:bg-graphite-800 hover:text-graphite-100 transition"
+            >
+              <Icon name="chart" size={14} className="shrink-0 text-graphite-400" />
+              <span className="truncate">{t("canvas.chartType")}</span>
+            </button>
+          )}
+
+          {onOpen && (
+            <button
+              type="button"
+              onClick={() => {
+                onOpen();
+                onClose();
+              }}
+              className="flex w-full items-center gap-2 rounded-lg px-2.5 py-1.5 text-left text-xs text-graphite-300 hover:bg-graphite-800 hover:text-graphite-100 transition"
+            >
+              <Icon name="maximize" size={14} className="shrink-0 text-graphite-400" />
+              <span className="truncate">{t("artifact.open")}</span>
+            </button>
+          )}
+
           <div className="my-1 border-t border-graphite-800" />
 
           <button
@@ -185,6 +230,39 @@ export default function ItemActionMenu({
           >
             <Icon name="trash" size={14} className="shrink-0 text-bad" />
             <span className="truncate">{deleteLabel}</span>
+          </button>
+        </div>
+      )}
+
+      {view === "chart_type" && (
+        <div className="p-1 space-y-1">
+          <div className="px-1.5 pb-1 text-[12px] font-medium text-graphite-200">
+            {t("canvas.chartType")}
+          </div>
+          {(chartTypes ?? []).map((type) => (
+            <button
+              key={type}
+              type="button"
+              onClick={() => {
+                onChartTypeChange?.(type);
+                onClose();
+              }}
+              className={`flex w-full items-center justify-between gap-2 rounded-lg px-2.5 py-1.5 text-left text-xs transition ${
+                type === chartType
+                  ? "bg-graphite-800 text-graphite-50"
+                  : "text-graphite-300 hover:bg-graphite-800 hover:text-graphite-100"
+              }`}
+            >
+              <span className="truncate">{t(`chartType.${type}` as any)}</span>
+              {type === chartType && <Icon name="check" size={14} className="shrink-0 text-good" />}
+            </button>
+          ))}
+          <button
+            type="button"
+            onClick={() => setView("menu")}
+            className="mt-1 w-full rounded-md border border-graphite-700 px-2.5 py-1 text-xs text-graphite-300 hover:bg-graphite-800 transition"
+          >
+            {t("sidebar.cancel")}
           </button>
         </div>
       )}
