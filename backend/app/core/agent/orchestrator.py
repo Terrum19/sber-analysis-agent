@@ -38,6 +38,7 @@ import json
 import logging
 import time
 from collections.abc import AsyncIterator, Callable
+from contextlib import aclosing
 from dataclasses import dataclass, field
 
 logger = logging.getLogger(__name__)
@@ -51,6 +52,7 @@ from app.core.agent.recovery import STEP_FIX_ATTEMPTS, fixable
 from app.core.agent.step_executor import StepExecutor, resolve_input, tool_kind
 from app.core.data import overview
 from app.core.data.duckdb_manager import DuckDBManager
+from app.core.llm.budget import track_truncations
 from app.core.memory.profile_memory import ProfileMemory
 from app.core.memory.session_memory import SessionMemory
 from app.core.memory.state_cache import StateCache
@@ -65,6 +67,8 @@ NO_TABLE_MESSAGE = "Сначала подключите данные"
 FAILURE_MESSAGE = "Не удалось ответить на вопрос, попробуйте ещё раз"
 SUMMARY_UNAVAILABLE = "Описание данных сейчас недоступно: модель не ответила."
 OVERVIEW_CAPTION = "Колонки таблицы"
+# Событие, которым кончается ход: после него поток закрывается.
+TURN_END_EVENTS = ("done", "clarification_needed")
 
 # Отправка события фронту из глубины плана (progress), пока run() стримит.
 Emit = Callable[[dict], None]
@@ -172,7 +176,23 @@ class AgentOrchestrator:
         self.profiles = ProfileMemory(self.db)
 
     async def run(self, request: ChatRequest) -> AsyncIterator[dict]:
-        """Выполнить исследование и вернуть поток событий для фронта."""
+        """Выполнить исследование и вернуть поток событий для фронта.
+
+        Если сервер LLM обрезал промпты хода, последнее событие хода (done или
+        clarification_needed) несёт их число в prompt_truncated: eval (#58)
+        отбрасывает такие прогоны. Обрезанный промпт чаще всего и кончается
+        уточнением: модель без списка тулов строит план, шаг падает.
+        """
+        truncations = track_truncations()
+        # aclosing: клиент отключился — ход закрывается сразу, с отменой задачи плана.
+        async with aclosing(self._turn(request)) as events:
+            async for event in events:
+                if event["type"] in TURN_END_EVENTS and truncations:
+                    event["data"]["prompt_truncated"] = len(truncations)
+                yield event
+
+    async def _turn(self, request: ChatRequest) -> AsyncIterator[dict]:
+        """Один ход: события для фронта до done или clarification_needed."""
         logger.info(">>> run() session_id=%s question=%r", request.session_id, request.question)
         memory = SessionMemory(request.session_id, db=self.db)
         table = memory.table

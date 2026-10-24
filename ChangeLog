@@ -1,3 +1,74 @@
+2026-10-24  thebulkapro  <saitbatalovbulat200@gmail.com>
+
+	Длина контекста LLM: исправления по ревью #136.
+	* backend/app/core/agent/orchestrator.py (AgentOrchestrator.run):
+	prompt_truncated несёт и clarification_needed: обрезанный промпт
+	чаще всего кончается уточнением, и eval (#58) терял такие прогоны.
+	(TURN_END_EVENTS): Новая.
+	* backend/app/core/llm/budget.py (should_ask_server_context): Вместо
+	known_server_context.  «Сервер не назвал контекст» не кешируется:
+	переспрашиваем не чаще раза в SERVER_CTX_RETRY_S.  Раньше один
+	таймаут при старте отключал признак «упёрся в контекст» до
+	перезапуска бэкенда.
+	(remember_server_context): Запоминает только число.
+	* backend/app/core/llm/client.py (LLMClient._check_context): В длину
+	промпта входит схема тулов из tools: сервер считает её в
+	prompt_tokens, и без неё обрезка на Ollama 0.35.1 проходила незаметно.
+	(LLMClient.warm_up): Новый.  Короткий запрос при старте, чтобы
+	бюджет первого промпта считался от контекста сервера.
+	* backend/app/core/llm/fake_client.py (FakeLLM.warm_up): Новый.
+	* backend/app/main.py (lifespan): Вызывает LLMClient.warm_up.
+	* scripts/run_full_llm_cycle.py (run_turn): Обрезка и из
+	clarification_needed, по всем повторам хода.
+	* docs/architecture.md: prompt_truncated в clarification_needed.
+	* backend/tests/unit/test_budget.py
+	(test_unknown_server_context_is_asked_again_later): Новый тест.
+	* backend/tests/unit/test_llm_client_retries.py
+	(test_tools_schema_counts_toward_prompt_length)
+	(test_server_context_is_asked_again_after_failure)
+	(test_warm_up_learns_server_context)
+	(test_warm_up_survives_unavailable_llm): Новые тесты.
+	* backend/tests/unit/test_orchestrator_unit.py
+	(test_clarification_counts_truncated_prompts): Новый тест.
+
+2026-10-23  Alexander Yurits  <terruwork@gmail.com>
+
+	Длина контекста LLM: проверка обрезки промпта и его бюджет (#102).
+	* backend/app/config.py (llm_num_ctx, llm_chars_per_token): Новые.
+	* backend/app/core/llm/budget.py: Новый.  Реальный контекст сервера
+	(server_context, num_ctx — меньшее из него и LLM_NUM_CTX),
+	prompt_budget, признаки обрезки (check_prompt), сбор обрезок хода
+	(track_truncations, report_truncation), probe_context для проверочных
+	скриптов.
+	* backend/app/core/llm/client.py (LLMClient._check_context): Новый
+	response-хук httpx: сверяет usage.prompt_tokens каждого ответа, включая
+	повторы instructor и fallback, с длиной промпта и контекстом сервера;
+	обрезку пишет warning'ом.
+	(LLMClient._server_context): Новый.  Контекст из /v1/models (vLLM,
+	max_model_len) или /api/ps (Ollama, context_length), один раз на модель.
+	* backend/app/core/agent/orchestrator.py (AgentOrchestrator.run): done
+	несёт prompt_truncated, если сервер обрезал промпты хода.
+	(AgentOrchestrator._turn): Прежнее тело run.
+	* scripts/check_llm_client.py: Проверка промпта заданной длины с
+	паролем в начале.
+	* scripts/run_full_llm_cycle.py (check_llm): Контекст сервера;
+	--check-context CHARS — та же проверка.  Обрезка из done — в
+	предупреждения отчёта.
+	* infra/vllm/serve.sh: --max-model-len (MAX_MODEL_LEN, по умолчанию
+	LLM_NUM_CTX).
+	* scripts/download_model.sh: OLLAMA_CONTEXT_LENGTH в подсказке.
+	* .env.example: LLM_NUM_CTX, LLM_CHARS_PER_TOKEN.
+	* README.md (Длина контекста LLM): Новый раздел.
+	* docs/architecture.md: prompt_truncated в done; решение о контексте.
+	* backend/tests/unit/test_budget.py: Новый.
+	* backend/tests/unit/test_llm_client_retries.py
+	(test_ollama_truncation_is_reported)
+	(test_far_fewer_tokens_than_estimate_is_reported)
+	(test_full_prompt_is_not_reported)
+	(test_broken_server_info_does_not_fail_the_call): Новые тесты.
+	* backend/tests/unit/test_orchestrator_unit.py
+	(test_done_counts_truncated_prompts): Новый тест.
+
 2026-10-23  thebulkapro  <saitbatalovbulat200@gmail.com>
 
 	«Что передо мной?»: описание таблицы от LLM в паспорте (#54).
