@@ -6,9 +6,14 @@
 видно, сколько токенов в промптах, сколько вызовов делает один ход и
 какие ответы ломают парсинг. Только stdlib — ставить ничего не нужно.
 
+С --retry N ошибки провайдера (429, 5xx и 200 с "error" в теле без
+"choices", как у бесплатных моделей OpenRouter) повторяются до N раз с
+паузой: прогон eval не падает из-за чужих лимитов.
+
 Запуск:
     python record_proxy.py --port 11500 --upstream http://localhost:11434 \
         --log calls.jsonl
+    python record_proxy.py --upstream https://openrouter.ai/api --retry 12 --log calls.jsonl
     LLM_BASE_URL=http://localhost:11500/v1 python scripts/run_full_llm_cycle.py ...
 """
 
@@ -25,7 +30,14 @@ _lock = threading.Lock()
 _counter = [0]
 
 
-def make_handler(upstream: str, log_path: Path) -> type[BaseHTTPRequestHandler]:
+def _transient(status: int, payload: bytes) -> bool:
+    """Ошибка провайдера, которую стоит повторить."""
+    if status in (429, 500, 502, 503):
+        return True
+    return status == 200 and b'"error"' in payload[:300] and b'"choices"' not in payload
+
+
+def make_handler(upstream: str, log_path: Path, retry: int = 0) -> type[BaseHTTPRequestHandler]:
     class Handler(BaseHTTPRequestHandler):
         def do_GET(self) -> None:
             self._forward(None)
@@ -46,21 +58,32 @@ def make_handler(upstream: str, log_path: Path) -> type[BaseHTTPRequestHandler]:
                 record["request"] = body.decode("utf-8", "replace") if body else None
             skip = ("host", "content-length", "connection", "accept-encoding")
             headers = {k: v for k, v in self.headers.items() if k.lower() not in skip}
-            req = urllib.request.Request(
-                upstream + self.path, data=body, headers=headers, method=self.command
-            )
-            try:
-                with urllib.request.urlopen(req, timeout=None) as resp:
-                    status, payload = resp.status, resp.read()
-                    ctype = resp.headers.get("Content-Type", "application/json")
-            except urllib.error.HTTPError as exc:
-                status, payload = exc.code, exc.read()
-                ctype = exc.headers.get("Content-Type", "text/plain")
-            except Exception as exc:  # noqa: BLE001 — пишем в лог и отдаём 502
-                record.update(error=repr(exc), seconds=time.time() - started)
-                _append(log_path, record)
-                self.send_error(502, str(exc))
-                return
+            attempt = 0
+            while True:
+                req = urllib.request.Request(
+                    upstream + self.path, data=body, headers=headers, method=self.command
+                )
+                try:
+                    with urllib.request.urlopen(req, timeout=None) as resp:
+                        status, payload = resp.status, resp.read()
+                        ctype = resp.headers.get("Content-Type", "application/json")
+                except urllib.error.HTTPError as exc:
+                    status, payload = exc.code, exc.read()
+                    ctype = exc.headers.get("Content-Type", "text/plain")
+                except Exception as exc:  # noqa: BLE001 — пишем в лог и отдаём 502
+                    record.update(error=repr(exc), seconds=time.time() - started)
+                    _append(log_path, record)
+                    self.send_error(502, str(exc))
+                    return
+                if attempt >= retry or not _transient(status, payload):
+                    break
+                attempt += 1
+                time.sleep(min(5 * attempt, 30))
+            if attempt:
+                record["retries"] = attempt
+            if status == 200 and _transient(status, payload):
+                # Ошибка в теле с кодом 200: клиент должен увидеть сбой, а не пустой ответ.
+                status = 502
             record["seconds"] = time.time() - started
             record["status"] = status
             try:
@@ -94,8 +117,10 @@ def main() -> None:
     parser.add_argument("--port", type=int, default=11500)
     parser.add_argument("--upstream", default="http://localhost:11434")
     parser.add_argument("--log", type=Path, required=True)
+    parser.add_argument("--retry", type=int, default=0, help="повторы ошибок провайдера")
     args = parser.parse_args()
-    server = ThreadingHTTPServer(("127.0.0.1", args.port), make_handler(args.upstream, args.log))
+    handler = make_handler(args.upstream, args.log, args.retry)
+    server = ThreadingHTTPServer(("127.0.0.1", args.port), handler)
     server.serve_forever()
 
 

@@ -1,5 +1,21 @@
 2026-10-25  Alexander Yurits  <143354682+Terrum19@users.noreply.github.com>
 
+	Eval диалогов и стадии вывода для R-01.
+	* scripts/llm_bench/run_dialog.sh: Новый.  Диалог полным циклом через
+	прокси; локальная Ollama или OpenRouter (UPSTREAM, RETRY).
+	* scripts/llm_bench/replay_insight.py: Новый.  Повтор вывода на
+	таблицах прогона любой версией backend.
+	* scripts/llm_bench/grade_insight.py: Новый.  Оценка заголовков по
+	таблице результата.
+	* scripts/llm_bench/show_turns.py: Новый.  Планы и ответы по ходам.
+	* scripts/llm_bench/record_proxy.py (make_handler): --retry повторяет
+	ошибки провайдера (429, 5xx, 200 с error в теле).
+	* scripts/llm_bench/questions/followups.txt,
+	scripts/llm_bench/questions/replies.txt: Новые.
+	* scripts/llm_bench/README.md: Новый.
+
+2026-10-25  Alexander Yurits  <143354682+Terrum19@users.noreply.github.com>
+
 	Вывод отвечает на вопрос по форме результата.
 	* backend/app/core/agent/quality_fixes.py (insight_facts): У мин и
 	макс подписана строка (arg_min/arg_max по первой нечисловой колонке).
