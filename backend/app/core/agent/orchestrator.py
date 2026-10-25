@@ -62,8 +62,15 @@ from app.core.memory.profile_memory import ProfileMemory
 from app.core.memory.session_memory import SessionMemory
 from app.core.memory.state_cache import StateCache
 from app.core.sandbox.wasm_runtime import SandboxError
+from app.core.tools.base import identifier
+from app.core.tools.registry import tool_registry
 from app.core.viz.chart_morph import detect_morph, morph
-from app.core.viz.chart_selector import NO_CHART, select_chart
+from app.core.viz.chart_selector import (
+    MIN_HISTOGRAM_VALUES,
+    NO_CHART,
+    asks_distribution,
+    select_chart,
+)
 from app.core.viz.vega_spec_builder import (
     SPEC_ROW_LIMIT,
     build_vega_spec,
@@ -97,6 +104,8 @@ UNSUPPORTED_SUGGESTIONS = [
     "Переформулировать вопрос",
     "Пропустить этот шаг и продолжить",
 ]
+
+DISTRIBUTION_TOOL = "describe_stats"
 
 # Сколько раз план можно достроить после lookup-шагов (защита от циклов).
 MAX_REPLANS = 2
@@ -453,6 +462,7 @@ class AgentOrchestrator:
         """
         source = source_table or input_table
         tables = dict(step_tables or {})
+        inputs: dict[int, str] = {}
         current = input_table
         steps = list(plan.steps)
         replans = 0
@@ -514,6 +524,7 @@ class AgentOrchestrator:
             steps[index] = step
             kind = tool_kind(step)
             logger.info("<<< _execute_plan шаг %d УСПЕШЕН result_table=%s", step.step_id, table)
+            inputs[step.step_id] = resolve_input(step, current, tables, source)
             tables[step.step_id] = table
             memory.record_step(step, table)
             if kind == "transform":
@@ -535,7 +546,7 @@ class AgentOrchestrator:
                 )
 
         logger.info("<<< _execute_plan все шаги завершены $prev=%s", current)
-        return self._finish(plan, steps, tables, fallback=current)
+        return self._finish(plan, steps, tables, fallback=current, question=question, inputs=inputs)
 
     async def _run_step(
         self,
@@ -627,6 +638,8 @@ class AgentOrchestrator:
         steps: list[ResearchStep],
         tables: dict[int, str],
         fallback: str,
+        question: str = "",
+        inputs: dict[int, str] | None = None,
     ) -> Execution:
         """Выбрать таблицу ответа и сопутствующие результаты."""
         executed = [step for step in steps if step.step_id in tables]
@@ -642,13 +655,43 @@ class AgentOrchestrator:
             for step in executed
             if tool_kind(step) == "analysis" and tables[step.step_id] != result_table
         ]
-        return Execution(
+        execution = Execution(
             result_table=result_table,
             supporting=supporting,
             final_viz=plan.final_viz,
             dashboard_requested=plan.dashboard_requested,
             result_purpose=shown.purpose if shown else "",
             result_kind=tool_kind(shown) if shown else "transform",
+        )
+        values = self._distribution_values(question, shown, inputs or {})
+        if values is None:
+            return execution
+        return Execution(
+            result_table=values,
+            supporting=[(shown.purpose or shown.tool, result_table), *supporting],
+            final_viz="histogram",
+            dashboard_requested=plan.dashboard_requested,
+            result_purpose=shown.purpose,
+        )
+
+    def _distribution_values(
+        self, question: str, shown: ResearchStep | None, inputs: dict[int, str]
+    ) -> str | None:
+        if shown is None or shown.tool != DISTRIBUTION_TOOL or not asks_distribution(question):
+            return None
+        source = inputs.get(shown.step_id)
+        if source is None:
+            return None
+        column = identifier(
+            tool_registry.get(shown.tool).parse_args(shown.columns, shown.arguments).column
+        )
+        present = self.db.query(f"SELECT COUNT({column}) AS present FROM {identifier(source)}")
+        if present[0]["present"] < MIN_HISTOGRAM_VALUES:
+            return None
+        return self.db.save_step_result(
+            source,
+            f"SELECT * FROM (SELECT {column} FROM {identifier(source)} WHERE {column} IS NOT NULL)"
+            f" USING SAMPLE reservoir({SPEC_ROW_LIMIT} ROWS) REPEATABLE (0)",
         )
 
     async def _replan_after_lookup(

@@ -11,6 +11,7 @@ from app.core.data.profiling import profile_table
 from app.core.memory.profile_memory import ProfileMemory
 from app.core.memory.session_memory import SessionMemory
 from app.core.memory.state_cache import StateCache
+from app.core.viz.vega_spec_builder import SPEC_ROW_LIMIT
 from app.models.insight import Insight
 from app.models.research_step import ResearchPlan, ResearchStep
 
@@ -33,16 +34,23 @@ class SpyDB(DuckDBManager):
 
 class FakePlanner:
     def __init__(
-        self, final_viz: str = "bar", tool: str = "group", purpose: str = "выручка по регионам"
+        self,
+        final_viz: str = "bar",
+        tool: str = "group",
+        purpose: str = "выручка по регионам",
+        arguments: dict | None = None,
     ) -> None:
         self.calls = 0
         self.final_viz = final_viz
         self.tool = tool
         self.purpose = purpose
+        self.arguments = arguments or {}
 
     async def plan(self, question: str, context: dict) -> ResearchPlan:
         self.calls += 1
-        steps = [ResearchStep(step_id=1, tool=self.tool, purpose=self.purpose)]
+        steps = [
+            ResearchStep(step_id=1, tool=self.tool, purpose=self.purpose, arguments=self.arguments)
+        ]
         return ResearchPlan(steps=steps, final_viz=self.final_viz)
 
 
@@ -62,9 +70,13 @@ class FakeExecutor:
 class FakeInsight:
     def __init__(self) -> None:
         self.calls = 0
+        self.supporting: list[tuple[str, str]] = []
 
-    async def generate(self, question: str, result_table: str, **_: object) -> Insight:
+    async def generate(
+        self, question: str, result_table: str, supporting=(), **_: object
+    ) -> Insight:
         self.calls += 1
+        self.supporting = list(supporting)
         return Insight(headline="Москва лидирует", details=["msk > spb"])
 
 
@@ -298,3 +310,42 @@ async def test_analysis_result_is_shown_as_table(db) -> None:
     spec = chart_of(await collect(agent, "Опиши выручку"))["spec"]
     assert spec["usermeta"]["chart_type"] == "table"
     assert spec["title"] == "статистики"
+
+
+def stats_agent(db: DuckDBManager, rows: int) -> AgentOrchestrator:
+    db.execute(f"INSERT INTO raw SELECT 'msk', range // 25 FROM range({rows - 3})")
+    planner = FakePlanner(
+        final_viz="table",
+        tool="describe_stats",
+        purpose="распределение выручки",
+        arguments={"column": "amount"},
+    )
+    return agent_with(db, planner)
+
+
+async def test_distribution_question_draws_histogram_of_the_column(db) -> None:
+    agent = stats_agent(db, rows=25)
+    chart = chart_of(await collect(agent, "Покажи распределение amount"))
+    spec = chart["spec"]
+    assert spec["usermeta"]["chart_type"] == "histogram"
+    assert spec["title"] == "распределение выручки"
+    assert len(spec["data"]["values"]) == 25
+    assert set(spec["data"]["values"][0]) == {"amount"}
+    assert agent.insight_gen.supporting == [("распределение выручки", "temp_result_v1")]
+    assert chart["result_table"] == "temp_result_v2"
+
+
+async def test_distribution_of_few_values_shows_the_statistics(db) -> None:
+    agent = stats_agent(db, rows=5)
+    chart = chart_of(await collect(agent, "Покажи распределение amount"))
+    assert chart["spec"]["usermeta"]["chart_type"] == "table"
+    assert chart["result_table"] == "temp_result_v1"
+    assert agent.insight_gen.supporting == []
+
+
+async def test_distribution_is_drawn_from_a_sample_of_the_whole_column(db) -> None:
+    agent = stats_agent(db, rows=SPEC_ROW_LIMIT * 4)
+    spec = chart_of(await collect(agent, "Покажи распределение amount"))["spec"]
+    amounts = [row["amount"] for row in spec["data"]["values"]]
+    assert len(amounts) == SPEC_ROW_LIMIT
+    assert max(amounts) > SPEC_ROW_LIMIT // 25

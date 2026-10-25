@@ -18,6 +18,10 @@
 	(AgentOrchestrator._finish): В Execution — purpose и вид шага, чей
 	результат показан.
 	(_requested_view): Новая.  Результат analysis/lookup-шага — table.
+	(AgentOrchestrator._distribution_values): Новая.  На вопрос о
+	распределении после describe_stats — histogram по выборке из 500
+	значений колонки, статистики уходят в инсайт.
+	* backend/app/core/viz/chart_selector.py (asks_distribution): Новая.
 	* backend/app/models/research_step.py (ResearchPlan.final_viz):
 	Добавлено "none".
 	* backend/app/core/llm/prompts/step_planner.py: То же.

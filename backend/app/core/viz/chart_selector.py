@@ -64,9 +64,14 @@ def select_chart(
     return "table"
 
 
+def asks_distribution(question: str) -> bool:
+    text = question.lower()
+    return "распредел" in text or "гистограмм" in text
+
+
 def _by_question(question: str) -> str:
     text = question.lower()
-    if "распредел" in text or "гистограмм" in text:
+    if asks_distribution(question):
         return "histogram"
     if "динамик" in text or "во времени" in text or "по годам" in text or "по месяцам" in text:
         return "line"
