@@ -1,5 +1,33 @@
 2026-10-25  mb6ockatf  <smokenmirror@tutamail.com>
 
+	Eval: проверки без ложных проходов и падений (#57).
+	* scripts/eval.py (check_value, reference_value, value_in_text)
+	(matches): Эталон — одно значение; число с допуском (при 0 —
+	абсолютным), строка или дата — без учёта регистра; числовое
+	совпадение в result_table больше VALUE_MAX_ROWS строк не
+	засчитывается; без result_table эталон ищется в тексте ответа.
+	(check_expect_types): Новая.  Типы expect проверяются при загрузке.
+	(check_turn, checked): Упавшая проверка — провал с причиной, прогон
+	идёт дальше; пустые tools_any и chart_type_any и columns_all хода без
+	плана не проверяются; событие error — «ход упал», уточнение без
+	refusal: true — провал turn.
+	(refused, errored): error больше не считается отказом, уточнение после
+	упавшего шага — тоже.
+	(mentioned, strings_in): Колонки ищутся в значениях аргументов, без
+	имён аргументов и строковых литералов SQL.
+	(check_answer, normalized): Пробелы, в том числе неразрывные, и «ё».
+	(bind_table): Новая.  set_table с одним или двумя аргументами (#171).
+	(report_paths, evaluate, parse_args): --tag, --force; отчёт не
+	перезаписывается; при --fake — временный каталог; код выхода 3, если
+	у вопросов не открылась сессия.
+	(summarize, render): Число упавших ходов, вопросов без сессии и без
+	паспорта таблицы; такие вопросы не входят в recall.
+	* Makefile (lint): Проверяет и scripts/eval.py.
+	* backend/tests/unit/test_eval_runner.py: Тесты того же.
+	* docs/eval.md: То же.
+
+2026-10-25  mb6ockatf  <smokenmirror@tutamail.com>
+
 	Eval агента на наборе вопросов (Q-02, #57).
 	* scripts/eval.py: Новый.  Каждый вопрос data/eval/questions.yaml
 	(формат #56) — новая сессия над таблицей dataset, follow_up_of — в

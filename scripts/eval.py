@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import argparse
 import asyncio
+import inspect
 import json
 import logging
 import math
@@ -29,12 +30,17 @@ if str(BACKEND_DIR) not in sys.path:
 
 DEFAULT_QUESTIONS = ROOT / "data" / "eval" / "questions.yaml"
 DEFAULT_OUT_DIR = ROOT / "docs" / "reports"
+LIST_KEYS = ("tools_any", "columns_all", "answer_contains", "chart_type_any")
+UNCHECKED_WHEN_EMPTY = ("tools_any", "chart_type_any")
 QUESTION_KEYS = ("id", "scenario", "dataset", "question", "follow_up_of", "expect")
 REQUIRED_KEYS = ("id", "scenario", "dataset", "question")
 EXPECT_KEYS = ("tools_any", "columns_all", "answer_contains", "value", "chart_type_any", "refusal")
 TURN_END_EVENTS = ("done", "clarification_needed")
-REFUSAL_EVENTS = ("refusal", "clarification_needed", "error")
 RESULT_ROWS = 1000
+VALUE_MAX_ROWS = 50
+SESSION_FAILED = 3
+SQL_LITERAL = re.compile(r"'(?:[^']|'')*'")
+TEXT_NUMBER = re.compile(r"-?\d{1,3}(?: \d{3})+(?:[.,]\d+)?|-?\d+(?:[.,]\d+)?")
 VALUE_EPSILON = 1e-9
 SHOWN_VALUES = 5
 FAKE_MODEL = "fake"
@@ -57,6 +63,7 @@ class Question:
 class Selection:
     columns: list[str]
     block_chars: int = 0
+    profiled: bool = False
 
 
 @dataclass
@@ -116,9 +123,7 @@ def parse_question(entry: object, known: set[str], where: str) -> Question:
     unknown = sorted(set(expect) - set(EXPECT_KEYS))
     if unknown:
         raise ValueError(f"{where}: неизвестные проверки {', '.join(unknown)}")
-    value = expect.get("value")
-    if value is not None and not (isinstance(value, dict) and value.get("sql")):
-        raise ValueError(f"{where}: value должен содержать sql")
+    check_expect_types(expect, where)
     return Question(
         id=question_id,
         scenario=int(entry["scenario"]),
@@ -127,6 +132,28 @@ def parse_question(entry: object, known: set[str], where: str) -> Question:
         follow_up_of=None if parent is None else str(parent),
         expect=expect,
     )
+
+
+def check_expect_types(expect: dict, where: str) -> None:
+    for key in LIST_KEYS:
+        items = expect.get(key)
+        if items is None:
+            continue
+        if not isinstance(items, list) or not all(isinstance(item, str) for item in items):
+            raise TypeError(f"{where}: {key} должен быть списком строк (в кавычках)")
+    refusal = expect.get("refusal")
+    if refusal is not None and not isinstance(refusal, bool):
+        raise TypeError(f"{where}: refusal должен быть true или false")
+    value = expect.get("value")
+    if value is None:
+        return
+    if not isinstance(value, dict) or not isinstance(value.get("sql"), str) or not value["sql"]:
+        raise ValueError(f"{where}: value должен содержать sql")
+    tolerance = value.get("tolerance")
+    if tolerance is not None and (
+        isinstance(tolerance, bool) or not isinstance(tolerance, int | float) or tolerance < 0
+    ):
+        raise ValueError(f"{where}: tolerance должен быть числом не меньше 0")
 
 
 def select_questions(
@@ -165,6 +192,7 @@ def watch_columns(selection: Selection) -> Iterator[None]:
     def recorded_select(*args, **kwargs):
         selected = select(*args, **kwargs)
         selection.columns = [str(name) for name in selected]
+        selection.profiled = True
         return selected
 
     def recorded_describe(*args, **kwargs):
@@ -309,40 +337,73 @@ def chart_types(turn: Turn) -> list[str]:
     return kinds
 
 
+def errored(turn: Turn) -> bool:
+    return turn.error is not None or any(event["type"] == "error" for event in turn.events)
+
+
 def refused(turn: Turn) -> bool:
     kinds = {event["type"] for event in turn.events}
-    if turn.error is not None or kinds & set(REFUSAL_EVENTS):
+    if "refusal" in kinds:
         return True
+    stepped = any(data.get("stage") == "step" for data in events_of(turn, "progress"))
+    if "clarification_needed" in kinds:
+        return not stepped
     return "chart" not in kinds and not turn.steps
+
+
+def strings_in(value: object) -> list[str]:
+    if isinstance(value, str):
+        return [value]
+    if isinstance(value, dict):
+        return [text for item in value.values() for text in strings_in(item)]
+    if isinstance(value, list | tuple):
+        return [text for item in value for text in strings_in(item)]
+    return []
 
 
 def mentioned(column: str, steps: list[dict]) -> bool:
     pattern = re.compile(rf"(?<!\w){re.escape(column)}(?!\w)", re.IGNORECASE)
     return any(
-        pattern.search(
-            json.dumps([step["columns"], step["arguments"]], ensure_ascii=False, default=str)
-        )
+        pattern.search(SQL_LITERAL.sub("''", text))
         for step in steps
+        for text in strings_in([step["columns"], step["arguments"]])
     )
 
 
-def numbers(rows: list[dict]) -> list[float]:
+def is_number(value: object) -> bool:
+    return not isinstance(value, bool) and isinstance(value, int | float | Decimal)
+
+
+def normalized(text: str) -> str:
+    return " ".join(text.replace("ё", "е").replace("Ё", "Е").split()).casefold()
+
+
+def text_numbers(text: str) -> list[float]:
     found = []
-    for row in rows:
-        for value in row.values():
-            if isinstance(value, bool) or not isinstance(value, int | float | Decimal):
-                continue
-            if not math.isnan(float(value)):
-                found.append(float(value))
+    for match in TEXT_NUMBER.finditer(" ".join(text.split())):
+        found.append(float(match.group().replace(" ", "").replace(",", ".")))
     return found
 
 
 def close(actual: float, expected: float, tolerance: float) -> bool:
-    return abs(actual - expected) <= tolerance * abs(expected) + VALUE_EPSILON
+    limit = tolerance * abs(expected) if expected else tolerance
+    return abs(actual - expected) <= limit + VALUE_EPSILON
 
 
-def shown(values: list[float]) -> str:
-    return ", ".join(f"{value:g}" for value in values[:SHOWN_VALUES]) or "нет"
+def matches(found: object, expected: object, tolerance: float) -> bool:
+    if found is None:
+        return False
+    if is_number(expected):
+        return (
+            is_number(found)
+            and not math.isnan(float(found))
+            and close(float(found), float(expected), tolerance)
+        )
+    return str(found).strip().casefold() == str(expected).strip().casefold()
+
+
+def shown(values: list) -> str:
+    return ", ".join(map(str, values[:SHOWN_VALUES])) or "нет"
 
 
 def check_tools(expected: list[str], turn: Turn, db) -> Check:
@@ -362,33 +423,65 @@ def check_columns(expected: list[str], turn: Turn, db) -> Check:
 
 
 def check_answer(expected: list[str], turn: Turn, db) -> Check:
-    text = answer_text(turn).casefold()
-    missing = [part for part in expected if str(part).casefold() not in text]
+    text = normalized(answer_text(turn))
+    missing = [part for part in expected if normalized(part) not in text]
     if not missing:
         return Check("answer_contains", True)
     return Check("answer_contains", False, f"в ответе нет {', '.join(map(str, missing))}")
 
 
+def reference_value(sql: str, db) -> object:
+    rows = db.query(sql)
+    if len(rows) != 1 or len(rows[0]) != 1:
+        raise ValueError(
+            f"эталонный SQL вернул {len(rows)} строк, нужна одна строка с одним значением"
+        )
+    [value] = rows[0].values()
+    if value is None:
+        raise ValueError("эталонный SQL вернул NULL")
+    return value
+
+
 def check_value(expected: dict, turn: Turn, db) -> Check:
-    if turn.result_rows is None:
-        return Check("value", False, turn.result_error or "в ответе нет result_table")
     tolerance = float(expected.get("tolerance") or 0)
     try:
-        reference = numbers(db.query(expected["sql"]))
+        reference = reference_value(expected["sql"], db)
     except duckdb.Error as error:
         return Check("value", False, f"эталонный SQL не выполнился: {error}")
-    if not reference:
-        return Check("value", False, "эталонный SQL не вернул чисел")
-    actual = numbers(turn.result_rows)
-    missing = [
-        value for value in reference if not any(close(found, value, tolerance) for found in actual)
-    ]
-    if not missing:
+    except ValueError as error:
+        return Check("value", False, str(error))
+    if turn.result_rows is None:
+        return value_in_text(reference, tolerance, turn)
+    if is_number(reference) and len(turn.result_rows) > VALUE_MAX_ROWS:
+        return Check(
+            "value",
+            False,
+            f"в result_table {len(turn.result_rows)} строк (больше {VALUE_MAX_ROWS}): "
+            "совпадение числа не засчитывается",
+        )
+    cells = [cell for row in turn.result_rows for cell in row.values()]
+    if any(matches(cell, reference, tolerance) for cell in cells):
         return Check("value", True)
     return Check(
         "value",
         False,
-        f"в result_table нет {shown(missing)} (допуск {tolerance:g}), есть {shown(actual)}",
+        f"в result_table нет {reference} (допуск {tolerance:g}), есть {shown(cells)}",
+    )
+
+
+def value_in_text(reference: object, tolerance: float, turn: Turn) -> Check:
+    text = answer_text(turn)
+    if is_number(reference):
+        found = text_numbers(text)
+        passed = any(close(number, float(reference), tolerance) for number in found)
+    else:
+        found = []
+        passed = normalized(str(reference)) in normalized(text)
+    if passed:
+        return Check("value", True)
+    reason = turn.result_error or "в ответе нет result_table"
+    return Check(
+        "value", False, f"{reason}; в тексте ответа нет {reference}, чисел: {shown(found)}"
     )
 
 
@@ -402,6 +495,8 @@ def check_chart(expected: list[str], turn: Turn, db) -> Check:
 
 
 def check_refusal(expected: bool, turn: Turn, db) -> Check:
+    if errored(turn):
+        return Check("refusal", False, "ход упал, отказ не проверить: " + ending(turn))
     if refused(turn) == bool(expected):
         return Check("refusal", True)
     if expected:
@@ -438,16 +533,34 @@ def ending(turn: Turn) -> str:
 
 def check_turn(expect: dict, turn: Turn, db) -> list[Check]:
     checks = []
-    if turn.error is not None or turn.end_s is None:
+    clarified = any(event["type"] == "clarification_needed" for event in turn.events)
+    if errored(turn):
+        checks.append(Check("turn", False, "ход упал: " + ending(turn)))
+    elif turn.end_s is None:
         checks.append(Check("turn", False, ending(turn)))
+    elif clarified and expect.get("refusal") is not True:
+        checks.append(Check("turn", False, "агент запросил уточнение: " + ending(turn)))
     for key in EXPECT_KEYS:
-        if expect.get(key) is not None:
+        if not checked(key, expect.get(key), turn):
+            continue
+        try:
             checks.append(CHECKS[key](expect[key], turn, db))
+        except Exception as error:
+            logger.exception("проверка %s упала", key)
+            checks.append(Check(key, False, f"проверка упала: {type(error).__name__}: {error}"))
     return checks
 
 
+def checked(key: str, expected: object, turn: Turn) -> bool:
+    if expected is None:
+        return False
+    if key in UNCHECKED_WHEN_EMPTY and expected == []:
+        return False
+    return key != "columns_all" or bool(turn.steps or turn.selections)
+
+
 def selection_covered(expected: list[str] | None, turn: Turn) -> bool | None:
-    if not expected or not turn.selections:
+    if not expected or not turn.selections or not turn.selections[0].profiled:
         return None
     selected = {column.casefold() for column in turn.selections[0].columns}
     return all(str(column).casefold() in selected for column in expected)
@@ -484,9 +597,11 @@ def question_result(
         ),
         "tools": used_tools(turn),
         "selected_columns": None if first is None else first.columns,
+        "profiled": None if first is None else first.profiled,
         "block_chars": None if first is None else first.block_chars,
         "selection_covered": selection_covered(question.expect.get("columns_all"), turn),
         "prompt_truncated": truncated,
+        "errored": errored(turn),
         "error": turn.error,
     }
 
@@ -502,8 +617,15 @@ def open_session(question: Question, dataset: str, db, sessions: dict[str, str])
     if not columns:
         raise LookupError(f"таблицы {dataset} нет в DuckDB (make hk-data)")
     session_id = f"eval-{question.id}-{uuid.uuid4().hex[:8]}"
-    SessionMemory(session_id, db=db).set_table(dataset, columns)
+    bind_table(SessionMemory(session_id, db=db), dataset, columns)
     return session_id
+
+
+def bind_table(memory, dataset: str, columns: list[str]) -> None:
+    if len(inspect.signature(memory.set_table).parameters) >= 2:
+        memory.set_table(dataset, columns)
+    else:
+        memory.set_table(dataset)
 
 
 async def run_questions(
@@ -555,6 +677,7 @@ def summarize(results: list[dict], model: str, questions_path: Path, day: date) 
             "pass_rate": rate(passed, len(own)),
         }
     measured = [result for result in results if result["selection_covered"] is not None]
+    unprofiled = sum(1 for result in results if result.get("profiled") is False)
     covered = sum(result["selection_covered"] for result in measured)
     blocks = [result["block_chars"] for result in results if result["block_chars"] is not None]
     passed = sum(result["passed"] for result in results)
@@ -575,8 +698,11 @@ def summarize(results: list[dict], model: str, questions_path: Path, day: date) 
             "covered": covered,
             "recall": round(covered / len(measured), 3) if measured else None,
             "mean_block_chars": round(sum(blocks) / len(blocks)) if blocks else None,
+            "unprofiled": unprofiled,
         },
         "prompt_truncated": sum(1 for result in results if result["prompt_truncated"]),
+        "errored": sum(1 for result in results if result["errored"]),
+        "no_session": sum(1 for result in results if result["session_id"] is None),
         "questions": results,
     }
 
@@ -599,6 +725,13 @@ def render(report: dict) -> str:
             f"прошло {report['passed']} ({cell(report['pass_rate'])} %)."
         ),
     ]
+    if report["errored"]:
+        lines.append(
+            f"Ходов с ошибкой (LLM, сеть, сбой этапа): {report['errored']} — это не оценка "
+            "качества, такие вопросы провалены."
+        )
+    if report["no_session"]:
+        lines.append(f"Не открылась сессия (нет таблицы): {report['no_session']}.")
     if report["prompt_truncated"]:
         lines.append(
             f"Сервер LLM обрезал промпты в {report['prompt_truncated']} вопросах: "
@@ -638,6 +771,10 @@ def render(report: dict) -> str:
             "`expect.columns_all` вопроса попали в колонки, отобранные для планировщика."
         ),
         f"Средний размер блока колонок в промпте: {cell(selection['mean_block_chars'])} символов.",
+        (
+            f"Без паспорта таблицы (планировщик видит все колонки, в recall не входят): "
+            f"{selection['unprofiled']}."
+        ),
         "",
         "## Провалы",
         "",
@@ -657,11 +794,15 @@ def model_slug(model: str) -> str:
     return re.sub(r"[^\w.-]+", "-", model).strip("-") or "model"
 
 
-def write_report(report: dict, out_dir: Path) -> tuple[Path, Path]:
-    out_dir = Path(out_dir)
-    out_dir.mkdir(parents=True, exist_ok=True)
-    stem = f"eval_{report['date']}_{model_slug(report['model'])}"
-    markdown, data = out_dir / f"{stem}.md", out_dir / f"{stem}.json"
+def report_paths(out_dir: Path, day: date, model: str, tag: str | None) -> tuple[Path, Path]:
+    stem = f"eval_{day.isoformat()}_{model_slug(model)}"
+    if tag:
+        stem += f"_{model_slug(tag)}"
+    return Path(out_dir) / f"{stem}.md", Path(out_dir) / f"{stem}.json"
+
+
+def write_report(report: dict, markdown: Path, data: Path) -> tuple[Path, Path]:
+    markdown.parent.mkdir(parents=True, exist_ok=True)
     markdown.write_text(render(report), encoding="utf-8")
     data.write_text(
         json.dumps(report, ensure_ascii=False, indent=1, default=str) + "\n", encoding="utf-8"
@@ -722,6 +863,13 @@ async def evaluate(args: argparse.Namespace) -> int:
 
     questions = select_questions(load_questions(args.questions), args.per_scenario, args.ids)
     model = FAKE_MODEL if fake_mode() else args.model or settings.llm_model
+    out_dir = args.out_dir or (
+        Path(tempfile.mkdtemp(prefix="eval-report-")) if fake_mode() else DEFAULT_OUT_DIR
+    )
+    markdown, data = report_paths(out_dir, date.today(), model, args.tag)
+    if markdown.exists() and not args.force:
+        print(f"Отчёт {markdown} уже есть: задайте --tag или --force", file=sys.stderr)
+        return 2
     if not fake_mode() and not await prepare_model():
         return 2
     try:
@@ -739,10 +887,15 @@ async def evaluate(args: argparse.Namespace) -> int:
     finally:
         db.close()
     report = summarize(results, model, args.questions, date.today())
-    markdown, data = write_report(report, args.out_dir)
+    write_report(report, markdown, data)
     print(f"Прошло {report['passed']} из {report['total']} ({cell(report['pass_rate'])} %)")
     print(f"Отчёт: {markdown}\nJSON:  {data}")
-    return 1 if any(result["error"] for result in results) else 0
+    if any(result["error"] for result in results):
+        return 1
+    if report["no_session"]:
+        print(f"Не открылась сессия у {report['no_session']} вопросов", file=sys.stderr)
+        return SESSION_FAILED
+    return 0
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -755,7 +908,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--dataset", help="задать всем вопросам эту таблицу")
     parser.add_argument("--per-scenario", type=int, help="не больше N вопросов на сценарий")
     parser.add_argument("--ids", nargs="+", help="только эти вопросы")
-    parser.add_argument("--out-dir", type=Path, default=DEFAULT_OUT_DIR)
+    parser.add_argument(
+        "--out-dir", type=Path, help="каталог отчёта (docs/reports; при --fake — временный)"
+    )
+    parser.add_argument("--tag", help="суффикс имени отчёта: eval_<дата>_<модель>_<tag>")
+    parser.add_argument("--force", action="store_true", help="перезаписать отчёт с тем же именем")
     return parser.parse_args(argv)
 
 

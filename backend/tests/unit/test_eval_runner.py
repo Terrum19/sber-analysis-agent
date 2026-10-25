@@ -174,8 +174,10 @@ def test_turn_without_done_fails_with_reason(sales_db: DuckDBManager) -> None:
 
     [check] = runner.check_turn({}, make_turn(events), sales_db)
 
-    assert check == runner.Check("turn", False, "error: Не удалось ответить (planning: timeout)")
-    assert runner.check_turn({}, crashed, sales_db)[0].reason == "RuntimeError: boom"
+    assert check == runner.Check(
+        "turn", False, "ход упал: error: Не удалось ответить (planning: timeout)"
+    )
+    assert runner.check_turn({}, crashed, sales_db)[0].reason == "ход упал: RuntimeError: boom"
 
 
 def test_refusal_counts_clarification_and_missing_chart(sales_db: DuckDBManager) -> None:
@@ -193,8 +195,21 @@ def test_refusal_counts_clarification_and_missing_chart(sales_db: DuckDBManager)
         assert runner.check_turn({"refusal": True}, turn, sales_db) == [
             runner.Check("refusal", True)
         ]
-    [check] = runner.check_turn({"refusal": False}, clarification, sales_db)
-    assert check.reason == "агент не ответил: clarification_needed: колонки нет"
+    turn_check, refusal_check = runner.check_turn({"refusal": False}, clarification, sales_db)
+    assert turn_check.reason == "агент запросил уточнение: clarification_needed: колонки нет"
+    assert refusal_check.reason == "агент не ответил: clarification_needed: колонки нет"
+    assert [check.name for check in runner.check_turn({}, clarification, sales_db)] == ["turn"]
+
+
+def test_error_event_is_neither_refusal_nor_answer(sales_db: DuckDBManager) -> None:
+    failed = make_turn(
+        [{"type": "error", "data": {"message": "LLM недоступна"}}, {"type": "done", "data": {}}]
+    )
+    for expected in (True, False):
+        checks = runner.check_turn({"refusal": expected}, failed, sales_db)
+        assert [check.passed for check in checks] == [False, False]
+        assert checks[0].reason.startswith("ход упал: ")
+        assert checks[1].reason.startswith("ход упал, отказ не проверить: ")
 
 
 def test_answer_without_chart_after_steps_is_not_a_refusal(sales_db: DuckDBManager) -> None:
@@ -236,9 +251,101 @@ def test_value_reports_missing_result_and_broken_reference(sales_db: DuckDBManag
     broken = runner.check_value({"sql": "SELECT * FROM nope"}, with_result, sales_db)
     empty = runner.check_value({"sql": "SELECT 'a'"}, with_result, sales_db)
 
-    assert missing.reason == "в ответе нет result_table"
+    several = runner.check_value({"sql": "SELECT 1 UNION ALL SELECT 2"}, with_result, sales_db)
+
+    assert missing.reason.startswith("в ответе нет result_table; в тексте ответа нет 1")
     assert broken.reason.startswith("эталонный SQL не выполнился: ")
-    assert empty.reason == "эталонный SQL не вернул чисел"
+    assert empty.reason.startswith("в result_table нет a ")
+    assert several.reason.startswith("эталонный SQL вернул 2 строк")
+
+
+def test_value_matches_strings_ignoring_case(sales_db: DuckDBManager) -> None:
+    turn = make_turn(ANSWER_EVENTS, result_rows=[{"category": " одежда "}])
+    sql = "SELECT 'Одежда'"
+    assert runner.check_value({"sql": sql}, turn, sales_db).passed
+
+
+def test_value_on_many_rows_does_not_pass_by_coincidence(sales_db: DuckDBManager) -> None:
+    rows = [{"n": number} for number in range(runner.VALUE_MAX_ROWS + 1)]
+    turn = make_turn(ANSWER_EVENTS, result_rows=rows)
+    check = runner.check_value({"sql": "SELECT 2"}, turn, sales_db)
+    assert not check.passed
+    assert "совпадение числа не засчитывается" in check.reason
+
+
+def test_value_without_result_table_is_found_in_the_answer_text(sales_db: DuckDBManager) -> None:
+    overview = [
+        {"type": "text", "data": {"headline": "В таблице 12\u00a0345 строк", "details": []}},
+        {"type": "done", "data": {}},
+    ]
+    turn = make_turn(overview, result_error="в ответе нет result_table")
+    assert runner.check_value({"sql": "SELECT 12345"}, turn, sales_db).passed
+    assert not runner.check_value({"sql": "SELECT 1234"}, turn, sales_db).passed
+
+
+def test_zero_reference_uses_tolerance_as_absolute(sales_db: DuckDBManager) -> None:
+    turn = make_turn(ANSWER_EVENTS, result_rows=[{"n": 0.01}])
+    assert runner.check_value({"sql": "SELECT 0", "tolerance": 0.02}, turn, sales_db).passed
+    assert not runner.check_value({"sql": "SELECT 0"}, turn, sales_db).passed
+
+
+def test_answer_contains_normalises_spaces_and_yo(sales_db: DuckDBManager) -> None:
+    text = [{"type": "text", "data": {"headline": "Итого 1\u202f234, всё ещё растёт"}}]
+    turn = make_turn([*text, {"type": "done", "data": {}}])
+    check = runner.check_answer(["1 234", "все еще"], turn, sales_db)
+    assert check.passed
+
+
+def test_columns_ignore_sql_literals_and_argument_keys() -> None:
+    steps = [
+        {
+            "tool": "filter_rows",
+            "columns": [],
+            "arguments": {"value": "x", "sql": "SELECT * FROM t WHERE region = 'revenue'"},
+        }
+    ]
+    assert not runner.mentioned("revenue", steps)
+    assert not runner.mentioned("value", steps)
+    assert runner.mentioned("region", steps)
+
+
+def test_failed_check_does_not_stop_the_run(sales_db: DuckDBManager, monkeypatch) -> None:
+    def broken(expected, turn, db):
+        raise RuntimeError("boom")
+
+    monkeypatch.setitem(runner.CHECKS, "tools_any", broken)
+    [check] = runner.check_turn({"tools_any": ["group_by"]}, make_turn(ANSWER_EVENTS), sales_db)
+    assert check == runner.Check("tools_any", False, "проверка упала: RuntimeError: boom")
+
+
+@pytest.mark.parametrize(
+    ("expect", "message"),
+    [
+        ({"columns_all": [2023]}, "columns_all должен быть списком строк"),
+        ({"answer_contains": "июл"}, "answer_contains должен быть списком строк"),
+        ({"refusal": "yes"}, "refusal должен быть true или false"),
+        ({"value": {"sql": "SELECT 1", "tolerance": -1}}, "tolerance должен быть числом"),
+    ],
+)
+def test_expect_types_are_validated(expect: dict, message: str) -> None:
+    entry = {"id": "q", "scenario": 1, "dataset": "sales", "question": "?", "expect": expect}
+    with pytest.raises((TypeError, ValueError), match=message):
+        runner.parse_question(entry, set(), "вопрос 1")
+
+
+def test_session_binds_table_with_either_set_table_signature() -> None:
+    class OldMemory:
+        def set_table(self, table, columns):
+            self.bound = (table, columns)
+
+    class NewMemory:
+        def set_table(self, table):
+            self.bound = (table,)
+
+    old, new = OldMemory(), NewMemory()
+    runner.bind_table(old, "sales", ["a"])
+    runner.bind_table(new, "sales", ["a"])
+    assert (old.bound, new.bound) == (("sales", ["a"]), ("sales",))
 
 
 def test_failures_fold_multiline_reasons_into_one_line() -> None:
@@ -371,12 +478,15 @@ def test_recording_planner_fails_fast_without_planner_hooks(monkeypatch) -> None
 
 
 def test_selection_covered_uses_first_planner_call() -> None:
-    turn = make_turn([], selections=[runner.Selection(["Revenue", "date"]), runner.Selection([])])
+    first = runner.Selection(["Revenue", "date"], profiled=True)
+    turn = make_turn([], selections=[first, runner.Selection([])])
 
     assert runner.selection_covered(["revenue", "date"], turn) is True
     assert runner.selection_covered(["revenue", "region"], turn) is False
     assert runner.selection_covered(None, turn) is None
     assert runner.selection_covered(["revenue"], make_turn([])) is None
+    unprofiled = make_turn([], selections=[runner.Selection(["Revenue", "date"])])
+    assert runner.selection_covered(["revenue"], unprofiled) is None
 
 
 def result(question_id: str, scenario: int, passed: bool, **fields) -> dict:
@@ -391,6 +501,9 @@ def result(question_id: str, scenario: int, passed: bool, **fields) -> dict:
         "selection_covered": None,
         "block_chars": None,
         "prompt_truncated": 0,
+        "errored": False,
+        "session_id": f"eval-{question_id}",
+        "profiled": True,
         "error": None,
         **fields,
     }
@@ -399,7 +512,7 @@ def result(question_id: str, scenario: int, passed: bool, **fields) -> dict:
 SAMPLE_RESULTS = [
     result("sales-01", 2, True, selection_covered=True, block_chars=300),
     result("sales-02", 2, False, selection_covered=False, block_chars=500, done_s=9.0),
-    result("odd-01", 0, True, done_s=None),
+    result("odd-01", 0, True, done_s=None, profiled=None),
 ]
 
 
@@ -417,14 +530,17 @@ def test_summarize_counts_scenarios_timing_and_recall() -> None:
         "covered": 1,
         "recall": 0.5,
         "mean_block_chars": 400,
+        "unprofiled": 0,
     }
+    assert (report["errored"], report["no_session"]) == (0, 0)
     assert report["questions_file"] == "backend/tests/fixtures/eval_questions.yaml"
 
 
 def test_write_report_names_files_by_date_and_model(tmp_path: Path) -> None:
     report = runner.summarize(SAMPLE_RESULTS, "qwen2.5-coder:7b", FIXTURE, date(2026, 10, 25))
 
-    markdown, data = runner.write_report(report, tmp_path / "reports")
+    paths = runner.report_paths(tmp_path / "reports", date(2026, 10, 25), "qwen2.5-coder:7b", None)
+    markdown, data = runner.write_report(report, *paths)
 
     assert markdown.name == "eval_2026-10-25_qwen2.5-coder-7b.md"
     assert data.name == "eval_2026-10-25_qwen2.5-coder-7b.json"
@@ -470,3 +586,36 @@ def test_main_runs_on_fake_llm(tmp_path: Path, sales_csv: Path, monkeypatch) -> 
         "odd-01",
     ]
     assert report["column_selection"]["measured"] == 3
+
+
+def test_report_tag_goes_into_the_file_name(tmp_path: Path) -> None:
+    markdown, data = runner.report_paths(tmp_path, date(2026, 10, 25), "qwen:7b", "before")
+    assert markdown.name == "eval_2026-10-25_qwen-7b_before.md"
+    assert data.name == "eval_2026-10-25_qwen-7b_before.json"
+
+
+def test_empty_lists_and_planless_turns_skip_their_checks(sales_db: DuckDBManager) -> None:
+    overview = make_turn(
+        [
+            {"type": "text", "data": {"headline": "Таблица продаж"}},
+            {"type": "chart", "data": {"spec": {"usermeta": {"chart_type": "table"}}}},
+            {"type": "done", "data": {}},
+        ]
+    )
+    expect = {"tools_any": [], "chart_type_any": [], "columns_all": ["date"]}
+    assert runner.check_turn(expect, overview, sales_db) == []
+    planned = make_turn(ANSWER_EVENTS, selections=[runner.Selection(["date"], profiled=True)])
+    [check] = runner.check_turn({"columns_all": ["date"]}, planned, sales_db)
+    assert check.name == "columns_all"
+
+
+def test_clarification_after_a_failed_step_is_not_a_refusal(sales_db: DuckDBManager) -> None:
+    failed_step = make_turn(
+        [
+            {"type": "progress", "data": {"stage": "step", "status": "failed", "step_id": 0}},
+            {"type": "clarification_needed", "data": {"error": "Binder Error"}},
+        ],
+        end_s=0.5,
+    )
+    checks = runner.check_turn({"refusal": True}, failed_step, sales_db)
+    assert checks == [runner.Check("refusal", False, "ждали отказ, агент ответил по данным")]
