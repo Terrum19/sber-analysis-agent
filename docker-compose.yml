@@ -1,8 +1,10 @@
-# Локальный подъём в замкнутом контуре: make up (Ollama на CPU) или make up-gpu.
-# LLM — сервис Ollama в профиле cpu или gpu; оба отвечают по имени ollama, поэтому
-# backend ходит на http://ollama:11434/v1 в любом профиле. Модель скачивается при
-# первом запуске в том ollama-models (infra/ollama/entrypoint.sh).
-# Без профиля Ollama не поднимается: backend стартует и без неё (для CI, #79).
+# Локальный подъём в замкнутом контуре: start.command / start.bat / start.sh или make up.
+# LLM по умолчанию — Ollama на хосте, вне контейнера (#167): на Mac она берёт Metal,
+# на Windows — видеокарту без WSL-тулкита. backend ходит на host.docker.internal;
+# модель и её вариант с контекстом LLM_NUM_CTX готовит сам (core/llm/ollama_setup.py).
+# Ollama в контейнере — профиль ollama (CPU) или ollama-gpu, для серверов и CI:
+#   COMPOSE_LLM_BASE_URL=http://ollama:11434/v1 docker compose --profile ollama up
+# .env не обязателен: значения по умолчанию — здесь и в app/config.py.
 
 x-ollama: &ollama
   image: ollama/ollama:0.35.1
@@ -16,8 +18,9 @@ x-ollama: &ollama
     - ollama-models:/root/.ollama
     - ./infra/ollama/entrypoint.sh:/entrypoint.sh:ro
   # Только localhost: API Ollama без авторизации; backend ходит по сети compose.
+  # Не 11434: этот порт на хосте занимает Ollama вне контейнера.
   ports:
-    - "127.0.0.1:${OLLAMA_PORT:-11434}:11434"
+    - "127.0.0.1:${OLLAMA_PORT:-11435}:11434"
   networks:
     default:
       aliases: [ollama]
@@ -34,12 +37,12 @@ x-ollama: &ollama
 services:
   ollama-cpu:
     <<: *ollama
-    profiles: [cpu]
+    profiles: [ollama]
 
   # GPU NVIDIA: нужен NVIDIA Container Toolkit на хосте.
   ollama-gpu:
     <<: *ollama
-    profiles: [gpu]
+    profiles: [ollama-gpu]
     deploy:
       resources:
         reservations:
@@ -51,19 +54,27 @@ services:
   backend:
     build: ./backend
     image: sber-backend:local
-    env_file: .env
+    env_file:
+      - path: .env
+        required: false
     # Пути данных внутри контейнера — на смонтированном томе /app/storage
     # (относительные пути из .env рассчитаны на запуск из корня репозитория).
     environment:
       STORAGE_DIR: /app/storage
       DUCKDB_PATH: /app/storage/duckdb/main.duckdb
       SQLITE_PATH: /app/storage/sessions/sessions.sqlite
-      LLM_BASE_URL: http://ollama:11434/v1
+      # Не LLM_BASE_URL: в .env он для make dev (localhost), а в контейнере
+      # localhost — сам backend. Ollama в контейнере: http://ollama:11434/v1.
+      LLM_BASE_URL: ${COMPOSE_LLM_BASE_URL:-http://host.docker.internal:11434/v1}
       LLM_MODEL: ${LLM_MODEL:-qwen2.5-coder:7b}
       # Бэкенд ждёт тот же контекст, что задан Ollama (#102).
       LLM_NUM_CTX: ${OLLAMA_CONTEXT_LENGTH:-16384}
+    # На Linux host.docker.internal есть только с этой записью (на Mac/Windows — всегда).
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    # Снаружи нужен только фронтенд (:3000); API — для smoke и разработки, с этой машины.
     ports:
-      - "8000:8000"
+      - "127.0.0.1:8000:8000"
     volumes:
       - ./backend/storage:/app/storage
     depends_on:
@@ -87,8 +98,11 @@ services:
 
   # Демо/тестовый PostgreSQL для коннектора postgres_scanner (tests/integration).
   # Платформа читает его только в режиме READ_ONLY; бекенд от него не зависит.
+  # Поднимается только по запросу, чтобы не спорить за 5432 с Postgres на хосте:
+  # docker compose --profile integration up -d postgres
   postgres:
     image: postgres:16-alpine
+    profiles: [integration]
     environment:
       POSTGRES_USER: sber
       POSTGRES_PASSWORD: sber
