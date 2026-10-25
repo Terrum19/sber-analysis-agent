@@ -55,7 +55,7 @@ class StepPlanner:
         prompt = STEP_PLANNER.format(
             tools=tools,
             columns=f"{described}\n{others}" if others else described,
-            history=describe_turns(context.get("turns", [])),
+            history=describe_turns(context.get("turns", []), context.get("datasource")),
             executed=context.get("executed", "нет"),
             next_step_id=start,
             question=question,
@@ -114,24 +114,54 @@ class StepPlanner:
         return plan
 
 
-def describe_turns(turns: list[dict]) -> str:
-    """Прошлые ходы для промпта: вопрос, план с аргументами, ответ, колонки результата."""
+def describe_turns(turns: list[dict], table: str | None = None) -> str:
+    """Прошлые ходы для промпта: таблица, вопрос, план с аргументами, ответ, колонки результата.
+
+    Шаги каждого плана перенумерованы с 0 вместе со ссылками $step_N: план
+    хода после уточнения начинается не с 0, а новый план нумеруется с 0, и
+    скопированная ссылка указывала бы на другой шаг. Ход по другой таблице
+    помечен: колонки его плана в текущей таблице могут отсутствовать.
+    """
     blocks = []
     for number, turn in enumerate(turns, 1):
+        numbers = {step["step_id"]: index for index, step in enumerate(turn["steps"])}
         steps = [
-            {key: value for key, value in step.items() if value not in (None, [], {})}
+            {
+                key: _renumber_refs(value, numbers) if key != "step_id" else numbers[value]
+                for key, value in step.items()
+                if value not in (None, [], {})
+            }
             for step in turn["steps"]
         ]
         lines = [
             f"{number}. Вопрос: {turn['question']}",
             f"   План: {json.dumps(steps, ensure_ascii=False, default=str)}",
         ]
+        tables = turn.get("tables") or []
+        if tables:
+            other = table is not None and table not in tables
+            mark = " (другая таблица: её колонки не переноси)" if other else ""
+            lines.insert(1, f"   Таблица: {', '.join(tables)}{mark}")
         if turn.get("headline"):
             lines.append(f"   Ответ: {turn['headline']}")
         if turn.get("result_columns"):
             lines.append(f"   Колонки результата: {', '.join(turn['result_columns'])}")
         blocks.append("\n".join(lines))
     return "\n".join(blocks) or "нет"
+
+
+def _renumber_refs(value: object, numbers: dict[int, int]) -> object:
+    """Заменить $step_N (и step_N во входе шага) на номер шага в перенумерованном плане."""
+    if isinstance(value, list):
+        return [_renumber_refs(item, numbers) for item in value]
+    if isinstance(value, dict):
+        return {key: _renumber_refs(item, numbers) for key, item in value.items()}
+    if isinstance(value, str):
+        prefix = "$step_" if value.startswith("$step_") else "step_"
+        ref = value.removeprefix(prefix)
+        if value.startswith(prefix) and ref.isdigit() and int(ref) in numbers:
+            return f"{prefix}{numbers[int(ref)]}"
+    return value
 
 
 def _step_dict(step: ResearchStep) -> dict:

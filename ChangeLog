@@ -15,7 +15,10 @@
 	Ход на каждое сообщение, ответ на уточнение продолжает тот же ход;
 	turn_id в done и clarification_needed.
 	(_result_columns): Новая.
-	* backend/app/core/agent/planner.py (describe_turns): Новая.
+	* backend/app/core/agent/planner.py (describe_turns): Новая.  Таблица
+	хода, ход по другой таблице помечен; шаги плана перенумерованы с 0
+	вместе со ссылками $step_N.
+	(_renumber_refs): Новая.
 	(StepPlanner.plan): Прошлые ходы в промпте для любого вопроса.
 	* backend/app/core/agent/quality_fixes.py (frame_context, FOLLOW_UP):
 	Удалены.

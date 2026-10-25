@@ -1,5 +1,7 @@
 """Unit-тесты StepPlanner: генерация плана исследования."""
 
+import json
+
 import pytest
 
 from app.core.agent.planner import StepPlanner, validate_plan
@@ -120,3 +122,36 @@ def test_prompt_without_previous_turns_says_none():
     from app.core.agent.planner import describe_turns
 
     assert describe_turns([]) == "нет"
+
+
+def _turn(steps: list[dict], tables: list[str]) -> dict:
+    return {"question": "Выручка по регионам", "tables": tables, "steps": steps}
+
+
+def test_previous_turn_on_other_table_is_marked():
+    from app.core.agent.planner import describe_turns
+
+    step = {"step_id": 0, "tool": "group_by", "input": "$source", "arguments": {"by": ["region"]}}
+    same = describe_turns([_turn([step], ["sales"])], "sales")
+    other = describe_turns([_turn([step], ["sales"])], "events")
+    assert "Таблица: sales\n" in same
+    assert "Таблица: sales (другая таблица" in other
+
+
+def test_previous_plan_is_renumbered_from_zero_with_refs():
+    from app.core.agent.planner import describe_turns
+
+    # План хода после уточнения: шаги 3 и 4, шаг 4 ссылается на 3.
+    steps = [
+        {"step_id": 3, "tool": "filter_rows", "input": "$source", "arguments": {"column": "x"}},
+        {
+            "step_id": 4,
+            "tool": "join",
+            "input": "step_3",
+            "arguments": {"right": "$step_3", "on": ["id"]},
+        },
+    ]
+    plan = json.loads(describe_turns([_turn(steps, [])]).split("План: ")[1].split("\n")[0])
+    assert [step["step_id"] for step in plan] == [0, 1]
+    assert plan[1]["input"] == "step_0"
+    assert plan[1]["arguments"]["right"] == "$step_0"
