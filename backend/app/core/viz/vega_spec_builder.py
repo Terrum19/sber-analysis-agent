@@ -95,6 +95,25 @@ def infer_field_types(data: list[dict]) -> dict[str, str]:
     return {column: infer_field_type([record.get(column) for record in data]) for column in columns}
 
 
+def ordered_column(types: dict[str, str]) -> str | None:
+    temporal = [column for column, kind in types.items() if kind == "temporal"]
+    if temporal:
+        return temporal[0]
+    return next((column for column in types if _ORDER_NAME.search(column)), None)
+
+
+def chart_title(data: list[dict], titles: dict[str, str] | None = None) -> str | None:
+    types = infer_field_types(data)
+    columns = _Columns(types, {column: (titles or {}).get(column, column) for column in types})
+    metric = columns.metric()
+    category = columns.category(exclude=(metric,) if metric else ())
+    metric_label = columns.labels[metric] if metric else COUNT_TITLE
+    if category is None:
+        return metric_label if metric else None
+    category_label = columns.labels[category]
+    return f"{metric_label} по {category_label[:1].lower()}{category_label[1:]}"
+
+
 def field_ref(column: str) -> str:
     """Экранировать имя колонки для поля Vega-Lite (точки и скобки)."""
     return _FIELD_ESCAPE.sub(r"\\\1", column)
@@ -170,11 +189,9 @@ class _Columns:
         return next((column for column in self.numeric if column not in exclude), None)
 
     def order(self) -> tuple[str, str] | None:
-        if self.temporal:
-            return self.temporal[0], "temporal"
-        named = [column for column in self.types if _ORDER_NAME.search(column)]
-        if named:
-            return named[0], "ordinal"
+        ordered = ordered_column(self.types)
+        if ordered is not None:
+            return ordered, "temporal" if self.types[ordered] == "temporal" else "ordinal"
         if self.nominal:
             return self.nominal[0], "ordinal"
         if len(self.numeric) > 1:

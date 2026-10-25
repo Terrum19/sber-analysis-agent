@@ -1,3 +1,28 @@
+2026-10-25  mb6ockatf  <smokenmirror@tutamail.com>
+
+	Графики: название из шага, тип по форме данных, «без графика» (#164).
+	* backend/app/core/viz/chart_selector.py (fits): Новая.  Проверка
+	вида по строкам результата: line/area — от 3 точек и с упорядоченной
+	осью, scatter — две числовые колонки, histogram — одна числовая
+	колонка и от 20 значений, bar — не больше 30 категорий.
+	(select_chart): Одна строка — kpi или table; выбор планировщика и
+	эвристика проверяются через fits, не подошло — table; "none" — без
+	графика.
+	* backend/app/core/viz/vega_spec_builder.py (ordered_column)
+	(chart_title): Новые.  Упорядоченная ось и запасной заголовок
+	«{метрика} по {категории}».
+	* backend/app/core/agent/orchestrator.py (AgentOrchestrator._turn):
+	Заголовок спеки — purpose шага-результата, инсайт остаётся подписью.
+	В select_chart идут строки результата, они же — в спеку.  При
+	final_viz="none" событий chart нет.
+	(AgentOrchestrator._finish): В Execution — purpose и вид шага, чей
+	результат показан.
+	(_requested_view): Новая.  Результат analysis/lookup-шага — table.
+	* backend/app/models/research_step.py (ResearchPlan.final_viz):
+	Добавлено "none".
+	* backend/app/core/llm/prompts/step_planner.py: То же.
+	* docs/visualization.md, docs/architecture.md: То же.
+
 2026-10-25  Alexander Yurits  <143354682+Terrum19@users.noreply.github.com>
 
 	Исправления по ревью #144.

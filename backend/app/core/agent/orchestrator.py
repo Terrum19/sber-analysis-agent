@@ -63,8 +63,13 @@ from app.core.memory.session_memory import SessionMemory
 from app.core.memory.state_cache import StateCache
 from app.core.sandbox.wasm_runtime import SandboxError
 from app.core.viz.chart_morph import detect_morph, morph
-from app.core.viz.chart_selector import select_chart
-from app.core.viz.vega_spec_builder import SPEC_ROW_LIMIT, build_vega_spec, column_aliases
+from app.core.viz.chart_selector import NO_CHART, select_chart
+from app.core.viz.vega_spec_builder import (
+    SPEC_ROW_LIMIT,
+    build_vega_spec,
+    chart_title,
+    column_aliases,
+)
 from app.models.research_step import ResearchPlan, ResearchStep
 
 NO_TABLE_MESSAGE = "Сначала подключите данные"
@@ -108,6 +113,8 @@ class Execution:
     supporting: list[tuple[str, str]] = field(default_factory=list)
     final_viz: str = "auto"
     dashboard_requested: bool = False
+    result_purpose: str = ""
+    result_kind: str = "transform"
 
 
 class ClarificationNeeded(Exception):
@@ -302,12 +309,22 @@ class AgentOrchestrator:
             }
 
             stage = "chart"
+            records = self.db.to_records(result_table, limit=SPEC_ROW_LIMIT)
+            chart_type = select_chart(question, result_table, _requested_view(execution), records)
+            if chart_type == NO_CHART:
+                logger.info("<<< run() ответ без графика")
+                memory.record_answer(insight.headline)
+                yield {"type": "done", "data": {}}
+                return
             yield _progress_event("chart", "started")
-            # Две строки хватает, чтобы узнать ответ одним числом (kpi).
-            records = self.db.to_records(result_table, limit=2)
-            chart_type = select_chart(question, result_table, execution.final_viz, records)
             logger.info(">>> run() построение графика chart_type=%s", chart_type)
-            spec = build_vega_spec(chart_type, result_table, db=self.db, titles=titles)
+            spec = build_vega_spec(
+                chart_type,
+                result_table,
+                data=records,
+                titles=titles,
+                title=execution.result_purpose or chart_title(records, titles),
+            )
             logger.info(
                 "<<< run() график построен: mark=%s строк=%d",
                 spec.get("mark", "?"),
@@ -619,6 +636,7 @@ class AgentOrchestrator:
             result_table = tables[executed[-1].step_id]
         else:
             result_table = fallback
+        shown = next((step for step in executed if tables[step.step_id] == result_table), None)
         supporting = [
             (step.purpose or step.tool or f"шаг {step.step_id}", tables[step.step_id])
             for step in executed
@@ -629,6 +647,8 @@ class AgentOrchestrator:
             supporting=supporting,
             final_viz=plan.final_viz,
             dashboard_requested=plan.dashboard_requested,
+            result_purpose=shown.purpose if shown else "",
+            result_kind=tool_kind(shown) if shown else "transform",
         )
 
     async def _replan_after_lookup(
@@ -792,6 +812,14 @@ class AgentOrchestrator:
         memory.record_chart(chart_type, last["result_table"], last["caption"])
         memory.record_answer(f"График перестроен: {chart_type}")
         return _chart_event(spec, last["caption"], last["result_table"])
+
+
+def _requested_view(execution: Execution) -> str:
+    if execution.final_viz == NO_CHART and not execution.dashboard_requested:
+        return NO_CHART
+    if execution.result_kind != "transform":
+        return "table"
+    return "auto" if execution.final_viz == NO_CHART else execution.final_viz
 
 
 def _next_step_id(tables: dict[int, str]) -> int:

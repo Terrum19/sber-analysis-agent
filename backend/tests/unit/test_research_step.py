@@ -74,7 +74,7 @@ def test_research_plan_null_fields_fall_back_to_defaults() -> None:
 
 def test_plan_final_viz_is_a_known_chart_type() -> None:
     allowed = get_args(ResearchPlan.model_fields["final_viz"].annotation)
-    assert set(allowed) == {*CHART_TYPES, "auto"}
+    assert set(allowed) == {*CHART_TYPES, "auto", "none"}
     assert ResearchPlan(final_viz=" KPI ").final_viz == "kpi"
     with pytest.raises(ValidationError):
         ResearchPlan(final_viz="pie")

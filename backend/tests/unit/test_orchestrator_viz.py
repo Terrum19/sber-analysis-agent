@@ -32,13 +32,17 @@ class SpyDB(DuckDBManager):
 
 
 class FakePlanner:
-    def __init__(self, final_viz: str = "bar") -> None:
+    def __init__(
+        self, final_viz: str = "bar", tool: str = "group", purpose: str = "выручка по регионам"
+    ) -> None:
         self.calls = 0
         self.final_viz = final_viz
+        self.tool = tool
+        self.purpose = purpose
 
     async def plan(self, question: str, context: dict) -> ResearchPlan:
         self.calls += 1
-        steps = [ResearchStep(step_id=1, tool="group", purpose="выручка по регионам")]
+        steps = [ResearchStep(step_id=1, tool=self.tool, purpose=self.purpose)]
         return ResearchPlan(steps=steps, final_viz=self.final_viz)
 
 
@@ -112,6 +116,7 @@ async def test_first_answer_builds_filled_spec(agent, db) -> None:
     spec = chart["spec"]
     assert chart["caption"] == "Москва лидирует"
     assert chart["result_table"] == "temp_result_v1"
+    assert spec["title"] == "выручка по регионам"
     assert spec["mark"] == "bar"
     assert spec["data"]["values"] == [
         {"region": "msk", "revenue": 12.5},
@@ -250,3 +255,46 @@ async def test_recovery_answers_the_original_question(db) -> None:
 
 def test_chart_without_step_result_has_no_result_table() -> None:
     assert "result_table" not in _chart_event({}, "caption", "raw")["data"]
+
+
+def agent_with(db: DuckDBManager, planner: FakePlanner) -> AgentOrchestrator:
+    return AgentOrchestrator(planner=planner, executor=FakeExecutor(db), insight_gen=FakeInsight())
+
+
+async def test_chart_without_purpose_is_titled_by_columns(db) -> None:
+    agent = agent_with(db, FakePlanner(purpose=""))
+    spec = chart_of(await collect(agent, "Сравни выручку по регионам"))["spec"]
+    assert spec["title"] == "revenue по region"
+    assert spec["title"] != "Москва лидирует"
+
+
+async def test_no_chart_answer_sends_only_text(db) -> None:
+    agent = agent_with(db, FakePlanner(final_viz="none"))
+    request = ChatRequest(session_id="s1", question="Кто лидирует?")
+    events = [event async for event in agent.run(request)]
+    assert [event["type"] for event in events if event["type"] != "progress"] == ["text", "done"]
+    assert all(event["data"]["stage"] != "chart" for event in events if event["type"] == "progress")
+    assert SessionMemory("s1").last_chart() is None
+
+
+async def test_no_chart_is_ignored_when_dashboard_is_requested(db) -> None:
+    planner = FakePlanner(final_viz="none")
+    original = planner.plan
+
+    async def plan_with_dashboard(question: str, context: dict) -> ResearchPlan:
+        plan = await original(question, context)
+        return plan.model_copy(update={"dashboard_requested": True})
+
+    planner.plan = plan_with_dashboard
+    events = await collect(agent_with(db, planner), "Создай дашборд по регионам")
+    assert [event["type"] for event in events] == ["text", "chart", "dashboard", "done"]
+    assert chart_of(events)["spec"]["mark"] == "bar"
+
+
+async def test_analysis_result_is_shown_as_table(db) -> None:
+    agent = agent_with(
+        db, FakePlanner(final_viz="bar", tool="describe_stats", purpose="статистики")
+    )
+    spec = chart_of(await collect(agent, "Опиши выручку"))["spec"]
+    assert spec["usermeta"]["chart_type"] == "table"
+    assert spec["title"] == "статистики"

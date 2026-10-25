@@ -55,7 +55,7 @@
 |---|---|---|
 | `progress` | `ProgressPayload` (ниже) | по ходу хода: план, шаги, начало инсайта и графика |
 | `text` | `{headline, details}` | инсайт готов |
-| `chart` | `{spec, caption, result_table?}` | Vega-Lite спека; `result_table` — `temp_result_vN` ответа (нет, если ответ без шагов): по нему плитка пересчитывается, а результат выгружается в Excel |
+| `chart` | `{spec, caption, result_table?}` | Vega-Lite спека (нет, если план выбрал `final_viz: "none"`); `result_table` — `temp_result_vN` ответа (нет, если ответ без шагов): по нему плитка пересчитывается, а результат выгружается в Excel |
 | `dashboard` | `{dashboard_id}` | дашборд собран по запросу |
 | `clarification_needed` | `{step_id, error, suggestions}`, может быть `prompt_truncated` | шаг не выполнился, ждём `recovery_response`; `prompt_truncated` — как в `done` |
 | `error` | `{message}` | сбой хода; дальше `done` |
