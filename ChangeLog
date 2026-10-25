@@ -1,5 +1,11 @@
 2026-10-25  Alexander Yurits  <143354682+Terrum19@users.noreply.github.com>
 
+	* docs/reports/llm_perf/dialog_and_insight_25-10.md: Новый.  Отчёт о
+	памяти по ходам, reply_to и версиях стадии вывода.
+	* docs/reports/llm_perf/experiment_log.md (П9): Ссылка на отчёт.
+
+2026-10-25  Alexander Yurits  <143354682+Terrum19@users.noreply.github.com>
+
 	Eval диалогов и стадии вывода для R-01.
 	* scripts/llm_bench/run_dialog.sh: Новый.  Диалог полным циклом через
 	прокси; локальная Ollama или OpenRouter (UPSTREAM, RETRY).
