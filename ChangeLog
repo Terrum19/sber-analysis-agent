@@ -1,3 +1,27 @@
+2026-10-25  mb6ockatf  <smokenmirror@tutamail.com>
+
+	Плитки дашборда в плане исследования (B-03, #43).
+	* backend/app/models/research_step.py (DashboardTilePlan): Новая.
+	Плитка плана: title, step_id, chart_type, is_kpi, insight_needed.
+	(ResearchPlan): Поля dashboard_title, template_id, dashboard_tiles;
+	null в dashboard_tiles — пустой список; плитки ставят
+	dashboard_requested.
+	* backend/app/core/agent/planner.py (is_dashboard_question)
+	(dashboard_prompt, apply_template, renumber_steps): Новые.  Вопрос
+	про дашборд («дашборд», «панель», «сводка») — templates.match по
+	колонкам таблицы: плитки шаблона в промпт и в план (template_id),
+	без шаблона — просьба составить 3–6 плиток.  Ссылки плиток
+	переписываются вместе с номерами шагов.
+	(validate_plan, _validate_tiles): step_id плиток — среди шагов;
+	дашборд без плиток — ошибка для переспроса.
+	(_plan_json): В переспрос уходят и плитки.
+	* backend/app/core/llm/prompts/step_planner.py (DASHBOARD_PLAN)
+	(DASHBOARD_CUSTOM, DASHBOARD_TEMPLATE, NO_TILES): Новые.
+	* backend/tests/unit/test_planner.py: Тесты плиток, шаблона и
+	переспроса.
+	* docs/visualization.md (План дашборда), docs/architecture.md,
+	docs/prompts.md: То же.
+
 2026-10-25  Alexander Yurits  <143354682+Terrum19@users.noreply.github.com>
 
 	Исправления по ревью #170.

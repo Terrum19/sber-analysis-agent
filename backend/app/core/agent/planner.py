@@ -6,6 +6,7 @@
 
 import json
 import logging
+import re
 
 from app.config import settings
 from app.core.agent.quality_fixes import frame_context, select_tools
@@ -13,18 +14,36 @@ from app.core.llm.client import LLMClient
 
 logger = logging.getLogger(__name__)
 from app.core.agent.step_executor import tool_kind
+from app.core.dashboards import templates
+from app.core.dashboards.templates import DashboardTemplate
 from app.core.data.semantic_select import (
     describe_columns,
     describe_other_columns,
     select_columns,
 )
 from app.core.llm.prompts.quality_rules import PLANNER_RULES
-from app.core.llm.prompts.step_planner import PLAN_ERRORS, STEP_FIX, STEP_PLANNER
+from app.core.llm.prompts.step_planner import (
+    DASHBOARD_CUSTOM,
+    DASHBOARD_PLAN,
+    DASHBOARD_TEMPLATE,
+    NO_TILES,
+    PLAN_ERRORS,
+    STEP_FIX,
+    STEP_PLANNER,
+)
 from app.core.tools.registry import tool_registry
-from app.models.research_step import PREVIOUS, SOURCE, ResearchPlan, ResearchStep
+from app.models.research_step import (
+    PREVIOUS,
+    SOURCE,
+    DashboardTilePlan,
+    ResearchPlan,
+    ResearchStep,
+)
 
 # Сколько раз переспросить LLM, если план не прошёл валидацию.
 PLAN_FIX_ATTEMPTS = 1
+
+DASHBOARD_WORDS = re.compile(r"дашборд|панел|сводк|dashboard", re.IGNORECASE)
 
 
 class PlanInvalid(Exception):
@@ -73,9 +92,14 @@ class StepPlanner:
         )
         if settings.agent_quality_fixes:
             prompt += PLANNER_RULES
+        template = None
+        if is_dashboard_question(question):
+            template = templates.match(all_columns, context.get("titles"))
+            prompt += dashboard_prompt(template, all_columns, context.get("titles"))
+            logger.info("    дашборд: шаблон=%s", template.id if template else None)
         logger.info(">>> StepPlanner.plan() вопрос=%r", question)
         logger.debug("    промпт=%r", prompt)
-        plan = await self._ask(prompt, start)
+        plan = await self._ask(prompt, start, template)
         # Проверяем и ответ на переспрос: непроверенный план упал бы уже при
         # исполнении, потратив попытки fix_step и показав ошибку шага.
         errors = validate_plan(plan, known_steps=start)
@@ -84,7 +108,7 @@ class StepPlanner:
                 break
             logger.warning("    план не прошёл валидацию: %s", errors)
             fix = PLAN_ERRORS.format(plan=_plan_json(plan), errors="\n".join(errors))
-            plan = await self._ask(prompt + fix, start)
+            plan = await self._ask(prompt + fix, start, template)
             errors = validate_plan(plan, known_steps=start)
         if errors:
             logger.warning("<<< StepPlanner.plan() план отклонён после переспроса: %s", errors)
@@ -121,13 +145,16 @@ class StepPlanner:
         logger.info("<<< StepPlanner.fix_step() tool=%s args=%s", fixed.tool, fixed.arguments)
         return fixed
 
-    async def _ask(self, prompt: str, start: int) -> ResearchPlan:
+    async def _ask(
+        self, prompt: str, start: int, template: DashboardTemplate | None = None
+    ) -> ResearchPlan:
         from app.core.llm.prompts.system_analyst import SYSTEM_ANALYST
 
         plan = await self.llm.complete_structured(SYSTEM_ANALYST, prompt, ResearchPlan)
         # LLM может не включать step_id в шаги — присваиваем последовательные ID.
-        for i, step in enumerate(plan.steps):
-            step.step_id = start + i
+        renumber_steps(plan, start)
+        if template is not None and plan.dashboard_requested:
+            apply_template(plan, template)
         return plan
 
 
@@ -148,6 +175,10 @@ def _plan_json(plan: ResearchPlan) -> str:
     """План в том виде, в каком его просили у модели (для переспроса)."""
     steps = [_step_dict(s) for s in plan.steps]
     payload = {"steps": steps, "final_viz": plan.final_viz, "result_step": plan.result_step}
+    if plan.dashboard_requested:
+        payload["dashboard_requested"] = True
+        payload["dashboard_title"] = plan.dashboard_title
+        payload["dashboard_tiles"] = [tile.model_dump() for tile in plan.dashboard_tiles]
     return json.dumps(payload, ensure_ascii=False, default=str)
 
 
@@ -166,7 +197,7 @@ def _without_refs(value: object) -> object:
 
 
 def validate_plan(plan: ResearchPlan, known_steps: int = 0) -> list[str]:
-    """Проверить шаги до выполнения: инструмент, аргументы, ссылки на шаги."""
+    """Проверить шаги до выполнения: инструмент, аргументы, ссылки на шаги (и у плиток)."""
     errors: list[str] = []
     seen = set(range(known_steps))
     for step in plan.steps:
@@ -174,10 +205,26 @@ def validate_plan(plan: ResearchPlan, known_steps: int = 0) -> list[str]:
         seen.add(step.step_id)
     # План, который кончается разведкой (lookup), всё равно будет достроен —
     # result_step может указывать на будущие шаги, сбрасываем его без переспроса.
-    if plan.steps and tool_kind(plan.steps[-1]) == "lookup" and plan.result_step not in seen:
+    ends_with_lookup = bool(plan.steps) and tool_kind(plan.steps[-1]) == "lookup"
+    if ends_with_lookup and plan.result_step not in seen:
         plan.result_step = None
     if plan.result_step is not None and plan.result_step not in seen:
         errors.append(f"result_step={plan.result_step}: такого шага нет")
+    if ends_with_lookup:
+        plan.dashboard_tiles = [tile for tile in plan.dashboard_tiles if tile.step_id in seen]
+    else:
+        errors.extend(_validate_tiles(plan, seen))
+    return errors
+
+
+def _validate_tiles(plan: ResearchPlan, seen: set[int]) -> list[str]:
+    errors = [
+        f"плитка «{tile.title}»: step_id={tile.step_id} — такого шага нет"
+        for tile in plan.dashboard_tiles
+        if tile.step_id not in seen
+    ]
+    if plan.dashboard_requested and not plan.dashboard_tiles:
+        errors.append(NO_TILES)
     return errors
 
 
@@ -209,3 +256,61 @@ def _step_refs(value: object) -> list[int]:
     if isinstance(value, str) and value.startswith("$step_") and value[6:].isdigit():
         return [int(value[6:])]
     return []
+
+
+def is_dashboard_question(question: str) -> bool:
+    return DASHBOARD_WORDS.search(question) is not None
+
+
+def dashboard_prompt(
+    template: DashboardTemplate | None, columns: list[str], titles: dict[str, str] | None
+) -> str:
+    if template is None:
+        return DASHBOARD_PLAN.format(tiles=DASHBOARD_CUSTOM)
+    roles = templates.role_columns(template, columns, titles) or {}
+    tiles = "\n".join(
+        f"- «{tile.title}» (chart_type {tile.chart_type}"
+        f"{', is_kpi true' if tile.is_kpi else ''}"
+        f"{', insight_needed true' if tile.insight_needed else ''}): {tile.purpose}"
+        for tile in template.tiles
+    )
+    described = DASHBOARD_TEMPLATE.format(
+        name=template.name,
+        roles=", ".join(f"{role} — {column}" for role, column in roles.items()),
+        tiles=tiles,
+    )
+    return DASHBOARD_PLAN.format(tiles=described)
+
+
+def renumber_steps(plan: ResearchPlan, start: int) -> None:
+    numbers = {step.step_id: start + index for index, step in enumerate(plan.steps)}
+    if len(numbers) == len(plan.steps):
+        for tile in plan.dashboard_tiles:
+            tile.step_id = numbers.get(tile.step_id, tile.step_id)
+    for index, step in enumerate(plan.steps):
+        step.step_id = start + index
+
+
+def apply_template(plan: ResearchPlan, template: DashboardTemplate) -> None:
+    planned = list(plan.dashboard_tiles)
+    by_title = {templates.normalize(tile.title): tile for tile in planned}
+    found = [by_title.get(templates.normalize(tile.title)) for tile in template.tiles]
+    spare = iter([tile for tile in planned if all(tile is not match for match in found)])
+    tiles = []
+    for template_tile, match in zip(template.tiles, found, strict=True):
+        source = match or next(spare, None)
+        if source is None:
+            logger.warning("    плитка шаблона %r без шага", template_tile.title)
+            continue
+        tiles.append(
+            DashboardTilePlan(
+                title=template_tile.title,
+                step_id=source.step_id,
+                chart_type=template_tile.chart_type,
+                is_kpi=template_tile.is_kpi,
+                insight_needed=template_tile.insight_needed,
+            )
+        )
+    plan.dashboard_tiles = tiles
+    plan.template_id = template.id
+    plan.dashboard_title = plan.dashboard_title or template.name

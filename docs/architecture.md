@@ -6,7 +6,8 @@
 вопрос пользователя
   |
   v
-[1] Planner (LLM + Instructor) --> ResearchPlan {steps[], final_viz, dashboard_requested}
+[1] Planner (LLM + Instructor) --> ResearchPlan {steps[], final_viz, dashboard_requested,
+  |        dashboard_title, template_id, dashboard_tiles[]} (план дашборда: docs/visualization.md)
   |        вход: вопрос, топ-5 релевантных колонок (semantic_select), контекст сессии
   v
 [2] StepExecutor: последовательное применение шагов
