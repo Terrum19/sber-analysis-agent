@@ -307,6 +307,8 @@ export function streamChat(
         const lines = buffer.split("\n\n");
         buffer = lines.pop() ?? "";
         for (const line of lines) {
+          // SSE-комментарий (": ping" бэкенда) держит соединение, событием не является
+          if (line.startsWith(":")) continue;
           const data = line.replace(/^data: /, "").trim();
           if (!data) continue;
           let event: ChatStreamEvent;

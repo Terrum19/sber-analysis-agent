@@ -399,6 +399,21 @@ def test_csv_brief_without_dates_has_no_period(client, storage) -> None:
     assert (brief["period_from"], brief["period_to"], brief["warnings"]) == (None, None, [])
 
 
+def test_csv_brief_has_profile_warnings(client, storage) -> None:
+    survey = b"Q1A,Q1I,age\n1,2,25\n5,NULL,31\nQ1A,Q1I,age\n3,4,NULL\n,,\n"
+    response = client.post("/api/datasources/csv", files=[("files", ("survey.csv", survey))])
+    [brief] = response.json()["profiles"]
+    assert brief["warnings"] == [
+        "Числа записаны текстом в колонках «Q1A», «Q1I», «age».",
+        "Литералы пропусков (NULL, N/A и т. п.) в колонках «Q1I» (1), «age» (1).",
+        (
+            "Значение, равное имени колонки (похоже на повторённый заголовок), "
+            "в колонках «Q1A», «Q1I», «age»."
+        ),
+        "Пустых строк (все колонки пустые): 1.",
+    ]
+
+
 class DocumentLLM:
     def __init__(self, fail: bool = False) -> None:
         self.fail = fail
@@ -494,6 +509,30 @@ def test_db_response_marks_described_tables_pending(monkeypatch) -> None:
         db.close()
     [brief] = result.profiles
     assert (brief.table, brief.rows, brief.description_status) == ("orders", 1, "pending")
+
+
+class SurveyConnector(RecordingConnector):
+    """Источник БД без очистки: числа и литерал NULL в текстовой колонке."""
+
+    def connect(self, db) -> list[str]:
+        db.execute(
+            "CREATE OR REPLACE TABLE survey AS SELECT * FROM (VALUES ('1'), ('2'), ('NULL')) t(score)"
+        )
+        return ["survey"]
+
+
+def test_db_brief_has_profile_warnings(monkeypatch) -> None:
+    monkeypatch.setattr(datasources, "build_connector", lambda kind, dsn, schema: SurveyConnector())
+    db = DuckDBManager(":memory:")
+    payload = DatasourceCreate(kind="postgres", dsn="host=x")
+    try:
+        result = datasources.attach_db(payload, db, BackgroundTasks())
+    finally:
+        db.close()
+    assert result.profiles[0].warnings == [
+        "Числа записаны текстом в колонках «score».",
+        "Литералы пропусков (NULL, N/A и т. п.) в колонках «score» (1).",
+    ]
 
 
 def test_unknown_description_status_is_rejected() -> None:
