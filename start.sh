@@ -4,11 +4,13 @@
 # остальное скрипт делает сам и при повторном запуске пропускает готовое:
 #   - запускает Docker, если он установлен, но не запущен;
 #   - Mac: ставит и запускает Ollama (вне контейнера — с Metal);
-#   - Linux: берёт Ollama на хосте, если она есть и видна из контейнеров,
-#     иначе — Ollama в контейнере (профиль ollama, с NVIDIA — ollama-gpu);
+#   - Linux: ставит Ollama на хост официальным install.sh (спросит пароль sudo)
+#     и запускает её на адресе моста docker; Ollama в контейнере (профиль ollama,
+#     с NVIDIA — ollama-gpu) — только если хостовую контейнерам не видно;
 #   - поднимает docker compose и открывает http://localhost:3000.
 # Модель backend скачивает сам; прогресс — в окне чата (/api/llm/status).
-# START_DRY_RUN=1 — только выбрать, где будет Ollama, без docker compose up.
+# START_DRY_RUN=1 — только выбрать, где будет Ollama, без установки Ollama и
+# docker compose up.
 set -euo pipefail
 cd "$(dirname "$0")"
 
@@ -105,6 +107,9 @@ check_compose() {
 
 ollama_up() { curl -fsS -m 3 "$OLLAMA_URL/api/version" >/dev/null 2>&1; }
 
+# Linux: Ollama, которую запустил скрипт, слушает адрес моста docker, а не localhost.
+any_ollama_up() { ollama_up || host_ollama_visible; }
+
 mac_ollama_app() {
 	local app
 	for app in /Applications/Ollama.app "$HOME/Applications/Ollama.app"; do
@@ -167,7 +172,7 @@ start_linux_ollama() {
 	if has_service ollama; then
 		start_service ollama || return 0
 		echo service >"$OLLAMA_MARK"
-		wait_for 60 ollama_up || true
+		wait_for 60 any_ollama_up || true
 		return
 	fi
 	local gateway
@@ -177,9 +182,43 @@ start_linux_ollama() {
 	wait_for 60 host_ollama_visible || true
 }
 
-choose_linux_ollama() {
-	if ! ollama_up && ! host_ollama_visible && command -v ollama >/dev/null 2>&1; then
+# Ollama не установлена: официальный установщик ставит её и службу systemd.
+# Службу, которую поставили сами, привязываем к адресу моста docker (иначе она
+# слушает только 127.0.0.1 и контейнерам не видна). Чужую службу не правим.
+install_linux_ollama() {
+	if [ "${START_DRY_RUN:-0}" = 1 ]; then
+		echo "dry-run: Ollama не установлена, поставил бы её install.sh"
+		return
+	fi
+	say "Устанавливаю Ollama — понадобится пароль sudo"
+	curl -fsSL https://ollama.com/install.sh | sh ||
+		fail "Не удалось установить Ollama. Поставьте её с https://ollama.com/download и повторите."
+	if has_systemd && has_service ollama; then
+		bind_ollama_service_to_bridge
+	else
 		start_linux_ollama
+	fi
+}
+
+bind_ollama_service_to_bridge() {
+	local gateway
+	gateway=$(bridge_gateway) && [ -n "$gateway" ] || return 0
+	sudo mkdir -p /etc/systemd/system/ollama.service.d
+	printf '[Unit]\nAfter=docker.service\n\n[Service]\nEnvironment="OLLAMA_HOST=%s:11434"\n' "$gateway" |
+		sudo tee /etc/systemd/system/ollama.service.d/bridge.conf >/dev/null
+	sudo systemctl daemon-reload
+	sudo systemctl restart ollama
+	echo service >"$OLLAMA_MARK"
+	wait_for 60 host_ollama_visible || true
+}
+
+choose_linux_ollama() {
+	if ! any_ollama_up; then
+		if command -v ollama >/dev/null 2>&1; then
+			start_linux_ollama
+		else
+			install_linux_ollama
+		fi
 	fi
 	if host_ollama_visible; then
 		say "LLM: Ollama на этой машине"

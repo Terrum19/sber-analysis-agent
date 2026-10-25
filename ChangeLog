@@ -14,6 +14,10 @@
 	«Модели нет в Ollama, проверьте LLM_MODEL» без «повторяю».
 	* start.sh, scripts/start/start.ps1: Метка .ollama-started, если Ollama
 	запустил скрипт.
+	* start.sh (install_linux_ollama, bind_ollama_service_to_bridge): Новые.
+	На Linux без Ollama — установка официальным install.sh (п. 5 #167), а не
+	сразу контейнер; поставленная службой Ollama слушает адрес моста docker.
+	(any_ollama_up): Новая.  Такую Ollama ждём и по адресу моста.
 	* stop.sh, stop.bat: Останавливают Ollama по метке; Ollama, запущенную
 	до start, не трогают.
 	* README.md (Запуск): То же.
