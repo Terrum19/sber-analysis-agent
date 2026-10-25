@@ -1,3 +1,25 @@
+2026-10-25  mb6ockatf  <smokenmirror@tutamail.com>
+
+	Исправления по ревью #170.
+	* backend/app/core/llm/ollama_setup.py (_version): Любой ответ
+	/api/version, кроме 200 с полем version, — сервер не Ollama: шлюз
+	с авторизацией (401/403) больше не держит чат в «Подключаюсь».
+	(prepare_once): Новая.  Неожиданная ошибка подготовки (битая строка
+	прогресса, HTML вместо JSON) — повтор с причиной в detail, а не
+	смерть фоновой задачи и вечный индикатор.
+	(prepare_forever): Через prepare_once; ошибка warm_up не прерывает
+	слежение за Ollama.
+	* backend/tests/unit/test_ollama_setup.py: Тесты на 401/403/500 от
+	/api/version, битую строку /api/pull и HTML вместо /api/tags.
+	* start.sh (start_service, has_service, has_systemd): Новые.  Docker
+	и Ollama запускаются и без systemd (service); не запустился Docker —
+	понятная ошибка вместо молчаливого выхода.
+	(start_linux_ollama): Новая.  Ollama без службы запускается на адресе
+	моста docker, чтобы контейнеры её видели.
+	(use_container_ollama): На GPU — модель LLM_MODEL_GPU, как make up-gpu.
+	(env_or_file): Новая, как в Makefile.
+	* README.md (Запуск): То же.
+
 2026-10-25  Alexander Yurits  <143354682+Terrum19@users.noreply.github.com>
 
 	Исправления по ревью #144.

@@ -144,6 +144,43 @@ async def test_not_ollama_server_is_used_as_is() -> None:
     assert ollama_setup.status()["state"] == "ok"
 
 
+@pytest.mark.parametrize("version", [401, 403, 500])
+async def test_server_refusing_version_is_not_ollama(version: int) -> None:
+    http, calls = fake_ollama([], version=version)
+    assert await ollama_setup.prepare(http)
+    assert paths(calls) == ["/api/version"]
+    assert ollama_setup.active_model() == "qwen2.5-coder:7b"
+    assert ollama_setup.status()["state"] == "ok"
+
+
+async def test_broken_pull_line_is_retried_later() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/api/version":
+            return httpx.Response(200, json={"version": "0.35.1"})
+        if request.url.path == "/api/tags":
+            return httpx.Response(200, json={"models": []})
+        return httpx.Response(200, content=b'{"status": "pulling a", "dig')
+
+    http = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    assert not await ollama_setup.prepare_once(http)
+    status = ollama_setup.status()
+    assert status["state"] == "pulling"
+    assert status["detail"]
+
+
+async def test_html_instead_of_tags_is_retried_later() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/api/version":
+            return httpx.Response(200, json={"version": "0.35.1"})
+        return httpx.Response(200, content=b"<html>proxy</html>")
+
+    http = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    assert not await ollama_setup.prepare_once(http)
+    status = ollama_setup.status()
+    assert status["state"] == "connecting"
+    assert status["detail"]
+
+
 async def test_unreachable_ollama_is_connecting() -> None:
     def down(request: httpx.Request) -> httpx.Response:
         raise httpx.ConnectError("connection refused")

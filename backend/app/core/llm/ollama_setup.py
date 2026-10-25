@@ -91,12 +91,11 @@ class NotOllama(Exception):
 
 async def _version(http: httpx.AsyncClient, root: str) -> str:
     response = await http.get(f"{root}/api/version", timeout=REQUEST_TIMEOUT)
-    if response.status_code == 404:
+    if response.status_code != 200:
         raise NotOllama
-    response.raise_for_status()
     try:
         return response.json()["version"]
-    except (ValueError, KeyError) as exc:
+    except (ValueError, KeyError, TypeError) as exc:
         raise NotOllama from exc
 
 
@@ -198,6 +197,15 @@ async def prepare(http: httpx.AsyncClient) -> bool:
     return True
 
 
+async def prepare_once(http: httpx.AsyncClient) -> bool:
+    try:
+        return await prepare(http)
+    except Exception as exc:
+        logger.exception("Ollama: подготовка модели %s сорвалась", settings.llm_model)
+        _set(_status.state, progress=_status.progress, detail=str(exc) or type(exc).__name__)
+        return False
+
+
 async def prepare_forever() -> None:
     """Готовить модель, пока не получится, затем следить, что Ollama жива.
 
@@ -208,10 +216,13 @@ async def prepare_forever() -> None:
 
     async with httpx.AsyncClient() as http:
         while True:
-            while not await prepare(http):
+            while not await prepare_once(http):
                 await asyncio.sleep(PULL_RETRY_S if _status.state == "pulling" else RETRY_S)
             # Контекст сервера — до первого вопроса: от него считается бюджет промпта.
-            await LLMClient().warm_up()
+            try:
+                await LLMClient().warm_up()
+            except Exception:
+                logger.warning("LLM: контекст сервера не узнали при старте", exc_info=True)
             while True:
                 await asyncio.sleep(WATCH_S)
                 try:

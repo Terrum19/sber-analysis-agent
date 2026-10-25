@@ -38,6 +38,34 @@ wait_for() {
 	done
 }
 
+# Значение переменной: из окружения, иначе из .env (как env_or_file в Makefile).
+env_or_file() {
+	local value=${!1:-}
+	if [ -z "$value" ] && [ -f .env ]; then
+		value=$(sed -n "s/^$1=//p" .env | tail -n 1 | sed "s/^[\"']\(.*\)[\"']$/\1/")
+	fi
+	[ -n "$value" ] && printf '%s\n' "$value"
+}
+
+# Службы: systemd, а без него (sysvinit, OpenRC) — service.
+has_systemd() { [ -d /run/systemd/system ]; }
+
+start_service() {
+	if has_systemd; then
+		sudo systemctl start "$1"
+	else
+		sudo service "$1" start
+	fi
+}
+
+has_service() {
+	if has_systemd; then
+		systemctl cat "$1" >/dev/null 2>&1
+	else
+		[ -x "/etc/init.d/$1" ]
+	fi
+}
+
 ensure_docker() {
 	if ! command -v docker >/dev/null 2>&1; then
 		[ "$OS" = Darwin ] && open https://www.docker.com/products/docker-desktop/ || true
@@ -53,10 +81,10 @@ ensure_docker() {
 	case $OS in
 	Darwin) open -a Docker ;;
 	Linux)
-		if systemctl --user cat docker-desktop >/dev/null 2>&1; then
+		if has_systemd && systemctl --user cat docker-desktop >/dev/null 2>&1; then
 			systemctl --user start docker-desktop
 		else
-			sudo systemctl start docker
+			start_service docker || fail "Не удалось запустить службу docker. Запустите Docker вручную и повторите."
 		fi
 		;;
 	esac
@@ -105,44 +133,65 @@ ensure_mac_ollama() {
 
 # Linux: Ollama на хосте по умолчанию слушает только 127.0.0.1 — из контейнеров
 # её видно, только если она слушает и адрес моста docker (OLLAMA_HOST=0.0.0.0).
+bridge_gateway() {
+	docker network inspect bridge -f '{{(index .IPAM.Config 0).Gateway}}' 2>/dev/null
+}
+
 host_ollama_visible() {
 	local gateway
-	gateway=$(docker network inspect bridge -f '{{(index .IPAM.Config 0).Gateway}}' 2>/dev/null) || return 1
+	gateway=$(bridge_gateway) || return 1
 	[ -n "$gateway" ] && curl -fsS -m 3 "http://$gateway:11434/api/version" >/dev/null 2>&1
 }
 
 use_container_ollama() {
-	local profile=ollama
+	local profile=ollama model
 	if docker info --format '{{json .Runtimes}}' 2>/dev/null | grep -q nvidia; then
 		profile=ollama-gpu
+		# Как make up-gpu: на GPU — LLM_MODEL_GPU, иначе LLM_MODEL.
+		if model=$(env_or_file LLM_MODEL_GPU) || model=$(env_or_file LLM_MODEL); then
+			export LLM_MODEL=$model
+		fi
 	fi
 	export COMPOSE_PROFILES=$profile
 	export COMPOSE_LLM_BASE_URL=http://ollama:11434/v1
 	say "LLM: Ollama в контейнере (профиль $profile)"
 }
 
-choose_linux_ollama() {
-	if ! ollama_up && command -v ollama >/dev/null 2>&1; then
-		say "Запускаю Ollama"
-		if systemctl cat ollama >/dev/null 2>&1; then
-			sudo systemctl start ollama
-		else
-			nohup ollama serve >"${TMPDIR:-/tmp}/ollama-serve.log" 2>&1 &
-		fi
+# Ollama установлена, но не запущена. Есть служба — запускаем её. Нет — запускаем
+# сами и только на адресе моста docker: контейнерам её видно, локальной сети — нет.
+start_linux_ollama() {
+	say "Запускаю Ollama"
+	if has_service ollama; then
+		start_service ollama || return 0
 		wait_for 60 ollama_up || true
+		return
+	fi
+	local gateway
+	gateway=$(bridge_gateway) && [ -n "$gateway" ] || return 0
+	OLLAMA_HOST="$gateway:11434" nohup ollama serve >"${TMPDIR:-/tmp}/ollama-serve.log" 2>&1 &
+	wait_for 60 host_ollama_visible || true
+}
+
+choose_linux_ollama() {
+	if ! ollama_up && ! host_ollama_visible && command -v ollama >/dev/null 2>&1; then
+		start_linux_ollama
+	fi
+	if host_ollama_visible; then
+		say "LLM: Ollama на этой машине"
+		return
 	fi
 	if ! ollama_up; then
 		use_container_ollama
 		return
 	fi
-	if host_ollama_visible; then
-		say "LLM: Ollama на этой машине ($OLLAMA_URL)"
-		return
-	fi
 	printf '\nOllama на этой машине слушает только 127.0.0.1, контейнеры её не видят.\n'
 	printf 'Чтобы работать с ней, а не с Ollama в контейнере, выполните один раз:\n'
-	printf '  sudo systemctl edit ollama   # добавьте: [Service] Environment="OLLAMA_HOST=0.0.0.0"\n'
-	printf '  sudo systemctl restart ollama\n'
+	if has_systemd; then
+		printf '  sudo systemctl edit ollama   # добавьте: [Service] Environment="OLLAMA_HOST=0.0.0.0"\n'
+		printf '  sudo systemctl restart ollama\n'
+	else
+		printf '  задайте OLLAMA_HOST=0.0.0.0 в окружении службы ollama и перезапустите её\n'
+	fi
 	use_container_ollama
 }
 
