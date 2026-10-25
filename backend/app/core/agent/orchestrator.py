@@ -51,7 +51,7 @@ import duckdb
 
 from app.api.schemas.chat import ChatRequest, DashboardPayload, ProgressPayload
 from app.core.agent.insight import InsightGenerator
-from app.core.agent.planner import StepPlanner
+from app.core.agent.planner import PlanInvalid, StepPlanner
 from app.core.agent.recovery import STEP_FIX_ATTEMPTS, fixable
 from app.core.agent.step_executor import StepExecutor, resolve_input, tool_kind
 from app.core.agent.triage import small_talk_reply
@@ -373,7 +373,7 @@ class AgentOrchestrator:
         logger.info(">>> run() планируем шаги (planner.plan)")
         emit(_progress_event("planning", "started"))
         try:
-            plan = await self.planner.plan(request.question, context)
+            plan = await self._plan(request.question, context)
         except Exception as exc:
             emit(_progress_event("planning", "failed", error=str(exc)))
             raise
@@ -399,6 +399,17 @@ class AgentOrchestrator:
             memory, plan, memory.table, request.question, emit=emit
         )
         return request.question, execution
+
+    async def _plan(self, question: str, context: dict) -> ResearchPlan:
+        """План от планировщика; невалидный и после переспроса — уточнение у пользователя."""
+        try:
+            return await self.planner.plan(question, context)
+        except PlanInvalid as exc:
+            raise ClarificationNeeded(
+                step_id=-1,
+                error="Не удалось составить корректный план: " + "; ".join(exc.errors),
+                suggestions=["Переформулировать вопрос"],
+            ) from exc
 
     async def _execute_plan(
         self,
@@ -634,7 +645,7 @@ class AgentOrchestrator:
         context["executed"] = _describe_executed(executed, tables, observed)
         context["next_step_id"] = _next_step_id(tables)
         logger.info(">>> _replan_after_lookup после шага %d", executed[-1].step_id)
-        plan = await self.planner.plan(question, context)
+        plan = await self._plan(question, context)
         return _renumber(plan, context["next_step_id"])
 
     async def _apply_recovery(
@@ -711,9 +722,7 @@ class AgentOrchestrator:
         )
         context["next_step_id"] = _next_step_id(tables)
 
-        plan = _renumber(
-            await self.planner.plan(modified_question, context), context["next_step_id"]
-        )
+        plan = _renumber(await self._plan(modified_question, context), context["next_step_id"])
         _require_steps(plan)
         return await self._execute_plan(
             memory,
