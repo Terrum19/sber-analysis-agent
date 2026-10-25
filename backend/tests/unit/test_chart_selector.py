@@ -48,6 +48,8 @@ def test_no_chart_is_kept() -> None:
         ("bar", MANY_CATEGORIES, False),
         ("bar", PAIRS, False),
         ("heatmap", REGIONS, False),
+        ("box", SAMPLES, True),
+        ("box", [{"region": "msk"}, {"region": "spb"}], False),
     ],
 )
 def test_fits(chart_type: str, records: list[dict], expected: bool) -> None:

@@ -349,3 +349,9 @@ async def test_distribution_is_drawn_from_a_sample_of_the_whole_column(db) -> No
     amounts = [row["amount"] for row in spec["data"]["values"]]
     assert len(amounts) == SPEC_ROW_LIMIT
     assert max(amounts) > SPEC_ROW_LIMIT // 25
+
+
+def test_distribution_needs_the_input_of_the_shown_step(db) -> None:
+    agent = agent_with(db, FakePlanner())
+    step = ResearchStep(step_id=1, tool="describe_stats", arguments={"column": "amount"})
+    assert agent._distribution_values("Покажи распределение amount", step, {}) is None
