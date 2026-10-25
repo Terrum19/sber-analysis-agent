@@ -4,6 +4,7 @@
 узнали сё, узнать невозможно» (см. prompts/insight_summary.py).
 """
 
+import json
 import logging
 
 from app.config import settings
@@ -18,6 +19,7 @@ from app.core.llm.prompts.quality_rules import (
     SINGLE_ROW,
 )
 from app.models.insight import Insight
+from app.models.research_step import ResearchStep
 
 logger = logging.getLogger(__name__)
 
@@ -41,11 +43,14 @@ class InsightGenerator:
         question: str,
         result_table: str,
         supporting: list[tuple[str, str]] | None = None,
+        steps: list[ResearchStep] | None = None,
     ) -> Insight:
         """Сформировать Insight по финальной таблице.
 
         supporting — (purpose, таблица) результатов стат-тестов и других
-        analysis-шагов, которые дополняют основную таблицу.
+        analysis-шагов, которые дополняют основную таблицу. steps —
+        выполненные шаги плана: без них «41» в одной строке не знает, что
+        это декабрь и сумма больше 150.
         """
         from app.core.data.duckdb_manager import DuckDBManager
 
@@ -72,7 +77,7 @@ class InsightGenerator:
             facts = "нет"
         # Одна строка — ответ числом; ряд — лидер, минимум или число строк, а не одно значение.
         shape = SINGLE_ROW if len(result) <= 1 else MANY_ROWS.format(rows=len(result))
-        prompt += INSIGHT_RULES.format(facts=facts, shape=shape)
+        prompt += INSIGHT_RULES.format(plan=describe_steps(steps or []), facts=facts, shape=shape)
         return await self._grounded(prompt, f"{question}\n{shown}\n{extra}\n{facts}")
 
     async def _grounded(self, prompt: str, sources: str) -> Insight:
@@ -84,3 +89,13 @@ class InsightGenerator:
         logger.warning("инсайт: числа без опоры в фактах %s, переспрос", missing)
         fix = NUMBER_FIX.format(numbers=", ".join(missing))
         return await self.llm.complete_structured("Ты — аналитик.", prompt + fix, Insight)
+
+
+def describe_steps(steps: list[ResearchStep]) -> str:
+    """Шаги плана для вывода: «1. purpose — tool {аргументы}»."""
+    lines = [
+        f"{number}. {step.purpose or step.tool} — {step.tool} "
+        f"{json.dumps(step.arguments or step.columns, ensure_ascii=False, default=str)}"
+        for number, step in enumerate(steps, 1)
+    ]
+    return "\n".join(lines) or "нет"

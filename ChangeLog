@@ -8,7 +8,13 @@
 	* backend/app/core/llm/prompts/quality_rules.py (INSIGHT_RULES): Без
 	примера «Выручка за квартал — 12 345», его копировала модель.
 	(SINGLE_ROW, MANY_ROWS): Новые.  Правило headline по форме результата.
-	* backend/app/core/agent/insight.py (InsightGenerator.generate): То же.
+	* backend/app/core/agent/insight.py (InsightGenerator.generate): То же;
+	steps — выполненные шаги плана идут в промпт («41» знает, что это
+	декабрь и сумма больше 150).
+	(describe_steps): Новая.
+	* backend/app/core/agent/orchestrator.py (Execution.steps): Новое.
+	* backend/app/core/tools/stats/describe_stats.py (DescribeStatsTool):
+	median: модели выбирают этот тул на «медиану».
 
 2026-10-25  Alexander Yurits  <143354682+Terrum19@users.noreply.github.com>
 

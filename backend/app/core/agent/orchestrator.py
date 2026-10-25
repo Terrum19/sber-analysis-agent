@@ -113,6 +113,8 @@ class Execution:
     supporting: list[tuple[str, str]] = field(default_factory=list)
     final_viz: str = "auto"
     dashboard_requested: bool = False
+    # Выполненные шаги: вывод знает, какие фильтры и периоды уже применены.
+    steps: list[ResearchStep] = field(default_factory=list)
 
 
 class ClarificationNeeded(Exception):
@@ -308,7 +310,7 @@ class AgentOrchestrator:
             logger.info(">>> run() генерация инсайта")
             yield _progress_event("insight", "started")
             insight = await self.insight_gen.generate(
-                question, result_table, supporting=execution.supporting
+                question, result_table, supporting=execution.supporting, steps=execution.steps
             )
             logger.info(
                 "<<< run() инсайт: headline=%r details=%r", insight.headline, insight.details
@@ -650,6 +652,7 @@ class AgentOrchestrator:
             supporting=supporting,
             final_viz=plan.final_viz,
             dashboard_requested=plan.dashboard_requested,
+            steps=executed,
         )
 
     async def _replan_after_lookup(
