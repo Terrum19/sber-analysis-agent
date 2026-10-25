@@ -73,3 +73,10 @@ def test_series_prompt_asks_for_whole_series(db):
     asyncio.run(InsightGenerator(llm=llm, db=db).generate("По месяцам", "temp_result_v1"))
     assert "Результат — 2 строк" in llm.prompt
     assert "12 345" not in llm.prompt
+
+
+def test_series_shape_counts_the_whole_table(db):
+    db.execute("CREATE TABLE temp_result_v4 AS SELECT range AS id FROM range(471)")
+    llm = PromptSpy()
+    asyncio.run(InsightGenerator(llm=llm, db=db).generate("Сколько?", "temp_result_v4"))
+    assert "Результат — 471 строк" in llm.prompt

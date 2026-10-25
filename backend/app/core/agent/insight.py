@@ -18,6 +18,7 @@ from app.core.llm.prompts.quality_rules import (
     NUMBER_FIX,
     SINGLE_ROW,
 )
+from app.core.tools.base import identifier
 from app.models.insight import Insight
 from app.models.research_step import ResearchStep
 
@@ -76,7 +77,9 @@ class InsightGenerator:
             logger.warning("инсайт: факты по %s не посчитались", result_table, exc_info=True)
             facts = "нет"
         # Одна строка — ответ числом; ряд — лидер, минимум или число строк, а не одно значение.
-        shape = SINGLE_ROW if len(result) <= 1 else MANY_ROWS.format(rows=len(result))
+        # Число строк всей таблицы, а не показанных модели (их не больше SHOWN_ROWS).
+        rows = db.query(f"SELECT COUNT(*) AS n FROM {identifier(result_table)}")[0]["n"]
+        shape = SINGLE_ROW if rows <= 1 else MANY_ROWS.format(rows=rows)
         prompt += INSIGHT_RULES.format(plan=describe_steps(steps or []), facts=facts, shape=shape)
         return await self._grounded(prompt, f"{question}\n{shown}\n{extra}\n{facts}")
 
