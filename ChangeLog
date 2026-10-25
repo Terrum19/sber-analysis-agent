@@ -1,3 +1,22 @@
+2026-10-25  mb6ockatf  <smokenmirror@tutamail.com>
+
+	Eval-набор вопросов по датасетам хакатона (Q-01, #56).
+	* data/eval/questions.yaml: Новый.  51 вопрос: сценарии 1–6 по 6–10
+	вопросов, каждый на 6 таблицах, и 7 «неудобных» с refusal: true.
+	Кодовые колонки без описания (Q3 → Q3A, VCL5, TIPI2), шаблон «все
+	Q*A», вопросы по 6–21 колонке, склеенный openPsych data.csv с
+	повторным заголовком и NULL, NA как код страны.  columns_all
+	заполнен у всех вопросов, эталоны value.sql сверены в DuckDB.
+	* data/eval/README.md: Новый.  Формат записи, соглашения о допуске и
+	сравнении эталона с result_table, сборка openPsych data.csv, проверка
+	эталонов, как добавить вопрос.
+	* scripts/check_eval_questions.py: Новый.  Проверка схемы набора
+	(ключи, тулы из tool_registry, CHART_TYPES, follow_up_of, охват
+	сценариев); с --db — колонки columns_all и выполнение каждого
+	value.sql.  (matches): Сравнение эталона со значением с допуском.
+	* backend/tests/unit/test_eval_questions.py: Новый.  Тесты схемы,
+	matches и проверки по базе на синтетической таблице.
+
 2026-10-25  Alexander Yurits  <143354682+Terrum19@users.noreply.github.com>
 
 	Исправления по ревью #170.
