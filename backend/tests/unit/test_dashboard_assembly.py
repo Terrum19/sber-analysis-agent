@@ -172,3 +172,12 @@ async def test_skipped_step_drops_only_its_tile(db) -> None:
     dashboard = saved_dashboard(await collect(agent, recovery_response=skip))
     assert [tile.source_step_id for tile in dashboard.tiles] == [0, 2]
     assert dashboard.title == "Регионы"
+
+
+async def test_kpi_tile_on_several_rows_is_drawn_as_a_chart(db) -> None:
+    wrong = [DashboardTilePlan(title="Выручка", step_id=0, is_kpi=True, chart_type="kpi")]
+    dashboard = saved_dashboard(await collect(orchestrator(db, TilePlanner(wrong))))
+    [tile] = dashboard.tiles
+    assert tile.spec["usermeta"]["chart_type"] != "kpi"
+    assert not tile.is_kpi
+    assert tile.layout["w"] == 6

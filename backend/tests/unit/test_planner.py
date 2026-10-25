@@ -2,7 +2,7 @@
 
 import pytest
 
-from app.core.agent.planner import PlanInvalid, StepPlanner, validate_plan
+from app.core.agent.planner import PlanInvalid, StepPlanner, apply_template, validate_plan
 from app.core.llm.fake_client import FakeLLM
 from app.core.llm.prompts.step_planner import NO_TEMPLATE_TILES, NO_TILES
 from app.models.research_step import DashboardTilePlan, ResearchPlan, ResearchStep
@@ -235,7 +235,7 @@ def test_template_applies_even_when_the_llm_plans_no_dashboard():
 
     reply = ResearchPlan(
         steps=[total(0, "quantity", ["order_date"]), total(1, "quantity", ["product"])],
-        dashboard_tiles=[tile("По кварталам", 0), tile("Товары", 1)],
+        dashboard_tiles=[tile("Выручка по кварталам", 0), tile("Топ товаров по выручке", 1)],
     )
     llm = ScriptedLLM(ResearchPlan(steps=[total(0, "quantity")]), reply)
     plan = asyncio.run(StepPlanner(llm=llm).plan("Сводка продаж", {"columns": SALES_COLUMNS}))
@@ -293,3 +293,20 @@ def test_renumbering_steps_keeps_tile_references():
     plan = asyncio.run(StepPlanner(llm=llm).plan("Дашборд по выручке", context))
     assert [step.step_id for step in plan.steps] == [4, 5]
     assert [planned.step_id for planned in plan.dashboard_tiles] == [4, 5]
+
+
+def test_template_pairs_renamed_tiles_by_position_only_when_counts_match():
+    from app.core.dashboards.templates import match
+
+    template = match(SALES_COLUMNS)
+    renamed = [tile(f"Плитка {number}", number) for number in range(len(template.tiles))]
+    full = ResearchPlan(steps=[], dashboard_requested=True, dashboard_tiles=list(renamed))
+    apply_template(full, template)
+    assert [planned.step_id for planned in full.dashboard_tiles] == list(range(len(renamed)))
+
+    exact = tile(template.tiles[1].title, 7)
+    partial = ResearchPlan(steps=[], dashboard_requested=True, dashboard_tiles=[renamed[0], exact])
+    apply_template(partial, template)
+    assert [(planned.title, planned.step_id) for planned in partial.dashboard_tiles] == [
+        (template.tiles[1].title, 7)
+    ]

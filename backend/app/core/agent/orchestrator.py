@@ -65,7 +65,7 @@ from app.core.memory.session_memory import SessionMemory
 from app.core.memory.state_cache import StateCache
 from app.core.sandbox.wasm_runtime import SandboxError
 from app.core.viz.chart_morph import detect_morph, morph
-from app.core.viz.chart_selector import select_chart
+from app.core.viz.chart_selector import is_single_number, select_chart
 from app.core.viz.vega_spec_builder import SPEC_ROW_LIMIT, build_vega_spec, column_aliases
 from app.models.research_step import DashboardTilePlan, ResearchPlan, ResearchStep
 
@@ -697,6 +697,9 @@ class AgentOrchestrator:
         requested = "kpi" if planned.is_kpi and planned.chart_type == "auto" else planned.chart_type
         records = self.db.to_records(table, limit=2)
         chart_type = select_chart(planned.title, table, requested, records)
+        if chart_type == "kpi" and not is_single_number(records):
+            logger.warning("    плитка %r: KPI не по одному числу", planned.title)
+            chart_type = select_chart(planned.title, table, "auto", records)
         spec = build_vega_spec(chart_type, table, db=self.db, titles=titles, title=planned.title)
         built = spec["usermeta"]["chart_type"]
         insight = None
@@ -711,7 +714,7 @@ class AgentOrchestrator:
             source_step_id=planned.step_id,
             result_table=table,
             insight=insight or None,
-            is_kpi=planned.is_kpi or built == "kpi",
+            is_kpi=built == "kpi",
         )
 
     async def _apply_recovery(

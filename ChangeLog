@@ -1,5 +1,18 @@
 2026-10-25  mb6ockatf  <smokenmirror@tutamail.com>
 
+	Плитки дашборда: KPI только по одному числу, шаблон без сдвига плиток.
+	* backend/app/core/agent/orchestrator.py
+	(AgentOrchestrator._dashboard_tile): Плитка KPI по результату не из
+	одного числа строится видом auto; is_kpi — построенный вид.
+	* backend/app/core/agent/planner.py (apply_template): Плитки модели
+	без совпадения по названию разбираются по порядку, только если их
+	столько же, сколько в шаблоне.
+	* backend/tests/unit/test_dashboard_assembly.py
+	* backend/tests/unit/test_planner.py: Тесты того же.
+	* docs/visualization.md: То же.
+
+2026-10-25  mb6ockatf  <smokenmirror@tutamail.com>
+
 	Шаблон дашборда применяется при совпадении колонок (#43).
 	* backend/app/core/agent/planner.py (StepPlanner._ask): Нашёлся
 	шаблон — dashboard_requested ставится в true и плитки переписываются

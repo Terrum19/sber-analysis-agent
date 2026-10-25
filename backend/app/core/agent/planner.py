@@ -297,7 +297,8 @@ def apply_template(plan: ResearchPlan, template: DashboardTemplate) -> None:
     planned = list(plan.dashboard_tiles)
     by_title = {templates.normalize(tile.title): tile for tile in planned}
     found = [by_title.get(templates.normalize(tile.title)) for tile in template.tiles]
-    spare = iter([tile for tile in planned if all(tile is not match for match in found)])
+    leftovers = [tile for tile in planned if all(tile is not match for match in found)]
+    spare = iter(leftovers if len(planned) == len(template.tiles) else [])
     tiles = []
     for template_tile, match in zip(template.tiles, found, strict=True):
         source = match or next(spare, None)
