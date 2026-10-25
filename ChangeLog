@@ -1,5 +1,19 @@
 2026-10-25  mb6ockatf  <smokenmirror@tutamail.com>
 
+	Шаблон дашборда применяется при совпадении колонок (#43).
+	* backend/app/core/agent/planner.py (StepPlanner._ask): Нашёлся
+	шаблон — dashboard_requested ставится в true и плитки переписываются
+	по шаблону, даже если модель дашборд не запланировала.
+	(_validate_tiles): План по шаблону без плиток — ошибка
+	NO_TEMPLATE_TILES для переспроса.
+	* backend/app/core/llm/prompts/step_planner.py (NO_TEMPLATE_TILES):
+	Новая.
+	* backend/tests/unit/test_planner.py: Шаблон применяется и при
+	ответе без дашборда; вопрос без дашборда шаблон не получает.
+	* docs/visualization.md: То же.
+
+2026-10-25  mb6ockatf  <smokenmirror@tutamail.com>
+
 	Дашборд из плиток плана (B-04, #44).
 	* backend/app/core/agent/orchestrator.py (Execution): Поля tables
 	и plan, их заполняет _finish.

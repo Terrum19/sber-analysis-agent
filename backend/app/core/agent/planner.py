@@ -26,6 +26,7 @@ from app.core.llm.prompts.step_planner import (
     DASHBOARD_CUSTOM,
     DASHBOARD_PLAN,
     DASHBOARD_TEMPLATE,
+    NO_TEMPLATE_TILES,
     NO_TILES,
     PLAN_ERRORS,
     STEP_FIX,
@@ -153,7 +154,8 @@ class StepPlanner:
         plan = await self.llm.complete_structured(SYSTEM_ANALYST, prompt, ResearchPlan)
         # LLM может не включать step_id в шаги — присваиваем последовательные ID.
         renumber_steps(plan, start)
-        if template is not None and plan.dashboard_requested:
+        if template is not None:
+            plan.dashboard_requested = True
             apply_template(plan, template)
         return plan
 
@@ -224,7 +226,7 @@ def _validate_tiles(plan: ResearchPlan, seen: set[int]) -> list[str]:
         if tile.step_id not in seen
     ]
     if plan.dashboard_requested and not plan.dashboard_tiles:
-        errors.append(NO_TILES)
+        errors.append(NO_TEMPLATE_TILES if plan.template_id else NO_TILES)
     return errors
 
 

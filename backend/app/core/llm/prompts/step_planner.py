@@ -113,3 +113,7 @@ NO_TILES = (
     "dashboard_requested=true, но dashboard_tiles пуст: добавь плитки со ссылками "
     "на шаги плана или поставь dashboard_requested=false"
 )
+NO_TEMPLATE_TILES = (
+    "колонки таблицы подходят под шаблон дашборда, но dashboard_tiles пуст: добавь шаги "
+    "под каждую плитку шаблона и плитки со ссылками на эти шаги"
+)

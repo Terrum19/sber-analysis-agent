@@ -4,7 +4,7 @@ import pytest
 
 from app.core.agent.planner import PlanInvalid, StepPlanner, validate_plan
 from app.core.llm.fake_client import FakeLLM
-from app.core.llm.prompts.step_planner import NO_TILES
+from app.core.llm.prompts.step_planner import NO_TEMPLATE_TILES, NO_TILES
 from app.models.research_step import DashboardTilePlan, ResearchPlan, ResearchStep
 
 SALES_COLUMNS = ["order_date", "order_id", "product", "quantity", "price"]
@@ -230,13 +230,34 @@ def test_matching_columns_set_template_id_and_template_tiles():
     assert plan.dashboard_tiles[0].insight_needed is True
 
 
-def test_template_is_ignored_when_the_llm_plans_no_dashboard():
+def test_template_applies_even_when_the_llm_plans_no_dashboard():
+    import asyncio
+
+    reply = ResearchPlan(
+        steps=[total(0, "quantity", ["order_date"]), total(1, "quantity", ["product"])],
+        dashboard_tiles=[tile("По кварталам", 0), tile("Товары", 1)],
+    )
+    llm = ScriptedLLM(ResearchPlan(steps=[total(0, "quantity")]), reply)
+    plan = asyncio.run(StepPlanner(llm=llm).plan("Сводка продаж", {"columns": SALES_COLUMNS}))
+    assert NO_TEMPLATE_TILES in llm.prompts[1]
+    assert plan.dashboard_requested
+    assert plan.template_id == "sales_quarterly"
+    assert [planned.title for planned in plan.dashboard_tiles] == [
+        "Выручка по кварталам",
+        "Топ товаров по выручке",
+    ]
+
+
+def test_template_is_not_used_for_a_question_without_a_dashboard():
     import asyncio
 
     llm = ScriptedLLM(ResearchPlan(steps=[total(0, "quantity")]))
-    plan = asyncio.run(StepPlanner(llm=llm).plan("Сводка продаж", {"columns": SALES_COLUMNS}))
+    plan = asyncio.run(
+        StepPlanner(llm=llm).plan("Сколько всего продано", {"columns": SALES_COLUMNS})
+    )
+    assert "Продажи по кварталам" not in llm.prompts[0]
+    assert not plan.dashboard_requested
     assert plan.template_id is None
-    assert plan.dashboard_tiles == []
 
 
 def test_dashboard_without_tiles_is_asked_again():
