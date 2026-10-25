@@ -207,15 +207,23 @@ async def test_unreadable_columns_do_not_stop_fixing(db, monkeypatch) -> None:
     assert "Колонки входной таблицы шага (имя: тип):\nнет" in llm.prompts["ResearchStep"][0]
 
 
-async def test_broken_input_reference_shows_previous_columns(db) -> None:
+async def test_plan_still_invalid_after_retry_is_not_executed(db) -> None:
     plan = ResearchPlan(steps=[group_by("revenue", input="$step_9")], final_viz="bar")
     llm = ScriptedLLM(plan, [group_by("revenue")])
-    # Переспрос планировщика ссылку не исправил — шаг падает при выполнении.
+    # Переспрос планировщика ссылку не исправил — план не доходит до исполнения.
     llm.answers["ResearchPlan"].append(plan)
     events = await collect(make_agent(db, llm))
 
-    assert kinds(events) == [*PLANNED, "step:fixing", *ANSWERED]
-    assert "region: VARCHAR" in llm.prompts["ResearchStep"][0]
+    assert kinds(events) == ["planning:started", "planning:failed", "clarification_needed"]
+    assert "$step_9" in events[-1]["data"]["error"]
+    assert llm.prompts["ResearchStep"] == []
+
+
+def test_broken_input_reference_shows_previous_columns(db) -> None:
+    agent = make_agent(db, ScriptedLLM(ResearchPlan(steps=[]), []))
+    step = group_by("revenue", input="$step_9")
+    columns = agent._input_columns(step, "raw", {}, "raw")
+    assert columns["region"] == "VARCHAR"
 
 
 async def test_disconnect_cancels_the_running_plan(db) -> None:

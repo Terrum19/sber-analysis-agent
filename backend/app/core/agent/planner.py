@@ -27,6 +27,14 @@ from app.models.research_step import PREVIOUS, SOURCE, ResearchPlan, ResearchSte
 PLAN_FIX_ATTEMPTS = 1
 
 
+class PlanInvalid(Exception):
+    """План не прошёл валидацию и после всех переспросов; errors — ошибки валидатора."""
+
+    def __init__(self, errors: list[str]) -> None:
+        self.errors = errors
+        super().__init__("; ".join(errors))
+
+
 class StepPlanner:
     """Планировщик исследования на базе LLM."""
 
@@ -68,13 +76,19 @@ class StepPlanner:
         logger.info(">>> StepPlanner.plan() вопрос=%r", question)
         logger.debug("    промпт=%r", prompt)
         plan = await self._ask(prompt, start)
+        # Проверяем и ответ на переспрос: непроверенный план упал бы уже при
+        # исполнении, потратив попытки fix_step и показав ошибку шага.
+        errors = validate_plan(plan, known_steps=start)
         for _ in range(PLAN_FIX_ATTEMPTS):
-            errors = validate_plan(plan, known_steps=start)
             if not errors:
                 break
             logger.warning("    план не прошёл валидацию: %s", errors)
             fix = PLAN_ERRORS.format(plan=_plan_json(plan), errors="\n".join(errors))
             plan = await self._ask(prompt + fix, start)
+            errors = validate_plan(plan, known_steps=start)
+        if errors:
+            logger.warning("<<< StepPlanner.plan() план отклонён после переспроса: %s", errors)
+            raise PlanInvalid(errors)
         logger.info("<<< StepPlanner.plan() шагов=%d", len(plan.steps))
         return plan
 
