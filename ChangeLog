@@ -1,3 +1,26 @@
+2026-10-25  mb6ockatf  <smokenmirror@tutamail.com>
+
+	Eval агента на наборе вопросов (Q-02, #57).
+	* scripts/eval.py: Новый.  Каждый вопрос data/eval/questions.yaml
+	(формат #56) — новая сессия над таблицей dataset, follow_up_of — в
+	сессии прошлого вопроса; прогон через AgentOrchestrator, все события,
+	время до первого события и до конца хода.  Проверки expect: tools_any,
+	columns_all (по выполненным шагам), value (эталонный SQL против
+	result_table с допуском), answer_contains, chart_type_any, refusal;
+	у каждого провала — причина.  Recall отбора колонок и средний размер
+	блока колонок в промпте — по select_columns первого вызова
+	StepPlanner.plan, без изменения планировщика.  Отчёт
+	docs/reports/eval_<дата>_<модель>.md и JSON рядом.  --fake — на
+	FakeLLM; --csv, --dataset, --per-scenario, --ids.
+	* Makefile (eval): Новая цель, make eval MODEL=...
+	* .github/workflows/backend-ci.yml: Прогон на FakeLLM по вопросу на
+	сценарий над demo_events, если набор есть; ruff и для scripts/eval.py.
+	* backend/requirements.txt, backend/pyproject.toml: pyyaml.
+	* backend/tests/unit/test_eval_runner.py,
+	backend/tests/fixtures/eval_questions.yaml: Новые.
+	* docs/eval.md: Новый.  Запуск, проверки, recall отбора, формат отчёта.
+	* README.md (Eval агента), docs/repo_structure.md: То же кратко.
+
 2026-10-25  Alexander Yurits  <143354682+Terrum19@users.noreply.github.com>
 
 	Исправления по ревью #170.

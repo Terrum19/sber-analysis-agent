@@ -9,10 +9,14 @@ on:
   push:
     paths:
       - "backend/**"
+      - "scripts/eval.py"
+      - "data/eval/**"
       - ".github/workflows/backend-ci.yml"
   pull_request:
     paths:
       - "backend/**"
+      - "scripts/eval.py"
+      - "data/eval/**"
       - ".github/workflows/backend-ci.yml"
   workflow_dispatch:
 
@@ -66,11 +70,23 @@ jobs:
 
       - name: Ruff
         run: |
-          ruff check app tests
-          ruff format --check app tests
+          ruff check app tests ../scripts/eval.py
+          ruff format --check app tests ../scripts/eval.py
 
       - name: Unit tests under coverage
         run: coverage run -m pytest -q --strict-markers -m "not integration and not benchmark"
+
+      # Eval (#57) на FakeLLM: по вопросу на сценарий над демо-таблицей, чтобы
+      # scripts/eval.py и формат data/eval/questions.yaml не ломались. Качество здесь
+      # не меряется: FakeLLM на любой вопрос строит один и тот же план. Ненулевой
+      # код — только если ход упал внутри скрипта. Без набора (#56) шаг пропускается.
+      - name: Eval on FakeLLM
+        if: hashFiles('data/eval/questions.yaml') != ''
+        run: |
+          python ../scripts/eval.py --fake --per-scenario 1 \
+            --csv ../data/sample_datasets/demo_events.csv --dataset demo_events \
+            --db "$RUNNER_TEMP/eval.duckdb" --out-dir "$RUNNER_TEMP/eval"
+          cat "$RUNNER_TEMP"/eval/eval_*.md >> "$GITHUB_STEP_SUMMARY"
 
       - name: Coverage summary
         if: always()
