@@ -181,3 +181,18 @@ async def test_kpi_tile_on_several_rows_is_drawn_as_a_chart(db) -> None:
     assert tile.spec["usermeta"]["chart_type"] != "kpi"
     assert not tile.is_kpi
     assert tile.layout["w"] == 6
+
+
+async def test_tile_whose_spec_fails_is_dropped(db, monkeypatch) -> None:
+    from app.core.agent import orchestrator as orchestrator_module
+
+    build = orchestrator_module.build_vega_spec
+
+    def failing_for_orders(chart_type, table, **kwargs):
+        if kwargs.get("title") == "Заказы по регионам":
+            raise ValueError("bad spec")
+        return build(chart_type, table, **kwargs)
+
+    monkeypatch.setattr(orchestrator_module, "build_vega_spec", failing_for_orders)
+    dashboard = saved_dashboard(await collect(orchestrator(db, TilePlanner(TILES))))
+    assert [tile.title for tile in dashboard.tiles] == ["Выручка", "Выручка по регионам"]
