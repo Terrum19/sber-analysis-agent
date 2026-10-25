@@ -19,6 +19,7 @@ def fresh_state(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(settings, "llm_model", "qwen2.5-coder:7b")
     monkeypatch.setattr(settings, "llm_num_ctx", 16384)
     monkeypatch.setattr(ollama_setup, "_active_model", None)
+    monkeypatch.setattr(ollama_setup, "_missing_model", None)
     monkeypatch.setattr(ollama_setup, "_status", ollama_setup.LLMStatus("connecting", "m"))
 
 
@@ -144,13 +145,74 @@ async def test_not_ollama_server_is_used_as_is() -> None:
     assert ollama_setup.status()["state"] == "ok"
 
 
-@pytest.mark.parametrize("version", [401, 403, 500])
+@pytest.mark.parametrize("version", [401, 403])
 async def test_server_refusing_version_is_not_ollama(version: int) -> None:
     http, calls = fake_ollama([], version=version)
     assert await ollama_setup.prepare(http)
     assert paths(calls) == ["/api/version"]
     assert ollama_setup.active_model() == "qwen2.5-coder:7b"
     assert ollama_setup.status()["state"] == "ok"
+
+
+@pytest.mark.parametrize("version", [500, 502, 503])
+async def test_server_error_on_version_is_retried(version: int) -> None:
+    http, calls = fake_ollama(["qwen2.5-coder:7b"], version=version)
+    assert not await ollama_setup.prepare(http)
+    assert paths(calls) == ["/api/version"]
+    assert ollama_setup.status()["state"] == "connecting"
+    assert ollama_setup.active_model() == "qwen2.5-coder:7b"
+
+    http, _ = fake_ollama(["qwen2.5-coder:7b"])
+    assert await ollama_setup.prepare(http)
+    assert ollama_setup.active_model() == "qwen2.5-coder:7b-ctx16384"
+
+
+async def test_unknown_model_is_missing_and_not_pulled_again() -> None:
+    models: list[str] = []
+    error = "pull model manifest: file does not exist"
+    http, calls = fake_ollama(models, pull=[{"status": "pulling manifest"}, {"error": error}])
+    assert not await ollama_setup.prepare(http)
+    assert ollama_setup.status()["state"] == "missing"
+    assert ollama_setup.status()["detail"] == error
+
+    calls.clear()
+    assert not await ollama_setup.prepare(http)
+    assert paths(calls) == ["/api/version", "/api/tags"]
+    assert ollama_setup.status()["state"] == "missing"
+    assert ollama_setup.status()["detail"] == error
+
+    # Модель создали или скачали на сервере вручную — подготовка продолжается.
+    models.append("qwen2.5-coder:7b")
+    assert await ollama_setup.prepare(http)
+    assert ollama_setup.active_model() == "qwen2.5-coder:7b-ctx16384"
+
+
+async def test_unknown_model_with_error_status_is_missing() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/api/version":
+            return httpx.Response(200, json={"version": "0.35.1"})
+        if request.url.path == "/api/tags":
+            return httpx.Response(200, json={"models": []})
+        return httpx.Response(500, json={"error": "pull model manifest: file does not exist"})
+
+    http = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    assert not await ollama_setup.prepare(http)
+    assert ollama_setup.status()["state"] == "missing"
+
+
+async def test_pull_server_error_is_retried() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/api/version":
+            return httpx.Response(200, json={"version": "0.35.1"})
+        if request.url.path == "/api/tags":
+            return httpx.Response(200, json={"models": []})
+        return httpx.Response(500, json={"error": "dial tcp: lookup registry.ollama.ai"})
+
+    http = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    assert not await ollama_setup.prepare(http)
+    status = ollama_setup.status()
+    assert status["state"] == "pulling"
+    assert status["detail"] == "dial tcp: lookup registry.ollama.ai"
 
 
 async def test_broken_pull_line_is_retried_later() -> None:

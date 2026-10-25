@@ -96,6 +96,8 @@ if (-not (Test-Ollama)) {
     }
     Say "Запускаю Ollama"
     Start-Process $OllamaApp
+    # Метка: Ollama запустил этот скрипт, stop.bat её остановит.
+    Set-Content -Path .ollama-started -Value app
     if (-not (Wait-For 90 { Test-Ollama })) {
         Fail "Ollama не ответила на $OllamaUrl. Запустите приложение Ollama вручную и повторите."
     }

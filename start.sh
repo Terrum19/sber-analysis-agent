@@ -14,6 +14,8 @@ cd "$(dirname "$0")"
 
 APP_URL=http://localhost:3000
 OLLAMA_URL=http://localhost:11434
+# Метка: Ollama запустил этот скрипт (app, service или pid N), stop.sh её остановит.
+OLLAMA_MARK=.ollama-started
 COMPOSE_MIN_MINOR=24 # Compose 2.24+: необязательный env_file
 OS=$(uname -s)
 
@@ -128,6 +130,7 @@ ensure_mac_ollama() {
 	fi
 	say "Запускаю Ollama"
 	open "$app"
+	echo app >"$OLLAMA_MARK"
 	wait_for 90 ollama_up || fail "Ollama не ответила на $OLLAMA_URL. Запустите приложение Ollama вручную и повторите."
 }
 
@@ -163,12 +166,14 @@ start_linux_ollama() {
 	say "Запускаю Ollama"
 	if has_service ollama; then
 		start_service ollama || return 0
+		echo service >"$OLLAMA_MARK"
 		wait_for 60 ollama_up || true
 		return
 	fi
 	local gateway
 	gateway=$(bridge_gateway) && [ -n "$gateway" ] || return 0
 	OLLAMA_HOST="$gateway:11434" nohup ollama serve >"${TMPDIR:-/tmp}/ollama-serve.log" 2>&1 &
+	echo "pid $!" >"$OLLAMA_MARK"
 	wait_for 60 host_ollama_visible || true
 }
 

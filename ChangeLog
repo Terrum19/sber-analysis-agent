@@ -1,3 +1,23 @@
+2026-10-25  Alexander Yurits  <143354682+Terrum19@users.noreply.github.com>
+
+	Исправления по ревью #170.
+	* backend/app/core/llm/ollama_setup.py (_version): 5xx от
+	/api/version — повтор (connecting), а не «сервер не Ollama»: иначе
+	один ответ 502/503 при старте навсегда выключал скачивание модели и
+	вариант с num_ctx.  401/403/404 — по-прежнему не Ollama.
+	(ModelMissing, _pull_error, _error_text): Новые.  Модели нет в реестре
+	(опечатка в LLM_MODEL) — состояние missing: pull больше не
+	повторяется, бэкенд только ждёт модель в /api/tags.
+	* backend/app/api/schemas/llm.py, frontend/src/types/llm.ts: Состояние
+	missing.
+	* frontend/src/components/chat/LlmStatusBanner.tsx: Для missing —
+	«Модели нет в Ollama, проверьте LLM_MODEL» без «повторяю».
+	* start.sh, scripts/start/start.ps1: Метка .ollama-started, если Ollama
+	запустил скрипт.
+	* stop.sh, stop.bat: Останавливают Ollama по метке; Ollama, запущенную
+	до start, не трогают.
+	* README.md (Запуск): То же.
+
 2026-10-25  mb6ockatf  <smokenmirror@tutamail.com>
 
 	Исправления по ревью #170.

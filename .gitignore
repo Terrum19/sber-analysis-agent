@@ -35,6 +35,7 @@ out/
 
 # --- окружение и мусор ---
 .env
+.ollama-started
 .DS_Store
 *.log
 

@@ -10,6 +10,8 @@
 Сервер не Ollama (vLLM, облако: нет /api/version) — шаги пропускаются,
 модель берётся из LLM_MODEL как есть. Пока Ollama недоступна, бэкенд
 переподключается сам; что происходит, фронт видит в /api/llm/status.
+Модели LLM_MODEL нет в реестре (опечатка) — состояние missing: скачивание
+больше не повторяется, бэкенд только ждёт, что модель появится на сервере.
 """
 
 import asyncio
@@ -24,7 +26,7 @@ from app.config import settings
 
 logger = logging.getLogger(__name__)
 
-State = Literal["connecting", "pulling", "preparing", "ok"]
+State = Literal["connecting", "pulling", "preparing", "missing", "ok"]
 
 # Пауза между попытками достучаться до Ollama и повторить неудавшийся pull.
 RETRY_S = 5.0
@@ -36,6 +38,8 @@ REQUEST_TIMEOUT = httpx.Timeout(10.0)
 # копирует только манифест, но на медленном диске может занять минуту.
 PULL_TIMEOUT = httpx.Timeout(10.0, read=300.0)
 CREATE_TIMEOUT = httpx.Timeout(10.0, read=120.0)
+# Так Ollama отвечает на pull модели, которой нет в реестре.
+MISSING_MODEL_ERRORS = ("file does not exist", "invalid model name")
 
 
 @dataclass
@@ -49,6 +53,8 @@ class LLMStatus:
 _status = LLMStatus("connecting", settings.llm_model)
 # Модель, с которой работает LLMClient: вариант с контекстом или LLM_MODEL.
 _active_model: str | None = None
+# Модель, которой нет в реестре: её больше не скачиваем.
+_missing_model: str | None = None
 
 
 def status() -> dict:
@@ -89,8 +95,16 @@ class NotOllama(Exception):
     """Сервер отвечает, но это не Ollama: модель готовить не нужно."""
 
 
+class ModelMissing(RuntimeError):
+    """Модели нет в реестре Ollama: повтор скачивания не поможет."""
+
+
 async def _version(http: httpx.AsyncClient, root: str) -> str:
     response = await http.get(f"{root}/api/version", timeout=REQUEST_TIMEOUT)
+    if response.status_code >= 500:
+        # Ollama или прокси перед ней ещё не готовы (502/503): повторить,
+        # а не счесть сервер чужим — иначе подготовка не запустится никогда.
+        response.raise_for_status()
     if response.status_code != 200:
         raise NotOllama
     try:
@@ -113,18 +127,33 @@ async def _pull(http: httpx.AsyncClient, root: str, model: str) -> None:
     async with http.stream(
         "POST", f"{root}/api/pull", json={"model": model}, timeout=PULL_TIMEOUT
     ) as response:
-        response.raise_for_status()
+        if response.is_error:
+            await response.aread()
+            raise _pull_error(_error_text(response))
         async for line in response.aiter_lines():
             if not line.strip():
                 continue
             event = json.loads(line)
             if event.get("error"):
-                raise RuntimeError(event["error"])
+                raise _pull_error(event["error"])
             if event.get("digest") and event.get("total"):
                 layers[event["digest"]] = (event.get("completed", 0), event["total"])
                 done = sum(completed for completed, _ in layers.values())
                 total = sum(size for _, size in layers.values())
                 _set("pulling", progress=round(done / total, 3))
+
+
+def _error_text(response: httpx.Response) -> str:
+    try:
+        return response.json()["error"]
+    except (ValueError, KeyError, TypeError):
+        return f"HTTP {response.status_code}"
+
+
+def _pull_error(message: str) -> RuntimeError:
+    if any(marker in message for marker in MISSING_MODEL_ERRORS):
+        return ModelMissing(message)
+    return RuntimeError(message)
 
 
 async def _create(http: httpx.AsyncClient, root: str, model: str, variant: str) -> None:
@@ -152,7 +181,7 @@ async def _create(http: httpx.AsyncClient, root: str, model: str, variant: str) 
 
 async def prepare(http: httpx.AsyncClient) -> bool:
     """Один проход подготовки. True — LLM готова, False — повторить позже."""
-    global _active_model
+    global _active_model, _missing_model
     root = server_root(settings.llm_base_url)
     model = _with_tag(settings.llm_model)
     try:
@@ -168,6 +197,9 @@ async def prepare(http: httpx.AsyncClient) -> bool:
 
     try:
         models = await _models(http, root)
+        if model not in models and model == _missing_model:
+            _set("missing", detail=_status.detail)
+            return False
         if model not in models:
             logger.info("Ollama %s: скачиваю %s", version, model)
             await _pull(http, root, model)
@@ -184,6 +216,11 @@ async def prepare(http: httpx.AsyncClient) -> bool:
                 variant = model
     except httpx.TransportError as exc:
         _set("connecting", detail=str(exc) or type(exc).__name__)
+        return False
+    except ModelMissing as exc:
+        logger.error("Ollama: модели %s нет в реестре, проверьте LLM_MODEL: %s", model, exc)
+        _missing_model = model
+        _set("missing", detail=str(exc))
         return False
     except (RuntimeError, httpx.HTTPStatusError) as exc:
         # Например, нет интернета для скачивания: повторим, причина — в detail.
@@ -217,7 +254,9 @@ async def prepare_forever() -> None:
     async with httpx.AsyncClient() as http:
         while True:
             while not await prepare_once(http):
-                await asyncio.sleep(PULL_RETRY_S if _status.state == "pulling" else RETRY_S)
+                await asyncio.sleep(
+                    PULL_RETRY_S if _status.state in ("pulling", "missing") else RETRY_S
+                )
             # Контекст сервера — до первого вопроса: от него считается бюджет промпта.
             try:
                 await LLMClient().warm_up()
