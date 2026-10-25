@@ -1,5 +1,28 @@
 2026-10-25  mb6ockatf  <smokenmirror@tutamail.com>
 
+	Дашборд из плиток плана (B-04, #44).
+	* backend/app/core/agent/orchestrator.py (Execution): Поля tables
+	и plan, их заполняет _finish.
+	(_build_dashboard, _dashboard_tile, _arrange): Новые.  Плитка на
+	каждую DashboardTilePlan: таблица её шага, вид из плана или
+	select_chart, вывод LLM только при insight_needed.  KPI первым
+	рядом по 3x2, графики по два в ряд 6x4.  Без плиток — прежняя
+	одна плитка с графиком ответа.
+	(_execute_plan, _apply_recovery): Плитки, название и шаблон плана
+	переживают достройку после lookup и пропуск упавшего шага.
+	* backend/app/core/agent/insight.py (generate_tile_insight): Новая.
+	* backend/app/core/llm/prompts/insight_summary.py (TILE_INSIGHT):
+	Новый.
+	* backend/tests/integration/test_agent_cycle.py
+	(test_agent_cycle_builds_dashboard_from_plan_tiles): Новый.
+	* backend/tests/unit/test_dashboard_assembly.py: Новый.
+	* backend/tests/unit/test_insight_generator.py
+	(test_tile_insight_sends_title_view_and_rows): Новый.
+	* docs/visualization.md (Сборка дашборда), docs/architecture.md,
+	docs/prompts.md: То же.
+
+2026-10-25  mb6ockatf  <smokenmirror@tutamail.com>
+
 	Плитки дашборда в плане исследования (B-03, #43).
 	* backend/app/models/research_step.py (DashboardTilePlan): Новая.
 	Плитка плана: title, step_id, chart_type, is_kpi, insight_needed.

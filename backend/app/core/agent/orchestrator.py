@@ -55,6 +55,8 @@ from app.core.agent.planner import PlanInvalid, StepPlanner
 from app.core.agent.recovery import STEP_FIX_ATTEMPTS, fixable
 from app.core.agent.step_executor import StepExecutor, resolve_input, tool_kind
 from app.core.agent.triage import small_talk_reply
+from app.core.dashboards.generator import DashboardGenerator
+from app.core.dashboards.models import DashboardTile
 from app.core.data import overview
 from app.core.data.duckdb_manager import DuckDBManager
 from app.core.llm.budget import track_truncations
@@ -65,7 +67,7 @@ from app.core.sandbox.wasm_runtime import SandboxError
 from app.core.viz.chart_morph import detect_morph, morph
 from app.core.viz.chart_selector import select_chart
 from app.core.viz.vega_spec_builder import SPEC_ROW_LIMIT, build_vega_spec, column_aliases
-from app.models.research_step import ResearchPlan, ResearchStep
+from app.models.research_step import DashboardTilePlan, ResearchPlan, ResearchStep
 
 NO_TABLE_MESSAGE = "Сначала подключите данные"
 # Ход упал вне шагов (планировщик, инсайт, график): текст ошибки — в progress.
@@ -98,6 +100,11 @@ MAX_REPLANS = 2
 # Сколько строк результата lookup-шага показать планировщику.
 OBSERVATION_ROWS = 20
 
+DASHBOARD_TITLE = "Дашборд"
+GRID_COLUMNS = 12
+KPI_WIDTH, KPI_HEIGHT = 3, 2
+CHART_WIDTH, CHART_HEIGHT = 6, 4
+
 
 @dataclass
 class Execution:
@@ -108,6 +115,8 @@ class Execution:
     supporting: list[tuple[str, str]] = field(default_factory=list)
     final_viz: str = "auto"
     dashboard_requested: bool = False
+    tables: dict[int, str] = field(default_factory=dict)
+    plan: ResearchPlan = field(default_factory=ResearchPlan)
 
 
 class ClarificationNeeded(Exception):
@@ -323,18 +332,15 @@ class AgentOrchestrator:
             return
 
         if execution.dashboard_requested:
-            from app.core.dashboards.generator import DashboardGenerator
-            from app.core.dashboards.models import DashboardTile
-
-            tile = DashboardTile(
+            fallback = DashboardTile(
                 title=spec.get("title") or insight.headline,
                 spec=spec,
                 result_table=result_table,
                 insight=insight.headline,
             )
             try:
-                dashboard = await DashboardGenerator(db=self.db).generate(
-                    request.session_id, "Дашборд", [tile]
+                event = await self._build_dashboard(
+                    request.session_id, question, execution, titles, fallback
                 )
             except Exception as exc:
                 # Ответ и график уже у пользователя: ход не провален, нет
@@ -342,11 +348,7 @@ class AgentOrchestrator:
                 logger.exception("<<< run() дашборд не собран")
                 yield _progress_event("dashboard", "failed", error=str(exc))
             else:
-                # Плитки уходят сразу в событии: фронт рисует превью без GET.
-                # exclude_none убирает snapshot_data (в payload он None) и другие
-                # пустые поля — снимок данных в SSE не передаётся.
-                payload = DashboardPayload.from_dashboard(dashboard)
-                yield {"type": "dashboard", "data": payload.model_dump(exclude_none=True)}
+                yield event
 
         memory.record_answer(insight.headline)
         yield {"type": "done", "data": {}}
@@ -487,6 +489,9 @@ class AgentOrchestrator:
                         "final_viz": plan.final_viz,
                         "dashboard_requested": plan.dashboard_requested,
                         "result_step": plan.result_step,
+                        "dashboard_title": plan.dashboard_title,
+                        "template_id": plan.template_id,
+                        "dashboard_tiles": [tile.model_dump() for tile in plan.dashboard_tiles],
                     }
                 )
                 logger.error("<<< _execute_plan шаг %d ПАЛ: %r", failed.step.step_id, exc)
@@ -515,6 +520,9 @@ class AgentOrchestrator:
                     final_viz=replanned.final_viz,
                     dashboard_requested=plan.dashboard_requested or replanned.dashboard_requested,
                     result_step=replanned.result_step,
+                    dashboard_title=replanned.dashboard_title or plan.dashboard_title,
+                    template_id=replanned.template_id or plan.template_id,
+                    dashboard_tiles=replanned.dashboard_tiles or plan.dashboard_tiles,
                 )
 
         logger.info("<<< _execute_plan все шаги завершены $prev=%s", current)
@@ -629,6 +637,8 @@ class AgentOrchestrator:
             supporting=supporting,
             final_viz=plan.final_viz,
             dashboard_requested=plan.dashboard_requested,
+            tables=dict(tables),
+            plan=plan,
         )
 
     async def _replan_after_lookup(
@@ -647,6 +657,62 @@ class AgentOrchestrator:
         logger.info(">>> _replan_after_lookup после шага %d", executed[-1].step_id)
         plan = await self._plan(question, context)
         return _renumber(plan, context["next_step_id"])
+
+    async def _build_dashboard(
+        self,
+        session_id: str,
+        question: str,
+        execution: Execution,
+        titles: dict[str, str],
+        fallback: DashboardTile,
+    ) -> dict:
+        plan = execution.plan
+        tiles = []
+        for planned in plan.dashboard_tiles:
+            table = execution.tables.get(planned.step_id)
+            if table is None:
+                logger.warning("    плитка %r: шаг %d не выполнен", planned.title, planned.step_id)
+                continue
+            try:
+                tiles.append(await self._dashboard_tile(planned, table, titles))
+            except Exception:
+                logger.exception("    плитка %r не собрана", planned.title)
+        template_id = plan.template_id if tiles else None
+        logger.info(">>> run() дашборд: плиток=%d шаблон=%s", len(tiles), template_id)
+        dashboard = await DashboardGenerator(db=self.db).generate(
+            session_id,
+            plan.dashboard_title or DASHBOARD_TITLE,
+            _arrange(tiles) if tiles else [fallback],
+            template_id=template_id,
+        )
+        # Плитки уходят сразу в событии: фронт рисует превью без GET.
+        # exclude_none убирает snapshot_data (в payload он None) и другие
+        # пустые поля — снимок данных в SSE не передаётся.
+        payload = DashboardPayload.from_dashboard(dashboard)
+        return {"type": "dashboard", "data": payload.model_dump(exclude_none=True)}
+
+    async def _dashboard_tile(
+        self, planned: DashboardTilePlan, table: str, titles: dict[str, str]
+    ) -> DashboardTile:
+        requested = "kpi" if planned.is_kpi and planned.chart_type == "auto" else planned.chart_type
+        records = self.db.to_records(table, limit=2)
+        chart_type = select_chart(planned.title, table, requested, records)
+        spec = build_vega_spec(chart_type, table, db=self.db, titles=titles, title=planned.title)
+        built = spec["usermeta"]["chart_type"]
+        insight = None
+        if planned.insight_needed:
+            try:
+                insight = await self.insight_gen.generate_tile_insight(planned.title, table, built)
+            except Exception:
+                logger.exception("    плитка %r: вывод не построен", planned.title)
+        return DashboardTile(
+            title=planned.title,
+            spec=spec,
+            source_step_id=planned.step_id,
+            result_table=table,
+            insight=insight or None,
+            is_kpi=planned.is_kpi or built == "kpi",
+        )
 
     async def _apply_recovery(
         self,
@@ -693,6 +759,9 @@ class AgentOrchestrator:
                 final_viz=pending.get("final_viz", "auto"),
                 dashboard_requested=pending.get("dashboard_requested", False),
                 result_step=None if result_step == failed_step_id else result_step,
+                dashboard_title=pending.get("dashboard_title"),
+                template_id=pending.get("template_id"),
+                dashboard_tiles=pending.get("dashboard_tiles") or [],
             )
             return await self._execute_plan(
                 memory,
@@ -827,3 +896,38 @@ def _describe_executed(
     if observed is not None:
         lines.append(f"Результат $step_{steps[-1].step_id}: {observed}")
     return "\n".join(lines) or "нет"
+
+
+def _arrange(tiles: list[DashboardTile]) -> list[DashboardTile]:
+    kpis = [tile for tile in tiles if tile.is_kpi]
+    charts = [tile for tile in tiles if not tile.is_kpi]
+    kpis_per_row = GRID_COLUMNS // KPI_WIDTH
+    charts_per_row = GRID_COLUMNS // CHART_WIDTH
+    kpi_rows = -(-len(kpis) // kpis_per_row)
+    placed = [
+        tile.model_copy(
+            update={
+                "layout": {
+                    "x": position % kpis_per_row * KPI_WIDTH,
+                    "y": position // kpis_per_row * KPI_HEIGHT,
+                    "w": KPI_WIDTH,
+                    "h": KPI_HEIGHT,
+                }
+            }
+        )
+        for position, tile in enumerate(kpis)
+    ]
+    placed.extend(
+        tile.model_copy(
+            update={
+                "layout": {
+                    "x": position % charts_per_row * CHART_WIDTH,
+                    "y": kpi_rows * KPI_HEIGHT + position // charts_per_row * CHART_HEIGHT,
+                    "w": CHART_WIDTH,
+                    "h": CHART_HEIGHT,
+                }
+            }
+        )
+        for position, tile in enumerate(charts)
+    )
+    return placed
