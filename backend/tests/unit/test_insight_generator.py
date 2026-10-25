@@ -80,3 +80,9 @@ def test_series_shape_counts_the_whole_table(db):
     llm = PromptSpy()
     asyncio.run(InsightGenerator(llm=llm, db=db).generate("Сколько?", "temp_result_v4"))
     assert "Результат — 471 строк" in llm.prompt
+
+
+def test_prompt_asks_for_a_full_sentence_not_a_bare_number(db):
+    llm = PromptSpy()
+    asyncio.run(InsightGenerator(llm=llm, db=db).generate("Сколько?", "temp_result_v1"))
+    assert "Голое число или" in llm.prompt
