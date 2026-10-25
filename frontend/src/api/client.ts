@@ -5,6 +5,7 @@
  * При ошибках сети или бэкенда выбрасывается ApiError.
  */
 import type { ChatStreamEvent } from "@/types/chat";
+import { filenameFromDisposition } from "@/lib/download";
 import type { Datasource, DatasourceDbRequest, SessionResponse } from "@/types/datasource";
 import type {
   DashboardConfig,
@@ -487,23 +488,59 @@ export async function recalculateDashboard(id: string): Promise<DashboardConfig>
 }
 
 /** Выгрузка артефактов (Excel / PDF). */
+export interface ExportPayload {
+  session_id: string;
+  format: "xlsx" | "pdf";
+  /** Ссылка на temp_result_vN в DuckDB (обязательна для Excel). */
+  result_ref?: string | null;
+  /** Вопрос пользователя — для PDF-отчёта (E-01). */
+  question?: string;
+  /** Заголовок инсайта — для PDF-отчёта (E-01). */
+  headline?: string;
+  /** Детали инсайта — для PDF-отчёта (E-01). */
+  details?: string[];
+  /** Vega-Lite спека графика — для картинки в PDF (E-01). */
+  spec?: Record<string, unknown>;
+}
+
+export interface ExportResult {
+  blob: Blob;
+  /** Имя из Content-Disposition либо запасное. */
+  filename: string;
+}
+
 export async function exportArtifact(
-  sessionId: string,
-  format: "xlsx" | "pdf",
-  resultRef?: string,
-): Promise<Blob> {
+  payload: ExportPayload,
+  fallbackName?: string,
+): Promise<ExportResult> {
+  const { session_id, format, result_ref, ...insight } = payload;
+  const fallback = fallbackName ?? `agent_export.${format}`;
   if (isMockMode()) {
-    const content = `Экспорт дашборда (${format.toUpperCase()})\nСессия: ${sessionId}\nДата: ${new Date().toLocaleString("ru-RU")}`;
-    return new Blob([content], { type: format === "xlsx" ? "application/vnd.ms-excel" : "application/pdf" });
+    const content = `Экспорт (${format.toUpperCase()})\nСессия: ${session_id}\nДата: ${new Date().toLocaleString("ru-RU")}`;
+    return {
+      blob: new Blob([content], {
+        type: format === "xlsx" ? "application/vnd.ms-excel" : "application/pdf",
+      }),
+      filename: fallback,
+    };
   }
   try {
     const res = await fetch(`${API}/artifacts/export`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ session_id: sessionId, format, result_ref: resultRef || null }),
+      body: JSON.stringify({
+        session_id,
+        format,
+        result_ref: result_ref || null,
+        ...insight,
+      }),
     });
     if (!res.ok) throw await parseApiError(res);
-    return await res.blob();
+    const blob = await res.blob();
+    return {
+      blob,
+      filename: filenameFromDisposition(res.headers.get("Content-Disposition"), fallback),
+    };
   } catch (err) {
     throw toApiError(err);
   }

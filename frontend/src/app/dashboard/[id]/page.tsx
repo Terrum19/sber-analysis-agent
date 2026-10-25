@@ -22,11 +22,15 @@ import DashboardTile from "@/components/canvas/DashboardTile";
 import Icon from "@/components/ui/Icon";
 import ZoomControl from "@/components/ui/ZoomControl";
 import ItemActionMenu from "@/components/layout/ItemActionMenu";
-import { MIN_SIZE, applyGridLayout, isKpiTile, tileGridLayout } from "@/lib/tileLayout";
+import { MIN_SIZE, STACK_BELOW, applyGridLayout, isKpiTile, tileGridLayout } from "@/lib/tileLayout";
 import { CHART_TYPES, chartTypeOf, withChartType, type ChartType } from "@/lib/chartTypes";
 import { dashboardSnapshotAt } from "@/lib/dashboard";
 import FitGrid from "@/components/canvas/FitGrid";
 import { useOpenArtifact } from "@/hooks/useOpenArtifact";
+import { useAskAgent } from "@/hooks/useAskAgent";
+import { useElementSize } from "@/hooks/useElementSize";
+import { drillQuestion, type ChartSelection } from "@/lib/chartSelection";
+import { downloadBlob } from "@/lib/download";
 import { useSessionStore } from "@/store/sessionStore";
 import { useUiStore } from "@/store/uiStore";
 import { useDateLocale, useT } from "@/i18n/useT";
@@ -41,6 +45,10 @@ export default function DashboardPage({ params }: { params: { id: string } }) {
   const dateLocale = useDateLocale();
   const zoom = useUiStore((s) => s.zoom);
   const openArtifact = useOpenArtifact();
+  const askAgent = useAskAgent();
+  // На узком экране плитки идут одной колонкой, drag/resize и раскладка отключены.
+  const { ref: pageBodyRef, width: pageWidth } = useElementSize<HTMLDivElement>();
+  const stack = pageWidth > 0 && pageWidth * zoom < STACK_BELOW;
   const [config, setConfig] = useState<DashboardConfig | null>(null);
   const [loading, setLoading] = useState(true);
   const [notFound, setNotFound] = useState(false);
@@ -234,6 +242,14 @@ export default function DashboardPage({ params }: { params: { id: string } }) {
     markDirty();
   }
 
+  /** «Дообследовать»: вопрос агенту в чат сессии дашборда (F-09). */
+  function handleElaborate(index: number, selection?: ChartSelection) {
+    if (!config || !config.session_id) return;
+    const tile = config.tiles[index];
+    if (!tile) return;
+    askAgent(config.session_id, drillQuestion(t, tile.title, selection));
+  }
+
   function handleAddKpi() {
     if (!config) return;
     const newKpi: DashboardTileType = {
@@ -249,10 +265,10 @@ export default function DashboardPage({ params }: { params: { id: string } }) {
     markDirty();
   }
 
-  const gridLayout: Layout[] = tileGridLayout(config?.tiles || [], isKpiTile);
+  const gridLayout: Layout[] = tileGridLayout(config?.tiles || [], isKpiTile, { stack });
 
   function handleLayoutChange(newLayout: Layout[]) {
-    if (!isEditing || !config) return;
+    if (!isEditing || !config || stack) return;
     const tiles = applyGridLayout(config.tiles, newLayout);
     const changed = tiles.some((tile, i) => {
       const before = config.tiles[i]?.layout;
@@ -303,15 +319,20 @@ export default function DashboardPage({ params }: { params: { id: string } }) {
     setIsExporting(format);
     setExportMenuOpen(false);
     try {
-      // Excel — по таблице результата последнего графика с ней (temp_result_vN)
-      const resultRef = [...config.tiles].reverse().find((tile) => tile.result_table)?.result_table;
-      const blob = await exportArtifact(config.session_id || params.id, format, resultRef);
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement("a");
-      a.href = url;
-      a.download = `${config.title || "dashboard"}.${format}`;
-      a.click();
-      URL.revokeObjectURL(url);
+      // Excel — по таблице результата последнего графика с ней (temp_result_vN);
+      // PDF дополнительно получает спеку и инсайт этой плитки (E-01).
+      const source = [...config.tiles].reverse().find((tile) => tile.result_table);
+      const { blob, filename } = await exportArtifact(
+        {
+          session_id: config.session_id || params.id,
+          format,
+          result_ref: source?.result_table,
+          spec: source?.spec,
+          headline: source?.insight,
+        },
+        `${config.title || "dashboard"}.${format}`,
+      );
+      downloadBlob(blob, filename);
       flash(format === "pdf" ? t("canvas.pdfDone") : t("canvas.xlsxDone"), 3500);
     } catch (err: any) {
       flash(t("canvas.exportError", { msg: err?.detail || err?.message || String(err) }), 3500);
@@ -387,7 +408,7 @@ export default function DashboardPage({ params }: { params: { id: string } }) {
 
   return (
     <WorkspaceShell tab={tab}>
-      <div className="h-full overflow-y-auto">
+      <div ref={pageBodyRef} className="h-full overflow-y-auto">
         <div className="mx-auto max-w-6xl space-y-5 px-6 py-6 md:px-8">
           {/* Заголовок и действия */}
           <div className="flex flex-col justify-between gap-4 border-b border-graphite-800 pb-4 md:flex-row md:items-end">
@@ -565,8 +586,8 @@ export default function DashboardPage({ params }: { params: { id: string } }) {
                   rowHeight={Math.round(60 * zoom)}
                   margin={[16, 16]}
                   containerPadding={[0, 0]}
-                  isDraggable={isEditing}
-                  isResizable={isEditing}
+                  isDraggable={isEditing && !stack}
+                  isResizable={isEditing && !stack}
                   onLayoutChange={handleLayoutChange}
                   useCSSTransforms
                 >
@@ -581,6 +602,7 @@ export default function DashboardPage({ params }: { params: { id: string } }) {
                           onRename={(newTitle) => handleRenameTile(i, newTitle)}
                           onDelete={() => handleDeleteTile(i)}
                           onOpen={() => openArtifact(tile, config.session_id)}
+                          onElaborate={(selection) => handleElaborate(i, selection)}
                           onMenu={(rect) => setMenu({ index: i, rect })}
                         />
                       </div>
@@ -604,6 +626,7 @@ export default function DashboardPage({ params }: { params: { id: string } }) {
           onDelete={() => handleDeleteTile(menu.index)}
           onChartTypeChange={(type) => handleChartTypeChange(menu.index, type as ChartType)}
           onOpen={() => openArtifact(config.tiles[menu.index], config.session_id)}
+          onElaborate={() => handleElaborate(menu.index)}
         />
       )}
     </WorkspaceShell>

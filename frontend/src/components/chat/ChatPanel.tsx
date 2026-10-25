@@ -18,6 +18,7 @@ import ClarificationCard from "@/components/chat/ClarificationCard";
 import StepProgress from "@/components/chat/StepProgress";
 import TableBriefCard from "@/components/chat/TableBriefCard";
 import DashboardPreviewCard from "@/components/chat/DashboardPreviewCard";
+import AnswerExport from "@/components/chat/AnswerExport";
 import { useT } from "@/i18n/useT";
 import type { DashboardTile as DashboardTileType } from "@/types/dashboard";
 import { RECOVERY_SKIP_STEP, applyProgress, type DashboardEvent, type TurnProgress } from "@/types/chat";
@@ -62,6 +63,9 @@ export default function ChatPanel({ sessionId }: Props) {
   const addTile = useSessionStore((s) => s.addTile);
   const registerSession = useSessionStore((s) => s.registerSession);
   const setStreamingSessionId = useSessionStore((s) => s.setStreamingSessionId);
+  const pendingQuestion = useSessionStore((s) => s.pendingQuestions[sessionId]);
+  const consumeQuestion = useSessionStore((s) => s.consumeQuestion);
+  const activeStreamingSessionId = useSessionStore((s) => s.activeStreamingSessionId);
   const database = useSessionDatabase(sessionId);
   const sessionTitle = database?.sessions.find((x) => x.id === sessionId)?.title;
 
@@ -226,6 +230,36 @@ export default function ChatPanel({ sessionId }: Props) {
       }
     };
 
+    // Что показали пользователю: нужно для PDF/Excel ответа (F-10).
+    let answerHeadline = "";
+    let answerDetails: string[] = [];
+    let answerSpec: Record<string, unknown> | undefined;
+    let answerResultTable: string | undefined;
+    const saveAnswerMeta = () => {
+      if (!answerHeadline && answerDetails.length === 0 && !answerSpec && !answerResultTable) {
+        return;
+      }
+      const all = useSessionStore.getState().messages;
+      const last = all[all.length - 1];
+      if (
+        !last ||
+        last.role !== "agent" ||
+        last.failed ||
+        last.clarification ||
+        last.refusal
+      ) {
+        return;
+      }
+      updateLastMessage({
+        answer: {
+          headline: answerHeadline || undefined,
+          details: answerDetails.length > 0 ? answerDetails : undefined,
+          spec: answerSpec,
+          result_table: answerResultTable,
+        },
+      });
+    };
+
     const stop = streamChat(
       sessionId,
       q,
@@ -233,6 +267,7 @@ export default function ChatPanel({ sessionId }: Props) {
         if (event.type === "done") {
           streamFinished = true;
           finishProgress();
+          saveAnswerMeta();
         } else if (event.type === "progress") {
           if (!progress) {
             progress = applyProgress({ planning: false, steps: [], started_at: Date.now() }, event.data);
@@ -255,15 +290,29 @@ export default function ChatPanel({ sessionId }: Props) {
           addMessage({ role: "agent", content: event.data.reason || t("chat.refusal"), refusal: event.data });
         } else if (event.type === "text") {
           const raw = event as any;
+          const headline = event.data?.headline || raw.headline;
+          if (typeof headline === "string" && headline) answerHeadline = headline;
           const content = event.data?.headline || event.data?.chunk || raw.headline || raw.chunk || "";
           if (content) appendText(content);
           const details = event.data?.details || raw.details;
           if (details && Array.isArray(details)) {
-            appendText("\n\n" + details.map((d: string) => `• ${d}`).join("\n"));
+            answerDetails = details.filter((d: unknown): d is string => typeof d === "string");
+            if (answerDetails.length > 0) {
+              appendText("\n\n" + answerDetails.map((d: string) => `• ${d}`).join("\n"));
+            }
           }
         } else if (event.type === "chart") {
           answerStarted = false;
           const chartData = { ...((event.data || (event as any)) as any), tile_id: `chart-${Date.now().toString(36)}` };
+          if (typeof chartData.caption === "string" && chartData.caption) {
+            answerHeadline = chartData.caption;
+          }
+          if (chartData.spec && typeof chartData.spec === "object") {
+            answerSpec = chartData.spec as Record<string, unknown>;
+          }
+          if (typeof chartData.result_table === "string") {
+            answerResultTable = chartData.result_table;
+          }
           // График — на правую панель, в ленте только ссылка на него
           addTile(chartTile(chartData, t("chat.chartDefault")));
           setCanvasOpen(true);
@@ -325,6 +374,32 @@ export default function ChatPanel({ sessionId }: Props) {
       setStreamingSessionId(null);
     };
   }
+
+  // Вопрос извне (клик по графику / «Дообследовать», F-09): отправляем, когда
+  // таблица сессии уже известна и агент свободен. handledQuestionRef защищает
+  // от повторной отправки в StrictMode и при ре-рендерах.
+  const sendQuestionRef = useRef(sendQuestion);
+  sendQuestionRef.current = sendQuestion;
+  const handledQuestionRef = useRef<string | null>(null);
+
+  useEffect(() => {
+    if (!pendingQuestion) {
+      handledQuestionRef.current = null;
+      return;
+    }
+    if (handledQuestionRef.current === pendingQuestion.id) return;
+    if (!activeTable || streaming || activeStreamingSessionId) return;
+    handledQuestionRef.current = pendingQuestion.id;
+    consumeQuestion(sessionId, pendingQuestion.id);
+    sendQuestionRef.current(pendingQuestion.text);
+  }, [
+    pendingQuestion,
+    activeTable,
+    streaming,
+    activeStreamingSessionId,
+    consumeQuestion,
+    sessionId,
+  ]);
 
   function handleOpenDashboard(dashboardId: string) {
     router.push(`/dashboard/${dashboardId}`);
@@ -561,6 +636,27 @@ export default function ChatPanel({ sessionId }: Props) {
                     onOpenCanvas={() => handleLoadToCanvas(m.dashboard!)}
                   />
                 )}
+
+                {/* Экспорт ответа: Excel по таблице результата, PDF по инсайту и спеке */}
+                {!m.failed &&
+                  !m.progress &&
+                  !m.clarification &&
+                  (m.chart || m.answer) && (
+                    <AnswerExport
+                      sessionId={sessionId}
+                      question={
+                        messages
+                          .slice(0, i)
+                          .reverse()
+                          .find((x) => x.role === "user")?.content
+                      }
+                      headline={m.answer?.headline ?? m.chart?.caption}
+                      details={m.answer?.details}
+                      spec={m.answer?.spec ?? m.chart?.spec}
+                      resultTable={m.answer?.result_table ?? m.chart?.result_table}
+                      compact
+                    />
+                  )}
               </div>
               <span className="mt-1 text-[10px] text-graphite-500 px-1">
                 {m.timestamp || ""}

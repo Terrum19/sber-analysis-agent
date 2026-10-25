@@ -37,6 +37,13 @@ export interface ChatMessage {
   failedQuestion?: string;
   /** Подсказки для уточнения/повтора (если backend прислал clarification_needed). */
   suggestions?: string[];
+  /** Что показали пользователю — для экспорта ответа (F-10). */
+  answer?: {
+    headline?: string;
+    details?: string[];
+    spec?: Record<string, unknown>;
+    result_table?: string;
+  };
 }
 
 export interface SessionItem {
@@ -91,7 +98,16 @@ interface SessionState {
   sessionTableCache: Record<string, Record<string, SessionTableSnapshot>>;
   /** ID сессии, в которой прямо сейчас генерируется ответ агента. */
   activeStreamingSessionId: string | null;
+  /**
+   * Вопросы, поставленные извне (клик по графику / «Дообследовать»): ChatPanel
+   * забирает их и отправляет сам, когда сессия готова. В localStorage не пишутся.
+   */
+  pendingQuestions: Record<string, { id: string; text: string } | undefined>;
   setStreamingSessionId: (sessionId: string | null) => void;
+  /** Поставить вопрос в очередь сессии (F-09). */
+  queueQuestion: (sessionId: string, text: string) => void;
+  /** Убрать вопрос из очереди после отправки. */
+  consumeQuestion: (sessionId: string, id: string) => void;
 
   setSession: (id: string) => void;
   addMessage: (msg: ChatMessage) => void;
@@ -140,8 +156,28 @@ export const useSessionStore = create<SessionState>()(
       sessionCache: {},
       sessionTableCache: {},
       activeStreamingSessionId: null,
+      pendingQuestions: {},
 
       setStreamingSessionId: (sessionId) => set({ activeStreamingSessionId: sessionId }),
+
+      queueQuestion: (sessionId, text) =>
+        set((s) => ({
+          pendingQuestions: {
+            ...s.pendingQuestions,
+            [sessionId]: {
+              id: `q-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`,
+              text,
+            },
+          },
+        })),
+
+      consumeQuestion: (sessionId, id) =>
+        set((s) => {
+          if (s.pendingQuestions[sessionId]?.id !== id) return {};
+          const nextPending = { ...s.pendingQuestions };
+          delete nextPending[sessionId];
+          return { pendingQuestions: nextPending };
+        }),
 
       setSession: (id) =>
         set((s) => {
@@ -385,11 +421,13 @@ export const useSessionStore = create<SessionState>()(
           const nextCache = { ...s.sessionCache };
           const nextActiveTable = { ...s.sessionActiveTable };
           const nextTableCache = { ...s.sessionTableCache };
+          const nextPending = { ...s.pendingQuestions };
           for (const sid of sessionIds) {
             delete nextSessionDb[sid];
             delete nextCache[sid];
             delete nextActiveTable[sid];
             delete nextTableCache[sid];
+            delete nextPending[sid];
           }
           const isActiveDeleted = s.sessionId ? sessionIds.includes(s.sessionId) : false;
           const isStreamingDeleted = s.activeStreamingSessionId ? sessionIds.includes(s.activeStreamingSessionId) : false;
@@ -401,6 +439,7 @@ export const useSessionStore = create<SessionState>()(
             sessionCache: nextCache,
             sessionActiveTable: nextActiveTable,
             sessionTableCache: nextTableCache,
+            pendingQuestions: nextPending,
             ...(isActiveDeleted ? { sessionId: null, messages: [], tiles: [], selectedTile: null } : {}),
             ...(isStreamingDeleted ? { activeStreamingSessionId: null } : {}),
             ...(isDatasourceDeleted ? { datasource: null, datasourceTitle: null } : {}),
@@ -502,6 +541,8 @@ export const useSessionStore = create<SessionState>()(
           delete nextActiveTable[sessionId];
           const nextTableCache = { ...s.sessionTableCache };
           delete nextTableCache[sessionId];
+          const nextPending = { ...s.pendingQuestions };
+          delete nextPending[sessionId];
           const isActiveDeleted = s.sessionId === sessionId;
           const isStreamingDeleted = s.activeStreamingSessionId === sessionId;
           return {
@@ -510,6 +551,7 @@ export const useSessionStore = create<SessionState>()(
             sessionCache: nextCache,
             sessionActiveTable: nextActiveTable,
             sessionTableCache: nextTableCache,
+            pendingQuestions: nextPending,
             ...(isActiveDeleted ? { sessionId: null, messages: [], tiles: [], selectedTile: null } : {}),
             ...(isStreamingDeleted ? { activeStreamingSessionId: null } : {}),
           };
