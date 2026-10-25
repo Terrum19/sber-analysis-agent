@@ -21,6 +21,7 @@ H-C1 (прошлые шаги видел только вопрос-продол�
 """
 
 import re
+from datetime import date, datetime
 
 from app.core.data.duckdb_manager import DuckDBManager
 from app.core.tools.base import identifier
@@ -106,12 +107,19 @@ _NUMERIC = {
 
 
 def insight_facts(db: DuckDBManager, table: str, shown: int) -> str:
-    """Число строк и итоги числовых колонок результата — посчитанные SQL, а не LLM."""
+    """Число строк и итоги числовых колонок результата — посчитанные SQL, а не LLM.
+
+    У минимума и максимума подписана строка, где они достигаются (первая
+    нечисловая колонка: период, регион, id): «лучший месяц» читается из
+    фактов, а не поиском по строкам.
+    """
+    columns = db.query(f"DESCRIBE {identifier(table)}")
     numeric = [
         col["column_name"]
-        for col in db.query(f"DESCRIBE {identifier(table)}")
+        for col in columns
         if str(col["column_type"]).upper().split("(")[0] in _NUMERIC
     ]
+    label = next((c["column_name"] for c in columns if c["column_name"] not in numeric), None)
     metrics = ["COUNT(*) AS n"]
     for i, name in enumerate(numeric):
         column = identifier(name)
@@ -121,14 +129,44 @@ def insight_facts(db: DuckDBManager, table: str, shown: int) -> str:
             f"MIN({column}) AS lo{i}",
             f"MAX({column}) AS hi{i}",
         ]
+        if label is not None:
+            metrics += [
+                f"arg_min({identifier(label)}, {column}) AS at_lo{i}",
+                f"arg_max({identifier(label)}, {column}) AS at_hi{i}",
+            ]
     row = db.query(f"SELECT {', '.join(metrics)} FROM {identifier(table)}")[0]
     lines = [f"- строк в результате: {row['n']} (показано модели: {min(row['n'], shown)})"]
-    lines += [
-        f"- {name}: сумма {row[f's{i}']}, среднее {_round(row[f'a{i}'])}, "
-        f"мин {row[f'lo{i}']}, макс {row[f'hi{i}']}"
-        for i, name in enumerate(numeric)
-    ]
+    for i, name in enumerate(numeric):
+        low, high = f"мин {row[f'lo{i}']}", f"макс {row[f'hi{i}']}"
+        if label is not None and row["n"] > 1:
+            low += f" ({label} = {format_value(row[f'at_lo{i}'])})"
+            high += f" ({label} = {format_value(row[f'at_hi{i}'])})"
+        lines.append(
+            f"- {name}: сумма {row[f's{i}']}, среднее {_round(row[f'a{i}'])}, {low}, {high}"
+        )
     return "\n".join(lines)
+
+
+def format_value(value: object) -> str:
+    """Значение для промпта: даты в ISO, полночь без времени, дробные — до сотых."""
+    if isinstance(value, datetime):
+        return (
+            value.date().isoformat()
+            if value.time() == datetime.min.time()
+            else value.isoformat(" ")
+        )
+    if isinstance(value, date):
+        return value.isoformat()
+    return str(_round(value))
+
+
+def format_rows(records: list[dict]) -> str:
+    """Строки результата компактной таблицей «a | b» вместо repr Python-объектов."""
+    if not records:
+        return "пусто"
+    header = " | ".join(records[0])
+    rows = [" | ".join(format_value(value) for value in record.values()) for record in records]
+    return "\n".join([header, *rows])
 
 
 def _round(value):
