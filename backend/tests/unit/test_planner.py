@@ -3,8 +3,9 @@
 import pytest
 
 from app.core.agent.planner import PlanInvalid, StepPlanner, apply_template, validate_plan
+from app.core.dashboards.templates import match
 from app.core.llm.fake_client import FakeLLM
-from app.core.llm.prompts.step_planner import NO_TEMPLATE_TILES, NO_TILES
+from app.core.llm.prompts.step_planner import NO_TILES
 from app.models.research_step import DashboardTilePlan, ResearchPlan, ResearchStep
 
 SALES_COLUMNS = ["order_date", "order_id", "product", "quantity", "price"]
@@ -230,22 +231,57 @@ def test_matching_columns_set_template_id_and_template_tiles():
     assert plan.dashboard_tiles[0].insight_needed is True
 
 
+def template_reply(*titles: str) -> ResearchPlan:
+    return ResearchPlan(
+        steps=[total(number, "quantity") for number in range(len(titles))],
+        dashboard_tiles=[tile(title, number) for number, title in enumerate(titles)],
+    )
+
+
 def test_template_applies_even_when_the_llm_plans_no_dashboard():
     import asyncio
 
-    reply = ResearchPlan(
-        steps=[total(0, "quantity", ["order_date"]), total(1, "quantity", ["product"])],
-        dashboard_tiles=[tile("Выручка по кварталам", 0), tile("Топ товаров по выручке", 1)],
-    )
-    llm = ScriptedLLM(ResearchPlan(steps=[total(0, "quantity")]), reply)
+    titles = [planned.title for planned in match(SALES_COLUMNS).tiles]
+    llm = ScriptedLLM(ResearchPlan(steps=[total(0, "quantity")]), template_reply(*titles))
     plan = asyncio.run(StepPlanner(llm=llm).plan("Сводка продаж", {"columns": SALES_COLUMNS}))
-    assert NO_TEMPLATE_TILES in llm.prompts[1]
+    assert "в dashboard_tiles нет плиток шаблона" in llm.prompts[1]
     assert plan.dashboard_requested
     assert plan.template_id == "sales_quarterly"
-    assert [planned.title for planned in plan.dashboard_tiles] == [
-        "Выручка по кварталам",
-        "Топ товаров по выручке",
-    ]
+    assert [planned.title for planned in plan.dashboard_tiles] == titles
+
+
+def test_missing_template_tiles_are_asked_for_by_name():
+    import asyncio
+
+    titles = [planned.title for planned in match(SALES_COLUMNS).tiles]
+    llm = ScriptedLLM(template_reply(*titles[:2]), template_reply(*titles))
+    plan = asyncio.run(StepPlanner(llm=llm).plan("Дашборд продаж", {"columns": SALES_COLUMNS}))
+    assert all(f"«{title}»" in llm.prompts[1] for title in titles[2:])
+    assert f"«{titles[0]}»" not in llm.prompts[1].split("нет плиток шаблона")[1]
+    assert plan.template_id == "sales_quarterly"
+    assert len(plan.dashboard_tiles) == len(titles)
+
+
+def test_template_left_incomplete_after_the_reask_degrades_to_a_plain_dashboard():
+    import asyncio
+
+    titles = [planned.title for planned in match(SALES_COLUMNS).tiles]
+    llm = ScriptedLLM(template_reply(*titles[:2]), template_reply(*titles[:2]))
+    plan = asyncio.run(StepPlanner(llm=llm).plan("Дашборд продаж", {"columns": SALES_COLUMNS}))
+    assert plan.dashboard_requested
+    assert plan.template_id is None
+    assert [planned.title for planned in plan.dashboard_tiles] == titles[:2]
+
+
+def test_template_without_any_tiles_after_the_reask_keeps_the_answer():
+    import asyncio
+
+    empty = ResearchPlan(steps=[total(0, "quantity")])
+    llm = ScriptedLLM(empty, empty.model_copy(deep=True))
+    plan = asyncio.run(StepPlanner(llm=llm).plan("Дашборд продаж", {"columns": SALES_COLUMNS}))
+    assert plan.dashboard_requested
+    assert plan.template_id is None
+    assert plan.dashboard_tiles == []
 
 
 def test_template_is_not_used_for_a_question_without_a_dashboard():
@@ -296,8 +332,6 @@ def test_renumbering_steps_keeps_tile_references():
 
 
 def test_template_pairs_renamed_tiles_by_position_only_when_counts_match():
-    from app.core.dashboards.templates import match
-
     template = match(SALES_COLUMNS)
     renamed = [tile(f"Плитка {number}", number) for number in range(len(template.tiles))]
     full = ResearchPlan(steps=[], dashboard_requested=True, dashboard_tiles=list(renamed))

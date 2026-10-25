@@ -1,5 +1,20 @@
 2026-10-25  mb6ockatf  <smokenmirror@tutamail.com>
 
+	Дашборд по шаблону: все плитки шаблона или без шаблона (#43).
+	* backend/app/core/agent/planner.py (template_gap): Новая.  Плитки
+	шаблона, которых нет в плане.
+	(_validate_tiles): Недостающие плитки шаблона — ошибка
+	NO_TEMPLATE_TILES с их названиями для переспроса.
+	(StepPlanner.plan): Если после переспроса не хватает только плиток
+	шаблона, template_id сбрасывается и план принимается: ход не
+	обрывается, дашборд собирается из того, что есть.
+	* backend/app/core/llm/prompts/step_planner.py (NO_TEMPLATE_TILES):
+	Называет недостающие плитки.
+	* backend/tests/unit/test_planner.py: Тесты того же.
+	* docs/visualization.md: То же.
+
+2026-10-25  mb6ockatf  <smokenmirror@tutamail.com>
+
 	Плитки дашборда: KPI только по одному числу, шаблон без сдвига плиток.
 	* backend/app/core/agent/orchestrator.py
 	(AgentOrchestrator._dashboard_tile): Плитка KPI по результату не из

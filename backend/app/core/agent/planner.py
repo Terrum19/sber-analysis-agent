@@ -111,6 +111,10 @@ class StepPlanner:
             fix = PLAN_ERRORS.format(plan=_plan_json(plan), errors="\n".join(errors))
             plan = await self._ask(prompt + fix, start, template)
             errors = validate_plan(plan, known_steps=start)
+        if errors and errors == [template_gap(plan)]:
+            logger.warning("<<< StepPlanner.plan() шаблон не собран, дашборд без шаблона")
+            plan.template_id = None
+            errors = []
         if errors:
             logger.warning("<<< StepPlanner.plan() план отклонён после переспроса: %s", errors)
             raise PlanInvalid(errors)
@@ -225,9 +229,23 @@ def _validate_tiles(plan: ResearchPlan, seen: set[int]) -> list[str]:
         for tile in plan.dashboard_tiles
         if tile.step_id not in seen
     ]
-    if plan.dashboard_requested and not plan.dashboard_tiles:
-        errors.append(NO_TEMPLATE_TILES if plan.template_id else NO_TILES)
+    gap = template_gap(plan)
+    if gap is not None:
+        errors.append(gap)
+    elif plan.dashboard_requested and not plan.dashboard_tiles:
+        errors.append(NO_TILES)
     return errors
+
+
+def template_gap(plan: ResearchPlan) -> str | None:
+    template = next((item for item in templates.TEMPLATES if item.id == plan.template_id), None)
+    if template is None:
+        return None
+    planned = {tile.title for tile in plan.dashboard_tiles}
+    missing = [tile.title for tile in template.tiles if tile.title not in planned]
+    if not missing:
+        return None
+    return NO_TEMPLATE_TILES.format(missing=", ".join(f"«{title}»" for title in missing))
 
 
 def _validate_step(step: ResearchStep, seen: set[int]) -> list[str]:
