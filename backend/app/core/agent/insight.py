@@ -80,8 +80,10 @@ class InsightGenerator:
         # Число строк всей таблицы, а не показанных модели (их не больше SHOWN_ROWS).
         rows = db.query(f"SELECT COUNT(*) AS n FROM {identifier(result_table)}")[0]["n"]
         shape = SINGLE_ROW if rows <= 1 else MANY_ROWS.format(rows=rows)
-        prompt += INSIGHT_RULES.format(plan=describe_steps(steps or []), facts=facts, shape=shape)
-        return await self._grounded(prompt, f"{question}\n{shown}\n{extra}\n{facts}")
+        plan = describe_steps(steps or [])
+        prompt += INSIGHT_RULES.format(plan=plan, facts=facts, shape=shape)
+        # Числа условий из шагов плана («> 150», «2024») — тоже опора, не выдумка.
+        return await self._grounded(prompt, f"{question}\n{shown}\n{extra}\n{facts}\n{plan}")
 
     async def _grounded(self, prompt: str, sources: str) -> Insight:
         """H-Q3: число в headline, которого нет в sources, — один переспрос."""

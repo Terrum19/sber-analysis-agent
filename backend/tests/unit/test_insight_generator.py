@@ -86,3 +86,30 @@ def test_prompt_asks_for_a_full_sentence_not_a_bare_number(db):
     llm = PromptSpy()
     asyncio.run(InsightGenerator(llm=llm, db=db).generate("Сколько?", "temp_result_v1"))
     assert "Голое число или" in llm.prompt
+
+
+def test_numbers_from_plan_conditions_are_grounded(db):
+    from app.models.insight import Insight
+    from app.models.research_step import ResearchStep
+
+    class Scripted(PromptSpy):
+        calls = 0
+
+        async def complete_structured(self, system, user, schema):
+            self.calls += 1
+            return Insight(headline="В декабре 2024 событий с суммой > 150 — 41", details=[])
+
+    db.execute("CREATE TABLE temp_result_v5 AS SELECT 41 AS n")
+    steps = [
+        ResearchStep(
+            step_id=0,
+            tool="filter_rows",
+            arguments={"column": "amount", "operator": ">", "value": 150},
+            purpose="Сумма больше 150 в декабре 2024",
+        )
+    ]
+    llm = Scripted()
+    asyncio.run(
+        InsightGenerator(llm=llm, db=db).generate("Сколько?", "temp_result_v5", steps=steps)
+    )
+    assert llm.calls == 1
