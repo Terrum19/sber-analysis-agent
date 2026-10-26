@@ -93,7 +93,17 @@ class ResearchPlan(BaseModel):
 
     steps: list[ResearchStep] = Field(default_factory=list)
     final_viz: Literal[
-        "bar", "line", "area", "scatter", "histogram", "box", "heatmap", "table", "kpi", "auto"
+        "bar",
+        "line",
+        "area",
+        "scatter",
+        "histogram",
+        "box",
+        "heatmap",
+        "table",
+        "kpi",
+        "auto",
+        "none",
     ] = "auto"
     dashboard_requested: bool = False
     # Шаг, чей результат идёт в ответ и на график (None — последний шаг).

@@ -69,9 +69,25 @@ from app.core.memory.profile_memory import ProfileMemory
 from app.core.memory.session_memory import SessionMemory
 from app.core.memory.state_cache import StateCache
 from app.core.sandbox.wasm_runtime import SandboxError
+from app.core.tools.base import identifier
+from app.core.tools.registry import tool_registry
 from app.core.viz.chart_morph import detect_morph, morph
-from app.core.viz.chart_selector import is_single_number, select_chart
-from app.core.viz.vega_spec_builder import SPEC_ROW_LIMIT, build_vega_spec, column_aliases
+from app.core.viz.chart_selector import (
+    MIN_HISTOGRAM_VALUES,
+    NO_CHART,
+    asks_distribution,
+    fits,
+    histogram_column,
+    is_single_number,
+    select_chart,
+)
+from app.core.viz.vega_spec_builder import (
+    SPEC_ROW_LIMIT,
+    build_vega_spec,
+    chart_title,
+    column_aliases,
+    infer_field_types,
+)
 from app.models.research_step import DashboardTilePlan, ResearchPlan, ResearchStep
 
 NO_TABLE_MESSAGE = "Сначала подключите данные"
@@ -100,6 +116,8 @@ UNSUPPORTED_SUGGESTIONS = [
     "Пропустить этот шаг и продолжить",
 ]
 
+DISTRIBUTION_TOOL = "describe_stats"
+
 # Сколько раз план можно достроить после lookup-шагов (защита от циклов).
 MAX_REPLANS = 2
 # Сколько строк результата lookup-шага показать планировщику.
@@ -124,6 +142,8 @@ class Execution:
     plan: ResearchPlan = field(default_factory=ResearchPlan)
     # Выполненные шаги: вывод знает, какие фильтры и периоды уже применены.
     steps: list[ResearchStep] = field(default_factory=list)
+    result_purpose: str = ""
+    result_kind: str = "transform"
 
 
 class ClarificationNeeded(Exception):
@@ -330,12 +350,32 @@ class AgentOrchestrator:
             }
 
             stage = "chart"
+            records = self.db.to_records(result_table, limit=SPEC_ROW_LIMIT)
+            view = _requested_view(execution, records)
+            chart_type = select_chart(question, result_table, view, records, titles)
+            if chart_type == NO_CHART:
+                logger.info("<<< run() ответ без графика")
+                memory.finish_turn(
+                    "ok",
+                    headline=insight.headline,
+                    result_table=result_table,
+                    result_columns=self._result_columns(result_table),
+                )
+                yield _done(turn_id)
+                return
             yield _progress_event("chart", "started")
-            # Две строки хватает, чтобы узнать ответ одним числом (kpi).
-            records = self.db.to_records(result_table, limit=2)
-            chart_type = select_chart(question, result_table, execution.final_viz, records)
+            if chart_type == "histogram":
+                result_table, records = self._histogram_values(
+                    question, result_table, records, titles
+                )
             logger.info(">>> run() построение графика chart_type=%s", chart_type)
-            spec = build_vega_spec(chart_type, result_table, db=self.db, titles=titles)
+            spec = build_vega_spec(
+                chart_type,
+                result_table,
+                data=records,
+                titles=titles,
+                title=execution.result_purpose or chart_title(records, titles),
+            )
             logger.info(
                 "<<< run() график построен: mark=%s строк=%d",
                 spec.get("mark", "?"),
@@ -463,6 +503,7 @@ class AgentOrchestrator:
         """
         source = source_table or input_table
         tables = dict(step_tables or {})
+        inputs: dict[int, str] = {}
         current = input_table
         steps = list(plan.steps)
         replans = 0
@@ -528,6 +569,7 @@ class AgentOrchestrator:
             steps[index] = step
             kind = tool_kind(step)
             logger.info("<<< _execute_plan шаг %d УСПЕШЕН result_table=%s", step.step_id, table)
+            inputs[step.step_id] = resolve_input(step, current, tables, source)
             tables[step.step_id] = table
             memory.record_step(step)
             if kind == "transform":
@@ -552,7 +594,7 @@ class AgentOrchestrator:
                 )
 
         logger.info("<<< _execute_plan все шаги завершены $prev=%s", current)
-        return self._finish(plan, steps, tables, fallback=current)
+        return self._finish(plan, steps, tables, fallback=current, question=question, inputs=inputs)
 
     async def _run_step(
         self,
@@ -652,6 +694,8 @@ class AgentOrchestrator:
         steps: list[ResearchStep],
         tables: dict[int, str],
         fallback: str,
+        question: str = "",
+        inputs: dict[int, str] | None = None,
     ) -> Execution:
         """Выбрать таблицу ответа и сопутствующие результаты."""
         executed = [step for step in steps if step.step_id in tables]
@@ -661,12 +705,13 @@ class AgentOrchestrator:
             result_table = tables[executed[-1].step_id]
         else:
             result_table = fallback
+        shown = next((step for step in executed if tables[step.step_id] == result_table), None)
         supporting = [
             (step.purpose or step.tool or f"шаг {step.step_id}", tables[step.step_id])
             for step in executed
             if tool_kind(step) == "analysis" and tables[step.step_id] != result_table
         ]
-        return Execution(
+        execution = Execution(
             result_table=result_table,
             supporting=supporting,
             final_viz=plan.final_viz,
@@ -674,7 +719,59 @@ class AgentOrchestrator:
             tables=dict(tables),
             plan=plan,
             steps=executed,
+            result_purpose=shown.purpose if shown else "",
+            result_kind=tool_kind(shown) if shown else "transform",
         )
+        try:
+            values = self._distribution_values(question, shown, inputs or {})
+        except Exception:
+            # Гистограмма — дополнение: без неё показываем статистики шага.
+            logger.exception("<<< _finish выборка для гистограммы не собрана")
+            values = None
+        if values is None:
+            return execution
+        return Execution(
+            result_table=values,
+            supporting=[(shown.purpose or shown.tool, result_table), *supporting],
+            final_viz="histogram",
+            dashboard_requested=plan.dashboard_requested,
+            tables=dict(tables),
+            plan=plan,
+            steps=executed,
+            result_purpose=shown.purpose,
+        )
+
+    def _distribution_values(
+        self, question: str, shown: ResearchStep | None, inputs: dict[int, str]
+    ) -> str | None:
+        if shown is None or shown.tool != DISTRIBUTION_TOOL or not asks_distribution(question):
+            return None
+        source = inputs.get(shown.step_id)
+        if source is None:
+            return None
+        column = identifier(
+            tool_registry.get(shown.tool).parse_args(shown.columns, shown.arguments).column
+        )
+        present = self.db.query(f"SELECT COUNT({column}) AS present FROM {identifier(source)}")
+        if present[0]["present"] < MIN_HISTOGRAM_VALUES:
+            return None
+        return self.db.save_step_result(
+            source,
+            f"SELECT * FROM (SELECT {column} FROM {identifier(source)} WHERE {column} IS NOT NULL)"
+            f" USING SAMPLE reservoir({SPEC_ROW_LIMIT} ROWS) REPEATABLE (0)",
+        )
+
+    def _histogram_values(
+        self, question: str, result_table: str, records: list[dict], titles: dict[str, str]
+    ) -> tuple[str, list[dict]]:
+        """Оставить для гистограммы одну колонку — ту, о которой спросили."""
+        column = histogram_column(question, infer_field_types(records), titles)
+        if column is None or list(records[0]) == [column]:
+            return result_table, records
+        table = self.db.save_step_result(
+            result_table, f"SELECT {identifier(column)} FROM {identifier(result_table)}"
+        )
+        return table, self.db.to_records(table, limit=SPEC_ROW_LIMIT)
 
     async def _replan_after_lookup(
         self,
@@ -730,11 +827,11 @@ class AgentOrchestrator:
         self, planned: DashboardTilePlan, table: str, titles: dict[str, str]
     ) -> DashboardTile:
         requested = "kpi" if planned.is_kpi and planned.chart_type == "auto" else planned.chart_type
-        records = self.db.to_records(table, limit=2)
-        chart_type = select_chart(planned.title, table, requested, records)
-        if chart_type == "kpi" and not is_single_number(records):
+        records = self.db.to_records(table, limit=SPEC_ROW_LIMIT)
+        if requested == "kpi" and not is_single_number(records):
             logger.warning("    плитка %r: KPI не по одному числу", planned.title)
-            chart_type = select_chart(planned.title, table, "auto", records)
+            requested = "auto"
+        chart_type = select_chart(planned.title, table, requested, records)
         spec = build_vega_spec(chart_type, table, db=self.db, titles=titles, title=planned.title)
         built = spec["usermeta"]["chart_type"]
         insight = None
@@ -902,6 +999,19 @@ class AgentOrchestrator:
             "ok", headline=f"График перестроен: {chart_type}", result_table=last["result_table"]
         )
         return _chart_event(spec, last["title"], last["result_table"])
+
+
+def _requested_view(execution: Execution, records: list[dict]) -> str:
+    if execution.final_viz == NO_CHART and not execution.dashboard_requested:
+        return NO_CHART
+    requested = "auto" if execution.final_viz == NO_CHART else execution.final_viz
+    if execution.result_kind == "transform":
+        return requested
+    # Стат-тест и разведка — строки чисел: таблица. Тренд и сезонность —
+    # ряд по времени: его рисуем линией (или областью, если её просили).
+    if not fits("line", records, infer_field_types(records)):
+        return "table"
+    return requested if requested in ("line", "area") else "line"
 
 
 def _next_step_id(tables: dict[int, str]) -> int:
