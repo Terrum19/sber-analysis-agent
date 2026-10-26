@@ -18,6 +18,8 @@ import ClarificationCard from "@/components/chat/ClarificationCard";
 import StepProgress from "@/components/chat/StepProgress";
 import TableBriefCard from "@/components/chat/TableBriefCard";
 import DashboardPreviewCard from "@/components/chat/DashboardPreviewCard";
+import LlmStatusBanner from "@/components/chat/LlmStatusBanner";
+import { useLlmStatus } from "@/hooks/useLlmStatus";
 import { useT } from "@/i18n/useT";
 import type { DashboardTile as DashboardTileType } from "@/types/dashboard";
 import { RECOVERY_SKIP_STEP, applyProgress, type DashboardEvent, type TurnProgress } from "@/types/chat";
@@ -42,6 +44,9 @@ interface Props {
 export default function ChatPanel({ sessionId }: Props) {
   const router = useRouter();
   const t = useT();
+  const llmStatus = useLlmStatus();
+  // Статус не узнали (бэкенд не ответил) — не блокируем: ошибку покажет сам ход.
+  const llmReady = !llmStatus || llmStatus.state === "ok";
   const setCanvasOpen = useUiStore((s) => s.setCanvasOpen);
   const openArtifact = useOpenArtifact();
   const [input, setInput] = useState("");
@@ -573,6 +578,7 @@ export default function ChatPanel({ sessionId }: Props) {
 
       {/* Поле ввода (как композер Claude Code) */}
       <div className="mx-auto w-full max-w-3xl px-4 pb-4 md:px-8">
+        <LlmStatusBanner status={llmStatus} />
         {!activeTable && (
           <div className="mb-3 flex items-center gap-2 rounded-xl border border-amber-500/30 bg-amber-500/10 px-3.5 py-2.5 text-xs text-amber-200">
             <Icon name="alertTriangle" size={14} className="shrink-0 text-amber-400" />
@@ -607,13 +613,15 @@ export default function ChatPanel({ sessionId }: Props) {
             onKeyDown={(e) => {
               if (e.key === "Enter" && !e.shiftKey) {
                 e.preventDefault();
-                if (activeTable) sendQuestion();
+                if (activeTable && llmReady) sendQuestion();
               }
             }}
             rows={1}
             placeholder={
               !activeTable
                 ? t("chat.noTableWarning")
+                : !llmReady
+                ? t("llm.waiting")
                 : activeClarificationId
                 ? t("chat.clarifyPlaceholder")
                 : t("chat.placeholder")
@@ -632,7 +640,7 @@ export default function ChatPanel({ sessionId }: Props) {
           ) : (
             <button
               onClick={() => sendQuestion()}
-              disabled={!input.trim() || !activeTable}
+              disabled={!input.trim() || !activeTable || !llmReady}
               className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-graphite-100 text-graphite-950 hover:bg-graphite-50 disabled:bg-graphite-700 disabled:text-graphite-500 disabled:cursor-not-allowed transition"
               title={t("chat.send")}
             >

@@ -50,6 +50,9 @@ class Settings(BaseSettings):
     # Контекст модели в токенах. Задаётся на сервере (Ollama — OLLAMA_CONTEXT_LENGTH,
     # vLLM — --max-model-len), здесь — сколько ждём; от него считается бюджет промпта.
     llm_num_ctx: int = 16384
+    # Ollama: скачать LLM_MODEL, если её нет, и работать с её вариантом с
+    # контекстом llm_num_ctx (core/llm/ollama_setup.py). Другим серверам не мешает.
+    llm_prepare_model: bool = True
     # Символов на токен для оценки длины промпта: с запасом под кириллицу (~2,6).
     llm_chars_per_token: float = 2.5
 

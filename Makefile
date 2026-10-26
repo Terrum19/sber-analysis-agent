@@ -1,4 +1,4 @@
-.PHONY: help hooks install dev up up-gpu down test lint model seed hk-data smoke
+.PHONY: help hooks install dev up up-ollama up-gpu down test lint model seed hk-data smoke
 
 # Значение переменной: из окружения или командной строки make, иначе из .env.
 # .env не подключается через include: так его значения перекрыли бы окружение
@@ -14,9 +14,10 @@ help:
 	@echo "make hk-data  — датасеты хакатона в DuckDB"
 	@echo "make model    — подсказки по запуску LLM"
 	@echo "make dev      — backend + frontend локально"
-	@echo "make up       — docker compose, Ollama на CPU (модель LLM_MODEL)"
-	@echo "make up-gpu   — docker compose, Ollama на GPU NVIDIA (модель LLM_MODEL_GPU)"
-	@echo "make down     — остановить compose, включая Ollama"
+	@echo "make up       — docker compose, Ollama на хосте (модель LLM_MODEL)"
+	@echo "make up-ollama — docker compose с Ollama в контейнере на CPU (модель LLM_MODEL)"
+	@echo "make up-gpu   — docker compose с Ollama в контейнере на GPU NVIDIA (модель LLM_MODEL_GPU)"
+	@echo "make down     — остановить compose, включая Ollama в контейнере"
 	@echo "make test     — pytest"
 	@echo "make lint     — ruff + next lint"
 	@echo "make smoke    — smoke-тест поднятого стека (scripts/smoke.sh, как CI)"
@@ -41,14 +42,20 @@ model:
 dev:
 	bash infra/local-dev.sh
 
+# Ollama в контейнере отвечает по имени ollama в сети compose (docker-compose.yml).
+OLLAMA_IN_COMPOSE = COMPOSE_LLM_BASE_URL=http://ollama:11434/v1
+
 up:
-	docker compose --profile cpu up --build
+	docker compose up --build
+
+up-ollama:
+	$(OLLAMA_IN_COMPOSE) docker compose --profile ollama up --build
 
 up-gpu:
-	LLM_MODEL="$(or $(call env_or_file,LLM_MODEL_GPU),$(call env_or_file,LLM_MODEL))" docker compose --profile gpu up --build
+	$(OLLAMA_IN_COMPOSE) LLM_MODEL="$(or $(call env_or_file,LLM_MODEL_GPU),$(call env_or_file,LLM_MODEL))" docker compose --profile ollama-gpu up --build
 
 down:
-	docker compose --profile cpu --profile gpu down
+	docker compose --profile ollama --profile ollama-gpu --profile integration down
 
 test:
 	cd backend && pytest -q
