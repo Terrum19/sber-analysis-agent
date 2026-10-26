@@ -364,21 +364,6 @@ def test_expect_types_are_validated(expect: dict, message: str) -> None:
         runner.parse_question(entry, set(), "вопрос 1")
 
 
-def test_session_binds_table_with_either_set_table_signature() -> None:
-    class OldMemory:
-        def set_table(self, table, columns):
-            self.bound = (table, columns)
-
-    class NewMemory:
-        def set_table(self, table):
-            self.bound = (table,)
-
-    old, new = OldMemory(), NewMemory()
-    runner.bind_table(old, "sales", ["a"])
-    runner.bind_table(new, "sales", ["a"])
-    assert (old.bound, new.bound) == (("sales", ["a"]), ("sales",))
-
-
 def test_failures_fold_multiline_reasons_into_one_line() -> None:
     question = runner.Question(id="q", scenario=1, dataset="sales", text="?")
     check = runner.Check("value", False, "эталонный SQL не выполнился: Catalog Error\n\nLINE 1: x")
@@ -441,9 +426,9 @@ async def test_follow_up_runs_in_parent_session(sales_db: DuckDBManager, monkeyp
     bound = []
     set_table = SessionMemory.set_table
 
-    def recorded_set_table(memory, table, columns):
+    def recorded_set_table(memory, table):
         bound.append(memory.session_id)
-        set_table(memory, table, columns)
+        set_table(memory, table)
 
     monkeypatch.setattr(SessionMemory, "set_table", recorded_set_table)
     trace = runner.Trace()
@@ -480,7 +465,7 @@ async def test_recording_planner_keeps_plan_and_records_selection(
     sales_db: DuckDBManager,
 ) -> None:
     memory = SessionMemory("selection", db=sales_db)
-    memory.set_table("sales", sales_db.columns("sales"))
+    memory.set_table("sales")
     context = memory.build_context("Какая выручка по категориям?")
     trace = runner.Trace()
     planner = runner.RecordingPlanner(StepPlanner(llm=FakeLLM()), trace)

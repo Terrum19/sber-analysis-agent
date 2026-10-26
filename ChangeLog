@@ -1,5 +1,13 @@
 2026-10-26  mb6ockatf  <smokenmirror@tutamail.com>
 
+	Eval: сессия по API памяти по ходам (#171).
+	* scripts/eval.py (open_session): SessionMemory.set_table(dataset):
+	после #171 колонки в set_table не передаются.
+	(bind_table): Удалена вместе с поддержкой старой сигнатуры.
+	* backend/tests/unit/test_eval_runner.py: То же.
+
+2026-10-26  mb6ockatf  <smokenmirror@tutamail.com>
+
 	Eval: судья в раннере (#57).
 	* scripts/eval.py (judge_turn): Новая.  --judge и --judge-votes:
 	пункты рубрики — проверки judge.<пункт>, неоценённые — в

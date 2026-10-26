@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 import argparse
 import asyncio
-import inspect
 import json
 import logging
 import math
@@ -969,15 +968,8 @@ def open_session(question: Question, dataset: str, db, sessions: dict[str, str])
     if not columns:
         raise LookupError(f"таблицы {dataset} нет в DuckDB (make hk-data)")
     session_id = f"eval-{question.id}-{uuid.uuid4().hex[:8]}"
-    bind_table(SessionMemory(session_id, db=db), dataset, columns)
+    SessionMemory(session_id, db=db).set_table(dataset)
     return session_id
-
-
-def bind_table(memory, dataset: str, columns: list[str]) -> None:
-    if len(inspect.signature(memory.set_table).parameters) >= 2:
-        memory.set_table(dataset, columns)
-    else:
-        memory.set_table(dataset)
 
 
 def turn_id_of(turn: Turn) -> str | None:
