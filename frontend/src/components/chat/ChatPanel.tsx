@@ -9,7 +9,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { getSession, setSessionTable, listTables, streamChat } from "@/api/client";
-import { useSessionStore, useSessionDatabase } from "@/store/sessionStore";
+import { useSessionStore, useSessionDatabase, type ChatMessage } from "@/store/sessionStore";
 import { useCanvasStore } from "@/store/canvasStore";
 import { useUiStore } from "@/store/uiStore";
 import { useOpenArtifact } from "@/hooks/useOpenArtifact";
@@ -18,7 +18,8 @@ import ClarificationCard from "@/components/chat/ClarificationCard";
 import StepProgress from "@/components/chat/StepProgress";
 import TableBriefCard from "@/components/chat/TableBriefCard";
 import DashboardPreviewCard from "@/components/chat/DashboardPreviewCard";
-import AnswerExport from "@/components/chat/AnswerExport";
+import AnswerActions from "@/components/chat/AnswerActions";
+import ReplyQuote from "@/components/chat/ReplyQuote";
 import LlmStatusBanner from "@/components/chat/LlmStatusBanner";
 import { useLlmStatus } from "@/hooks/useLlmStatus";
 import { useT } from "@/i18n/useT";
@@ -36,6 +37,24 @@ function chartTile(chartData: any, fallbackTitle: string): DashboardTileType {
     // Новый график встаёт под существующими: сетка сама поднимет его вверх
     layout: { x: 0, y: 1000, w: 12, h: 5 },
   };
+}
+
+/** Текст ответа для буфера обмена: инсайт и детали, иначе — реплика из ленты. */
+function answerText(m: ChatMessage): string {
+  const lines: string[] = [];
+  if (m.answer?.headline) lines.push(m.answer.headline);
+  if (m.answer?.details?.length) lines.push(...m.answer.details.map((detail) => `• ${detail}`));
+  return lines.length > 0 ? lines.join("\n") : m.content;
+}
+
+/** Короткая выдержка ответа для цитаты (схлопнутые пробелы, обрезка по границе слова). */
+function excerptOf(m: ChatMessage, limit = 170): string {
+  const raw = m.answer?.headline ?? m.chart?.caption ?? m.content ?? "";
+  const text = raw.replace(/\s+/g, " ").trim();
+  if (text.length <= limit) return text;
+  const cut = text.slice(0, limit - 1);
+  const lastSpace = cut.lastIndexOf(" ");
+  return `${(lastSpace > limit * 0.6 ? cut.slice(0, lastSpace) : cut).trimEnd()}…`;
 }
 
 interface Props {
@@ -57,6 +76,12 @@ export default function ChatPanel({ sessionId }: Props) {
   // Сообщение с карточкой уточнения, на которую ещё можно ответить
   const [activeClarificationId, setActiveClarificationId] = useState<string | null>(null);
   const messagesEndRef = useRef<HTMLDivElement | null>(null);
+  const inputRef = useRef<HTMLTextAreaElement | null>(null);
+  // Ответ, на который пользователь отвечает: уходит в reply_to (F-12).
+  const [replyTarget, setReplyTarget] = useState<{ turn_id: string; excerpt: string } | null>(null);
+  // Подсветка ответа, к которому перешли по цитате в ленте.
+  const [highlightedTurnId, setHighlightedTurnId] = useState<string | null>(null);
+  const highlightTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const messages = useSessionStore((s) => s.messages);
   const addMessage = useSessionStore((s) => s.addMessage);
@@ -165,13 +190,49 @@ export default function ChatPanel({ sessionId }: Props) {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages, streaming]);
 
+  // Цитата не должна «протечь» в другую сессию или таблицу.
+  useEffect(() => {
+    setReplyTarget(null);
+  }, [sessionId, activeTable]);
+
+  // После «Спросить об этом» сразу ставим курсор в поле ввода.
+  useEffect(() => {
+    if (replyTarget) inputRef.current?.focus();
+  }, [replyTarget]);
+
+  useEffect(
+    () => () => {
+      if (highlightTimer.current) clearTimeout(highlightTimer.current);
+    },
+    [],
+  );
+
+  /** Перейти к ответу, на который ссылается цитата в ленте. */
+  function scrollToTurn(turnId: string) {
+    if (typeof document === "undefined") return;
+    const target = document.getElementById(`turn-${turnId}`);
+    if (!target) return;
+    target.scrollIntoView({ behavior: "smooth", block: "center" });
+    setHighlightedTurnId(turnId);
+    if (highlightTimer.current) clearTimeout(highlightTimer.current);
+    highlightTimer.current = setTimeout(() => setHighlightedTurnId(null), 1600);
+  }
+
   /**
    * Отправить вопрос. recoveryResponse — ответ на уточнение: тогда q — то, что
    * видит пользователь в ленте, а бэкенд продолжает исходный вопрос.
    */
   function sendQuestion(
     textToSend?: string,
-    optionsOrRecovery?: string | { isRetry?: boolean; messageIdToReplace?: string; recoveryResponse?: string },
+    optionsOrRecovery?:
+      | string
+      | {
+          isRetry?: boolean;
+          messageIdToReplace?: string;
+          recoveryResponse?: string;
+          /** Явный turn_id для reply_to; по умолчанию — выбранная цитата. */
+          replyTo?: string | null;
+        },
   ) {
     if (!activeTable) {
       setTableError(t("chat.noTableWarning"));
@@ -191,6 +252,33 @@ export default function ChatPanel({ sessionId }: Props) {
     const retryQuestion = recoveryResponse ? lastQuestionRef.current : q;
     setLastFailedQuestion(null);
 
+    // Цитата для reply_to: новый вопрос ссылается на выбранный ответ, повтор —
+    // на цитату повторяемого вопроса. Уточнению reply_to не нужен: бэкенд сам
+    // продолжает ход через pending_recovery.
+    const quoteFromRetry = (): { turn_id: string; excerpt: string } | null => {
+      const all = useSessionStore.getState().messages;
+      const stop = options?.messageIdToReplace
+        ? all.findIndex((x) => x.id === options.messageIdToReplace)
+        : all.length;
+      const prevUser = all
+        .slice(0, stop >= 0 ? stop : all.length)
+        .reverse()
+        .find((x) => x.role === "user");
+      return prevUser?.reply_to ?? null;
+    };
+    let quote: { turn_id: string; excerpt: string } | null = null;
+    if (!recoveryResponse) {
+      if (options?.isRetry) {
+        quote = quoteFromRetry();
+      } else if (options?.replyTo !== undefined) {
+        quote = options.replyTo
+          ? { turn_id: options.replyTo, excerpt: replyTarget?.excerpt ?? "" }
+          : null;
+      } else {
+        quote = replyTarget;
+      }
+    }
+
     if (options?.isRetry) {
       if (options.messageIdToReplace) {
         removeMessage(options.messageIdToReplace);
@@ -200,15 +288,16 @@ export default function ChatPanel({ sessionId }: Props) {
       const curMessages = useSessionStore.getState().messages;
       const lastMsg = curMessages[curMessages.length - 1];
       if (!lastMsg || lastMsg.role !== "user" || lastMsg.content !== q) {
-        addMessage({ role: "user", content: q });
+        addMessage({ role: "user", content: q, reply_to: quote ?? undefined });
       }
     } else {
-      addMessage({ role: "user", content: q });
+      addMessage({ role: "user", content: q, reply_to: quote ?? undefined });
     }
 
     // Первая реплика: сессия появляется в папке своей базы данных
     registerSession(sessionId, q.length > 48 ? `${q.slice(0, 47)}…` : q);
     if (!textToSend) setInput("");
+    setReplyTarget(null);
     setStreaming(true);
     setStreamingSessionId(sessionId);
 
@@ -379,7 +468,7 @@ export default function ChatPanel({ sessionId }: Props) {
         setStreaming(false);
         setStreamingSessionId(null);
       },
-      { recoveryResponse },
+      { recoveryResponse, replyTo: quote?.turn_id ?? null },
     );
     stopRef.current = () => {
       cancelled = true;
@@ -404,6 +493,8 @@ export default function ChatPanel({ sessionId }: Props) {
     if (!activeTable || streaming || activeStreamingSessionId) return;
     handledQuestionRef.current = pendingQuestion.id;
     consumeQuestion(sessionId, pendingQuestion.id);
+    // Внешний вопрос не продолжает выбранную цитату.
+    setReplyTarget(null);
     sendQuestionRef.current(pendingQuestion.text);
   }, [
     pendingQuestion,
@@ -516,8 +607,19 @@ export default function ChatPanel({ sessionId }: Props) {
           messages.map((m, i) => (
             <div
               key={m.id || i}
-              className={`mx-auto flex w-full max-w-3xl flex-col ${m.role === "user" ? "items-end" : "items-start"}`}
+              id={m.turn_id ? `turn-${m.turn_id}` : undefined}
+              className={`mx-auto flex w-full max-w-3xl flex-col rounded-xl transition-shadow ${
+                m.role === "user" ? "items-end" : "items-start"
+              } ${m.turn_id && highlightedTurnId === m.turn_id ? "ring-1 ring-graphite-500/70" : ""}`}
             >
+              {/* Цитата ответа, на который отвечает пользователь (клик — переход к ответу) */}
+              {m.role === "user" && m.reply_to && (
+                <ReplyQuote
+                  variant="message"
+                  excerpt={m.reply_to.excerpt}
+                  onClick={() => scrollToTurn(m.reply_to!.turn_id)}
+                />
+              )}
               <div
                 className={`text-sm leading-relaxed ${
                   m.role === "user"
@@ -650,24 +752,22 @@ export default function ChatPanel({ sessionId }: Props) {
                   />
                 )}
 
-                {/* Экспорт ответа: Excel по таблице результата, PDF по инсайту и спеке */}
-                {!m.failed &&
+                {/* Действия под ответом: копирование и ссылка на ответ (F-12) */}
+                {m.role === "agent" &&
+                  !m.failed &&
                   !m.progress &&
                   !m.clarification &&
-                  (m.chart || m.answer) && (
-                    <AnswerExport
-                      sessionId={sessionId}
-                      question={
-                        messages
-                          .slice(0, i)
-                          .reverse()
-                          .find((x) => x.role === "user")?.content
-                      }
-                      headline={m.answer?.headline ?? m.chart?.caption}
-                      details={m.answer?.details}
-                      spec={m.answer?.spec ?? m.chart?.spec}
-                      resultTable={m.answer?.result_table ?? m.chart?.result_table}
-                      compact
+                  !m.refusal &&
+                  !(streaming && i === messages.length - 1) &&
+                  (m.turn_id || m.answer || m.chart) && (
+                    <AnswerActions
+                      text={answerText(m)}
+                      canAsk={Boolean(m.turn_id)}
+                      onAskAbout={() => {
+                        if (!m.turn_id) return;
+                        setReplyTarget({ turn_id: m.turn_id, excerpt: excerptOf(m) });
+                        inputRef.current?.focus();
+                      }}
                     />
                   )}
               </div>
@@ -704,53 +804,72 @@ export default function ChatPanel({ sessionId }: Props) {
             </button>
           </div>
         )}
-        <div className="flex items-end gap-2 rounded-2xl border border-graphite-700 bg-graphite-850 p-2 pl-4 shadow-sm transition focus-within:border-graphite-500">
-          <textarea
-            value={input}
-            onChange={(e) => {
-              setInput(e.target.value);
-              // Поле растёт по содержимому до max-h-40
-              e.target.style.height = "auto";
-              e.target.style.height = `${e.target.scrollHeight}px`;
-              e.target.style.overflowY = e.target.scrollHeight > 160 ? "auto" : "hidden";
-            }}
-            onKeyDown={(e) => {
-              if (e.key === "Enter" && !e.shiftKey) {
-                e.preventDefault();
-                if (activeTable && llmReady) sendQuestion();
-              }
-            }}
-            rows={1}
-            placeholder={
-              !activeTable
-                ? t("chat.noTableWarning")
-                : !llmReady
-                ? t("llm.waiting")
-                : activeClarificationId
-                ? t("chat.clarifyPlaceholder")
-                : t("chat.placeholder")
-            }
-            className="max-h-40 min-h-[36px] flex-1 resize-none overflow-y-hidden bg-transparent py-2 text-sm leading-5 text-graphite-100 placeholder-graphite-500 outline-none disabled:cursor-not-allowed disabled:opacity-60"
-            disabled={streaming || !activeTable}
-          />
-          {streaming ? (
-            <button
-              onClick={() => stopRef.current?.()}
-              className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-graphite-700 text-graphite-100 hover:bg-graphite-600 transition"
-              title={t("chat.stop")}
-            >
-              <Icon name="stop" size={14} />
-            </button>
-          ) : (
-            <button
-              onClick={() => sendQuestion()}
-              disabled={!input.trim() || !activeTable || !llmReady}
-              className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-graphite-100 text-graphite-950 hover:bg-graphite-50 disabled:bg-graphite-700 disabled:text-graphite-500 disabled:cursor-not-allowed transition"
-              title={t("chat.send")}
-            >
-              <Icon name="arrowUp" />
-            </button>
+        <div className="rounded-2xl border border-graphite-700 bg-graphite-850 p-2 pl-4 shadow-sm transition focus-within:border-graphite-500">
+          {/* Чип-цитата: вопрос уйдёт с reply_to выбранного ответа */}
+          {replyTarget && (
+            <ReplyQuote
+              variant="composer"
+              excerpt={replyTarget.excerpt}
+              onClear={() => setReplyTarget(null)}
+            />
           )}
+          <div className="flex items-end gap-2">
+            <textarea
+              ref={inputRef}
+              value={input}
+              onChange={(e) => {
+                setInput(e.target.value);
+                // Поле растёт по содержимому до max-h-40
+                e.target.style.height = "auto";
+                e.target.style.height = `${e.target.scrollHeight}px`;
+                e.target.style.overflowY = e.target.scrollHeight > 160 ? "auto" : "hidden";
+              }}
+              onKeyDown={(e) => {
+                // Esc при пустом вводе убирает цитату
+                if (e.key === "Escape" && replyTarget && !input.trim()) {
+                  e.preventDefault();
+                  setReplyTarget(null);
+                  return;
+                }
+                if (e.key === "Enter" && !e.shiftKey) {
+                  e.preventDefault();
+                  if (activeTable && llmReady) sendQuestion();
+                }
+              }}
+              rows={1}
+              placeholder={
+                !activeTable
+                  ? t("chat.noTableWarning")
+                  : !llmReady
+                  ? t("llm.waiting")
+                  : replyTarget
+                  ? t("chat.replyPlaceholder")
+                  : activeClarificationId
+                  ? t("chat.clarifyPlaceholder")
+                  : t("chat.placeholder")
+              }
+              className="max-h-40 min-h-[36px] flex-1 resize-none overflow-y-hidden bg-transparent py-2 text-sm leading-5 text-graphite-100 placeholder-graphite-500 outline-none disabled:cursor-not-allowed disabled:opacity-60"
+              disabled={streaming || !activeTable}
+            />
+            {streaming ? (
+              <button
+                onClick={() => stopRef.current?.()}
+                className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-graphite-700 text-graphite-100 hover:bg-graphite-600 transition"
+                title={t("chat.stop")}
+              >
+                <Icon name="stop" size={14} />
+              </button>
+            ) : (
+              <button
+                onClick={() => sendQuestion()}
+                disabled={!input.trim() || !activeTable || !llmReady}
+                className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-graphite-100 text-graphite-950 hover:bg-graphite-50 disabled:bg-graphite-700 disabled:text-graphite-500 disabled:cursor-not-allowed transition"
+                title={t("chat.send")}
+              >
+                <Icon name="arrowUp" />
+              </button>
+            )}
+          </div>
         </div>
       </div>
     </div>
