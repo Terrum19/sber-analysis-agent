@@ -71,7 +71,7 @@ async def test_tie_fails():
     assert verdict["period_full"][0] is True
 
 
-async def test_unparseable_reply_is_failed_vote():
+async def test_unparseable_reply_abstains():
     verdict, _client = await run_judge(
         [
             "я не знаю",
@@ -79,21 +79,20 @@ async def test_unparseable_reply_is_failed_vote():
             reply(grounded=False, period_full=True),
         ]
     )
-    assert verdict["grounded"][0] is False
-    assert any(eval_judge.UNPARSED in reason for reason in verdict["grounded"][1])
-    assert verdict["period_full"] == (True, ["2/3", "period_full True"])
+    assert verdict["grounded"] == (False, ["1/2", "grounded False"])
+    assert verdict["period_full"] == (True, ["2/2", "period_full True"])
 
 
 async def test_all_votes_unparseable():
     verdict, _client = await run_judge(["", "{broken", '{"items": []}'])
     for point in POINTS:
         passed, reasons = verdict[point]
-        assert passed is False
-        assert reasons[0] == "0/3"
+        assert passed is None
+        assert reasons[0] == "0/0"
         assert all(eval_judge.UNPARSED in reason for reason in reasons[1:])
 
 
-async def test_client_error_is_failed_vote():
+async def test_client_error_abstains():
     verdict, _client = await run_judge(
         [
             RuntimeError("429"),
@@ -101,13 +100,13 @@ async def test_client_error_is_failed_vote():
             reply(grounded=True, period_full=True),
         ]
     )
-    assert verdict["grounded"] == (True, ["2/3", "grounded True"])
+    assert verdict["grounded"] == (True, ["2/2", "grounded True"])
 
 
-async def test_missing_point_fails_that_point():
+async def test_point_missing_from_every_reply_is_not_rated():
     verdict, _client = await run_judge([reply(grounded=True)], votes=1)
     assert verdict["grounded"][0] is True
-    assert verdict["period_full"] == (False, ["0/1", eval_judge.NOT_RATED])
+    assert verdict["period_full"] == (None, ["0/0", eval_judge.NOT_RATED])
 
 
 async def test_fenced_reply_is_parsed():

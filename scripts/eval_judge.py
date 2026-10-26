@@ -203,12 +203,12 @@ def read_vote(content: str, points: Sequence[str]) -> dict[str, tuple[bool, str]
         if not isinstance(items, dict):
             raise TypeError("items — не объект")
     except (ValueError, KeyError, TypeError) as error:
-        return {point: (False, f"{UNPARSED}: {error}") for point in points}
+        return {point: (None, f"{UNPARSED}: {error}") for point in points}
     vote = {}
     for point in points:
         item = items.get(point)
         if not isinstance(item, dict) or "pass" not in item:
-            vote[point] = (False, NOT_RATED)
+            vote[point] = (None, NOT_RATED)
             continue
         vote[point] = (item["pass"] is True, str(item.get("why", "")))
     return vote
@@ -220,20 +220,25 @@ async def cast_vote(client: JudgeLLM, prompt: str, points: Sequence[str]) -> dic
     except Exception as error:
         logger.warning("судья не ответил: %s", error, exc_info=True)
         return {
-            point: (False, f"судья не ответил: {type(error).__name__}: {error}") for point in points
+            point: (None, f"судья не ответил: {type(error).__name__}: {error}") for point in points
         }
     return read_vote(content, points)
 
 
-def majority(ballots: list[dict], points: Sequence[str]) -> dict[str, tuple[bool, list[str]]]:
+def majority(
+    ballots: list[dict], points: Sequence[str]
+) -> dict[str, tuple[bool | None, list[str]]]:
     verdict = {}
     for point in points:
-        ayes = sum(ballot[point][0] for ballot in ballots)
-        passed = ayes * 2 > len(ballots)
-        reasons = [
-            reason for agreed, reason in (ballot[point] for ballot in ballots) if agreed == passed
-        ]
-        verdict[point] = (passed, [f"{ayes}/{len(ballots)}", *dict.fromkeys(reasons)])
+        cast = [ballot[point] for ballot in ballots if ballot[point][0] is not None]
+        skipped = [ballot[point][1] for ballot in ballots if ballot[point][0] is None]
+        if not cast:
+            verdict[point] = (None, ["0/0", *dict.fromkeys(skipped)])
+            continue
+        ayes = sum(agreed for agreed, reason in cast)
+        passed = ayes * 2 > len(cast)
+        reasons = [reason for agreed, reason in cast if agreed == passed]
+        verdict[point] = (passed, [f"{ayes}/{len(cast)}", *dict.fromkeys(reasons)])
     return verdict
 
 
@@ -247,7 +252,7 @@ async def judge(
     notes: str | None = None,
     facts: str | None = None,
     previous: tuple[str, str] | None = None,
-) -> dict[str, tuple[bool, list[str]]]:
+) -> dict[str, tuple[bool | None, list[str]]]:
     if votes < 1:
         raise ValueError("судье нужен хотя бы один голос")
     prompt = build_prompt(question, answer, rows, points, notes, facts, previous)

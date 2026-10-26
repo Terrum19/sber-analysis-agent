@@ -20,8 +20,6 @@
 	* backend/tests/unit/test_eval_hk.py: Новый.  Тесты того же.
 	* docs/eval.md: То же.
 
-2026-10-26  mb6ockatf  <smokenmirror@tutamail.com>
-
 	Eval: проверка дашборда, шаблонная отписка — не отказ (#57).
 	* scripts/eval.py (check_dashboard): Новая.  expect.dashboard —
 	пришло ли событие dashboard.
@@ -30,6 +28,13 @@
 	подобрать инструменты» на пустой план, отказом не считается.
 	(check_expect_types): dashboard — true или false.
 	* backend/tests/unit/test_eval_runner.py: Тесты того же.
+	* docs/eval.md: То же.
+
+	Судья eval: сбой голоса не считается оценкой (#57).
+	* scripts/eval_judge.py (read_vote, cast_vote, majority): Голос,
+	который не разобран или упал, и пропущенный пункт в подсчёт не идут;
+	без годных голосов пункт не оценён (None).
+	* backend/tests/unit/test_eval_judge.py: Тесты того же.
 	* docs/eval.md: То же.
 
 	Eval: LLM-судья отдельным модулем (#57).  Перенесён из #181.
