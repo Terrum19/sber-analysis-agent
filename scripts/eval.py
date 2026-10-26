@@ -25,10 +25,13 @@ import yaml
 
 ROOT = Path(__file__).resolve().parent.parent
 BACKEND_DIR = ROOT / "backend"
-if str(BACKEND_DIR) not in sys.path:
-    sys.path.insert(0, str(BACKEND_DIR))
+SCRIPTS_DIR = ROOT / "scripts"
+for import_dir in (BACKEND_DIR, SCRIPTS_DIR):
+    if str(import_dir) not in sys.path:
+        sys.path.insert(0, str(import_dir))
 
 DEFAULT_QUESTIONS = ROOT / "data" / "eval" / "questions.yaml"
+AWKWARD_SCENARIO = 0
 DEFAULT_OUT_DIR = ROOT / "docs" / "reports"
 LIST_KEYS = (
     "tools_any",
@@ -145,6 +148,8 @@ class RunOptions:
     columns_recall_only: bool = False
     reply_to: bool = False
     repeat: int = 1
+    judge_client: object | None = None
+    judge_votes: int = 3
 
 
 @dataclass(frozen=True)
@@ -872,14 +877,16 @@ def api_failed(turn: Turn) -> bool:
     return any(API_LIMIT.search(text) for text in texts)
 
 
-def check_turn(expect: dict, turn: Turn, db, columns_recall_only: bool = False) -> list[Check]:
+def check_turn(
+    expect: dict, turn: Turn, db, columns_recall_only: bool = False, awkward: bool = False
+) -> list[Check]:
     checks = []
     clarified = any(event["type"] == "clarification_needed" for event in turn.events)
     if errored(turn):
         checks.append(Check("turn", False, "ход упал: " + ending(turn)))
     elif turn.end_s is None:
         checks.append(Check("turn", False, ending(turn)))
-    elif clarified and expect.get("refusal") is not True:
+    elif clarified and not awkward and expect.get("refusal") is not True:
         checks.append(Check("turn", False, "агент запросил уточнение: " + ending(turn)))
     for key in EXPECT_KEYS:
         if not checked(key, expect.get(key), turn):
@@ -1018,6 +1025,7 @@ async def run_pass(
 ) -> list[dict]:
     sessions: dict[str, str] = {}
     turns: dict[str, Turn] = {}
+    questions_by_id = {question.id: question for question in questions}
     results = []
     for question in questions:
         table = dataset or question.dataset
@@ -1040,12 +1048,55 @@ async def run_pass(
         turn.table_rows_before = rows_before
         if question.expect.get("table_intact"):
             turn.table_rows = table_rows(db, table)
-        checks = check_turn(question.expect, turn, db, options.columns_recall_only)
-        result = question_result(question, table, session_id, turn, checks)
+        checks = check_turn(
+            question.expect,
+            turn,
+            db,
+            options.columns_recall_only,
+            question.scenario == AWKWARD_SCENARIO,
+        )
+        verdict = {}
+        if options.judge_client is not None and not api_failed(turn):
+            previous = None
+            if parent is not None:
+                previous = (questions_by_id[question.follow_up_of].text, answer_text(parent))
+            verdict = await judge_turn(question, turn, options, previous)
+        judged = [
+            Check(f"judge.{point}", passed, "; ".join(reasons))
+            for point, (passed, reasons) in verdict.items()
+            if passed is not None
+        ]
+        result = question_result(question, table, session_id, turn, checks + judged)
+        result["passed_checks"] = all(check.passed for check in checks)
+        result["judge_unrated"] = [
+            point for point, (passed, _) in verdict.items() if passed is None
+        ]
         results.append({**result, "repeat": repeat, "api_error": api_failed(turn)})
         status = "API " if results[-1]["api_error"] else "ok  " if result["passed"] else "FAIL"
         print(f"  {status} {question.id}", flush=True)
     return results
+
+
+async def judge_turn(
+    question: Question, turn: Turn, options: RunOptions, previous: tuple[str, str] | None
+) -> dict:
+    import eval_judge
+
+    ended = next(
+        (event["type"] for event in reversed(turn.events) if event["type"] in TURN_END_EVENTS),
+        None,
+    )
+    points = eval_judge.rubric_points(question.scenario, ended == "done", question.judge)
+    return await eval_judge.judge(
+        question.text,
+        visible_text(turn),
+        turn.result_rows,
+        points,
+        options.judge_client,
+        votes=options.judge_votes,
+        notes=question.notes,
+        previous=previous,
+    )
 
 
 def percentile(values: list[float], share: float) -> float | None:
@@ -1097,6 +1148,12 @@ def summarize(results: list[dict], model: str, questions_path: Path, day: date) 
     covered = sum(result["selection_covered"] for result in measured)
     blocks = [result["block_chars"] for result in results if result["block_chars"] is not None]
     passed = sum(result["passed"] for result in scored)
+    checks_passed = sum(result.get("passed_checks", result["passed"]) for result in scored)
+    judged = any(
+        check["name"].startswith("judge.")
+        for result in scored
+        for check in result.get("checks", [])
+    )
     return {
         "model": model,
         "date": day.isoformat(),
@@ -1105,6 +1162,9 @@ def summarize(results: list[dict], model: str, questions_path: Path, day: date) 
         "passed": passed,
         "pass_rate": rate(passed, len(scored)),
         "api_errors": len(results) - len(scored),
+        "judged": judged,
+        "checks_passed": checks_passed,
+        "checks_pass_rate": rate(checks_passed, len(scored)),
         "pass_k": pass_k(scored, repeats),
         "scenarios": scenarios,
         "timing": {
@@ -1143,6 +1203,11 @@ def render(report: dict) -> str:
             f"прошло {report['passed']} ({cell(report['pass_rate'])} %)."
         ),
     ]
+    if report.get("judged"):
+        lines.append(
+            f"Без судьи, только проверки: {report['checks_passed']} "
+            f"({cell(report['checks_pass_rate'])} %)."
+        )
     if report["errored"]:
         lines.append(
             f"Ходов с ошибкой (LLM, сеть, сбой этапа): {report['errored']} — это не оценка "
@@ -1301,11 +1366,22 @@ async def evaluate(args: argparse.Namespace) -> int:
     gold = load_gold(args.gold or Path(args.questions).parent / GOLD_FILE, every_question)
     if args.reply_to and not reply_to_supported():
         print("В ChatRequest нет reply_to (#173): продолжения идут без него", file=sys.stderr)
+    judge_client = None
+    if args.judge:
+        import eval_judge
+
+        try:
+            judge_client = eval_judge.judge_client_from_env()
+        except RuntimeError as error:
+            print(f"Судья не настроен: {error}", file=sys.stderr)
+            return 2
     options = RunOptions(
         gold=gold,
         columns_recall_only=args.columns_recall_only,
         reply_to=args.reply_to,
         repeat=args.repeat,
+        judge_client=judge_client,
+        judge_votes=args.judge_votes,
     )
     model = FAKE_MODEL if fake_mode() else args.model or settings.llm_model
     out_dir = args.out_dir or (
@@ -1371,6 +1447,10 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--repeat", type=positive, default=1, help="прогнать набор N раз (pass^k в отчёте)"
     )
+    parser.add_argument(
+        "--judge", action="store_true", help="LLM-судья по рубрике (JUDGE_BASE_URL и др.)"
+    )
+    parser.add_argument("--judge-votes", type=positive, default=3, help="голосов судьи на ответ")
     parser.add_argument(
         "--reply-to",
         action="store_true",

@@ -398,3 +398,47 @@ def test_gold_numbers_override_sql(sales_db: DuckDBManager) -> None:
 def test_repeat_must_be_positive(value: str) -> None:
     with pytest.raises(SystemExit):
         runner.parse_args(["--repeat", value])
+
+
+RUBRIC_POINTS = ("answers_question", "grounded", "business_readable")
+
+
+class FakeJudgeClient:
+    def __init__(self, verdict: bool) -> None:
+        self.verdict = verdict
+        self.prompts: list[str] = []
+
+    async def complete(self, system: str, user: str) -> str:
+        self.prompts.append(user)
+        items = {point: {"pass": self.verdict, "why": "проверено"} for point in RUBRIC_POINTS}
+        return json.dumps({"items": items}, ensure_ascii=False)
+
+
+@pytest.mark.parametrize("verdict", [True, False])
+async def test_judge_verdict_joins_the_checks(sales_db, verdict: bool) -> None:
+    client = FakeJudgeClient(verdict)
+    options = runner.RunOptions(judge_client=client, judge_votes=1)
+    question = runner.Question(id="q", scenario=2, dataset="sales", text="Сколько продаж?")
+    verdicts = await runner.judge_turn(question, answer("Продаж 4"), options, None)
+    assert verdicts
+    assert all(passed is verdict for passed, _ in verdicts.values())
+    assert "Сколько продаж?" in client.prompts[0]
+
+
+def test_awkward_scenario_accepts_clarification(sales_db) -> None:
+    clarified = runner.Turn(
+        events=[
+            {"type": "clarification_needed", "data": {"error": "Не удалось подобрать инструменты"}}
+        ],
+        end_s=0.5,
+    )
+    assert runner.check_turn({}, clarified, sales_db, awkward=True) == []
+    assert runner.check_turn({}, clarified, sales_db)[0].name == "turn"
+
+
+def test_report_shows_checks_without_judge() -> None:
+    judged = [{"name": "judge.grounded", "passed": False, "reason": "0/1"}]
+    results = [result("a", False, checks=judged, passed_checks=True)]
+    report = runner.summarize(results, "fake", FIXTURE, date(2026, 10, 26))
+    assert (report["judged"], report["checks_passed"]) == (True, 1)
+    assert "Без судьи, только проверки: 1 (100 %)" in runner.render(report)

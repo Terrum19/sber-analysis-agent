@@ -9,13 +9,13 @@ on:
   push:
     paths:
       - "backend/**"
-      - "scripts/eval.py"
+      - "scripts/eval*.py"
       - "data/eval/**"
       - ".github/workflows/backend-ci.yml"
   pull_request:
     paths:
       - "backend/**"
-      - "scripts/eval.py"
+      - "scripts/eval*.py"
       - "data/eval/**"
       - ".github/workflows/backend-ci.yml"
   workflow_dispatch:
@@ -70,8 +70,8 @@ jobs:
 
       - name: Ruff
         run: |
-          ruff check app tests ../scripts/eval.py
-          ruff format --check app tests ../scripts/eval.py
+          ruff check app tests ../scripts/eval.py ../scripts/eval_gold.py ../scripts/eval_judge.py
+          ruff format --check app tests ../scripts/eval.py ../scripts/eval_gold.py ../scripts/eval_judge.py
 
       - name: Unit tests under coverage
         run: coverage run -m pytest -q --strict-markers -m "not integration and not benchmark"

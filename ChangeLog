@@ -1,5 +1,16 @@
 2026-10-26  mb6ockatf  <smokenmirror@tutamail.com>
 
+	Eval: судья в раннере (#57).
+	* scripts/eval.py (judge_turn): Новая.  --judge и --judge-votes:
+	пункты рубрики — проверки judge.<пункт>, неоценённые — в
+	judge_unrated; ходы с api_error судья не оценивает.
+	(summarize, render): checks_passed — итог без судьи.
+	(check_turn): Уточнение в сценарии 0 провалом хода не считается.
+	* Makefile (lint), .github/workflows/backend-ci.yml: ruff и для
+	scripts/eval_gold.py, scripts/eval_judge.py.
+	* backend/tests/unit/test_eval_hk.py: Тесты того же.
+	* docs/eval.md: То же.
+
 	Eval: проверки, повторы и набор вопросов из #181 (#57, #56).
 	* data/eval/hk/questions.yaml, data/eval/hk/gold.json:
 	* data/eval/hk/README.md: Новые.  Второй набор: 35 вопросов по

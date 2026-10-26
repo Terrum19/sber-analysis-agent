@@ -62,7 +62,7 @@ test:
 	cd backend && pytest -q
 
 lint:
-	cd backend && ruff check app tests ../scripts/eval.py
+	cd backend && ruff check app tests ../scripts/eval.py ../scripts/eval_gold.py ../scripts/eval_judge.py
 	cd frontend && npm run lint
 
 smoke:
