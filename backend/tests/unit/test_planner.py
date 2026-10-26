@@ -124,6 +124,33 @@ def test_prompt_without_previous_turns_says_none():
     assert describe_turns([]) == "нет"
 
 
+def test_reply_prompt_gives_plan_of_chosen_turn_as_draft():
+    from app.core.agent.planner import describe_history
+
+    first = {
+        "question": "Сколько событий с суммой больше 150?",
+        "steps": [
+            {
+                "step_id": 0,
+                "tool": "filter_rows",
+                "input": "$prev",
+                "arguments": {"column": "amount", "operator": ">", "value": 150},
+                "columns": [],
+                "purpose": "Сумма больше 150",
+            }
+        ],
+        "headline": "471",
+        "result_columns": ["event_id", "amount"],
+    }
+    history = describe_history({"reply": [first], "turns": []})
+    assert "Черновик плана" in history
+    assert "- Сколько событий с суммой больше 150?" in history
+    assert '"operator": ">", "value": 150' in history
+    assert "Ответ на него: 471" in history
+    assert "Прошлые ходы" not in history
+    assert "Прошлые ходы" in describe_history({"turns": []})
+
+
 def _turn(steps: list[dict], tables: list[str]) -> dict:
     return {"question": "Выручка по регионам", "tables": tables, "steps": steps}
 

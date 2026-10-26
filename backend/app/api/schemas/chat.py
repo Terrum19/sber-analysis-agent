@@ -51,6 +51,8 @@ class ChatRequest(BaseModel):
     session_id: str
     question: str
     recovery_response: str | None = None
+    # turn_id прошлого хода из события done: вопрос продолжает именно его.
+    reply_to: str | None = None
 
 
 class ChartPayload(BaseModel):

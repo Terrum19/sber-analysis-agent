@@ -19,7 +19,13 @@ from app.core.data.semantic_select import (
     select_columns,
 )
 from app.core.llm.prompts.quality_rules import PLANNER_RULES
-from app.core.llm.prompts.step_planner import PLAN_ERRORS, STEP_FIX, STEP_PLANNER
+from app.core.llm.prompts.step_planner import (
+    PAST_TURNS,
+    PLAN_ERRORS,
+    REPLY_DRAFT,
+    STEP_FIX,
+    STEP_PLANNER,
+)
 from app.core.tools.registry import tool_registry
 from app.models.research_step import PREVIOUS, SOURCE, ResearchPlan, ResearchStep
 
@@ -63,7 +69,7 @@ class StepPlanner:
         prompt = STEP_PLANNER.format(
             tools=tools,
             columns=f"{described}\n{others}" if others else described,
-            history=describe_turns(context.get("turns", []), context.get("datasource")),
+            history=describe_history(context),
             executed=context.get("executed", "нет"),
             next_step_id=start,
             question=question,
@@ -128,28 +134,53 @@ class StepPlanner:
         return plan
 
 
+def describe_history(context: dict) -> str:
+    """Блок истории промпта: черновик из цепочки ответа или прошлые ходы."""
+    chain = context.get("reply") or []
+    if not chain:
+        turns = describe_turns(context.get("turns", []), context.get("datasource"))
+        return PAST_TURNS.format(turns=turns)
+    draft = chain[-1]
+    outcome = []
+    if draft.get("headline"):
+        outcome.append(f"Ответ на него: {draft['headline']}")
+    if draft.get("result_columns"):
+        outcome.append(f"Колонки результата: {', '.join(draft['result_columns'])}")
+    return REPLY_DRAFT.format(
+        chain="\n".join(f"- {turn['question']}" for turn in chain),
+        draft=json.dumps(_turn_steps(draft), ensure_ascii=False, default=str),
+        outcome="\n".join(outcome),
+    )
+
+
+def _turn_steps(turn: dict) -> list[dict]:
+    """Шаги плана хода без пустых полей, перенумерованные с 0 вместе со ссылками $step_N.
+
+    План хода после уточнения начинается не с 0, а новый план нумеруется
+    с 0: без перенумерации скопированная ссылка указывала бы на другой шаг.
+    """
+    numbers = {step["step_id"]: index for index, step in enumerate(turn["steps"])}
+    return [
+        {
+            key: _renumber_refs(value, numbers) if key != "step_id" else numbers[value]
+            for key, value in step.items()
+            if value not in (None, [], {})
+        }
+        for step in turn["steps"]
+    ]
+
+
 def describe_turns(turns: list[dict], table: str | None = None) -> str:
     """Прошлые ходы для промпта: таблица, вопрос, план с аргументами, ответ, колонки результата.
 
-    Шаги каждого плана перенумерованы с 0 вместе со ссылками $step_N: план
-    хода после уточнения начинается не с 0, а новый план нумеруется с 0, и
-    скопированная ссылка указывала бы на другой шаг. Ход по другой таблице
-    помечен: колонки его плана в текущей таблице могут отсутствовать.
+    Ход по другой таблице помечен: колонки его плана в текущей таблице
+    могут отсутствовать.
     """
     blocks = []
     for number, turn in enumerate(turns, 1):
-        numbers = {step["step_id"]: index for index, step in enumerate(turn["steps"])}
-        steps = [
-            {
-                key: _renumber_refs(value, numbers) if key != "step_id" else numbers[value]
-                for key, value in step.items()
-                if value not in (None, [], {})
-            }
-            for step in turn["steps"]
-        ]
         lines = [
             f"{number}. Вопрос: {turn['question']}",
-            f"   План: {json.dumps(steps, ensure_ascii=False, default=str)}",
+            f"   План: {json.dumps(_turn_steps(turn), ensure_ascii=False, default=str)}",
         ]
         tables = turn.get("tables") or []
         if tables:
