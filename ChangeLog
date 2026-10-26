@@ -1,5 +1,27 @@
 2026-10-26  mb6ockatf  <smokenmirror@tutamail.com>
 
+	Eval: проверки, повторы и набор вопросов из #181 (#57, #56).
+	* data/eval/hk/questions.yaml, data/eval/hk/gold.json:
+	* data/eval/hk/README.md: Новые.  Второй набор: 35 вопросов по
+	датасетам организаторов и эталоны по сырым CSV.
+	* scripts/eval_gold.py: Новый.  Эталоны для gold.json.
+	* scripts/eval.py (check_numbers, check_range, check_contains_any)
+	(check_contains_all, check_contains_any_groups)
+	(check_contains_any_sql, check_chart_any, check_chart_changed)
+	(check_table_intact): Новые.  Ключи expect из #181.
+	(scaled_numbers, number_found, visible_text): Новые.  Числа с
+	множителями, доля и процент как одно число, видимый текст ответа.
+	(load_gold, parse_question, check_expect_types): gold.json, ключи
+	judge и notes, типы новых ключей.
+	(run_questions, run_pass, RunOptions, run_turn, turn_id_of): --repeat,
+	--reply-to, --gold, --columns-recall-only.
+	(api_failed, summarize, pass_k, render): Ходы, сорванные лимитом
+	провайдера, не входят в проценты; pass^k по повторам.
+	* backend/tests/unit/test_eval_hk.py: Новый.  Тесты того же.
+	* docs/eval.md: То же.
+
+2026-10-26  mb6ockatf  <smokenmirror@tutamail.com>
+
 	Eval: проверка дашборда, шаблонная отписка — не отказ (#57).
 	* scripts/eval.py (check_dashboard): Новая.  expect.dashboard —
 	пришло ли событие dashboard.

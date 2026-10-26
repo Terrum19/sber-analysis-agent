@@ -30,9 +30,28 @@ if str(BACKEND_DIR) not in sys.path:
 
 DEFAULT_QUESTIONS = ROOT / "data" / "eval" / "questions.yaml"
 DEFAULT_OUT_DIR = ROOT / "docs" / "reports"
-LIST_KEYS = ("tools_any", "columns_all", "answer_contains", "chart_type_any")
+LIST_KEYS = (
+    "tools_any",
+    "columns_all",
+    "answer_contains",
+    "chart_type_any",
+    "contains_any",
+    "chart_any",
+)
+GROUP_KEYS = ("contains_all", "contains_any_groups")
+FLAG_KEYS = ("refusal", "dashboard", "chart_changed", "table_intact")
 UNCHECKED_WHEN_EMPTY = ("tools_any", "chart_type_any")
-QUESTION_KEYS = ("id", "scenario", "dataset", "question", "follow_up_of", "expect")
+UNCHECKED_WHEN_FALSE = ("chart_changed", "table_intact")
+QUESTION_KEYS = (
+    "id",
+    "scenario",
+    "dataset",
+    "question",
+    "follow_up_of",
+    "expect",
+    "judge",
+    "notes",
+)
 REQUIRED_KEYS = ("id", "scenario", "dataset", "question")
 EXPECT_KEYS = (
     "tools_any",
@@ -42,7 +61,29 @@ EXPECT_KEYS = (
     "chart_type_any",
     "dashboard",
     "refusal",
+    "numbers",
+    "range",
+    "contains_any",
+    "contains_all",
+    "contains_any_groups",
+    "contains_any_sql",
+    "chart_any",
+    "chart_changed",
+    "table_intact",
 )
+GOLD_FILE = "gold.json"
+DEFAULT_NUMBER_TOLERANCE = 0.005
+NUMBER_ROWS = 200
+SCALE = {"тыс": 1e3, "млн": 1e6, "млрд": 1e9, "трлн": 1e12}
+SCALED_NUMBER = re.compile(
+    r"(?<![\w.,])(-?\d{1,3}(?:[   ]\d{3})+|-?\d+)(?:[.,](\d+))?"
+    r"(?:\s*(тыс|млн|млрд|трлн)\.?)?",
+    re.IGNORECASE,
+)
+DIGIT_SEPARATOR = re.compile(r"[   ]")
+SHARE_LIMIT = 1
+PERCENT_LIMIT = 100
+API_LIMIT = re.compile(r"Error code: 429|rate_limit|concurrency_limit")
 TURN_END_EVENTS = ("done", "clarification_needed")
 RESULT_ROWS = 1000
 VALUE_MAX_ROWS = 50
@@ -65,6 +106,8 @@ class Question:
     text: str
     follow_up_of: str | None = None
     expect: dict = field(default_factory=dict)
+    judge: tuple[str, ...] = ()
+    notes: str | None = None
 
 
 @dataclass
@@ -90,6 +133,18 @@ class Turn:
     error: str | None = None
     result_rows: list[dict] | None = None
     result_error: str | None = None
+    gold: dict = field(default_factory=dict)
+    parent_chart: str | None = None
+    table_rows_before: int | None = None
+    table_rows: int | None = None
+
+
+@dataclass(frozen=True)
+class RunOptions:
+    gold: dict = field(default_factory=dict)
+    columns_recall_only: bool = False
+    reply_to: bool = False
+    repeat: int = 1
 
 
 @dataclass(frozen=True)
@@ -132,6 +187,12 @@ def parse_question(entry: object, known: set[str], where: str) -> Question:
     if unknown:
         raise ValueError(f"{where}: неизвестные проверки {', '.join(unknown)}")
     check_expect_types(expect, where)
+    judge = entry.get("judge") or []
+    if not isinstance(judge, list) or not all(isinstance(item, str) for item in judge):
+        raise TypeError(f"{where}: judge должен быть списком строк")
+    notes = entry.get("notes")
+    if notes is not None and not isinstance(notes, str):
+        raise TypeError(f"{where}: notes должен быть строкой")
     return Question(
         id=question_id,
         scenario=int(entry["scenario"]),
@@ -139,7 +200,23 @@ def parse_question(entry: object, known: set[str], where: str) -> Question:
         text=str(entry["question"]),
         follow_up_of=None if parent is None else str(parent),
         expect=expect,
+        judge=tuple(judge),
+        notes=notes,
     )
+
+
+def load_gold(path: Path, questions: list[Question]) -> dict:
+    if not Path(path).exists():
+        return {}
+    gold = json.loads(Path(path).read_text(encoding="utf-8"))
+    if not isinstance(gold, dict) or not all(isinstance(entry, dict) for entry in gold.values()):
+        raise TypeError(f"{path}: ожидается словарь эталонов по id вопроса")
+    unknown = sorted(set(gold) - {question.id for question in questions})
+    if unknown:
+        raise ValueError(
+            f"{path}: эталоны для вопросов, которых нет в наборе: {', '.join(unknown)}"
+        )
+    return gold
 
 
 def check_expect_types(expect: dict, where: str) -> None:
@@ -149,20 +226,58 @@ def check_expect_types(expect: dict, where: str) -> None:
             continue
         if not isinstance(items, list) or not all(isinstance(item, str) for item in items):
             raise TypeError(f"{where}: {key} должен быть списком строк (в кавычках)")
-    for key in ("refusal", "dashboard"):
+    for key in GROUP_KEYS:
+        groups = expect.get(key)
+        if groups is not None and not is_groups(groups):
+            raise TypeError(f"{where}: {key} должен быть списком непустых списков строк")
+    for key in FLAG_KEYS:
         flag = expect.get(key)
         if flag is not None and not isinstance(flag, bool):
             raise TypeError(f"{where}: {key} должен быть true или false")
-    value = expect.get("value")
-    if value is None:
-        return
-    if not isinstance(value, dict) or not isinstance(value.get("sql"), str) or not value["sql"]:
-        raise ValueError(f"{where}: value должен содержать sql")
-    tolerance = value.get("tolerance")
-    if tolerance is not None and (
-        isinstance(tolerance, bool) or not isinstance(tolerance, int | float) or tolerance < 0
-    ):
-        raise ValueError(f"{where}: tolerance должен быть числом не меньше 0")
+    sql = expect.get("contains_any_sql")
+    if sql is not None and not has_sql({"sql": sql}):
+        raise ValueError(f"{where}: contains_any_sql должен быть строкой SQL")
+    for key in ("value", "range"):
+        spec = expect.get(key)
+        if spec is not None and not has_sql(spec):
+            raise ValueError(f"{where}: {key} должен содержать sql")
+    if expect.get("value") is not None:
+        check_tolerance(expect["value"], ("tolerance",), where)
+    if expect.get("numbers") is not None:
+        check_numbers_spec(expect["numbers"], where)
+
+
+def is_groups(groups: object) -> bool:
+    return isinstance(groups, list) and all(
+        isinstance(group, list) and group and all(isinstance(item, str) for item in group)
+        for group in groups
+    )
+
+
+def has_sql(spec: object) -> bool:
+    return isinstance(spec, dict) and isinstance(spec.get("sql"), str) and bool(spec["sql"])
+
+
+def check_tolerance(spec: dict, keys: tuple[str, ...], where: str) -> None:
+    for key in keys:
+        tolerance = spec.get(key)
+        if tolerance is not None and (
+            isinstance(tolerance, bool) or not isinstance(tolerance, int | float) or tolerance < 0
+        ):
+            raise ValueError(f"{where}: {key} должен быть числом не меньше 0")
+
+
+def check_numbers_spec(spec: object, where: str) -> None:
+    if not isinstance(spec, dict):
+        raise TypeError(f"{where}: numbers должен быть словарём с sql или any_of")
+    variants = spec.get("any_of")
+    if variants is None:
+        variants = [spec]
+    elif not isinstance(variants, list) or not variants or "sql" in spec:
+        raise ValueError(f"{where}: numbers.any_of должен быть непустым списком (без sql рядом)")
+    if not all(has_sql(variant) for variant in variants):
+        raise ValueError(f"{where}: у каждого варианта numbers должен быть sql")
+    check_tolerance(spec, ("tolerance", "tolerance_abs"), where)
 
 
 def select_questions(
@@ -276,14 +391,25 @@ def build_orchestrator(db, trace: Trace, llm=None):
     )
 
 
-async def run_turn(orchestrator, trace: Trace, session_id: str, text: str) -> Turn:
+def reply_to_supported() -> bool:
+    from app.api.schemas.chat import ChatRequest
+
+    return "reply_to" in ChatRequest.model_fields
+
+
+async def run_turn(
+    orchestrator, trace: Trace, session_id: str, text: str, reply_to: str | None = None
+) -> Turn:
     from app.api.schemas.chat import ChatRequest
 
     trace.steps, trace.selections = [], []
     turn = Turn()
     started = time.perf_counter()
+    request = {"session_id": session_id, "question": text}
+    if reply_to is not None and reply_to_supported():
+        request["reply_to"] = reply_to
     try:
-        async for event in orchestrator.run(ChatRequest(session_id=session_id, question=text)):
+        async for event in orchestrator.run(ChatRequest(**request)):
             elapsed = round(time.perf_counter() - started, 3)
             if turn.first_event_s is None:
                 turn.first_event_s = elapsed
@@ -521,6 +647,182 @@ def check_refusal(expected: bool, turn: Turn, db) -> Check:
     return Check("refusal", False, "агент не ответил: " + ending(turn))
 
 
+def visible_text(turn: Turn) -> str:
+    parts = [answer_text(turn)]
+    for data in events_of(turn, "clarification_needed"):
+        parts.append(str(data.get("error", "")))
+        parts += [str(suggestion) for suggestion in data.get("suggestions", [])]
+    parts += [str(data.get("message", "")) for data in events_of(turn, "error")]
+    parts += [str(data.get("caption", "")) for data in events_of(turn, "chart")]
+    return "\n".join(part for part in parts if part)
+
+
+def scaled_numbers(text: str) -> list[float]:
+    found = []
+    for whole, fraction, scale in SCALED_NUMBER.findall(text):
+        number = float(DIGIT_SEPARATOR.sub("", whole) + (f".{fraction}" if fraction else ""))
+        found.append(number * SCALE[scale.lower()] if scale else number)
+    return found
+
+
+def row_numbers(rows: list[dict] | None) -> list[float]:
+    return [
+        float(cell)
+        for row in rows or []
+        for cell in row.values()
+        if is_number(cell) and not math.isnan(float(cell))
+    ]
+
+
+def near(candidate: float, reference: float, tolerance: float, tolerance_abs) -> bool:
+    if tolerance_abs is not None:
+        return abs(candidate - reference) <= tolerance_abs + VALUE_EPSILON
+    if reference == 0:
+        return abs(candidate) < VALUE_EPSILON
+    return abs(candidate - reference) <= tolerance * abs(reference) + VALUE_EPSILON
+
+
+def number_found(
+    reference: float, candidates: list[float], tolerance: float, tolerance_abs
+) -> bool:
+    options = [reference]
+    if 0 < abs(reference) <= SHARE_LIMIT:
+        options.append(reference * PERCENT_LIMIT)
+    elif abs(reference) <= PERCENT_LIMIT:
+        options.append(reference / PERCENT_LIMIT)
+    return any(
+        near(candidate, option, tolerance, tolerance_abs)
+        for option in options
+        for candidate in candidates
+    )
+
+
+def number_variants(spec: dict, turn: Turn, db) -> list[list[float]]:
+    if "numbers" in turn.gold:
+        variants = turn.gold["numbers"]
+    else:
+        variants = [
+            [list(row.values()) for row in db.query(variant["sql"])]
+            for variant in spec.get("any_of") or [spec]
+        ]
+    return [
+        [float(cell) for row in variant for cell in row if is_number(cell)] for variant in variants
+    ]
+
+
+def check_numbers(expected: dict, turn: Turn, db) -> Check:
+    tolerance = expected.get("tolerance")
+    tolerance = DEFAULT_NUMBER_TOLERANCE if tolerance is None else float(tolerance)
+    tolerance_abs = expected.get("tolerance_abs")
+    candidates = scaled_numbers(visible_text(turn))
+    candidates += row_numbers((turn.result_rows or [])[:NUMBER_ROWS])
+    best: tuple[list[float], list[float]] | None = None
+    for references in number_variants(expected, turn, db):
+        if not references:
+            continue
+        missing = [
+            reference
+            for reference in references
+            if not number_found(reference, candidates, tolerance, tolerance_abs)
+        ]
+        if best is None or len(missing) / len(references) <= len(best[1]) / len(best[0]):
+            best = (references, missing)
+    if best is None:
+        return Check("numbers", False, "эталон не дал ни одного числа")
+    references, missing = best
+    if not missing:
+        return Check("numbers", True)
+    return Check(
+        "numbers",
+        False,
+        f"найдено {len(references) - len(missing)} из {len(references)} эталонных чисел, "
+        f"нет {shown(missing)}; в ответе чисел: {shown(candidates)}",
+    )
+
+
+def reference_range(sql: str, db) -> tuple[float, float]:
+    rows = db.query(sql)
+    if len(rows) != 1 or len(rows[0]) != 2:
+        raise ValueError("SQL диапазона должен вернуть одну строку с двумя значениями")
+    low, high = rows[0].values()
+    return float(low), float(high)
+
+
+def check_range(expected: dict, turn: Turn, db) -> Check:
+    low, high = turn.gold.get("range") or reference_range(expected["sql"], db)
+    found = scaled_numbers(visible_text(turn))
+    if any(low <= number <= high for number in found):
+        return Check("range", True)
+    return Check("range", False, f"в тексте нет числа в [{low:g}; {high:g}], чисел: {shown(found)}")
+
+
+def folded(text: str) -> str:
+    return re.sub(r"\s+", " ", text.replace("ё", "е").replace("Ё", "Е")).casefold()
+
+
+def contains_groups(name: str, groups: list[list[str]], turn: Turn) -> Check:
+    text = folded(visible_text(turn))
+    missing = [group for group in groups if not any(folded(word) in text for word in group)]
+    if not missing:
+        return Check(name, True)
+    return Check(
+        name, False, "в ответе нет ни одного из " + "; ни одного из ".join(map(str, missing))
+    )
+
+
+def check_contains_any(expected: list[str], turn: Turn, db) -> Check:
+    return contains_groups("contains_any", [expected], turn)
+
+
+def check_contains_all(expected: list[list[str]], turn: Turn, db) -> Check:
+    return contains_groups("contains_all", expected, turn)
+
+
+def check_contains_any_groups(expected: list[list[str]], turn: Turn, db) -> Check:
+    return contains_groups("contains_any_groups", expected, turn)
+
+
+def check_contains_any_sql(expected: str, turn: Turn, db) -> Check:
+    words = turn.gold.get("contains_any")
+    if words is None:
+        words = [str(next(iter(row.values()))) for row in db.query(expected) if row]
+    if not words:
+        return Check("contains_any_sql", False, "эталонный SQL не вернул строк")
+    return contains_groups("contains_any_sql", [words], turn)
+
+
+def last_chart(turn: Turn) -> str | None:
+    kinds = chart_types(turn)
+    return kinds[-1] if kinds else None
+
+
+def check_chart_any(expected: list[str], turn: Turn, db) -> Check:
+    kind = last_chart(turn)
+    if kind in expected:
+        return Check("chart_any", True)
+    return Check("chart_any", False, f"последний график {kind or 'нет'}, ждали один из {expected}")
+
+
+def check_chart_changed(expected: bool, turn: Turn, db) -> Check:
+    kind = last_chart(turn)
+    if kind is not None and kind != turn.parent_chart:
+        return Check("chart_changed", True)
+    return Check(
+        "chart_changed",
+        False,
+        f"график не сменился: {turn.parent_chart or 'нет'} -> {kind or 'нет'}",
+    )
+
+
+def check_table_intact(expected: bool, turn: Turn, db) -> Check:
+    reference = turn.gold.get("row_count", turn.table_rows_before)
+    if reference is None or turn.table_rows is None:
+        return Check("table_intact", False, "число строк таблицы не узнали")
+    if turn.table_rows == reference:
+        return Check("table_intact", True)
+    return Check("table_intact", False, f"строк {turn.table_rows} из {reference}")
+
+
 CHECKS = {
     "tools_any": check_tools,
     "columns_all": check_columns,
@@ -529,6 +831,15 @@ CHECKS = {
     "chart_type_any": check_chart,
     "dashboard": check_dashboard,
     "refusal": check_refusal,
+    "numbers": check_numbers,
+    "range": check_range,
+    "contains_any": check_contains_any,
+    "contains_all": check_contains_all,
+    "contains_any_groups": check_contains_any_groups,
+    "contains_any_sql": check_contains_any_sql,
+    "chart_any": check_chart_any,
+    "chart_changed": check_chart_changed,
+    "table_intact": check_table_intact,
 }
 
 
@@ -549,7 +860,19 @@ def ending(turn: Turn) -> str:
     return "нет графика"
 
 
-def check_turn(expect: dict, turn: Turn, db) -> list[Check]:
+def api_failed(turn: Turn) -> bool:
+    texts = [turn.error or ""]
+    texts += [
+        str(data.get("error", ""))
+        for data in events_of(turn, "progress")
+        if data.get("status") == "failed"
+    ]
+    texts += [str(data.get("message", "")) for data in events_of(turn, "error")]
+    texts += [str(data.get("error", "")) for data in events_of(turn, "clarification_needed")]
+    return any(API_LIMIT.search(text) for text in texts)
+
+
+def check_turn(expect: dict, turn: Turn, db, columns_recall_only: bool = False) -> list[Check]:
     checks = []
     clarified = any(event["type"] == "clarification_needed" for event in turn.events)
     if errored(turn):
@@ -560,6 +883,8 @@ def check_turn(expect: dict, turn: Turn, db) -> list[Check]:
         checks.append(Check("turn", False, "агент запросил уточнение: " + ending(turn)))
     for key in EXPECT_KEYS:
         if not checked(key, expect.get(key), turn):
+            continue
+        if key == "columns_all" and columns_recall_only:
             continue
         try:
             checks.append(CHECKS[key](expect[key], turn, db))
@@ -573,6 +898,8 @@ def checked(key: str, expected: object, turn: Turn) -> bool:
     if expected is None:
         return False
     if key in UNCHECKED_WHEN_EMPTY and expected == []:
+        return False
+    if key in UNCHECKED_WHEN_FALSE and expected is False:
         return False
     return key != "columns_all" or bool(turn.steps or turn.selections)
 
@@ -646,10 +973,51 @@ def bind_table(memory, dataset: str, columns: list[str]) -> None:
         memory.set_table(dataset)
 
 
+def turn_id_of(turn: Turn) -> str | None:
+    for data in reversed([event["data"] for event in turn.events]):
+        if data.get("turn_id"):
+            return str(data["turn_id"])
+    return None
+
+
+def table_rows(db, table: str) -> int | None:
+    quoted = table.replace('"', '""')
+    try:
+        [row] = db.query(f'SELECT count(*) AS row_count FROM "{quoted}"')
+    except duckdb.Error:
+        logger.warning("строки таблицы %s не посчитаны", table, exc_info=True)
+        return None
+    return int(row["row_count"])
+
+
 async def run_questions(
-    questions: list[Question], db, orchestrator, trace: Trace, dataset: str | None = None
+    questions: list[Question],
+    db,
+    orchestrator,
+    trace: Trace,
+    dataset: str | None = None,
+    options: RunOptions | None = None,
+) -> list[dict]:
+    options = options or RunOptions()
+    results = []
+    for repeat in range(1, options.repeat + 1):
+        if options.repeat > 1:
+            print(f"Повтор {repeat} из {options.repeat}", flush=True)
+        results += await run_pass(questions, db, orchestrator, trace, dataset, options, repeat)
+    return results
+
+
+async def run_pass(
+    questions: list[Question],
+    db,
+    orchestrator,
+    trace: Trace,
+    dataset: str | None,
+    options: RunOptions,
+    repeat: int,
 ) -> list[dict]:
     sessions: dict[str, str] = {}
+    turns: dict[str, Turn] = {}
     results = []
     for question in questions:
         table = dataset or question.dataset
@@ -657,14 +1025,26 @@ async def run_questions(
             session_id = open_session(question, table, db, sessions)
         except LookupError as error:
             check = Check("session", False, str(error))
-            results.append(question_result(question, table, None, Turn(), [check]))
+            result = question_result(question, table, None, Turn(), [check])
+            results.append({**result, "repeat": repeat, "api_error": False})
             continue
         sessions[question.id] = session_id
-        turn = await run_turn(orchestrator, trace, session_id, question.text)
+        parent = turns.get(question.follow_up_of) if question.follow_up_of else None
+        reply_to = turn_id_of(parent) if options.reply_to and parent is not None else None
+        rows_before = table_rows(db, table) if question.expect.get("table_intact") else None
+        turn = await run_turn(orchestrator, trace, session_id, question.text, reply_to)
+        turns[question.id] = turn
         read_result(turn, db)
-        checks = check_turn(question.expect, turn, db)
-        results.append(question_result(question, table, session_id, turn, checks))
-        print(f"  {'ok  ' if results[-1]['passed'] else 'FAIL'} {question.id}", flush=True)
+        turn.gold = options.gold.get(question.id, {})
+        turn.parent_chart = None if parent is None else last_chart(parent)
+        turn.table_rows_before = rows_before
+        if question.expect.get("table_intact"):
+            turn.table_rows = table_rows(db, table)
+        checks = check_turn(question.expect, turn, db, options.columns_recall_only)
+        result = question_result(question, table, session_id, turn, checks)
+        results.append({**result, "repeat": repeat, "api_error": api_failed(turn)})
+        status = "API " if results[-1]["api_error"] else "ok  " if result["passed"] else "FAIL"
+        print(f"  {status} {question.id}", flush=True)
     return results
 
 
@@ -684,10 +1064,28 @@ def timing(results: list[dict], key: str) -> dict:
     return {"p50": percentile(values, 0.5), "p95": percentile(values, 0.95), "count": len(values)}
 
 
+def pass_k(scored: list[dict], repeats: int) -> dict:
+    runs: dict[str, list[bool]] = {}
+    for result in scored:
+        runs.setdefault(result["id"], []).append(bool(result["passed"]))
+    return {
+        "repeat": repeats,
+        "questions": len(runs),
+        "always": sum(all(passes) for passes in runs.values()),
+        "at_least_once": sum(any(passes) for passes in runs.values()),
+        "by_question": {
+            question_id: {"passed": sum(passes), "runs": len(passes)}
+            for question_id, passes in runs.items()
+        },
+    }
+
+
 def summarize(results: list[dict], model: str, questions_path: Path, day: date) -> dict:
+    scored = [result for result in results if not result.get("api_error")]
+    repeats = max((result.get("repeat", 1) for result in results), default=1)
     scenarios = {}
-    for scenario in sorted({result["scenario"] for result in results}):
-        own = [result for result in results if result["scenario"] == scenario]
+    for scenario in sorted({result["scenario"] for result in scored}):
+        own = [result for result in scored if result["scenario"] == scenario]
         passed = sum(result["passed"] for result in own)
         scenarios[str(scenario)] = {
             "total": len(own),
@@ -698,14 +1096,16 @@ def summarize(results: list[dict], model: str, questions_path: Path, day: date) 
     unprofiled = sum(1 for result in results if result.get("profiled") is False)
     covered = sum(result["selection_covered"] for result in measured)
     blocks = [result["block_chars"] for result in results if result["block_chars"] is not None]
-    passed = sum(result["passed"] for result in results)
+    passed = sum(result["passed"] for result in scored)
     return {
         "model": model,
         "date": day.isoformat(),
         "questions_file": display_path(questions_path),
-        "total": len(results),
+        "total": len(scored),
         "passed": passed,
-        "pass_rate": rate(passed, len(results)),
+        "pass_rate": rate(passed, len(scored)),
+        "api_errors": len(results) - len(scored),
+        "pass_k": pass_k(scored, repeats),
         "scenarios": scenarios,
         "timing": {
             "first_event_s": timing(results, "first_event_s"),
@@ -747,6 +1147,18 @@ def render(report: dict) -> str:
         lines.append(
             f"Ходов с ошибкой (LLM, сеть, сбой этапа): {report['errored']} — это не оценка "
             "качества, такие вопросы провалены."
+        )
+    if report.get("api_errors"):
+        lines.append(
+            f"Исключено: ход сорван лимитом API провайдера — {report['api_errors']}; "
+            "такие ходы не входят ни в один процент."
+        )
+    repeats = report.get("pass_k") or {}
+    if repeats.get("repeat", 1) > 1:
+        lines.append(
+            f"Повторов {repeats['repeat']}: pass^{repeats['repeat']} (во всех повторах) — "
+            f"{repeats['always']} из {repeats['questions']} вопросов, "
+            f"хотя бы раз — {repeats['at_least_once']}."
         )
     if report["no_session"]:
         lines.append(f"Не открылась сессия (нет таблицы): {report['no_session']}.")
@@ -797,10 +1209,15 @@ def render(report: dict) -> str:
         "## Провалы",
         "",
     ]
-    failed = [result for result in report["questions"] if not result["passed"]]
+    failed = [
+        result
+        for result in report["questions"]
+        if not result["passed"] and not result.get("api_error")
+    ]
     for result in failed:
+        again = f", повтор {result['repeat']}" if repeats.get("repeat", 1) > 1 else ""
         lines.append(
-            f"- `{result['id']}` (сценарий {result['scenario']}, `{result['dataset']}`): "
+            f"- `{result['id']}` (сценарий {result['scenario']}, `{result['dataset']}`{again}): "
             + "; ".join(result["failures"])
         )
     if not failed:
@@ -879,7 +1296,17 @@ async def evaluate(args: argparse.Namespace) -> int:
     from app.config import settings
     from app.core.data.duckdb_manager import DuckDBManager
 
-    questions = select_questions(load_questions(args.questions), args.per_scenario, args.ids)
+    every_question = load_questions(args.questions)
+    questions = select_questions(every_question, args.per_scenario, args.ids)
+    gold = load_gold(args.gold or Path(args.questions).parent / GOLD_FILE, every_question)
+    if args.reply_to and not reply_to_supported():
+        print("В ChatRequest нет reply_to (#173): продолжения идут без него", file=sys.stderr)
+    options = RunOptions(
+        gold=gold,
+        columns_recall_only=args.columns_recall_only,
+        reply_to=args.reply_to,
+        repeat=args.repeat,
+    )
     model = FAKE_MODEL if fake_mode() else args.model or settings.llm_model
     out_dir = args.out_dir or (
         Path(tempfile.mkdtemp(prefix="eval-report-")) if fake_mode() else DEFAULT_OUT_DIR
@@ -901,7 +1328,7 @@ async def evaluate(args: argparse.Namespace) -> int:
         print(f"Eval: модель {model}, вопросов {len(questions)}", flush=True)
         trace = Trace()
         orchestrator = build_orchestrator(db, trace)
-        results = await run_questions(questions, db, orchestrator, trace, args.dataset)
+        results = await run_questions(questions, db, orchestrator, trace, args.dataset, options)
     finally:
         db.close()
     report = summarize(results, model, args.questions, date.today())
@@ -914,6 +1341,13 @@ async def evaluate(args: argparse.Namespace) -> int:
         print(f"Не открылась сессия у {report['no_session']} вопросов", file=sys.stderr)
         return SESSION_FAILED
     return 0
+
+
+def positive(text: str) -> int:
+    number = int(text)
+    if number < 1:
+        raise argparse.ArgumentTypeError("нужно целое число не меньше 1")
+    return number
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -931,6 +1365,22 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument("--tag", help="суффикс имени отчёта: eval_<дата>_<модель>_<tag>")
     parser.add_argument("--force", action="store_true", help="перезаписать отчёт с тем же именем")
+    parser.add_argument(
+        "--gold", type=Path, help="эталоны (по умолчанию gold.json рядом с набором, если есть)"
+    )
+    parser.add_argument(
+        "--repeat", type=positive, default=1, help="прогнать набор N раз (pass^k в отчёте)"
+    )
+    parser.add_argument(
+        "--reply-to",
+        action="store_true",
+        help="продолжения отвечают на ход follow_up_of через reply_to (после #173)",
+    )
+    parser.add_argument(
+        "--columns-recall-only",
+        action="store_true",
+        help="columns_all не влияет на итог вопроса, только на recall (набор data/eval/hk)",
+    )
     return parser.parse_args(argv)
 
 
