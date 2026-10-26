@@ -271,9 +271,18 @@ export default function ChatPanel({ sessionId }: Props) {
       if (options?.isRetry) {
         quote = quoteFromRetry();
       } else if (options?.replyTo !== undefined) {
-        quote = options.replyTo
-          ? { turn_id: options.replyTo, excerpt: replyTarget?.excerpt ?? "" }
-          : null;
+        if (options.replyTo) {
+          // Явный turn_id: выдержку берём у самого ответа, если он в ленте.
+          const source = useSessionStore
+            .getState()
+            .messages.find((x) => x.turn_id === options.replyTo);
+          quote = {
+            turn_id: options.replyTo,
+            excerpt: source ? excerptOf(source) : replyTarget?.excerpt ?? "",
+          };
+        } else {
+          quote = null;
+        }
       } else {
         quote = replyTarget;
       }
@@ -493,9 +502,10 @@ export default function ChatPanel({ sessionId }: Props) {
     if (!activeTable || streaming || activeStreamingSessionId) return;
     handledQuestionRef.current = pendingQuestion.id;
     consumeQuestion(sessionId, pendingQuestion.id);
-    // Внешний вопрос не продолжает выбранную цитату.
+    // Внешний вопрос не продолжает выбранную цитату: replyTo: null перекрывает
+    // значение из замыкания sendQuestion (setReplyTarget ещё не применился).
     setReplyTarget(null);
-    sendQuestionRef.current(pendingQuestion.text);
+    sendQuestionRef.current(pendingQuestion.text, { replyTo: null });
   }, [
     pendingQuestion,
     activeTable,
