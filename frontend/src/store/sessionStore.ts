@@ -22,6 +22,10 @@ export interface ChatMessage {
   id?: string;
   role: "user" | "agent";
   content: string;
+  /** turn_id хода, к которому относится ответ (из события done). */
+  turn_id?: string;
+  /** Цитата, на которую отвечает пользователь (для ленты и повтора запроса). */
+  reply_to?: { turn_id: string; excerpt: string };
   dashboard?: DashboardEvent["data"];
   chart?: ChartEvent["data"];
   timestamp?: string;

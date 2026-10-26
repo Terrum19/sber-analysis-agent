@@ -240,8 +240,11 @@ export default function ChatPanel({ sessionId }: Props) {
     let answerDetails: string[] = [];
     let answerSpec: Record<string, unknown> | undefined;
     let answerResultTable: string | undefined;
-    const saveAnswerMeta = () => {
-      if (!answerHeadline && answerDetails.length === 0 && !answerSpec && !answerResultTable) {
+    // turnId приходит в done: по нему работают «Спросить об этом» и reply_to (F-12).
+    const saveAnswerMeta = (turnId?: string) => {
+      const hasAnswer =
+        Boolean(answerHeadline) || answerDetails.length > 0 || Boolean(answerSpec) || Boolean(answerResultTable);
+      if (!hasAnswer && !turnId) {
         return;
       }
       const all = useSessionStore.getState().messages;
@@ -256,12 +259,17 @@ export default function ChatPanel({ sessionId }: Props) {
         return;
       }
       updateLastMessage({
-        answer: {
-          headline: answerHeadline || undefined,
-          details: answerDetails.length > 0 ? answerDetails : undefined,
-          spec: answerSpec,
-          result_table: answerResultTable,
-        },
+        ...(hasAnswer
+          ? {
+              answer: {
+                headline: answerHeadline || undefined,
+                details: answerDetails.length > 0 ? answerDetails : undefined,
+                spec: answerSpec,
+                result_table: answerResultTable,
+              },
+            }
+          : {}),
+        ...(turnId ? { turn_id: turnId } : {}),
       });
     };
 
@@ -272,7 +280,7 @@ export default function ChatPanel({ sessionId }: Props) {
         if (event.type === "done") {
           streamFinished = true;
           finishProgress();
-          saveAnswerMeta();
+          saveAnswerMeta(event.data?.turn_id);
         } else if (event.type === "progress") {
           if (!progress) {
             progress = applyProgress({ planning: false, steps: [], started_at: Date.now() }, event.data);
