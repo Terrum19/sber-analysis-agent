@@ -34,7 +34,15 @@ LIST_KEYS = ("tools_any", "columns_all", "answer_contains", "chart_type_any")
 UNCHECKED_WHEN_EMPTY = ("tools_any", "chart_type_any")
 QUESTION_KEYS = ("id", "scenario", "dataset", "question", "follow_up_of", "expect")
 REQUIRED_KEYS = ("id", "scenario", "dataset", "question")
-EXPECT_KEYS = ("tools_any", "columns_all", "answer_contains", "value", "chart_type_any", "refusal")
+EXPECT_KEYS = (
+    "tools_any",
+    "columns_all",
+    "answer_contains",
+    "value",
+    "chart_type_any",
+    "dashboard",
+    "refusal",
+)
 TURN_END_EVENTS = ("done", "clarification_needed")
 RESULT_ROWS = 1000
 VALUE_MAX_ROWS = 50
@@ -141,9 +149,10 @@ def check_expect_types(expect: dict, where: str) -> None:
             continue
         if not isinstance(items, list) or not all(isinstance(item, str) for item in items):
             raise TypeError(f"{where}: {key} должен быть списком строк (в кавычках)")
-    refusal = expect.get("refusal")
-    if refusal is not None and not isinstance(refusal, bool):
-        raise TypeError(f"{where}: refusal должен быть true или false")
+    for key in ("refusal", "dashboard"):
+        flag = expect.get(key)
+        if flag is not None and not isinstance(flag, bool):
+            raise TypeError(f"{where}: {key} должен быть true или false")
     value = expect.get("value")
     if value is None:
         return
@@ -345,9 +354,8 @@ def refused(turn: Turn) -> bool:
     kinds = {event["type"] for event in turn.events}
     if "refusal" in kinds:
         return True
-    stepped = any(data.get("stage") == "step" for data in events_of(turn, "progress"))
     if "clarification_needed" in kinds:
-        return not stepped
+        return False
     return "chart" not in kinds and not turn.steps
 
 
@@ -494,11 +502,20 @@ def check_chart(expected: list[str], turn: Turn, db) -> Check:
     )
 
 
+def check_dashboard(expected: bool, turn: Turn, db) -> Check:
+    sent = bool(events_of(turn, "dashboard"))
+    if sent == expected:
+        return Check("dashboard", True)
+    return Check("dashboard", False, "дашборда нет" if expected else "пришёл дашборд, не ждали")
+
+
 def check_refusal(expected: bool, turn: Turn, db) -> Check:
     if errored(turn):
         return Check("refusal", False, "ход упал, отказ не проверить: " + ending(turn))
     if refused(turn) == bool(expected):
         return Check("refusal", True)
+    if expected and events_of(turn, "clarification_needed"):
+        return Check("refusal", False, "ждали отказ, агент запросил уточнение: " + ending(turn))
     if expected:
         return Check("refusal", False, "ждали отказ, агент ответил по данным")
     return Check("refusal", False, "агент не ответил: " + ending(turn))
@@ -510,6 +527,7 @@ CHECKS = {
     "answer_contains": check_answer,
     "value": check_value,
     "chart_type_any": check_chart,
+    "dashboard": check_dashboard,
     "refusal": check_refusal,
 }
 

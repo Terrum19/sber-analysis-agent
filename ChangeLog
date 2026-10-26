@@ -1,3 +1,15 @@
+2026-10-26  mb6ockatf  <smokenmirror@tutamail.com>
+
+	Eval: проверка дашборда, шаблонная отписка — не отказ (#57).
+	* scripts/eval.py (check_dashboard): Новая.  expect.dashboard —
+	пришло ли событие dashboard.
+	(refused, check_refusal): Отказ — событие refusal или ответ одним
+	текстом без шагов; clarification_needed, в том числе «Не удалось
+	подобрать инструменты» на пустой план, отказом не считается.
+	(check_expect_types): dashboard — true или false.
+	* backend/tests/unit/test_eval_runner.py: Тесты того же.
+	* docs/eval.md: То же.
+
 2026-10-25  mb6ockatf  <smokenmirror@tutamail.com>
 
 	Eval: проверки без ложных проходов и падений (#57).

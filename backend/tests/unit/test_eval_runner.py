@@ -180,9 +180,12 @@ def test_turn_without_done_fails_with_reason(sales_db: DuckDBManager) -> None:
     assert runner.check_turn({}, crashed, sales_db)[0].reason == "ход упал: RuntimeError: boom"
 
 
-def test_refusal_counts_clarification_and_missing_chart(sales_db: DuckDBManager) -> None:
-    clarification = make_turn(
-        [{"type": "clarification_needed", "data": {"error": "колонки нет"}}], end_s=0.5
+def test_refusal_is_a_refusal_event_or_a_plain_text_reply(sales_db: DuckDBManager) -> None:
+    refusal = make_turn(
+        [
+            {"type": "refusal", "data": {"message": "Погоды в данных нет"}},
+            {"type": "done", "data": {}},
+        ]
     )
     small_talk = make_turn(
         [
@@ -190,15 +193,42 @@ def test_refusal_counts_clarification_and_missing_chart(sales_db: DuckDBManager)
             {"type": "done", "data": {}},
         ]
     )
-
-    for turn in (clarification, small_talk):
+    for turn in (refusal, small_talk):
         assert runner.check_turn({"refusal": True}, turn, sales_db) == [
             runner.Check("refusal", True)
         ]
-    turn_check, refusal_check = runner.check_turn({"refusal": False}, clarification, sales_db)
-    assert turn_check.reason == "агент запросил уточнение: clarification_needed: колонки нет"
-    assert refusal_check.reason == "агент не ответил: clarification_needed: колонки нет"
-    assert [check.name for check in runner.check_turn({}, clarification, sales_db)] == ["turn"]
+
+
+def test_canned_clarification_is_not_a_refusal(sales_db: DuckDBManager) -> None:
+    canned = make_turn(
+        [
+            {
+                "type": "clarification_needed",
+                "data": {
+                    "step_id": -1,
+                    "error": "Не удалось подобрать инструменты под этот вопрос.",
+                },
+            }
+        ],
+        end_s=0.5,
+    )
+    [check] = runner.check_turn({"refusal": True}, canned, sales_db)
+    assert not check.passed
+    assert check.reason.startswith("ждали отказ, агент запросил уточнение: ")
+    turn_check, refusal_check = runner.check_turn({"refusal": False}, canned, sales_db)
+    assert turn_check.reason.startswith("агент запросил уточнение: ")
+    assert refusal_check.passed
+    assert [check.name for check in runner.check_turn({}, canned, sales_db)] == ["turn"]
+
+
+def test_dashboard_check_needs_the_dashboard_event(sales_db: DuckDBManager) -> None:
+    dashboard = {"type": "dashboard", "data": {"dashboard_id": "d1", "tiles": []}}
+    built = make_turn([*ANSWER_EVENTS[:-1], dashboard, {"type": "done", "data": {}}])
+    assert runner.check_turn({"dashboard": True}, built, sales_db) == [
+        runner.Check("dashboard", True)
+    ]
+    [check] = runner.check_turn({"dashboard": True}, make_turn(ANSWER_EVENTS), sales_db)
+    assert check == runner.Check("dashboard", False, "дашборда нет")
 
 
 def test_error_event_is_neither_refusal_nor_answer(sales_db: DuckDBManager) -> None:
@@ -324,6 +354,7 @@ def test_failed_check_does_not_stop_the_run(sales_db: DuckDBManager, monkeypatch
         ({"columns_all": [2023]}, "columns_all должен быть списком строк"),
         ({"answer_contains": "июл"}, "answer_contains должен быть списком строк"),
         ({"refusal": "yes"}, "refusal должен быть true или false"),
+        ({"dashboard": 1}, "dashboard должен быть true или false"),
         ({"value": {"sql": "SELECT 1", "tolerance": -1}}, "tolerance должен быть числом"),
     ],
 )
@@ -617,5 +648,5 @@ def test_clarification_after_a_failed_step_is_not_a_refusal(sales_db: DuckDBMana
         ],
         end_s=0.5,
     )
-    checks = runner.check_turn({"refusal": True}, failed_step, sales_db)
-    assert checks == [runner.Check("refusal", False, "ждали отказ, агент ответил по данным")]
+    [check] = runner.check_turn({"refusal": True}, failed_step, sales_db)
+    assert check.reason.startswith("ждали отказ, агент запросил уточнение: ")
