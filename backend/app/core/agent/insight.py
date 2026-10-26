@@ -11,7 +11,7 @@ from app.config import settings
 from app.core.agent.quality_fixes import format_rows, insight_facts, ungrounded_numbers
 from app.core.data.duckdb_manager import DuckDBManager
 from app.core.llm.client import LLMClient
-from app.core.llm.prompts.insight_summary import INSIGHT_SUMMARY
+from app.core.llm.prompts.insight_summary import INSIGHT_SUMMARY, TILE_INSIGHT
 from app.core.llm.prompts.quality_rules import (
     INSIGHT_RULES,
     MANY_ROWS,
@@ -26,6 +26,7 @@ logger = logging.getLogger(__name__)
 
 # Сколько строк результата видит модель.
 SHOWN_ROWS = 50
+TILE_ROWS = 30
 
 
 class InsightGenerator:
@@ -84,6 +85,15 @@ class InsightGenerator:
         prompt += INSIGHT_RULES.format(plan=plan, facts=facts, shape=shape)
         # Числа условий из шагов плана («> 150», «2024») — тоже опора, не выдумка.
         return await self._grounded(prompt, f"{question}\n{shown}\n{extra}\n{facts}\n{plan}")
+
+    async def generate_tile_insight(self, title: str, result_table: str, chart_type: str) -> str:
+        from app.core.data.duckdb_manager import DuckDBManager
+
+        db = self.db or DuckDBManager()
+        result = db.to_records(result_table, limit=TILE_ROWS)
+        prompt = TILE_INSIGHT.format(title=title, chart_type=chart_type, result=result)
+        text = await self.llm.complete("Ты — аналитик.", prompt)
+        return text.strip()
 
     async def _grounded(self, prompt: str, sources: str) -> Insight:
         """H-Q3: число в headline, которого нет в sources, — один переспрос."""

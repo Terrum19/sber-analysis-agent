@@ -1,3 +1,136 @@
+2026-10-26  Alexander Yurits  <143354682+Terrum19@users.noreply.github.com>
+
+	Графики: тренд линией, гистограмма по колонке из вопроса (#176).
+	* backend/app/core/agent/orchestrator.py (_requested_view): Результат
+	analysis-шага с рядом по времени (trend_analysis, seasonal_decompose)
+	— line, остальное — table.
+	(AgentOrchestrator._histogram_values): Новая.  Для гистограммы —
+	только колонка из вопроса.
+	(AgentOrchestrator._finish): Сбой выборки для гистограммы не роняет
+	ход: показываются статистики шага.
+	* backend/app/core/viz/chart_selector.py (histogram_column): Новая.
+	(fits): Колонка гистограммы — аргументом.
+	(select_chart): Новый аргумент titles.
+	* docs/visualization.md: То же.
+
+2026-10-25  mb6ockatf  <smokenmirror@tutamail.com>
+
+	Графики: название из шага, тип по форме данных, «без графика» (#164).
+	* backend/app/core/viz/chart_selector.py (fits): Новая.  Проверка
+	вида по строкам результата: line/area — от 3 точек и с упорядоченной
+	осью, scatter — две числовые колонки, histogram — одна числовая
+	колонка и от 20 значений, bar — не больше 30 категорий.
+	(select_chart): Одна строка — kpi или table; выбор планировщика и
+	эвристика проверяются через fits, не подошло — table; "none" — без
+	графика.
+	* backend/app/core/viz/vega_spec_builder.py (ordered_column)
+	(chart_title): Новые.  Упорядоченная ось и запасной заголовок
+	«{метрика} по {категории}».
+	* backend/app/core/agent/orchestrator.py (AgentOrchestrator._turn):
+	Заголовок спеки — purpose шага-результата, инсайт остаётся подписью.
+	В select_chart идут строки результата, они же — в спеку.  При
+	final_viz="none" событий chart нет.
+	(AgentOrchestrator._finish): В Execution — purpose и вид шага, чей
+	результат показан.
+	(_requested_view): Новая.  Результат analysis/lookup-шага — table.
+	(AgentOrchestrator._distribution_values): Новая.  На вопрос о
+	распределении после describe_stats — histogram по выборке из 500
+	значений колонки, статистики уходят в инсайт.
+	* backend/app/core/viz/chart_selector.py (asks_distribution): Новая.
+	* backend/app/models/research_step.py (ResearchPlan.final_viz):
+	Добавлено "none".
+	* backend/app/core/llm/prompts/step_planner.py: То же.
+	* docs/visualization.md, docs/architecture.md: То же.
+
+2026-10-25  mb6ockatf  <smokenmirror@tutamail.com>
+
+	Дашборд по шаблону: все плитки шаблона или без шаблона (#43).
+	* backend/app/core/agent/planner.py (template_gap): Новая.  Плитки
+	шаблона, которых нет в плане.
+	(_validate_tiles): Недостающие плитки шаблона — ошибка
+	NO_TEMPLATE_TILES с их названиями для переспроса.
+	(StepPlanner.plan): Если после переспроса не хватает только плиток
+	шаблона, template_id сбрасывается и план принимается: ход не
+	обрывается, дашборд собирается из того, что есть.
+	* backend/app/core/llm/prompts/step_planner.py (NO_TEMPLATE_TILES):
+	Называет недостающие плитки.
+	* backend/tests/unit/test_planner.py: Тесты того же.
+	* docs/visualization.md: То же.
+
+2026-10-25  mb6ockatf  <smokenmirror@tutamail.com>
+
+	Плитки дашборда: KPI только по одному числу, шаблон без сдвига плиток.
+	* backend/app/core/agent/orchestrator.py
+	(AgentOrchestrator._dashboard_tile): Плитка KPI по результату не из
+	одного числа строится видом auto; is_kpi — построенный вид.
+	* backend/app/core/agent/planner.py (apply_template): Плитки модели
+	без совпадения по названию разбираются по порядку, только если их
+	столько же, сколько в шаблоне.
+	* backend/tests/unit/test_dashboard_assembly.py
+	* backend/tests/unit/test_planner.py: Тесты того же.
+	* docs/visualization.md: То же.
+
+2026-10-25  mb6ockatf  <smokenmirror@tutamail.com>
+
+	Шаблон дашборда применяется при совпадении колонок (#43).
+	* backend/app/core/agent/planner.py (StepPlanner._ask): Нашёлся
+	шаблон — dashboard_requested ставится в true и плитки переписываются
+	по шаблону, даже если модель дашборд не запланировала.
+	(_validate_tiles): План по шаблону без плиток — ошибка
+	NO_TEMPLATE_TILES для переспроса.
+	* backend/app/core/llm/prompts/step_planner.py (NO_TEMPLATE_TILES):
+	Новая.
+	* backend/tests/unit/test_planner.py: Шаблон применяется и при
+	ответе без дашборда; вопрос без дашборда шаблон не получает.
+	* docs/visualization.md: То же.
+
+2026-10-25  mb6ockatf  <smokenmirror@tutamail.com>
+
+	Дашборд из плиток плана (B-04, #44).
+	* backend/app/core/agent/orchestrator.py (Execution): Поля tables
+	и plan, их заполняет _finish.
+	(_build_dashboard, _dashboard_tile, _arrange): Новые.  Плитка на
+	каждую DashboardTilePlan: таблица её шага, вид из плана или
+	select_chart, вывод LLM только при insight_needed.  KPI первым
+	рядом по 3x2, графики по два в ряд 6x4.  Без плиток — прежняя
+	одна плитка с графиком ответа.
+	(_execute_plan, _apply_recovery): Плитки, название и шаблон плана
+	переживают достройку после lookup и пропуск упавшего шага.
+	* backend/app/core/agent/insight.py (generate_tile_insight): Новая.
+	* backend/app/core/llm/prompts/insight_summary.py (TILE_INSIGHT):
+	Новый.
+	* backend/tests/integration/test_agent_cycle.py
+	(test_agent_cycle_builds_dashboard_from_plan_tiles): Новый.
+	* backend/tests/unit/test_dashboard_assembly.py: Новый.
+	* backend/tests/unit/test_insight_generator.py
+	(test_tile_insight_sends_title_view_and_rows): Новый.
+	* docs/visualization.md (Сборка дашборда), docs/architecture.md,
+	docs/prompts.md: То же.
+
+2026-10-25  mb6ockatf  <smokenmirror@tutamail.com>
+
+	Плитки дашборда в плане исследования (B-03, #43).
+	* backend/app/models/research_step.py (DashboardTilePlan): Новая.
+	Плитка плана: title, step_id, chart_type, is_kpi, insight_needed.
+	(ResearchPlan): Поля dashboard_title, template_id, dashboard_tiles;
+	null в dashboard_tiles — пустой список; плитки ставят
+	dashboard_requested.
+	* backend/app/core/agent/planner.py (is_dashboard_question)
+	(dashboard_prompt, apply_template, renumber_steps): Новые.  Вопрос
+	про дашборд («дашборд», «панель», «сводка») — templates.match по
+	колонкам таблицы: плитки шаблона в промпт и в план (template_id),
+	без шаблона — просьба составить 3–6 плиток.  Ссылки плиток
+	переписываются вместе с номерами шагов.
+	(validate_plan, _validate_tiles): step_id плиток — среди шагов;
+	дашборд без плиток — ошибка для переспроса.
+	(_plan_json): В переспрос уходят и плитки.
+	* backend/app/core/llm/prompts/step_planner.py (DASHBOARD_PLAN)
+	(DASHBOARD_CUSTOM, DASHBOARD_TEMPLATE, NO_TILES): Новые.
+	* backend/tests/unit/test_planner.py: Тесты плиток, шаблона и
+	переспроса.
+	* docs/visualization.md (План дашборда), docs/architecture.md,
+	docs/prompts.md: То же.
+
 2026-10-26  mb6ockatf  <smokenmirror@tutamail.com>
 
 	Шаг с аргументом columns больше не падает (#59).

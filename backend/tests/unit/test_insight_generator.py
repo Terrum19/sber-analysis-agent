@@ -32,6 +32,27 @@ def test_generate_empty_table(db):
     assert isinstance(insight, Insight)
 
 
+def test_tile_insight_sends_title_view_and_rows(db):
+    class RecordingLLM(FakeLLM):
+        def __init__(self) -> None:
+            super().__init__()
+            self.prompts: list[str] = []
+
+        async def complete(self, system, user, **kwargs):
+            self.prompts.append(user)
+            return "  Значения растут.\n"
+
+    db.execute("CREATE TABLE temp_result_v3 AS SELECT range AS a FROM range(100)")
+    llm = RecordingLLM()
+    gen = InsightGenerator(llm=llm, db=db)
+    text = asyncio.run(gen.generate_tile_insight("Рост", "temp_result_v3", "line"))
+    assert text == "Значения растут."
+    assert "«Рост»" in llm.prompts[0]
+    assert "line" in llm.prompts[0]
+    assert "{'a': 29}" in llm.prompts[0]
+    assert "{'a': 30}" not in llm.prompts[0]
+
+
 class PromptSpy(FakeLLM):
     async def complete_structured(self, system, user, schema):
         self.prompt = user

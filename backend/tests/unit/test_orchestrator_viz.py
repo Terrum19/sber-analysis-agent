@@ -11,6 +11,7 @@ from app.core.data.profiling import profile_table
 from app.core.memory.profile_memory import ProfileMemory
 from app.core.memory.session_memory import SessionMemory
 from app.core.memory.state_cache import StateCache
+from app.core.viz.vega_spec_builder import SPEC_ROW_LIMIT
 from app.models.insight import Insight
 from app.models.research_step import ResearchPlan, ResearchStep
 
@@ -32,13 +33,24 @@ class SpyDB(DuckDBManager):
 
 
 class FakePlanner:
-    def __init__(self, final_viz: str = "bar") -> None:
+    def __init__(
+        self,
+        final_viz: str = "bar",
+        tool: str = "group",
+        purpose: str = "выручка по регионам",
+        arguments: dict | None = None,
+    ) -> None:
         self.calls = 0
         self.final_viz = final_viz
+        self.tool = tool
+        self.purpose = purpose
+        self.arguments = arguments or {}
 
     async def plan(self, question: str, context: dict) -> ResearchPlan:
         self.calls += 1
-        steps = [ResearchStep(step_id=1, tool="group", purpose="выручка по регионам")]
+        steps = [
+            ResearchStep(step_id=1, tool=self.tool, purpose=self.purpose, arguments=self.arguments)
+        ]
         return ResearchPlan(steps=steps, final_viz=self.final_viz)
 
 
@@ -58,9 +70,13 @@ class FakeExecutor:
 class FakeInsight:
     def __init__(self) -> None:
         self.calls = 0
+        self.supporting: list[tuple[str, str]] = []
 
-    async def generate(self, question: str, result_table: str, **_: object) -> Insight:
+    async def generate(
+        self, question: str, result_table: str, supporting=(), **_: object
+    ) -> Insight:
         self.calls += 1
+        self.supporting = list(supporting)
         return Insight(headline="Москва лидирует", details=["msk > spb"])
 
 
@@ -112,6 +128,7 @@ async def test_first_answer_builds_filled_spec(agent, db) -> None:
     spec = chart["spec"]
     assert chart["caption"] == "Москва лидирует"
     assert chart["result_table"] == "temp_result_v1"
+    assert spec["title"] == "выручка по регионам"
     assert spec["mark"] == "bar"
     assert spec["data"]["values"] == [
         {"region": "msk", "revenue": 12.5},
@@ -310,3 +327,141 @@ async def test_reply_to_morphs_chart_of_the_chosen_turn(agent, db) -> None:
     events = [event async for event in agent.run(request)]
     assert chart_of(events)["result_table"] == "temp_result_v1"
     assert SessionMemory("s1")._state["turns"][-1]["reply_to"] == first[-1]["data"]["turn_id"]
+
+
+def agent_with(db: DuckDBManager, planner: FakePlanner) -> AgentOrchestrator:
+    return AgentOrchestrator(planner=planner, executor=FakeExecutor(db), insight_gen=FakeInsight())
+
+
+async def test_chart_without_purpose_is_titled_by_columns(db) -> None:
+    agent = agent_with(db, FakePlanner(purpose=""))
+    spec = chart_of(await collect(agent, "Сравни выручку по регионам"))["spec"]
+    assert spec["title"] == "revenue по region"
+    assert spec["title"] != "Москва лидирует"
+
+
+async def test_no_chart_answer_sends_only_text(db) -> None:
+    agent = agent_with(db, FakePlanner(final_viz="none"))
+    request = ChatRequest(session_id="s1", question="Кто лидирует?")
+    events = [event async for event in agent.run(request)]
+    assert [event["type"] for event in events if event["type"] != "progress"] == ["text", "done"]
+    assert all(event["data"]["stage"] != "chart" for event in events if event["type"] == "progress")
+    assert SessionMemory("s1").last_chart() is None
+
+
+async def test_no_chart_is_ignored_when_dashboard_is_requested(db) -> None:
+    planner = FakePlanner(final_viz="none")
+    original = planner.plan
+
+    async def plan_with_dashboard(question: str, context: dict) -> ResearchPlan:
+        plan = await original(question, context)
+        return plan.model_copy(update={"dashboard_requested": True})
+
+    planner.plan = plan_with_dashboard
+    events = await collect(agent_with(db, planner), "Создай дашборд по регионам")
+    assert [event["type"] for event in events] == ["text", "chart", "dashboard", "done"]
+    assert chart_of(events)["spec"]["mark"] == "bar"
+
+
+async def test_analysis_result_is_shown_as_table(db) -> None:
+    agent = agent_with(
+        db, FakePlanner(final_viz="bar", tool="describe_stats", purpose="статистики")
+    )
+    spec = chart_of(await collect(agent, "Опиши выручку"))["spec"]
+    assert spec["usermeta"]["chart_type"] == "table"
+    assert spec["title"] == "статистики"
+
+
+def stats_agent(db: DuckDBManager, rows: int) -> AgentOrchestrator:
+    db.execute(f"INSERT INTO raw SELECT 'msk', range // 25 FROM range({rows - 3})")
+    planner = FakePlanner(
+        final_viz="table",
+        tool="describe_stats",
+        purpose="распределение выручки",
+        arguments={"column": "amount"},
+    )
+    return agent_with(db, planner)
+
+
+async def test_distribution_question_draws_histogram_of_the_column(db) -> None:
+    agent = stats_agent(db, rows=25)
+    chart = chart_of(await collect(agent, "Покажи распределение amount"))
+    spec = chart["spec"]
+    assert spec["usermeta"]["chart_type"] == "histogram"
+    assert spec["title"] == "распределение выручки"
+    assert len(spec["data"]["values"]) == 25
+    assert set(spec["data"]["values"][0]) == {"amount"}
+    assert agent.insight_gen.supporting == [("распределение выручки", "temp_result_v1")]
+    assert chart["result_table"] == "temp_result_v2"
+
+
+async def test_distribution_of_few_values_shows_the_statistics(db) -> None:
+    agent = stats_agent(db, rows=5)
+    chart = chart_of(await collect(agent, "Покажи распределение amount"))
+    assert chart["spec"]["usermeta"]["chart_type"] == "table"
+    assert chart["result_table"] == "temp_result_v1"
+    assert agent.insight_gen.supporting == []
+
+
+async def test_distribution_is_drawn_from_a_sample_of_the_whole_column(db) -> None:
+    agent = stats_agent(db, rows=SPEC_ROW_LIMIT * 4)
+    spec = chart_of(await collect(agent, "Покажи распределение amount"))["spec"]
+    amounts = [row["amount"] for row in spec["data"]["values"]]
+    assert len(amounts) == SPEC_ROW_LIMIT
+    assert max(amounts) > SPEC_ROW_LIMIT // 25
+
+
+def test_distribution_needs_the_input_of_the_shown_step(db) -> None:
+    agent = agent_with(db, FakePlanner())
+    step = ResearchStep(step_id=1, tool="describe_stats", arguments={"column": "amount"})
+    assert agent._distribution_values("Покажи распределение amount", step, {}) is None
+
+
+class SqlExecutor(FakeExecutor):
+    def __init__(self, db: DuckDBManager, sql: str) -> None:
+        super().__init__(db)
+        self.sql = sql
+
+    async def execute(self, step: ResearchStep, input_table: str, **_: object) -> str:
+        self.calls += 1
+        return self.db.save_step_result(input_table, self.sql)
+
+
+async def test_trend_result_is_drawn_as_line(db) -> None:
+    sql = (
+        "SELECT DATE '2024-01-01' + INTERVAL (range) MONTH AS period, range * 1.0 AS value,"
+        " range * 1.0 AS trend FROM range(12)"
+    )
+    planner = FakePlanner(final_viz="table", tool="trend_analysis", purpose="тренд выручки")
+    agent = AgentOrchestrator(
+        planner=planner, executor=SqlExecutor(db, sql), insight_gen=FakeInsight()
+    )
+    spec = chart_of(await collect(agent, "Покажи тренд выручки"))["spec"]
+    assert spec["usermeta"]["chart_type"] == "line"
+    assert spec["title"] == "тренд выручки"
+
+
+async def test_histogram_of_the_named_column_of_a_wide_result(db) -> None:
+    db.execute("INSERT INTO raw SELECT 'msk', range FROM range(30)")
+    sql = "SELECT region, amount, amount * 2 AS doubled FROM raw"
+    agent = AgentOrchestrator(
+        planner=FakePlanner(final_viz="histogram", tool="filter_rows", purpose="суммы"),
+        executor=SqlExecutor(db, sql),
+        insight_gen=FakeInsight(),
+    )
+    chart = chart_of(await collect(agent, "Распределение amount"))
+    assert chart["spec"]["usermeta"]["chart_type"] == "histogram"
+    assert set(chart["spec"]["data"]["values"][0]) == {"amount"}
+    assert chart["result_table"] == "temp_result_v2"
+
+
+async def test_failed_distribution_sample_keeps_the_statistics(db, monkeypatch) -> None:
+    agent = stats_agent(db, rows=25)
+
+    def broken(*_: object) -> str:
+        raise RuntimeError("sample failed")
+
+    monkeypatch.setattr(agent, "_distribution_values", broken)
+    events = await collect(agent, "Покажи распределение amount")
+    assert [event["type"] for event in events] == ["text", "chart", "done"]
+    assert chart_of(events)["spec"]["usermeta"]["chart_type"] == "table"

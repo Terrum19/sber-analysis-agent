@@ -6,7 +6,8 @@
 вопрос пользователя
   |
   v
-[1] Planner (LLM + Instructor) --> ResearchPlan {steps[], final_viz, dashboard_requested}
+[1] Planner (LLM + Instructor) --> ResearchPlan {steps[], final_viz, dashboard_requested,
+  |        dashboard_title, template_id, dashboard_tiles[]} (план дашборда: docs/visualization.md)
   |        вход: вопрос, топ-5 релевантных колонок (semantic_select), контекст сессии
   v
 [2] StepExecutor: последовательное применение шагов
@@ -26,6 +27,8 @@
   |        смена вида: chart_morph (БЕЗ нового вызова LLM, из state cache)
   v
 [5] (опц.) DashboardGenerator -> DashboardStore (SQLite: плитки, Vega, снимки данных)
+  |        плитки — из dashboard_tiles плана: по плитке на шаг, вывод LLM — только
+  |        у insight_needed; плиток нет — одна плитка с графиком ответа
   v
 [6] (опц.) Экспорт: ExcelExporter (.xlsx) / PDFExporter (.pdf)
 ```
@@ -57,8 +60,8 @@
 |---|---|---|
 | `progress` | `ProgressPayload` (ниже) | по ходу хода: план, шаги, начало инсайта и графика |
 | `text` | `{headline, details}` | инсайт готов |
-| `chart` | `{spec, caption, result_table?}` | Vega-Lite спека; `result_table` — `temp_result_vN` ответа (нет, если ответ без шагов): по нему плитка пересчитывается, а результат выгружается в Excel |
-| `dashboard` | `{dashboard_id}` | дашборд собран по запросу |
+| `chart` | `{spec, caption, result_table?}` | Vega-Lite спека (нет, если план выбрал `final_viz: "none"`); `result_table` — `temp_result_vN` ответа (нет, если ответ без шагов): по нему плитка пересчитывается, а результат выгружается в Excel |
+| `dashboard` | `DashboardPayload {dashboard_id, title, tiles}` | дашборд собран по запросу; приходит после `chart` (график и инсайт ответа отдаются и при запросе дашборда) |
 | `clarification_needed` | `{step_id, error, suggestions}`, может быть `prompt_truncated` | шаг не выполнился, ждём `recovery_response`; `prompt_truncated` — как в `done` |
 | `error` | `{message}` | сбой хода; дальше `done` |
 | `done` | `{}` или `{prompt_truncated}` | ход завершён; `prompt_truncated` — сколько промптов хода сервер LLM обрезал (только если > 0) |
