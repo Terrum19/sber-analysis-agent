@@ -47,6 +47,7 @@ class CodegenTool(BaseTool):
         db,
         input_table: str,
         columns: list[Any] | None = None,
+        /,
         **arguments: Any,
     ) -> str:
         args = self.parse_args(columns, arguments)

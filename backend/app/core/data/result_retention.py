@@ -53,7 +53,7 @@ def collect_keep(sqlite_path: str | None = None, session_keep_s: int = SESSION_K
 
 
 def _session_charts(raw_state: str) -> set[str]:
-    """result_table последних графиков всех таблиц сессии."""
+    """result_table графиков ходов сессии (и last_chart состояния до списка ходов)."""
     try:
         state = json.loads(raw_state)
     except (TypeError, ValueError):
@@ -62,12 +62,9 @@ def _session_charts(raw_state: str) -> set[str]:
         return set()
     histories = list((state.get("tables") or {}).values())
     histories.append(state)
-    charts = set()
-    for history in histories:
-        chart = history.get("last_chart") if isinstance(history, dict) else None
-        if isinstance(chart, dict) and chart.get("result_table"):
-            charts.add(chart["result_table"])
-    return charts
+    charts = [h.get("last_chart") for h in histories if isinstance(h, dict)]
+    charts += [t.get("chart") for t in state.get("turns") or [] if isinstance(t, dict)]
+    return {c["result_table"] for c in charts if isinstance(c, dict) and c.get("result_table")}
 
 
 def cleanup(db: DuckDBManager) -> list[str]:

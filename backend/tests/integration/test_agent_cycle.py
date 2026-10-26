@@ -39,7 +39,7 @@ def db():
 
 def test_full_agent_cycle(db):
     """Полный цикл: вопрос -> план -> шаги -> инсайт -> визуализация."""
-    SessionMemory("cycle-test").set_table("raw", db.columns("raw"))
+    SessionMemory("cycle-test").set_table("raw")
     orch = AgentOrchestrator(
         planner=StepPlanner(llm=FakeLLM()),
         executor=StepExecutor(db=db),
@@ -82,7 +82,7 @@ def test_agent_cycle_with_dashboard_request(db):
                 dashboard_requested=True,
             )
 
-    SessionMemory("dashboard-test").set_table("raw", db.columns("raw"))
+    SessionMemory("dashboard-test").set_table("raw")
     orch = AgentOrchestrator(
         planner=DashboardPlanner(),
         executor=StepExecutor(db=db),
@@ -131,7 +131,7 @@ def test_agent_cycle_with_run_python(db, monkeypatch, codegen_available):
         return {"ok": True, "stdout": ""}
 
     monkeypatch.setattr(WASMSandbox, "run", fake_run)
-    SessionMemory("codegen-test").set_table("raw", db.columns("raw"))
+    SessionMemory("codegen-test").set_table("raw")
     llm = CodeLLM()
     orch = AgentOrchestrator(
         planner=CodegenPlanner(),
@@ -211,7 +211,7 @@ def test_agent_cycle_builds_dashboard_from_plan_tiles(db):
         ],
     )
     llm = DashboardLLM(plan)
-    SessionMemory("dashboard-tiles").set_table("raw", db.columns("raw"))
+    SessionMemory("dashboard-tiles").set_table("raw")
     orch = AgentOrchestrator(
         planner=StepPlanner(llm=llm),
         executor=StepExecutor(db=db),

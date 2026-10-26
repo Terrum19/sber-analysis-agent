@@ -17,12 +17,14 @@ from app.models.research_step import ResearchPlan, ResearchStep
 
 
 class SpyPlanner:
-    """Запоминает колонки из контекста каждого вызова."""
+    """Запоминает контекст и колонки из контекста каждого вызова."""
 
     def __init__(self) -> None:
         self.columns: list[list[str]] = []
+        self.contexts: list[dict] = []
 
     async def plan(self, question: str, context: dict) -> ResearchPlan:
+        self.contexts.append(context)
         self.columns.append(context["columns"])
         return ResearchPlan(steps=[ResearchStep(step_id=1, tool="copy")], final_viz="bar")
 
@@ -74,7 +76,7 @@ def ask(agent: AgentOrchestrator, session: str, question: str) -> list[dict]:
 def test_memory_persists_between_requests(db):
     """Состояние сессии сохраняется между двумя запросами."""
     db.execute("CREATE TABLE raw AS SELECT * FROM (VALUES ('a', 1), ('b', 2)) AS t(category, n)")
-    SessionMemory("mem-session").set_table("raw", db.columns("raw"))
+    SessionMemory("mem-session").set_table("raw")
     orch = AgentOrchestrator(
         planner=StepPlanner(llm=FakeLLM()),
         executor=StepExecutor(db=db),
@@ -87,12 +89,14 @@ def test_memory_persists_between_requests(db):
 
     assert events1[-1]["type"] == "done"
     assert events2[-1]["type"] == "done"
-    assert len(SessionMemory("mem-session").build_context("")["messages"]) == 2
+    turns = SessionMemory("mem-session")._state["turns"]
+    assert [turn["question"] for turn in turns] == ["Первый вопрос", "Второй вопрос"]
+    assert [turn["status"] for turn in turns] == ["ok", "ok"]
 
 
 def test_planner_gets_columns_of_session_table(agent, db):
-    SessionMemory("sales-session").set_table("sales", db.columns("sales"))
-    SessionMemory("users-session").set_table("users", db.columns("users"))
+    SessionMemory("sales-session").set_table("sales")
+    SessionMemory("users-session").set_table("users")
 
     ask(agent, "sales-session", "Выручка по регионам")
     ask(agent, "users-session", "Возраст по городам")
@@ -103,25 +107,23 @@ def test_planner_gets_columns_of_session_table(agent, db):
 def test_session_without_table_asks_to_connect_data(agent):
     events = ask(agent, "no-table", "Выручка по регионам")
 
-    assert events == [
-        {"type": "error", "data": {"message": NO_TABLE_MESSAGE}},
-        {"type": "done", "data": {}},
-    ]
+    assert events[0] == {"type": "error", "data": {"message": NO_TABLE_MESSAGE}}
+    assert events[1]["type"] == "done"
+    assert len(events) == 2
     assert agent.planner.columns == []
 
 
-def test_chart_view_change_uses_chart_of_current_table(agent, db):
-    SessionMemory("switch").set_table("sales", db.columns("sales"))
+def test_table_switch_keeps_turns_and_last_chart(agent, db):
+    SessionMemory("switch").set_table("sales")
     ask(agent, "switch", "Выручка по регионам")
 
-    SessionMemory("switch").set_table("users", db.columns("users"))
+    # Смена таблицы не стирает ходы: смена вида берёт график прошлого хода.
+    SessionMemory("switch").set_table("users")
     events = ask(agent, "switch", "Сделай таблицей")
-    assert len(agent.planner.columns) == 2
-    assert agent.planner.columns[-1] == ["age", "city"]
-    assert next(event["type"] for event in events if event["type"] != "progress") == "text"
-
-    SessionMemory("switch").set_table("sales", db.columns("sales"))
-    events = ask(agent, "switch", "Сделай таблицей")
-    assert len(agent.planner.columns) == 2
+    assert len(agent.planner.columns) == 1
     assert [event["type"] for event in events] == ["chart", "done"]
     assert events[0]["data"]["caption"] == "ответ по temp_result_v1"
+
+    ask(agent, "switch", "Возраст по городам")
+    assert agent.planner.columns[-1] == ["age", "city"]
+    assert agent.planner.contexts[-1]["turns"][0]["question"] == "Выручка по регионам"

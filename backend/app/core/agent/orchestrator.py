@@ -34,6 +34,11 @@ SessionMemory состояние ожидания уточнения (``pending_
 запросе от того же ``session_id`` с полем ``recovery_response``
 оркестратор загружает сохранённый контекст, применяет ответ
 пользователя и повторяет только неудачный шаг (или перепланирует).
+
+Каждое сообщение пользователя — ход в SessionMemory (``start_turn``):
+шаги плана пишутся в него, итог и статус — в ``finish_turn``. Ответ на
+уточнение продолжает тот же ход. ``turn_id`` хода фронт получает в
+событии ``done`` (и ``clarification_needed``).
 """
 
 import asyncio
@@ -117,6 +122,8 @@ class Execution:
     dashboard_requested: bool = False
     tables: dict[int, str] = field(default_factory=dict)
     plan: ResearchPlan = field(default_factory=ResearchPlan)
+    # Выполненные шаги: вывод знает, какие фильтры и периоды уже применены.
+    steps: list[ResearchStep] = field(default_factory=list)
 
 
 class ClarificationNeeded(Exception):
@@ -178,6 +185,10 @@ def _failure_event() -> dict:
     return {"type": "error", "data": {"message": FAILURE_MESSAGE}}
 
 
+def _done(turn_id: str) -> dict:
+    return {"type": "done", "data": {"turn_id": turn_id}}
+
+
 def _elapsed_ms(started_at: float) -> int:
     return round((time.perf_counter() - started_at) * 1000)
 
@@ -229,19 +240,24 @@ class AgentOrchestrator:
             # иначе сессия навсегда застрянет в ожидании recovery_response.
             memory.clear_pending_recovery()
             pending = None
+        # Ответ на уточнение продолжает ход, в котором упал шаг.
+        if pending is None or not memory.resume_turn(pending.get("turn_id")):
+            memory.start_turn(request.question, reply_to=request.reply_to)
+        turn_id = memory.turn_id
 
         if pending is None and (reply := small_talk_reply(request.question)) is not None:
             # «Привет», «спасибо», «что ты умеешь» — без плана, LLM и графика.
-            memory.record_answer(reply)
+            memory.finish_turn("ok", headline=reply)
             yield {"type": "text", "data": {"headline": reply, "details": []}}
-            yield {"type": "done", "data": {}}
+            yield _done(turn_id)
             return
 
         # Small talk выше: «привет» отвечается и без подключённой таблицы.
         table = memory.table
         if table is None:
+            memory.finish_turn("failed")
             yield {"type": "error", "data": {"message": NO_TABLE_MESSAGE}}
-            yield {"type": "done", "data": {}}
+            yield _done(turn_id)
             return
         titles = column_aliases(
             {
@@ -260,7 +276,7 @@ class AgentOrchestrator:
             morphed = self._morph(memory, request.question, titles)
             if morphed is not None:
                 yield morphed
-                yield {"type": "done", "data": {}}
+                yield _done(turn_id)
                 return
 
         # План и шаги идут задачей: события прогресса, которые она шлёт
@@ -273,12 +289,14 @@ class AgentOrchestrator:
                 yield event
             question, execution = await task
         except ClarificationNeeded as exc:
+            memory.finish_turn("clarification")
             yield {
                 "type": "clarification_needed",
                 "data": {
                     "step_id": exc.step_id,
                     "error": exc.error,
                     "suggestions": exc.suggestions,
+                    "turn_id": turn_id,
                 },
             }
             return
@@ -286,8 +304,9 @@ class AgentOrchestrator:
             # Сбой вне шагов (планировщик, LLM недоступна): без error и done
             # фронт так и показывал бы «идёт планирование».
             logger.exception("<<< run() ход прерван")
+            memory.finish_turn("failed")
             yield _failure_event()
-            yield {"type": "done", "data": {}}
+            yield _done(turn_id)
             return
         finally:
             # Клиент отключился посреди плана — задача больше не нужна.
@@ -300,7 +319,7 @@ class AgentOrchestrator:
             logger.info(">>> run() генерация инсайта")
             yield _progress_event("insight", "started")
             insight = await self.insight_gen.generate(
-                question, result_table, supporting=execution.supporting
+                question, result_table, supporting=execution.supporting, steps=execution.steps
             )
             logger.info(
                 "<<< run() инсайт: headline=%r details=%r", insight.headline, insight.details
@@ -326,9 +345,10 @@ class AgentOrchestrator:
             yield _chart_event(spec, insight.headline, result_table)
         except Exception as exc:
             logger.exception("<<< run() этап %s упал", stage)
+            memory.finish_turn("failed")
             yield _progress_event(stage, "failed", error=str(exc))
             yield _failure_event()
-            yield {"type": "done", "data": {}}
+            yield _done(turn_id)
             return
 
         if execution.dashboard_requested:
@@ -350,8 +370,13 @@ class AgentOrchestrator:
             else:
                 yield event
 
-        memory.record_answer(insight.headline)
-        yield {"type": "done", "data": {}}
+        memory.finish_turn(
+            "ok",
+            headline=insight.headline,
+            result_table=result_table,
+            result_columns=self._result_columns(result_table),
+        )
+        yield _done(turn_id)
 
     # --- Вспомогательные методы ---
 
@@ -477,6 +502,7 @@ class AgentOrchestrator:
                 # Сохраняем контекст неудачи для последующего уточнения.
                 memory.set_pending_recovery(
                     {
+                        "turn_id": memory.turn_id,
                         "question": question,
                         "failed_step_id": failed.step.step_id,
                         "plan_steps": [s.model_dump() for s in steps],
@@ -503,7 +529,7 @@ class AgentOrchestrator:
             kind = tool_kind(step)
             logger.info("<<< _execute_plan шаг %d УСПЕШЕН result_table=%s", step.step_id, table)
             tables[step.step_id] = table
-            memory.record_step(step, table)
+            memory.record_step(step)
             if kind == "transform":
                 current = table
             index += 1
@@ -612,6 +638,14 @@ class AgentOrchestrator:
             return {}
         return {row["column_name"]: row["data_type"] for row in rows}
 
+    def _result_columns(self, table: str) -> list[str]:
+        """Колонки результата хода для памяти; каталог недоступен — без них."""
+        try:
+            return self.db.columns(table)
+        except duckdb.Error:
+            logger.exception("<<< run() колонки результата %s не прочитаны", table)
+            return []
+
     def _finish(
         self,
         plan: ResearchPlan,
@@ -639,6 +673,7 @@ class AgentOrchestrator:
             dashboard_requested=plan.dashboard_requested,
             tables=dict(tables),
             plan=plan,
+            steps=executed,
         )
 
     async def _replan_after_lookup(
@@ -837,12 +872,13 @@ class AgentOrchestrator:
             yield {"type": "chart", "data": {"spec": spec, "caption": OVERVIEW_CAPTION}}
         except Exception as exc:
             logger.exception("<<< run() обзор таблицы: этап %s упал", stage)
+            memory.finish_turn("failed")
             yield _progress_event(stage, "failed", error=str(exc))
             yield _failure_event()
-            yield {"type": "done", "data": {}}
+            yield _done(memory.turn_id)
             return
-        memory.record_answer(headline)
-        yield {"type": "done", "data": {}}
+        memory.finish_turn("ok", headline=headline)
+        yield _done(memory.turn_id)
 
     def _morph(self, memory: SessionMemory, question: str, titles: dict[str, str]) -> dict | None:
         """Сменить вид прошлого графика из кеша (None — нужен новый план).
@@ -859,11 +895,13 @@ class AgentOrchestrator:
             records = self.cache.get(last["result_table"], limit=SPEC_ROW_LIMIT)
         except duckdb.Error:
             return None
-        spec = morph(last["chart_type"], target, records, titles, last["result_table"])
+        spec = morph(last["type"], target, records, titles, last["result_table"])
         chart_type = spec["usermeta"]["chart_type"]
-        memory.record_chart(chart_type, last["result_table"], last["caption"])
-        memory.record_answer(f"График перестроен: {chart_type}")
-        return _chart_event(spec, last["caption"], last["result_table"])
+        memory.record_chart(chart_type, last["result_table"], last["title"])
+        memory.finish_turn(
+            "ok", headline=f"График перестроен: {chart_type}", result_table=last["result_table"]
+        )
+        return _chart_event(spec, last["title"], last["result_table"])
 
 
 def _next_step_id(tables: dict[int, str]) -> int:
