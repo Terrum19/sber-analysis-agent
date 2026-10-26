@@ -29,9 +29,10 @@ def make_dashboard(result_table: str) -> Dashboard:
 def chart_session(session_id: str, charts: dict[str, str]) -> None:
     memory = SessionMemory(session_id)
     for table, result_table in charts.items():
-        memory.set_table(table, ["a"])
+        memory.set_table(table)
+        memory.start_turn("Выручка по регионам")
         memory.record_chart("bar", result_table)
-        memory.record_answer("готово")
+        memory.finish_turn("ok", headline="готово")
 
 
 def backdate_session(session_id: str, seconds: float) -> None:
@@ -74,7 +75,7 @@ def test_collect_keep_takes_tiles_and_charts_of_every_table_of_recent_sessions()
 
 
 def test_collect_keep_tolerates_odd_session_states():
-    SessionMemory("empty").set_table("sales", [])
+    SessionMemory("empty").set_table("sales")
     connection = sqlite3.connect(settings.sqlite_path)
     try:
         connection.executemany(

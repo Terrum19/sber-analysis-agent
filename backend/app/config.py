@@ -87,6 +87,8 @@ class Settings(BaseSettings):
     profile_approx_min_rows: int = 100_000
     # Литералы пропусков в тексте: профайлер их считает, загрузчик CSV (D-08) чистит.
     csv_null_tokens: list[str] = ["NULL", "null", "None", "NaN", "N/A", "n/a", "#N/A", "-"]
+    # Минимальная доля значений для приведения VARCHAR к типу (D-08).
+    csv_retype_min_share: float = 1.0
 
     enrich_description_max_chars: int = 200
     enrich_batch_size: int = 25

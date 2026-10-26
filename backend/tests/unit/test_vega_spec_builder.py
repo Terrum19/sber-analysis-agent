@@ -14,10 +14,12 @@ from app.core.viz.vega_spec_builder import (
     SPEC_ROW_LIMIT,
     VEGA_LITE_SCHEMA,
     build_vega_spec,
+    chart_title,
     column_aliases,
     field_ref,
     infer_field_type,
     infer_field_types,
+    ordered_column,
     to_json_value,
 )
 
@@ -347,3 +349,24 @@ def test_kpi_without_title_is_captioned_by_its_metric() -> None:
     spec = build_vega_spec("kpi", None, data=[{"total": 5}], titles={"total": "Выручка"})
     assert spec["title"] == "Выручка"
     assert build_vega_spec("kpi", None, data=[{"total": 5}])["title"] == "total"
+
+
+@pytest.mark.parametrize(
+    ("data", "expected"),
+    [
+        ([{"region": "msk", "revenue": 1.0}], "Выручка по региону"),
+        ([{"region": "msk"}], f"{COUNT_TITLE} по региону"),
+        ([{"revenue": 1.0}], "Выручка"),
+        ([{"cnt": 1}], "cnt"),
+        ([], None),
+    ],
+)
+def test_chart_title_from_column_aliases(data: list[dict], expected: str | None) -> None:
+    titles = {"region": "Региону", "revenue": "Выручка"}
+    assert chart_title(data, titles) == expected
+
+
+def test_ordered_column_prefers_dates_then_names() -> None:
+    assert ordered_column({"region": "nominal", "month": "temporal"}) == "month"
+    assert ordered_column({"region": "nominal", "year": "quantitative"}) == "year"
+    assert ordered_column({"region": "nominal", "revenue": "quantitative"}) is None
