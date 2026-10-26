@@ -63,7 +63,7 @@ async def test_steps_after_a_report_still_see_the_data(db) -> None:
         ResearchStep(step_id=4, tool="pearson_corr", columns=["price", "qty"]),
     ]
     insight = RecordingInsight()
-    SessionMemory("chain").set_table("raw", db.columns("raw"))
+    SessionMemory("chain").set_table("raw")
     agent = AgentOrchestrator(
         planner=FixedPlanner(steps), executor=StepExecutor(db), insight_gen=insight
     )
@@ -73,3 +73,11 @@ async def test_steps_after_a_report_still_see_the_data(db) -> None:
     assert [event["type"] for event in events if event["type"] == "error"] == []
     assert insight.tables == ["temp_result_v4"]
     assert set(db.to_records("temp_result_v4")[0]) == {"correlation", "p_value", "n"}
+
+
+async def test_columns_argument_reaches_the_tool_by_name(db) -> None:
+    step = ResearchStep(
+        step_id=0, tool="select_columns", input="$source", arguments={"columns": ["product"]}
+    )
+    table = await StepExecutor(db).execute(step, "raw")
+    assert db.columns(table) == ["product"]

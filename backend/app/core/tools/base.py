@@ -234,7 +234,9 @@ class BaseTool(ABC):
         """Доступен ли тул сейчас; выключенный реестр не выдаёт и не показывает."""
         return True
 
-    def run(self, db, input_table: str, columns: list[Any] | None = None, **arguments: Any) -> str:
+    def run(
+        self, db, input_table: str, columns: list[Any] | None = None, /, **arguments: Any
+    ) -> str:
         """Применить тул к input_table, вернуть имя результирующей таблицы."""
         return self.execute(db, input_table, self.parse_args(columns, arguments))
 
@@ -244,6 +246,7 @@ class BaseTool(ABC):
         db,
         input_table: str,
         columns: list[Any] | None = None,
+        /,
         **arguments: Any,
     ) -> str:
         """Точка входа исполнителя; тулы, которым нужны LLM или песочница, её переопределяют."""

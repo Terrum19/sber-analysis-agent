@@ -5,8 +5,14 @@
 """
 
 import math
+import re
 
-from app.core.viz.vega_spec_builder import infer_field_types
+from app.core.viz.vega_spec_builder import infer_field_types, ordered_column
+
+NO_CHART = "none"
+MAX_BAR_CATEGORIES = 30
+MIN_LINE_POINTS = 3
+MIN_HISTOGRAM_VALUES = 20
 
 
 def is_single_number(records: list[dict] | None) -> bool:
@@ -17,20 +23,86 @@ def is_single_number(records: list[dict] | None) -> bool:
     return all(math.isfinite(value) for value in records[0].values())
 
 
-def select_chart(
-    question: str, result_table: str, requested: str = "auto", records: list[dict] | None = None
-) -> str:
-    """Подобрать тип графика: bar | line | scatter | histogram | kpi (или явный requested).
+def fits(
+    chart_type: str, records: list[dict], types: dict[str, str], column: str | None = None
+) -> bool:
+    """Подходит ли вид к строкам результата; column — колонка гистограммы."""
+    numeric = [column for column, kind in types.items() if kind == "quantitative"]
+    categories = [
+        *[column for column, kind in types.items() if kind == "nominal"],
+        *[column for column, kind in types.items() if kind == "temporal"],
+    ]
+    if chart_type in ("line", "area"):
+        return len(records) >= MIN_LINE_POINTS and ordered_column(types) is not None
+    if chart_type == "scatter":
+        return len(numeric) >= 2
+    if chart_type == "histogram":
+        column = column or (numeric[0] if len(numeric) == 1 else None)
+        return column is not None and _present(records, column) >= MIN_HISTOGRAM_VALUES
+    if chart_type == "box":
+        return bool(numeric)
+    if chart_type == "bar":
+        return bool(categories) and _distinct(records, categories[0]) <= MAX_BAR_CATEGORIES
+    if chart_type == "heatmap":
+        return len(categories) >= 2
+    if chart_type == "kpi":
+        return is_single_number(records)
+    return chart_type == "table"
 
-    Явный requested берётся как есть; результат из одной строки с одним
-    конечным числом — kpi; иначе простые эвристики по ключевым словам вопроса.
+
+def select_chart(
+    question: str,
+    result_table: str,
+    requested: str = "auto",
+    records: list[dict] | None = None,
+    titles: dict[str, str] | None = None,
+) -> str:
+    """Подобрать тип графика: bar | line | scatter | histogram | kpi | table (или none).
+
+    Результат из одной строки — kpi (одно конечное число) или table. Явный
+    requested или эвристика по ключевым словам вопроса проверяются по
+    records через fits; не подошло — table. Без records проверки нет.
+    Гистограмма по таблице с несколькими числовыми колонками строится по
+    колонке, названной в вопросе (histogram_column).
     """
-    if requested != "auto":
-        return requested
-    if is_single_number(records):
-        return "kpi"
+    if requested == NO_CHART:
+        return NO_CHART
+    if records is not None and len(records) <= 1:
+        return "kpi" if is_single_number(records) else "table"
+    chart_type = requested if requested != "auto" else _by_question(question)
+    if records is None:
+        return chart_type
+    types = infer_field_types(records)
+    column = histogram_column(question, types, titles) if chart_type == "histogram" else None
+    return chart_type if fits(chart_type, records, types, column) else "table"
+
+
+def histogram_column(
+    question: str, types: dict[str, str], titles: dict[str, str] | None = None
+) -> str | None:
+    """Числовая колонка для гистограммы: единственная или названная в вопросе.
+
+    Колонку узнаём по имени или по началу слов её названия («цен» из «Цена»),
+    чтобы «распределение цен» нашло колонку price с названием «Цена».
+    """
+    numeric = [column for column, kind in types.items() if kind == "quantitative"]
+    if len(numeric) == 1:
+        return numeric[0]
     text = question.lower()
-    if "распредел" in text or "гистограмм" in text:
+    return next(
+        (column for column in numeric if _named(text, column, (titles or {}).get(column, ""))),
+        None,
+    )
+
+
+def asks_distribution(question: str) -> bool:
+    text = question.lower()
+    return "распредел" in text or "гистограмм" in text
+
+
+def _by_question(question: str) -> str:
+    text = question.lower()
+    if asks_distribution(question):
         return "histogram"
     if "динамик" in text or "во времени" in text or "по годам" in text or "по месяцам" in text:
         return "line"
@@ -39,3 +111,18 @@ def select_chart(
     if "связ" in text or "корреляц" in text:
         return "scatter"
     return "bar"
+
+
+def _named(text: str, column: str, title: str) -> bool:
+    if len(column) >= 3 and column.lower() in text:
+        return True
+    words = re.findall(r"\w{3,}", title.lower())
+    return any(word[: max(3, len(word) - 2)] in text for word in words)
+
+
+def _present(records: list[dict], column: str) -> int:
+    return sum(record.get(column) is not None for record in records)
+
+
+def _distinct(records: list[dict], column: str) -> int:
+    return len({repr(record.get(column)) for record in records})

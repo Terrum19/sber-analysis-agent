@@ -10,14 +10,14 @@ from app.core.tools.stats._common import result, values
 
 class DescribeStatsTool(BaseTool):
     name = "describe_stats"
-    description = "Описательная статистика: n, mean, std, min, max, q1, q3, skew, kurtosis"
+    description = "Описательная статистика: n, mean, median, std, min, max, q1, q3, skew, kurtosis"
     kind = "analysis"
     Args = OneColumnArgs
 
     def execute(self, db, input_table: str, args: OneColumnArgs) -> str:
         items = values(db, input_table, args.column)
         if not items:
-            result_stats = (0, None, None, None, None, None, None, None, None)
+            result_stats = (0, None, None, None, None, None, None, None, None, None)
         else:
             array = np.asarray(items)
             q1, q3 = np.quantile(array, [0.25, 0.75], method="linear")
@@ -26,6 +26,7 @@ class DescribeStatsTool(BaseTool):
             result_stats = (
                 len(items),
                 np.mean(array),
+                np.median(array),
                 np.std(array, ddof=1) if len(items) > 1 else 0.0,
                 np.min(array),
                 np.max(array),
@@ -37,6 +38,6 @@ class DescribeStatsTool(BaseTool):
         return result(
             db,
             input_table,
-            "n, mean, std, min, max, q1, q3, skew, kurtosis",
+            "n, mean, median, std, min, max, q1, q3, skew, kurtosis",
             result_stats,
         )

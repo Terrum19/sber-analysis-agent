@@ -106,7 +106,7 @@ def test_atomic_tools_preserve_expected_values(db: DuckDBManager) -> None:
         (
             "describe_stats",
             ["amount"],
-            {"n", "mean", "std", "min", "max", "q1", "q3", "skew", "kurtosis"},
+            {"n", "mean", "median", "std", "min", "max", "q1", "q3", "skew", "kurtosis"},
         ),
         ("bootstrap_ci", ["amount"], {"statistic", "estimate", "ci_low", "ci_high"}),
         ("search_categorical_values", ["category", "a"], {"stored_value", "match_score"}),

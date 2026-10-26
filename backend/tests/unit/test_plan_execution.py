@@ -285,18 +285,20 @@ def test_planner_checks_the_retry_and_returns_it_when_valid() -> None:
 
 
 class FakeMemory:
+    turn_id = "turn-1"
+
     def __init__(self) -> None:
-        self.steps: list[tuple[int, str]] = []
+        self.steps: list[int] = []
         self.pending: dict | None = None
 
-    def record_step(self, step, result_table: str) -> None:
-        self.steps.append((step.step_id, result_table))
+    def record_step(self, step) -> None:
+        self.steps.append(step.step_id)
 
     def set_pending_recovery(self, data: dict) -> None:
         self.pending = data
 
     def build_context(self, question: str) -> dict:
-        return {"columns": [], "summary": ""}
+        return {"columns": [], "turns": []}
 
 
 class ScriptedPlanner:
@@ -391,7 +393,7 @@ def test_lookup_step_triggers_replanning_with_observation(db: DuckDBManager) -> 
     execution = run_plan(orchestrator(db, planner), memory, plan)
     assert planner.contexts[0]["next_step_id"] == 1
     assert "spb" in planner.contexts[0]["executed"]
-    assert [step_id for step_id, _ in memory.steps] == [0, 1]
+    assert memory.steps == [0, 1]
     assert [row["id"] for row in db.to_records(execution.result_table)] == [3, 4]
 
 
