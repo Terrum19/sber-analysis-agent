@@ -28,6 +28,16 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # Запуск у пользователя — без .env (start.sh / start.bat, #167).
+      - name: Compose works without .env
+        run: docker compose config --quiet
+
+      # С CRLF скрипты не запустятся в Linux-контейнерах и на Mac (.gitattributes).
+      - name: Line endings of launch scripts
+        run: |
+          bad=$(git ls-files --eol -- '*.sh' '*.command' '.githooks/*' | grep -v 'attr/text eol=lf' || true)
+          if [ -n "$bad" ]; then echo "Нет eol=lf в .gitattributes:"; echo "$bad"; exit 1; fi
+
       - name: Prepare .env
         run: |
           cp .env.example .env

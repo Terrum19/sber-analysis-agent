@@ -5,7 +5,7 @@
  * При ошибках сети или бэкенда выбрасывается ApiError.
  */
 import type { ChatStreamEvent } from "@/types/chat";
-import { filenameFromDisposition } from "@/lib/download";
+import type { LlmStatus } from "@/types/llm";
 import type { Datasource, DatasourceDbRequest, SessionResponse } from "@/types/datasource";
 import type {
   DashboardConfig,
@@ -82,6 +82,20 @@ export function isMockMode(): boolean {
     return localStorage.getItem("sber_force_mock") === "true";
   }
   return false;
+}
+
+/** GET /api/llm/status: готова ли модель (скачивание и подготовку бэкенд делает сам). */
+export async function getLlmStatus(): Promise<LlmStatus> {
+  if (isMockMode()) {
+    return { state: "ok", model: "mock" };
+  }
+  try {
+    const res = await fetch(`${API}/llm/status`);
+    if (!res.ok) throw await parseApiError(res);
+    return (await res.json()) as LlmStatus;
+  } catch (err) {
+    throw toApiError(err);
+  }
 }
 
 export async function createSession(

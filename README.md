@@ -17,11 +17,68 @@ Ollama/vLLM), DuckDB как единый SQL-движок, WASM-песочниц
 5. Дашборды по запросу («Создай дашборд с ежеквартальной статистикой»)
 6. Диалог с контекстом («А теперь то же самое в другом виде»)
 
-## Быстрый старт (локально)
+## Запуск
+
+Нужна одна программа — [Docker Desktop](https://www.docker.com/products/docker-desktop/)
+(на Linux подойдёт и Docker Engine с Compose 2.24+). Всё остальное делает скрипт запуска:
+
+| Система | Что сделать |
+|---|---|
+| Mac | двойной клик по `start.command` |
+| Windows | двойной клик по `start.bat` |
+| Linux | `./start.sh` |
+
+Скрипт сам запускает Docker, если тот не запущен, ставит и запускает
+[Ollama](https://ollama.com) (вне контейнера: на Mac она работает на Metal, на
+Windows — на видеокарте), поднимает платформу и открывает http://localhost:3000.
+Повторный запуск пропускает то, что уже установлено и работает. Остановить —
+`stop.command` / `stop.bat` / `./stop.sh` (данные и модель сохраняются). Ollama,
+которую запустил скрипт, тоже останавливается; запущенную до него — нет.
+
+Первый запуск — 10–20 минут и нужен интернет: собираются образы, а модель
+(`qwen2.5-coder:7b`, около 5 ГБ) скачивает сама платформа. Пока модель
+скачивается, над чатом виден прогресс; данные загружать уже можно. Памяти
+рекомендуется от 16 ГБ: модели 7B самой нужно около 6 ГБ.
+
+На Mac при первом открытии `start.command` система может спросить, доверяете
+ли вы файлу: правый клик → «Открыть». На Linux скрипт берёт Ollama на этой
+машине, а если её нет — ставит официальным установщиком (спросит пароль sudo)
+и запускает на адресе моста docker: контейнерам её видно, локальной сети — нет.
+Уже запущенную службу берёт, если она видна из контейнеров, и сам её не
+перенастраивает. Если хостовую Ollama контейнерам не видно — Ollama в контейнере
+(с NVIDIA Container Toolkit — на GPU и с моделью `LLM_MODEL_GPU`), и скрипт
+говорит об этом.
+Службы запускаются и без systemd (`service`).
+
+## Для разработчиков
+
+Модель для платформы готовит backend (`core/llm/ollama_setup.py`): при старте
+скачивает `LLM_MODEL`, если её нет на сервере Ollama, и работает с её вариантом
+с контекстом `LLM_NUM_CTX` (`<модель>-ctx<число>`); состояние — `GET /api/llm/status`.
+Отключить — `LLM_PREPARE_MODEL=false`. `.env` не обязателен: значения по
+умолчанию — в `docker-compose.yml` и `backend/app/config.py`, пример — `.env.example`.
 
 ```bash
-# 1) LLM (замкнутый контур): Ollama или vLLM; контекст — как LLM_NUM_CTX в .env
-ollama pull qwen2.5-coder:14b && OLLAMA_CONTEXT_LENGTH=16384 ollama serve
+make up          # docker compose, Ollama на хосте (http://host.docker.internal:11434)
+make up-ollama   # Ollama в контейнере на CPU (профиль ollama)
+make up-gpu      # Ollama в контейнере на GPU NVIDIA (профиль ollama-gpu), модель LLM_MODEL_GPU
+make down
+```
+
+Свой сервер LLM (vLLM, GPU-машина в сети) для compose: `COMPOSE_LLM_BASE_URL` в
+`.env`, например `http://10.0.0.5:8001/v1` (`LLM_BASE_URL` — только для `make dev`:
+в контейнере `localhost` — сам backend). Ollama в контейнере доступна с этой
+машины на `http://localhost:${OLLAMA_PORT:-11435}`. Демо-PostgreSQL и ClickHouse
+для интеграционных тестов — профиль `integration`.
+
+Нужны Docker Engine 25+ и Docker Compose 2.24+ (`start_interval` в healthcheck,
+`depends_on.required`, необязательный `env_file`): `docker compose version`.
+
+Без Docker:
+
+```bash
+# 1) LLM (замкнутый контур): Ollama или vLLM; контекст backend задаст сам (ниже)
+ollama serve
 # или GPU: MODEL=Qwen/Qwen2.5-Coder-14B-Instruct bash infra/vllm/serve.sh
 
 # 2) Зависимости
@@ -36,31 +93,16 @@ bash infra/local-dev.sh
 # backend: http://localhost:8000  frontend: http://localhost:3000
 ```
 
-Или одной командой в Docker — Ollama с моделью поднимается вместе с платформой:
-
-```bash
-cp .env.example .env
-make up        # Ollama на CPU, модель LLM_MODEL
-make up-gpu    # или Ollama на GPU NVIDIA (нужен NVIDIA Container Toolkit), модель LLM_MODEL_GPU
-make down
-```
-
-Нужны Docker Engine 25+ и Docker Compose 2.20+ (`start_interval` в healthcheck,
-`depends_on.required`): `docker version`, `docker compose version`.
-
-Первый запуск скачивает модель в том `ollama-models` (несколько минут, несколько ГБ);
-backend ждёт, пока Ollama не станет healthy: скачаны `LLM_MODEL` и `EMBED_MODEL`,
-если он задан. Дальше модели берутся из тома. Ollama доступна только с этой
-машины: `http://localhost:${OLLAMA_PORT:-11434}`.
-
 Переменные окружения перекрывают `.env`: `LLM_MODEL_GPU=qwen2.5-coder:32b make up-gpu`.
 
 ### Длина контекста LLM
 
 Промпт планировщика — около 12 тыс. символов, это 4–5 тыс. токенов. У Ollama
 контекст по умолчанию 4096 токенов, и не влезшее начало промпта отбрасывается
-без ошибки: модель не видит список инструментов. Контекст задаётся на сервере
-и должен быть не меньше `LLM_NUM_CTX` (по умолчанию 16384):
+без ошибки: модель не видит список инструментов. С Ollama backend решает это сам:
+работает с вариантом модели с `num_ctx = LLM_NUM_CTX` (по умолчанию 16384), который
+создаёт при старте. Вручную контекст нужен, только если `LLM_PREPARE_MODEL=false`
+или сервер не Ollama:
 
 - Ollama, запущенная руками: `OLLAMA_CONTEXT_LENGTH=16384 ollama serve`.
 - Ollama как служба systemd: `sudo systemctl edit ollama`, в `[Service]` —
