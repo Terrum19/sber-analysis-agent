@@ -259,13 +259,14 @@ export async function listTables(): Promise<string[]> {
 /**
  * Подписка на SSE-поток диалога; onEvent вызывается на каждое событие,
  * onClose — один раз, когда поток закончился, оборвался или был отменён.
+ * replyTo — turn_id из события done: вопрос продолжает конкретный прошлый ход (#166).
  */
 export function streamChat(
   sessionId: string,
   question: string,
   onEvent: (event: ChatStreamEvent) => void,
   onClose?: (error?: string) => void,
-  optionsOrRecoveryResponse?: { recoveryResponse?: string } | string,
+  optionsOrRecoveryResponse?: { recoveryResponse?: string; replyTo?: string | null } | string,
 ): () => void {
   const options =
     typeof optionsOrRecoveryResponse === "string"
@@ -287,6 +288,7 @@ export function streamChat(
           session_id: sessionId,
           question,
           recovery_response: options?.recoveryResponse ?? null,
+          reply_to: options?.replyTo ?? null,
         }),
         signal: controller.signal,
       });
