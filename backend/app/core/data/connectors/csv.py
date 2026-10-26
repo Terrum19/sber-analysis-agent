@@ -1,6 +1,7 @@
 import codecs
 import logging
 import re
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -369,7 +370,12 @@ def materialize(
     return rows, retyped, header_rows_removed, null_tokens_map, rejected_rows, unconverted
 
 
-def load_csv(db, name: str, path: str | Path) -> CSVReport:
+def source_marker(filename: str, datasource: str | None = None) -> str:
+    """Комментарий CSV-таблицы: файл и (если есть) id источника, которому она принадлежит."""
+    return f"{CSV_MARKER}{datasource}/{filename}" if datasource else f"{CSV_MARKER}{filename}"
+
+
+def load_csv(db, name: str, path: str | Path, datasource: str | None = None) -> CSVReport:
     original = Path(path).resolve()
     if not original.is_file():
         raise CSVLoadError(f"Файл «{original.name}» не найден.")
@@ -378,7 +384,7 @@ def load_csv(db, name: str, path: str | Path) -> CSVReport:
     readable, encoding = readable_copy(original)
     delimiter = sniffed_delimiter(db, readable)
     base = {"delim": quote_literal(delimiter)} if delimiter else {}
-    marker = f"{CSV_MARKER}{original.name}"
+    marker = source_marker(original.name, datasource)
     failure: duckdb.Error | None = None
     for strategy_index, strategy in enumerate(STRATEGIES):
         source = reader_sql(readable, base | strategy)
@@ -440,6 +446,22 @@ def csv_tables(db) -> set[str]:
     return {row["name"].lower() for row in rows}
 
 
+def datasource_tables(db, datasource: str, legacy_files: Sequence[str] = ()) -> list[str]:
+    """CSV-таблицы источника по комментарию «csv:<datasource>/<файл>».
+
+    legacy_files — файлы источника, загруженного до появления id в комментарии:
+    его таблицы помечены просто «csv:<файл>».
+    """
+    markers = [source_marker(filename) for filename in legacy_files]
+    rows = db.query(
+        "SELECT table_name AS name FROM duckdb_tables() "
+        "WHERE schema_name = 'main' AND (starts_with(comment, $prefix) "
+        "OR list_contains($legacy::VARCHAR[], comment)) ORDER BY table_name",
+        {"prefix": source_marker("", datasource), "legacy": markers},
+    )
+    return [row["name"] for row in rows]
+
+
 def taken_names(db) -> set[str]:
     rows = db.query(
         "SELECT view_name AS name FROM duckdb_views() WHERE NOT internal AND schema_name = 'main' "
@@ -449,8 +471,9 @@ def taken_names(db) -> set[str]:
 
 
 class CSVConnector(BaseConnector):
-    def __init__(self, paths: dict[str, str]) -> None:
+    def __init__(self, paths: dict[str, str], datasource: str | None = None) -> None:
         self.paths = paths
+        self.datasource = datasource
         self.reports: list[CSVReport] = []
 
     def connect(self, db) -> list[str]:
@@ -465,7 +488,7 @@ class CSVConnector(BaseConnector):
                 suffix += 1
             taken.add(name.lower())
             try:
-                self.reports.append(load_csv(db, name, path))
+                self.reports.append(load_csv(db, name, path, self.datasource))
             except CSVLoadError:
                 self.rollback(db)
                 raise

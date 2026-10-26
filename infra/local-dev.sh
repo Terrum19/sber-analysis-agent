@@ -4,6 +4,12 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
+if [ -f ".venv/bin/activate" ]; then
+  source .venv/bin/activate
+elif [ -f "backend/.venv/bin/activate" ]; then
+  source backend/.venv/bin/activate
+fi
+
 echo "==> Backend"
 (cd backend && uvicorn app.main:app --reload --port 8000) &
 BACKEND_PID=$!

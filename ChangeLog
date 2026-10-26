@@ -27,8 +27,161 @@
 	с замером базового времени read_csv и времени одиночного scan().
 	* docs/data_connectors.md: Документация очистки заголовков, сканирования,
 	автоприведения типов, токенов пропусков и store_rejects.
-  
+
+2026-10-25  Alexander Yurits  <143354682+Terrum19@users.noreply.github.com>
+
+	Исправления по ревью #170.
+	* backend/app/core/llm/ollama_setup.py (_version): 5xx от
+	/api/version — повтор (connecting), а не «сервер не Ollama»: иначе
+	один ответ 502/503 при старте навсегда выключал скачивание модели и
+	вариант с num_ctx.  401/403/404 — по-прежнему не Ollama.
+	(ModelMissing, _pull_error, _error_text): Новые.  Модели нет в реестре
+	(опечатка в LLM_MODEL) — состояние missing: pull больше не
+	повторяется, бэкенд только ждёт модель в /api/tags.
+	* backend/app/api/schemas/llm.py, frontend/src/types/llm.ts: Состояние
+	missing.
+	* frontend/src/components/chat/LlmStatusBanner.tsx: Для missing —
+	«Модели нет в Ollama, проверьте LLM_MODEL» без «повторяю».
+	* start.sh, scripts/start/start.ps1: Метка .ollama-started, если Ollama
+	запустил скрипт.
+	* start.sh (install_linux_ollama, bind_ollama_service_to_bridge): Новые.
+	На Linux без Ollama — установка официальным install.sh (п. 5 #167), а не
+	сразу контейнер; поставленная службой Ollama слушает адрес моста docker.
+	(any_ollama_up): Новая.  Такую Ollama ждём и по адресу моста.
+	* stop.sh, stop.bat: Останавливают Ollama по метке; Ollama, запущенную
+	до start, не трогают.
+	* README.md (Запуск): То же.
+
+2026-10-25  mb6ockatf  <smokenmirror@tutamail.com>
+
+	Исправления по ревью #170.
+	* backend/app/core/llm/ollama_setup.py (_version): Любой ответ
+	/api/version, кроме 200 с полем version, — сервер не Ollama: шлюз
+	с авторизацией (401/403) больше не держит чат в «Подключаюсь».
+	(prepare_once): Новая.  Неожиданная ошибка подготовки (битая строка
+	прогресса, HTML вместо JSON) — повтор с причиной в detail, а не
+	смерть фоновой задачи и вечный индикатор.
+	(prepare_forever): Через prepare_once; ошибка warm_up не прерывает
+	слежение за Ollama.
+	* backend/tests/unit/test_ollama_setup.py: Тесты на 401/403/500 от
+	/api/version, битую строку /api/pull и HTML вместо /api/tags.
+	* start.sh (start_service, has_service, has_systemd): Новые.  Docker
+	и Ollama запускаются и без systemd (service); не запустился Docker —
+	понятная ошибка вместо молчаливого выхода.
+	(start_linux_ollama): Новая.  Ollama без службы запускается на адресе
+	моста docker, чтобы контейнеры её видели.
+	(use_container_ollama): На GPU — модель LLM_MODEL_GPU, как make up-gpu.
+	(env_or_file): Новая, как в Makefile.
+	* README.md (Запуск): То же.
+
+2026-10-25  Alexander Yurits  <143354682+Terrum19@users.noreply.github.com>
+
+	Исправления по ревью #144.
+	* backend/app/core/agent/quality_fixes.py (insight_facts): Числовые
+	типы сверяются точно (INTERVAL больше не попадает в SUM), имена
+	через identifier(), итоги всех колонок одним запросом.
+	(ungrounded_numbers): Сверка только с вопросом, результатом и
+	фактами; допускается округление до точности заголовка; проценты не
+	проверяются.
+	(FOLLOW_UP): Вопрос с «а»/«и» в начале — продолжение; «прошлый» и
+	«предыдущий» сами по себе — нет.
+	* backend/app/core/agent/insight.py (InsightGenerator.generate):
+	Если факты не посчитались, инсайт строится без них.
+	* backend/app/core/llm/structured.py (parse_structured): Ошибка во
+	вложенных "arguments" тоже даёт переспрос.
+	(merge_tool_calls): Удалена, не использовалась.
+	* backend/app/core/llm/prompts/quality_rules.py,
+	backend/app/core/llm/prompts/structured_repair.py: Новые.  Промпты
+	из quality_fixes.py и structured.py.
+	* backend/app/core/tools/sql/atomic.py (GroupByTool.execute): by=[]
+	работает и без agent_quality_fixes.
+	(TimeBucketTool.execute): Убрана проверка, которую уже делает
+	TimeBucketArgs.
+	* backend/app/config.py: llm_max_retries (1); llm_structured_mode —
+	Literal.
+	* backend/app/core/llm/client.py (LLMClient.__init__): max_retries
+	из настроек.
+	* .env.example, docs/prompts.md: То же.
+	* CHANGELOG.md, docs/reports/architecture_compliance_report.md:
+	Удалены, устарели (историю ведёт ChangeLog).
+
+2026-10-24  Alexander Yurits  <terruwork@gmail.com>
+
+	JSON по схеме и исправления качества агента по умолчанию (#143).
+	* backend/app/core/llm/client.py (LLMClient.complete_structured): В
+	режиме json_schema — один запрос с response_format=json_schema,
+	толерантный разбор и один переспрос с текстом ошибки.
+	(LLMClient.__init__): Необязательный http_client.
+	* backend/app/core/llm/structured.py: Новый.  Толерантный разбор
+	ответа по схеме Pydantic и промпт переспроса.
+	* backend/app/core/agent/quality_fixes.py: Новый.  Факты для
+	инсайта, посчитанные SQL; проверка чисел заголовка; подсказки к
+	тулам и правила планировщика; прошлые шаги только для
+	вопроса-продолжения; отбор тулов под вопрос.
+	* backend/app/core/agent/planner.py (StepPlanner.plan): Правила и
+	обрамление контекста при agent_quality_fixes, отбор тулов при
+	agent_tool_topk.
+	* backend/app/core/agent/insight.py (InsightGenerator.generate):
+	Факты и проверка чисел при agent_quality_fixes.
+	* backend/app/core/tools/registry.py (ToolRegistry.describe):
+	Подсказки к описаниям тулов при agent_quality_fixes.
+	* backend/app/core/tools/sql/atomic.py (GroupByTool.execute):
+	by=[] — один итог по таблице при agent_quality_fixes.
+	(TimeBucketArgs): AVG/SUM без metric_column отклоняются при
+	проверке плана.
+	* backend/app/config.py: llm_structured_mode (json_schema),
+	llm_max_tokens, agent_quality_fixes (вкл.), agent_tool_topk
+	(выкл.); llm_timeout_s 120 -> 600.
+	* .env.example: То же.
+	* scripts/run_full_llm_cycle.py: Ожидание API (429, 5xx, таймауты)
+	отдельно от чистого времени.
+	* scripts/llm_bench: Новый.  Записывающий прокси, прогон варианта,
+	сводка вызовов, бенчмарк потоков; сырые логи вне git.
+	* docs/reports/llm_perf: Новый.  Гипотезы и журнал прогонов V1-V5.
+	* backend/tests/unit/test_llm_structured.py,
+	backend/tests/unit/test_quality_fixes.py: Новые.
+	* backend/tests/unit/test_llm_client_retries.py
+	(test_invalid_answer_is_asked_again): Режим tools задан явно.
+	Карточки таблиц после подключения (#69).
+	* frontend/src/types/datasource.ts (TableBrief, DescriptionStatus):
+	Новые типы по api/schemas/datasource.py; Datasource.profiles.
+	* frontend/src/components/chat/TableBriefCard.tsx: Новый компонент:
+	строки и колонки, период, summary, бейдж pending/failed описания
+	колонок, предупреждения загрузчика.
+	* frontend/src/store/sessionStore.ts (DatabaseFolder.profiles):
+	Паспорта из ответа подключения.
+	* frontend/src/components/chat/ChatPanel.tsx: Карточка активной
+	таблицы на пустом экране сессии.
+	* frontend/src/components/modals/TableSelectModal.tsx (briefs):
+	Краткая карточка под каждой таблицей.
+	* frontend/src/api/mockData.ts: profiles в мок-ответах подключения.
+	* backend/app/api/routes/chat.py (chat): Сбой вне оркестратора
+	завершает стрим событием done после error.
+	* backend/app/core/dashboards/models.py (DashboardTile): layout —
+	целые, snapshot_data — строки или словарь KPI вместо Any.
+
 2026-10-24  thebulkapro  <saitbatalovbulat200@gmail.com>
+
+	Флаги качества профиля в TableBrief.warnings (#139).
+	* backend/app/core/data/profiling.py (profile_warnings): Новая
+	функция: флаги и empty_rows фразами для карточки таблицы, одна фраза
+	на вид флага, не больше WARNING_COLUMNS колонок, остальные «и ещё N».
+	Литералы пропусков — по убыванию их числа.  Флаги без фразы в
+	WARNING_PHRASES пропускает, а не падает KeyError (500 у ручки).
+	(column_list): Новая функция.
+	(quality_fields): Счётчик distinct_values: различные значения без
+	литералов пропусков и значений-заголовков.
+	(is_text_code): unique и fixed_width сравнивают с distinct_values, а
+	не с distinct: «NULL» и повторённый заголовок делали почти
+	уникальную колонку кодом, и она не получала numeric_as_text.
+	* backend/app/api/schemas/datasource.py (TableBrief.from_profile):
+	После предупреждений загрузчика — флаги профиля: у PostgreSQL и
+	ClickHouse карточка была без предупреждений.
+	* backend/tests/unit/test_profiling.py,
+	backend/tests/unit/test_datasources_api.py: Фразы по флагам, «и ещё
+	N», чистый профиль, одна колонка, грязный CSV и источник БД,
+	литералы и заголовок не делают колонку уникальной, незнакомый флаг.
+	* docs/data_connectors.md: Поле warnings, profile_warnings.
 
 	Длина контекста LLM: исправления по ревью #136.
 	* backend/app/core/agent/orchestrator.py (AgentOrchestrator.run):

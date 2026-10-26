@@ -17,13 +17,14 @@ class DashboardTile(BaseModel):
 
     id: str = Field(default_factory=lambda: uuid4().hex[:12])
     title: str
-    spec: dict[str, Any]
+    spec: dict[str, Any] = Field(default_factory=dict)
     source_step_id: int | None = None
     result_table: str | None = None
     insight: str | None = None
     is_kpi: bool = False
     layout: dict[str, int] = Field(default_factory=lambda: {"x": 0, "y": 0, "w": 6, "h": 4})
-    snapshot_data: list[dict] | None = None
+    # Строки результата или значение KPI ({"value", "label"})
+    snapshot_data: list[dict[str, Any]] | dict[str, Any] | None = None
     snapshot_at: float | None = None
 
 

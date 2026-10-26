@@ -73,7 +73,9 @@ async def test_auth_error_is_not_retried() -> None:
     assert len(requests) == 1
 
 
-async def test_invalid_answer_is_asked_again() -> None:
+async def test_invalid_answer_is_asked_again(monkeypatch: pytest.MonkeyPatch) -> None:
+    # Переспрос instructor есть только в режиме tools.
+    monkeypatch.setattr(settings, "llm_structured_mode", "tools")
     llm, requests = client_with(
         [
             httpx.Response(200, json=tool_call_response({"value": "не число"})),

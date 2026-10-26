@@ -1,0 +1,8 @@
+# Скрипты, которые выполняются в Linux-контейнерах и на Mac/Linux, — всегда с LF,
+# даже при core.autocrlf=true на Windows: с CRLF /bin/sh и bash их не запустят.
+*.sh text eol=lf
+*.command text eol=lf
+.githooks/* text eol=lf
+# Запуск на Windows: cmd и Windows PowerShell ждут CRLF.
+*.bat text eol=crlf
+*.ps1 text eol=crlf
