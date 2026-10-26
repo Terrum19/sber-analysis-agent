@@ -18,6 +18,7 @@ import ClarificationCard from "@/components/chat/ClarificationCard";
 import StepProgress from "@/components/chat/StepProgress";
 import TableBriefCard from "@/components/chat/TableBriefCard";
 import DashboardPreviewCard from "@/components/chat/DashboardPreviewCard";
+import AnswerExport from "@/components/chat/AnswerExport";
 import LlmStatusBanner from "@/components/chat/LlmStatusBanner";
 import { useLlmStatus } from "@/hooks/useLlmStatus";
 import { useT } from "@/i18n/useT";

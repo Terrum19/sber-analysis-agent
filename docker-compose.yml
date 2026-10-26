@@ -54,6 +54,7 @@ services:
   backend:
     build: ./backend
     image: sber-backend:local
+    network_mode: host
     env_file:
       - path: .env
         required: false
@@ -65,16 +66,10 @@ services:
       SQLITE_PATH: /app/storage/sessions/sessions.sqlite
       # Не LLM_BASE_URL: в .env он для make dev (localhost), а в контейнере
       # localhost — сам backend. Ollama в контейнере: http://ollama:11434/v1.
-      LLM_BASE_URL: ${COMPOSE_LLM_BASE_URL:-http://host.docker.internal:11434/v1}
+      LLM_BASE_URL: ${COMPOSE_LLM_BASE_URL:-http://127.0.0.1:11434/v1}
       LLM_MODEL: ${LLM_MODEL:-qwen2.5-coder:7b}
       # Бэкенд ждёт тот же контекст, что задан Ollama (#102).
       LLM_NUM_CTX: ${OLLAMA_CONTEXT_LENGTH:-16384}
-    # На Linux host.docker.internal есть только с этой записью (на Mac/Windows — всегда).
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
-    # Снаружи нужен только фронтенд (:3000); API — для smoke и разработки, с этой машины.
-    ports:
-      - "127.0.0.1:8000:8000"
     volumes:
       - ./backend/storage:/app/storage
     depends_on:
@@ -140,12 +135,11 @@ services:
     build:
       context: ./frontend
       args:
-        NEXT_PUBLIC_API_URL: http://backend:8000
+        NEXT_PUBLIC_API_URL: http://127.0.0.1:8000
     image: sber-frontend:local
-    ports:
-      - "3000:3000"
+    network_mode: host
     environment:
-      - NEXT_PUBLIC_API_URL=http://backend:8000
+      - NEXT_PUBLIC_API_URL=http://127.0.0.1:8000
     depends_on:
       backend:
         condition: service_healthy
