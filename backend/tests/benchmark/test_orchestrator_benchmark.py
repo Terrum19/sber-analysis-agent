@@ -34,7 +34,7 @@ def db():
 
 
 def test_orchestrator_cycle_time(db):
-    SessionMemory("bench").set_table("raw", db.columns("raw"))
+    SessionMemory("bench").set_table("raw")
     orch = AgentOrchestrator(
         planner=StepPlanner(llm=FakeLLM()),
         executor=StepExecutor(db=db),

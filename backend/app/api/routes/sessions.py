@@ -1,10 +1,10 @@
 """CRUD сессий диалога.
 
-Сессия — единица памяти (память уровня 1): session_id -> история
-текстового диалога + история ResearchStep (см. core/memory/session_memory.py).
-Сессия создаётся только с подключённой таблицей; сменить таблицу и/или
-название можно через PATCH, история каждой таблицы хранится отдельно. Источник правды —
-SQLite SessionMemory: сессии и их метаданные переживают перезапуск.
+Сессия — единица памяти (память уровня 1): session_id -> ходы диалога
+(см. core/memory/session_memory.py). Таблица при создании необязательна;
+PATCH меняет таблицу по умолчанию и/или название, ходы при этом остаются.
+Источник правды — SQLite SessionMemory: сессии и их метаданные переживают
+перезапуск.
 """
 
 import uuid
@@ -51,11 +51,13 @@ def list_sessions(offset: Annotated[int, Query(ge=0)] = 0) -> list[SessionOut]:
 def create_session(
     payload: SessionCreate, db: Annotated[DuckDBManager, Depends(get_db)]
 ) -> SessionOut:
-    """Создать новую сессию диалога над подключённой таблицей."""
-    columns = table_columns(db, payload.table)
+    """Создать новую сессию диалога; таблица, если задана, становится таблицей по умолчанию."""
+    if payload.table is not None:
+        table_columns(db, payload.table)
     memory = SessionMemory(uuid.uuid4().hex, db)
     memory.set_meta(payload.title, payload.datasource_id)
-    memory.set_table(payload.table, columns)
+    if payload.table is not None:
+        memory.set_table(payload.table)
     return session_out(memory)
 
 
@@ -63,7 +65,7 @@ def create_session(
 def update_session(
     session_id: str, payload: SessionUpdate, db: Annotated[DuckDBManager, Depends(get_db)]
 ) -> SessionOut:
-    """Переключить сессию на другую таблицу и/или переименовать её.
+    """Сменить таблицу по умолчанию и/или переименовать сессию.
 
     Неизвестная таблица — 404 до любых изменений: название тоже не меняется.
     """
@@ -71,7 +73,8 @@ def update_session(
     if not memory.exists():
         raise HTTPException(status_code=404, detail="Сессия не найдена.")
     if payload.table is not None:
-        memory.set_table(payload.table, table_columns(db, payload.table))
+        table_columns(db, payload.table)
+        memory.set_table(payload.table)
     if payload.title is not None:
         memory.set_title(payload.title)
     return session_out(memory)

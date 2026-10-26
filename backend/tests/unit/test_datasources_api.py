@@ -400,16 +400,16 @@ def test_csv_brief_without_dates_has_no_period(client, storage) -> None:
 
 
 def test_csv_brief_has_profile_warnings(client, storage) -> None:
-    survey = b"Q1A,Q1I,age\n1,2,25\n5,NULL,31\nQ1A,Q1I,age\n3,4,NULL\n,,\n"
+    # Загрузчик удаляет повторный заголовок и заменяет NULL в числовых колонках;
+    # NULL в текстовой city остаётся, о нём (один раз) говорит профайлер.
+    survey = b"Q1A,Q1I,city\n1,2,Omsk\n5,NULL,NULL\nQ1A,Q1I,city\n3,4,Kazan\n,,\n"
     response = client.post("/api/datasources/csv", files=[("files", ("survey.csv", survey))])
     [brief] = response.json()["profiles"]
     assert brief["warnings"] == [
-        "Числа записаны текстом в колонках «Q1A», «Q1I», «age».",
-        "Литералы пропусков (NULL, N/A и т. п.) в колонках «Q1I» (1), «age» (1).",
-        (
-            "Значение, равное имени колонки (похоже на повторённый заголовок), "
-            "в колонках «Q1A», «Q1I», «age»."
-        ),
+        "Удалено строк с повторным заголовком: 1.",
+        "Литералы пропусков заменены на NULL: «NULL» (1).",
+        "Числа, записанные текстом, приведены к числам в колонках «Q1A», «Q1I».",
+        "Литералы пропусков (NULL, N/A и т. п.) в колонках «city» (1).",
         "Пустых строк (все колонки пустые): 1.",
     ]
 

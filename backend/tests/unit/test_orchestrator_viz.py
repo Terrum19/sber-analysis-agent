@@ -79,7 +79,7 @@ def db():
         "AS rows(region, amount)"
     )
     for session in ("s1", "fresh"):
-        SessionMemory(session).set_table("raw", manager.columns("raw"))
+        SessionMemory(session).set_table("raw")
     manager.statements.clear()
     yield manager
     manager.close()
@@ -120,9 +120,9 @@ async def test_first_answer_builds_filled_spec(agent, db) -> None:
     assert spec["encoding"]["x"]["title"] == "Регион"
     assert spec["encoding"]["y"]["title"] == "Выручка"
     assert SessionMemory("s1").last_chart() == {
-        "chart_type": "bar",
+        "type": "bar",
+        "title": "Москва лидирует",
         "result_table": "temp_result_v1",
-        "caption": "Москва лидирует",
     }
 
 
@@ -148,7 +148,7 @@ async def test_view_change_is_served_from_cache(agent, db) -> None:
     assert chart_of(events)["spec"]["usermeta"]["chart_type"] == "table"
     assert chart_of(events)["caption"] == "Москва лидирует"
     assert agent.planner.calls == 1
-    assert SessionMemory("s1").last_chart()["chart_type"] == "table"
+    assert SessionMemory("s1").last_chart()["type"] == "table"
 
 
 async def test_view_change_without_previous_chart_plans_anew(agent) -> None:
@@ -246,7 +246,67 @@ async def test_recovery_answers_the_original_question(db) -> None:
         event["data"]["stage"] if event["type"] == "progress" else event["type"] for event in events
     ] == ["step", "step", "insight", "text", "chart", "chart", "done"]
     assert insight.question == "Сравни выручку по регионам"
+    # Ответ на уточнение закрывает тот же ход, а не заводит новый.
+    turns = SessionMemory("s1")._state["turns"]
+    assert [(t["question"], t["status"]) for t in turns] == [("Сравни выручку по регионам", "ok")]
+    assert events[-1]["data"]["turn_id"] == turns[0]["turn_id"]
+
+
+async def test_done_carries_turn_id(agent) -> None:
+    first = await collect(agent, "Сравни выручку по регионам")
+    second = await collect(agent, "Привет")
+    turns = SessionMemory("s1")._state["turns"]
+    assert [first[-1]["data"]["turn_id"], second[-1]["data"]["turn_id"]] == [
+        t["turn_id"] for t in turns
+    ]
+
+
+async def test_steps_of_failed_turn_stay_out_of_next_plan(db) -> None:
+    class TwoStepPlanner(FakePlanner):
+        def __init__(self) -> None:
+            super().__init__()
+            self.contexts: list[dict] = []
+
+        async def plan(self, question: str, context: dict) -> ResearchPlan:
+            self.contexts.append(context)
+            steps = [
+                ResearchStep(step_id=0, tool="group", purpose="выручка по регионам"),
+                ResearchStep(step_id=1, tool="broken", purpose="сломанный шаг"),
+            ]
+            return ResearchPlan(steps=steps, final_viz="bar")
+
+    class BrokenToolExecutor(FakeExecutor):
+        async def execute(self, step: ResearchStep, input_table: str, **_: object) -> str:
+            if step.tool == "broken" and self.fail:
+                raise RuntimeError("broken step")
+            return self.db.save_step_result(input_table, STEP_SQL)
+
+    planner = TwoStepPlanner()
+    executor = BrokenToolExecutor(db, fail=True)
+    agent = AgentOrchestrator(planner=planner, executor=executor, insight_gen=FakeInsight())
+    events = await collect(agent, "Сравни выручку по регионам")
+    assert events[-1]["type"] == "clarification_needed"
+    assert events[-1]["data"]["turn_id"] == SessionMemory("s1")._state["turns"][0]["turn_id"]
+
+    executor.fail = False
+    await collect(agent, "Покажи выручку по регионам")
+    # Шаг 0 упавшего хода выполнился, но в контекст нового плана не попал.
+    assert planner.contexts[-1]["turns"] == []
+
+    await collect(agent, "А по месяцам?")
+    assert [t["question"] for t in planner.contexts[-1]["turns"]] == ["Покажи выручку по регионам"]
 
 
 def test_chart_without_step_result_has_no_result_table() -> None:
     assert "result_table" not in _chart_event({}, "caption", "raw")["data"]
+
+
+async def test_reply_to_morphs_chart_of_the_chosen_turn(agent, db) -> None:
+    first = await collect(agent, "Сравни выручку по регионам")
+    await collect(agent, "Сравни выручку по регионам ещё раз")
+    request = ChatRequest(
+        session_id="s1", question="Сделай таблицей", reply_to=first[-1]["data"]["turn_id"]
+    )
+    events = [event async for event in agent.run(request)]
+    assert chart_of(events)["result_table"] == "temp_result_v1"
+    assert SessionMemory("s1")._state["turns"][-1]["reply_to"] == first[-1]["data"]["turn_id"]

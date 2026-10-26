@@ -52,13 +52,17 @@ def test_create_session_binds_table_and_columns(client) -> None:
     assert response.status_code == 200
     body = response.json()
     assert body["table"] == "sales"
-    memory = SessionMemory(body["session_id"])
+    memory = SessionMemory(body["session_id"], app.dependency_overrides[get_db]())
     assert memory.table == "sales"
     assert memory.build_context("")["columns"] == ["region", "revenue"]
 
 
-def test_create_session_requires_table(client) -> None:
-    assert client.post("/api/sessions", json={}).status_code == 422
+def test_create_session_without_table(client) -> None:
+    response = client.post("/api/sessions", json={"title": "Без таблицы"})
+    assert response.status_code == 200
+    body = response.json()
+    assert body["table"] is None
+    assert client.get(f"/api/sessions/{body['session_id']}").json()["title"] == "Без таблицы"
 
 
 def test_create_session_with_unknown_table_is_404(client) -> None:
@@ -70,7 +74,7 @@ def test_patch_switches_table(client) -> None:
     response = client.patch(f"/api/sessions/{session_id}", json={"table": "users"})
     assert response.status_code == 200
     assert response.json()["table"] == "users"
-    memory = SessionMemory(session_id)
+    memory = SessionMemory(session_id, app.dependency_overrides[get_db]())
     assert memory.table == "users"
     assert memory.build_context("")["columns"] == ["age"]
     assert client.get(f"/api/sessions/{session_id}").json()["table"] == "users"
@@ -159,7 +163,8 @@ def test_create_session_over_temp_view(client) -> None:
     db.execute("CREATE TEMP VIEW pg_orders AS SELECT 1 AS order_id")
     response = client.post("/api/sessions", json={"table": "pg_orders"})
     assert response.status_code == 200
-    assert SessionMemory(response.json()["session_id"]).build_context("")["columns"] == ["order_id"]
+    memory = SessionMemory(response.json()["session_id"], db)
+    assert memory.build_context("")["columns"] == ["order_id"]
 
 
 def test_tables_lists_user_tables_only(client) -> None:
