@@ -1,3 +1,16 @@
+2026-10-26  mb6ockatf  <smokenmirror@tutamail.com>
+
+	Шаг с аргументом columns больше не падает (#59).
+	* backend/app/core/tools/base.py (BaseTool.run, BaseTool.arun):
+	db, input_table и позиционные columns — только позиционные
+	параметры: именованный аргумент тула columns (select_columns) уходит
+	в arguments, а не ломает вызов «got multiple values for argument
+	'columns'».
+	* backend/app/core/tools/codegen.py (CodegenTool.arun): То же.
+	* backend/tests/unit/test_step_chaining.py: Тест шага select_columns
+	с arguments.columns.
+	* docs/architecture.md: То же.
+
 2026-10-25  Alexander Yurits  <143354682+Terrum19@users.noreply.github.com>
 
 	Исправления по ревью #170.

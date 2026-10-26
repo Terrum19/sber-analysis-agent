@@ -11,6 +11,8 @@
   v
 [2] StepExecutor: последовательное применение шагов
   |        тул = предзаписанный SQL/стат-тест (подстановка колонок)
+  |        аргументы шага: позиционные columns + именованные arguments; имя
+  |        аргумента может совпадать с параметром тула (columns у select_columns)
   |        нет тула -> WASM-песочница (кодогенерация LLM)
   |        каждый шаг -> temp_result_vN в DuckDB (state cache)
   |        устаревшие temp_result_vN удаляются по RESULT_TTL_S (docs/memory.md)
