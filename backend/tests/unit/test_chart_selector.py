@@ -3,13 +3,14 @@ from decimal import Decimal
 
 import pytest
 
-from app.core.viz.chart_selector import fits, is_single_number, select_chart
+from app.core.viz.chart_selector import fits, histogram_column, is_single_number, select_chart
 from app.core.viz.vega_spec_builder import infer_field_types
 
 MONTHS = [{"month": f"2024-{month:02d}", "revenue": month * 10} for month in range(1, 13)]
 REGIONS = [{"region": "msk", "revenue": 12.5}, {"region": "spb", "revenue": 4.0}]
 SAMPLES = [{"amount": float(value)} for value in range(25)]
 PAIRS = [{"price": value, "demand": 100 - value} for value in range(5)]
+ORDERS = [{"order_id": value, "price": value % 7 * 10.0, "qty": value % 3} for value in range(25)]
 MANY_CATEGORIES = [{"sku": f"sku-{value}", "sold": value} for value in range(50)]
 
 
@@ -83,6 +84,26 @@ def test_single_number_result_becomes_kpi() -> None:
     assert select_chart("Какая выручка за квартал?", "t", records=[{"total": 10}]) == "kpi"
     assert select_chart("Динамика выручки", "t", records=[{"total": 10}, {"total": 11}]) == "table"
     assert select_chart("Динамика выручки", "t", records=MONTHS) == "line"
+
+
+def test_histogram_takes_the_column_named_in_the_question() -> None:
+    titles = {"price": "Цена", "qty": "Количество"}
+    assert select_chart("Распределение цен", "t", records=ORDERS, titles=titles) == "histogram"
+    assert select_chart("Распределение qty", "t", records=ORDERS) == "histogram"
+    assert select_chart("Распределение заказов", "t", records=ORDERS, titles=titles) == "table"
+
+
+@pytest.mark.parametrize(
+    ("question", "titles", "expected"),
+    [
+        ("Распределение цен", {"price": "Цена"}, "price"),
+        ("Как распределены суммы заказов", {"qty": "Сумма заказа"}, "qty"),
+        ("Распределение qty", {}, "qty"),
+        ("Распределение заказов", {}, None),
+    ],
+)
+def test_histogram_column(question: str, titles: dict, expected: str | None) -> None:
+    assert histogram_column(question, infer_field_types(ORDERS), titles) == expected
 
 
 def test_unfit_heuristic_falls_back_to_table() -> None:

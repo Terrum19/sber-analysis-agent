@@ -69,6 +69,8 @@ from app.core.viz.chart_selector import (
     MIN_HISTOGRAM_VALUES,
     NO_CHART,
     asks_distribution,
+    fits,
+    histogram_column,
     select_chart,
 )
 from app.core.viz.vega_spec_builder import (
@@ -76,6 +78,7 @@ from app.core.viz.vega_spec_builder import (
     build_vega_spec,
     chart_title,
     column_aliases,
+    infer_field_types,
 )
 from app.models.research_step import ResearchPlan, ResearchStep
 
@@ -319,13 +322,18 @@ class AgentOrchestrator:
 
             stage = "chart"
             records = self.db.to_records(result_table, limit=SPEC_ROW_LIMIT)
-            chart_type = select_chart(question, result_table, _requested_view(execution), records)
+            view = _requested_view(execution, records)
+            chart_type = select_chart(question, result_table, view, records, titles)
             if chart_type == NO_CHART:
                 logger.info("<<< run() ответ без графика")
                 memory.record_answer(insight.headline)
                 yield {"type": "done", "data": {}}
                 return
             yield _progress_event("chart", "started")
+            if chart_type == "histogram":
+                result_table, records = self._histogram_values(
+                    question, result_table, records, titles
+                )
             logger.info(">>> run() построение графика chart_type=%s", chart_type)
             spec = build_vega_spec(
                 chart_type,
@@ -663,7 +671,12 @@ class AgentOrchestrator:
             result_purpose=shown.purpose if shown else "",
             result_kind=tool_kind(shown) if shown else "transform",
         )
-        values = self._distribution_values(question, shown, inputs or {})
+        try:
+            values = self._distribution_values(question, shown, inputs or {})
+        except Exception:
+            # Гистограмма — дополнение: без неё показываем статистики шага.
+            logger.exception("<<< _finish выборка для гистограммы не собрана")
+            values = None
         if values is None:
             return execution
         return Execution(
@@ -693,6 +706,18 @@ class AgentOrchestrator:
             f"SELECT * FROM (SELECT {column} FROM {identifier(source)} WHERE {column} IS NOT NULL)"
             f" USING SAMPLE reservoir({SPEC_ROW_LIMIT} ROWS) REPEATABLE (0)",
         )
+
+    def _histogram_values(
+        self, question: str, result_table: str, records: list[dict], titles: dict[str, str]
+    ) -> tuple[str, list[dict]]:
+        """Оставить для гистограммы одну колонку — ту, о которой спросили."""
+        column = histogram_column(question, infer_field_types(records), titles)
+        if column is None or list(records[0]) == [column]:
+            return result_table, records
+        table = self.db.save_step_result(
+            result_table, f"SELECT {identifier(column)} FROM {identifier(result_table)}"
+        )
+        return table, self.db.to_records(table, limit=SPEC_ROW_LIMIT)
 
     async def _replan_after_lookup(
         self,
@@ -857,12 +882,17 @@ class AgentOrchestrator:
         return _chart_event(spec, last["caption"], last["result_table"])
 
 
-def _requested_view(execution: Execution) -> str:
+def _requested_view(execution: Execution, records: list[dict]) -> str:
     if execution.final_viz == NO_CHART and not execution.dashboard_requested:
         return NO_CHART
-    if execution.result_kind != "transform":
+    requested = "auto" if execution.final_viz == NO_CHART else execution.final_viz
+    if execution.result_kind == "transform":
+        return requested
+    # Стат-тест и разведка — строки чисел: таблица. Тренд и сезонность —
+    # ряд по времени: его рисуем линией (или областью, если её просили).
+    if not fits("line", records, infer_field_types(records)):
         return "table"
-    return "auto" if execution.final_viz == NO_CHART else execution.final_viz
+    return requested if requested in ("line", "area") else "line"
 
 
 def _next_step_id(tables: dict[int, str]) -> int:

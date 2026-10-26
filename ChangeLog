@@ -1,3 +1,18 @@
+2026-10-26  Alexander Yurits  <143354682+Terrum19@users.noreply.github.com>
+
+	Графики: тренд линией, гистограмма по колонке из вопроса (#176).
+	* backend/app/core/agent/orchestrator.py (_requested_view): Результат
+	analysis-шага с рядом по времени (trend_analysis, seasonal_decompose)
+	— line, остальное — table.
+	(AgentOrchestrator._histogram_values): Новая.  Для гистограммы —
+	только колонка из вопроса.
+	(AgentOrchestrator._finish): Сбой выборки для гистограммы не роняет
+	ход: показываются статистики шага.
+	* backend/app/core/viz/chart_selector.py (histogram_column): Новая.
+	(fits): Колонка гистограммы — аргументом.
+	(select_chart): Новый аргумент titles.
+	* docs/visualization.md: То же.
+
 2026-10-25  mb6ockatf  <smokenmirror@tutamail.com>
 
 	Графики: название из шага, тип по форме данных, «без графика» (#164).

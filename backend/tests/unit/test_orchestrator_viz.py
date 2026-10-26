@@ -355,3 +355,53 @@ def test_distribution_needs_the_input_of_the_shown_step(db) -> None:
     agent = agent_with(db, FakePlanner())
     step = ResearchStep(step_id=1, tool="describe_stats", arguments={"column": "amount"})
     assert agent._distribution_values("Покажи распределение amount", step, {}) is None
+
+
+class SqlExecutor(FakeExecutor):
+    def __init__(self, db: DuckDBManager, sql: str) -> None:
+        super().__init__(db)
+        self.sql = sql
+
+    async def execute(self, step: ResearchStep, input_table: str, **_: object) -> str:
+        self.calls += 1
+        return self.db.save_step_result(input_table, self.sql)
+
+
+async def test_trend_result_is_drawn_as_line(db) -> None:
+    sql = (
+        "SELECT DATE '2024-01-01' + INTERVAL (range) MONTH AS period, range * 1.0 AS value,"
+        " range * 1.0 AS trend FROM range(12)"
+    )
+    planner = FakePlanner(final_viz="table", tool="trend_analysis", purpose="тренд выручки")
+    agent = AgentOrchestrator(
+        planner=planner, executor=SqlExecutor(db, sql), insight_gen=FakeInsight()
+    )
+    spec = chart_of(await collect(agent, "Покажи тренд выручки"))["spec"]
+    assert spec["usermeta"]["chart_type"] == "line"
+    assert spec["title"] == "тренд выручки"
+
+
+async def test_histogram_of_the_named_column_of_a_wide_result(db) -> None:
+    db.execute("INSERT INTO raw SELECT 'msk', range FROM range(30)")
+    sql = "SELECT region, amount, amount * 2 AS doubled FROM raw"
+    agent = AgentOrchestrator(
+        planner=FakePlanner(final_viz="histogram", tool="filter_rows", purpose="суммы"),
+        executor=SqlExecutor(db, sql),
+        insight_gen=FakeInsight(),
+    )
+    chart = chart_of(await collect(agent, "Распределение amount"))
+    assert chart["spec"]["usermeta"]["chart_type"] == "histogram"
+    assert set(chart["spec"]["data"]["values"][0]) == {"amount"}
+    assert chart["result_table"] == "temp_result_v2"
+
+
+async def test_failed_distribution_sample_keeps_the_statistics(db, monkeypatch) -> None:
+    agent = stats_agent(db, rows=25)
+
+    def broken(*_: object) -> str:
+        raise RuntimeError("sample failed")
+
+    monkeypatch.setattr(agent, "_distribution_values", broken)
+    events = await collect(agent, "Покажи распределение amount")
+    assert [event["type"] for event in events] == ["text", "chart", "done"]
+    assert chart_of(events)["spec"]["usermeta"]["chart_type"] == "table"
