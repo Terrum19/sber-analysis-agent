@@ -115,6 +115,11 @@ def test_missing_expect_key_is_reported():
     assert any("columns_all" in problem for problem in problems_of(question))
 
 
+def test_dashboard_flag_is_optional_and_boolean():
+    assert problems_of(with_expect(dashboard=True)) == []
+    assert any("dashboard" in problem for problem in problems_of(with_expect(dashboard="yes")))
+
+
 def test_extra_question_key_is_reported():
     question = make_question(comment="лишнее")
 

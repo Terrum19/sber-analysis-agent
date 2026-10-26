@@ -1,3 +1,14 @@
+2026-10-26  mb6ockatf  <smokenmirror@tutamail.com>
+
+	Eval-набор: дашборд в сценарии 5, отказ без уточнения (#56).
+	* data/eval/questions.yaml: У шести вопросов сценария 5
+	dashboard: true.
+	* scripts/check_eval_questions.py (expect_problems): Необязательный
+	ключ dashboard — true или false.
+	* data/eval/README.md: dashboard; уточнение, в том числе шаблонное
+	«Не удалось подобрать инструменты», отказом не считается.
+	* backend/tests/unit/test_eval_questions.py: Тест того же.
+
 2026-10-25  mb6ockatf  <smokenmirror@tutamail.com>
 
 	Eval-набор вопросов по датасетам хакатона (Q-01, #56).

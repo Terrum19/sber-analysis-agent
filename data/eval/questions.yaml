@@ -541,6 +541,7 @@
         WHERE date_trunc('quarter', "Дата операции (МСК)") = DATE '2025-10-01'
       tolerance: 0
     chart_type_any: [bar, line, table]
+    dashboard: true
     refusal: false
 
 - id: support-05
@@ -558,6 +559,7 @@
         WHERE date_trunc('quarter', "Создано (МСК)") = DATE '2025-10-01'
       tolerance: 0
     chart_type_any: [bar, line, table]
+    dashboard: true
     refusal: false
 
 - id: delivery-05
@@ -571,6 +573,7 @@
     answer_contains: []
     value: null
     chart_type_any: [bar, line, table]
+    dashboard: true
     refusal: false
 
 - id: ads-05
@@ -584,6 +587,7 @@
     answer_contains: []
     value: null
     chart_type_any: [bar, line, area, table]
+    dashboard: true
     refusal: false
 
 - id: procurement-05
@@ -601,6 +605,7 @@
         WHERE date_trunc('quarter', "Подана (МСК)") = DATE '2025-10-01'
       tolerance: 0
     chart_type_any: [bar, line, table]
+    dashboard: true
     refusal: false
 
 - id: pharma-05
@@ -614,6 +619,7 @@
     answer_contains: []
     value: null
     chart_type_any: [bar, line, area, table]
+    dashboard: true
     refusal: false
 
 # --- Сценарий 6. Диалог с контекстом ---

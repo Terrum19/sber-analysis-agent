@@ -23,6 +23,7 @@ EXPECT_KEYS = {
     "chart_type_any",
     "refusal",
 }
+OPTIONAL_EXPECT_KEYS = {"dashboard"}
 VALUE_KEYS = {"sql", "tolerance"}
 ID_PATTERN = re.compile(r"^[a-z0-9]+(-[a-z0-9]+)*$")
 SCENARIOS = range(7)
@@ -89,7 +90,7 @@ def expect_problems(expect, tools: set[str], chart_types: set[str]) -> list[str]
     problems = []
     if missing := EXPECT_KEYS - set(expect):
         problems.append(f"expect: нет ключей {sorted(missing)}")
-    if extra := set(expect) - EXPECT_KEYS:
+    if extra := set(expect) - EXPECT_KEYS - OPTIONAL_EXPECT_KEYS:
         problems.append(f"expect: лишние ключи {sorted(extra)}")
     for key in ("tools_any", "columns_all", "answer_contains", "chart_type_any"):
         if key in expect and not is_text_list(expect[key]):
@@ -101,6 +102,8 @@ def expect_problems(expect, tools: set[str], chart_types: set[str]) -> list[str]
     if repeated := repeated_names(expect.get("columns_all")):
         problems.append(f"expect.columns_all: повторы {repeated}")
     problems += value_problems(expect.get("value"))
+    if "dashboard" in expect and not isinstance(expect["dashboard"], bool):
+        problems.append("expect.dashboard: true или false")
     refusal = expect.get("refusal")
     if not isinstance(refusal, bool):
         problems.append("expect.refusal: true или false")
