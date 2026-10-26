@@ -32,6 +32,24 @@
 	* backend/tests/unit/test_eval_runner.py: Тесты того же.
 	* docs/eval.md: То же.
 
+	Eval: LLM-судья отдельным модулем (#57).  Перенесён из #181.
+	* scripts/eval_judge.py: Новый.
+	(RUBRIC, JUDGE_SYSTEM): Тексты пунктов и системный промпт судьи.
+	(rubric_points): Общие пункты ходу с done, в сценарии 0 — только
+	business_readable, плюс пункты задачи.
+	(build_prompt, rows_block): Вопрос, ответ, первые 30 строк таблицы
+	результата, эталонные факты, справка и предыдущий ход; неизвестный
+	пункт — ValueError.
+	(parse_reply, read_vote, cast_vote): Ответ в блоке кода или с текстом
+	вокруг разбирается; неразобранный ответ или упавший вызов — провальный
+	голос с причиной, пункт без оценки — провальный голос по пункту.
+	(majority, judge): Несколько голосов (по умолчанию 3), по каждому
+	пункту большинство, ничья — провал.
+	(JudgeClient, judge_client_from_env): Эндпоинт судьи отдельно от
+	агента: JUDGE_BASE_URL, JUDGE_API_KEY, JUDGE_MODEL.
+	* backend/tests/unit/test_eval_judge.py: Тесты того же.
+	* docs/eval.md (Судья): Новый раздел.
+
 2026-10-25  mb6ockatf  <smokenmirror@tutamail.com>
 
 	Eval: проверки без ложных проходов и падений (#57).
