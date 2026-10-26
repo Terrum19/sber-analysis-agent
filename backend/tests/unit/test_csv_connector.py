@@ -365,18 +365,176 @@ def test_retype_min_share_threshold(tmp_path, db, monkeypatch) -> None:
     assert any("1 значений не удалось привести к BIGINT" in w for w in report.warnings())
 
 
-def test_null_in_text_column_counted_in_report(tmp_path, db) -> None:
+def test_null_in_text_column_is_left_to_profiler(tmp_path, db) -> None:
+    # Литерал в текстовой колонке не заменён: о нём пишет профайлер, не загрузчик.
     content = "country,note\nNA,NULL\nUS,comment\n"
     path = write(tmp_path, "text_nulls.csv", content.encode())
     report = load_csv(db, "text_nulls", path)
 
-    assert column_types(db, "text_nulls")["country"] == "VARCHAR"
     assert column_types(db, "text_nulls")["note"] == "VARCHAR"
-    assert report.null_tokens == {"NULL": 1}
+    assert report.null_tokens == {}
     assert report.retyped == {}
     rows = db.query("SELECT note FROM text_nulls ORDER BY country")
     assert [r["note"] for r in rows] == ["NULL", "comment"]
-    assert any("Обнаружены литералы пропусков: «NULL» (1)" in w for w in report.warnings())
+    assert not any("Литерал" in w for w in report.warnings())
+
+
+def test_null_warning_counts_only_replaced_literals(tmp_path, db) -> None:
+    content = "city,amount\nNULL,10\nМосква,NULL\nКазань,20\n"
+    report = load_csv(db, "cities", write(tmp_path, "cities.csv", content.encode()))
+
+    assert column_types(db, "cities") == {"city": "VARCHAR", "amount": "BIGINT"}
+    assert report.null_tokens == {"NULL": 1}
+    assert "Литералы пропусков заменены на NULL: «NULL» (1)." in report.warnings()
+    assert db.query("SELECT city FROM cities WHERE amount = 10") == [{"city": "NULL"}]
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "+7 912 345 67 89",
+        "4276 1234 5678 9012",
+        "4510 123456",
+        "40817810099910004312",
+        "4276123456789012",
+    ],
+)
+def test_identifiers_with_spaces_or_many_digits_stay_text(tmp_path, db, value: str) -> None:
+    content = f"id_value;n\n{value};1\nNULL;2\n"
+    report = load_csv(db, "ids", write(tmp_path, "ids.csv", content.encode()))
+
+    assert column_types(db, "ids")["id_value"] == "VARCHAR"
+    assert report.numeric_text_columns == []
+    assert db.query("SELECT id_value FROM ids WHERE n = 1") == [{"id_value": value}]
+
+
+@pytest.mark.parametrize("value", ["007.5", "-007", "-inf", "inf", "1_000"])
+def test_codes_and_special_floats_stay_text(tmp_path, db, value: str) -> None:
+    content = f"x;n\n{value};1\n1.5;2\nNULL;3\n"
+    load_csv(db, "codes", write(tmp_path, "codes.csv", content.encode()))
+    assert column_types(db, "codes")["x"] == "VARCHAR"
+
+
+def test_thousands_like_comma_is_warned(tmp_path, db) -> None:
+    content = "x\n1,234\n5,678\nNULL\n"
+    report = load_csv(db, "amounts", write(tmp_path, "amounts.csv", content.encode()))
+
+    assert column_types(db, "amounts")["x"] == "DOUBLE"
+    assert report.thousands_comma == ["x"]
+    assert any("разделитель тысяч" in w for w in report.warnings())
+
+
+def test_comma_decimals_with_other_lengths_are_not_warned(tmp_path, db) -> None:
+    content = "x\n1,234\n5,5\nNULL\n"
+    report = load_csv(db, "amounts", write(tmp_path, "amounts.csv", content.encode()))
+    assert report.thousands_comma == []
+
+
+@pytest.mark.parametrize(
+    ("values", "expected"),
+    [
+        (["25.10.2026", "01.02.2025"], "DATE"),
+        (["2026-10-25", "2026-10-25 10:00:00"], "TIMESTAMP"),
+        (["2026-10-25 10:00", "2026-10-26 11:30"], "TIMESTAMP"),
+        (["25.10.2026 10:00", "01.02.2025 11:30:15"], "TIMESTAMP"),
+        (["true", "False"], "BOOLEAN"),
+    ],
+)
+def test_dates_times_and_booleans_with_null_literal(tmp_path, db, values, expected) -> None:
+    content = "v\n" + "\n".join([*values, "NULL"]) + "\n"
+    report = load_csv(db, "typed", write(tmp_path, "typed.csv", content.encode()))
+
+    assert column_types(db, "typed") == {"v": expected}
+    assert report.null_tokens == {"NULL": 1}
+    assert db.query("SELECT count(v) AS filled FROM typed") == [{"filled": len(values)}]
+
+
+def test_russian_date_is_read_day_first(tmp_path, db) -> None:
+    content = "d\n01.02.2025\nNULL\n"
+    load_csv(db, "ru", write(tmp_path, "ru.csv", content.encode()))
+    assert db.query("SELECT d FROM ru WHERE d IS NOT NULL") == [{"d": datetime.date(2025, 2, 1)}]
+
+
+@pytest.mark.parametrize(
+    ("values", "expected"),
+    [
+        (["2024-01-02", "2024-03-15", "2024-04-01", "не дата"], "DATE"),
+        (["2024-01-02 10:00:00", "2024-03-15", "2024-04-01 11:30", "xyz"], "TIMESTAMP"),
+    ],
+)
+def test_retype_min_share_for_dates(tmp_path, db, monkeypatch, values, expected) -> None:
+    from app.config import settings
+
+    monkeypatch.setattr(settings, "csv_retype_min_share", 0.75)
+    content = "v\n" + "\n".join(values) + "\n"
+    report = load_csv(db, "share_dates", write(tmp_path, "share_dates.csv", content.encode()))
+
+    assert column_types(db, "share_dates") == {"v": expected}
+    assert report.unconverted == {"v": 1}
+    assert db.query("SELECT count(v) AS filled FROM share_dates") == [{"filled": 3}]
+
+
+@pytest.mark.parametrize(
+    "content",
+    [
+        "a,a,c\n1,2,3\na,a,c\n4,5,6\n",
+        "a,b\n1,2\na,\n3,4\n",
+        "a,b\n1,2\n A ,B\n3,4\n",
+    ],
+)
+def test_repeated_header_with_duplicates_or_empty_cells_is_removed(tmp_path, db, content) -> None:
+    report = load_csv(db, "stitched", write(tmp_path, "stitched.csv", content.encode()))
+
+    assert report.header_rows_removed == 1
+    assert report.rows == 2
+    assert set(column_types(db, "stitched").values()) == {"BIGINT"}
+
+
+def test_row_with_one_matching_cell_out_of_many_is_kept(tmp_path, db) -> None:
+    content = "status,a,b,c\nstatus,,,\nok,1,2,3\n"
+    report = load_csv(db, "statuses", write(tmp_path, "statuses.csv", content.encode()))
+    assert report.header_rows_removed == 0
+    assert report.rows == 2
+
+
+def test_existing_reject_errors_table_is_untouched(tmp_path, db) -> None:
+    db.execute("CREATE TABLE reject_errors AS SELECT 42 AS user_value")
+    report = load_csv(db, "small", write(tmp_path, "ok.csv", b"a,b\n1,x\n2,y\n"))
+
+    assert report.rows == 2
+    assert db.query("SELECT user_value FROM reject_errors") == [{"user_value": 42}]
+
+
+def test_file_named_reject_errors_loads_with_first_strategy(tmp_path, db) -> None:
+    report = load_csv(db, "reject_errors", write(tmp_path, "reject_errors.csv", b"a,b\n1,x\n"))
+
+    assert not report.tolerant
+    assert db.query("SELECT a, b FROM reject_errors") == [{"a": 1, "b": "x"}]
+
+
+def test_reject_tables_are_dropped_after_load(tmp_path, db) -> None:
+    lines = [f"{i},{i}" for i in range(25000)] + ["1,drift", "bad_line,\xff\xfe\xfd"]
+    content = codecs.BOM_UTF8 + ("a,b\n" + "\n".join(lines) + "\n").encode("latin1")
+    path = tmp_path / "broken.csv"
+    path.write_bytes(content)
+    load_csv(db, "broken", path)
+    assert db.query("SELECT table_name FROM duckdb_tables()") == [{"table_name": "broken"}]
+
+
+def test_file_with_1100_columns_is_retyped(tmp_path, db) -> None:
+    columns = [f"c{index}" for index in range(1100)]
+    lines = [",".join(columns)]
+    lines += [",".join(str((row + index) % 9) for index in range(1100)) for row in range(20)]
+    lines += [",".join(["NULL"] * 1100), ",".join(columns)]
+    path = write(tmp_path, "wide.csv", ("\n".join(lines) + "\n").encode())
+    report = load_csv(db, "wide", path)
+
+    assert report.rows == 21
+    assert report.header_rows_removed == 1
+    assert set(column_types(db, "wide").values()) == {"BIGINT"}
+    assert report.null_tokens == {"NULL": 1100}
+    numbers = next(w for w in report.warnings() if w.startswith("Числа"))
+    assert "и ещё" in numbers
 
 
 def test_nbsp_and_narrow_nbsp_without_decimal_comma_converted_to_double(tmp_path, db) -> None:
