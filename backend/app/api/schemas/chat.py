@@ -10,7 +10,7 @@ from app.core.dashboards.models import Dashboard
 
 
 class SessionCreate(BaseModel):
-    table: str
+    table: str | None = None
     datasource_id: str | None = None
     title: str | None = None
 
@@ -21,7 +21,7 @@ SessionTitle = Annotated[
 
 
 class SessionUpdate(BaseModel):
-    """Тело PATCH /sessions/{id}: новая таблица и/или новое название.
+    """Тело PATCH /sessions/{id}: новая таблица по умолчанию и/или новое название.
 
     Оба поля необязательны, но хотя бы одно должно быть задано (иначе 422).
     Тело ``{"table": ...}`` прежнего контракта остаётся валидным.

@@ -106,6 +106,42 @@
 
 2026-10-25  Alexander Yurits  <143354682+Terrum19@users.noreply.github.com>
 
+	Память сессии по ходам вместо памяти по таблице (#163).
+	* backend/app/core/memory/session_memory.py (SessionMemory): Сессия —
+	список ходов.  start_turn, resume_turn, finish_turn, turn_id,
+	recent_turns: Новые.
+	(record_step): Пишет шаг с аргументами в текущий ход.
+	(record_chart, last_chart): График хода; last_chart — последнего
+	успешного хода с графиком.
+	(build_context): Последние CONTEXT_TURNS успешных ходов с планом
+	вместо summary и окна сообщений; колонки из паспорта или каталога.
+	(set_table): Только таблица по умолчанию; ходы не сбрасываются.
+	(record_answer, _history): Удалены.
+	* backend/app/core/agent/orchestrator.py (AgentOrchestrator._turn):
+	Ход на каждое сообщение, ответ на уточнение продолжает тот же ход;
+	turn_id в done и clarification_needed.
+	(_result_columns): Новая.
+	* backend/app/core/agent/planner.py (describe_turns): Новая.  Таблица
+	хода, ход по другой таблице помечен; шаги плана перенумерованы с 0
+	вместе со ссылками $step_N.
+	(_renumber_refs): Новая.
+	(StepPlanner.plan): Прошлые ходы в промпте для любого вопроса.
+	* backend/app/core/agent/quality_fixes.py (frame_context, FOLLOW_UP):
+	Удалены.
+	* backend/app/core/llm/prompts/quality_rules.py (PAST_CONTEXT): Удалён.
+	* backend/app/core/llm/prompts/step_planner.py (STEP_PLANNER): Блок
+	прошлых ходов и правило про вопрос-продолжение.
+	* backend/app/api/schemas/chat.py (SessionCreate): table
+	необязательна.
+	* backend/app/api/routes/sessions.py (create_session): Сессия без
+	таблицы.
+	* backend/app/core/data/result_retention.py (_session_charts):
+	Графики ходов.
+	* scripts/run_full_llm_cycle.py: То же.
+	* docs/memory.md, docs/architecture.md: То же.
+
+2026-10-25  Alexander Yurits  <143354682+Terrum19@users.noreply.github.com>
+
 	Исправления по ревью #144.
 	* backend/app/core/agent/quality_fixes.py (insight_facts): Числовые
 	типы сверяются точно (INTERVAL больше не попадает в SUM), имена

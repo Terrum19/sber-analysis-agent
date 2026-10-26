@@ -65,31 +65,6 @@ def test_time_bucket_avg_without_metric_fails_validation() -> None:
         tool.parse_args([], {"date_column": "d", "function": "AVG"})
 
 
-def test_context_only_for_follow_up_questions() -> None:
-    from app.core.agent.quality_fixes import frame_context
-
-    summary = "шаг 0: Оставить события с суммой больше 150"
-    assert frame_context(summary, "Есть ли выбросы в amount?") == "нет"
-    assert "ПРОШЛЫХ" in frame_context(summary, "А из них сколько в марте?")
-
-
-@pytest.mark.parametrize("question", ["А в Москве?", "И по регионам?", "Покажи то же для 2023"])
-def test_follow_up_questions(question: str) -> None:
-    from app.core.agent.quality_fixes import frame_context
-
-    assert frame_context("шаг 0", question) != "нет"
-
-
-@pytest.mark.parametrize(
-    "question",
-    ["Сколько событий за прошлый месяц?", "Как выручка изменилась к предыдущему году?"],
-)
-def test_standalone_questions(question: str) -> None:
-    from app.core.agent.quality_fixes import frame_context
-
-    assert frame_context("шаг 0", question) == "нет"
-
-
 def test_select_tools_keeps_core_and_matches_question() -> None:
     from app.core.agent.quality_fixes import select_tools
 

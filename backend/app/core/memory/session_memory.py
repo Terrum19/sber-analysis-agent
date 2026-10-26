@@ -1,12 +1,19 @@
 """Память уровня 1: краткосрочная память сессии.
 
-Хранит историю текстового диалога и историю ResearchStep, привязанную
-к session_id. Чтобы не взрывать контекст, в промпт идёт скользящее
-окно последних 3-5 сообщений + сжатая выжимка предыдущих шагов.
-Сессия привязана к таблице DuckDB (``set_table``); сообщения и последний
-график хранятся отдельно для каждой таблицы. Метаданные сессии
+Сессия — список ходов: на каждое сообщение пользователя ``start_turn``
+заводит ход (вопрос, таблицы), шаги плана пишутся в него, ``finish_turn``
+закрывает его ответом и статусом (ok / failed / clarification). Ответ
+на уточнение продолжает тот же ход (``resume_turn``).
+
+В контекст планировщика идут последние ``CONTEXT_TURNS`` успешных ходов
+с планом: вопрос, шаги с аргументами, итог и колонки результата. Размер
+контекста не растёт с числом ходов, шаги упавших ходов в него не попадают.
+
+``datasource`` — таблица по умолчанию (``$source``), пока агент не выбирает
+таблицу сам (#165); её смена ходы не сбрасывает. Метаданные сессии
 (``title``, ``datasource_id``, ``created_at``) лежат в том же состоянии,
-поэтому сессия переживает перезапуск приложения.
+поэтому сессия переживает перезапуск приложения. Состояние до списка ходов
+(``tables``, ``steps``, ``columns``) открывается, но не читается.
 
 Состояние сессии хранится в SQLite (таблица ``session_state`` по адресу
 ``settings.sqlite_path``) вместо отдельных JSON-файлов.
@@ -15,12 +22,18 @@
 import json
 import sqlite3
 import time
+import uuid
 from datetime import UTC, datetime
 from pathlib import Path
+
+import duckdb
 
 from app.config import settings
 from app.core.data.duckdb_manager import DuckDBManager
 from app.core.memory.profile_memory import ProfileMemory
+
+# Сколько прошлых успешных ходов видит планировщик.
+CONTEXT_TURNS = 3
 
 
 def _connect(path: Path) -> sqlite3.Connection:
@@ -48,6 +61,8 @@ class SessionMemory:
         self._db_path = Path(settings.sqlite_path)
         self.db = db
         self._state = self._load()
+        self._state.setdefault("turns", [])
+        self._turn: dict | None = None
 
     @staticmethod
     def list_sessions(limit: int, offset: int = 0) -> list[dict]:
@@ -90,13 +105,7 @@ class SessionMemory:
             conn.close()
         if row is not None:
             return json.loads(row[0])
-        return {
-            "steps": [],
-            "datasource": None,
-            "columns": [],
-            "tables": {},
-            "pending_recovery": None,
-        }
+        return {"datasource": None, "pending_recovery": None, "turns": []}
 
     def exists(self) -> bool:
         """Сохранена ли сессия в SQLite."""
@@ -171,97 +180,134 @@ class SessionMemory:
         self._state["title"] = title
         self._persist()
 
-    def set_table(self, table: str, columns: list[str]) -> None:
-        """Привязать сессию к таблице и её колонкам.
+    def set_table(self, table: str) -> None:
+        """Сделать таблицу таблицей по умолчанию ($source) для следующих ходов.
 
-        Сообщения и последний график хранятся отдельно для каждой таблицы
-        и при возврате к ней снова доступны. Шаги и незавершённое уточнение
-        относятся к плану по прошлой таблице и сбрасываются. При смене
-        таблицы сбрасывается и ``datasource_id``: новая таблица может быть
-        из другого источника. Та же таблица обновляет только колонки: шаги
-        и незавершённое уточнение остаются.
+        Ходы остаются: вопрос по новой таблице может продолжать прошлый.
+        Незавершённое уточнение сбрасывается — его план по прошлой таблице.
+        При смене таблицы сбрасывается и ``datasource_id``: новая таблица
+        может быть из другого источника.
         """
         if table == self.table:
-            self._state["columns"] = list(columns)
-            self._persist()
             return
         if self.table is not None:
             self._state["datasource_id"] = None
         self._state["datasource"] = table
-        self._state["columns"] = list(columns)
-        self._state["steps"] = []
         self._state["pending_recovery"] = None
-        self._history()
         self._persist()
 
-    def _history(self) -> dict:
-        """Сообщения и последний график текущей таблицы.
+    @property
+    def turn_id(self) -> str | None:
+        """id текущего хода (None — ход не начат)."""
+        return self._turn["turn_id"] if self._turn is not None else None
 
-        Без таблицы история не ведётся: возвращается пустая запись,
-        которая не сохраняется.
+    def start_turn(self, question: str) -> str:
+        """Начать ход по вопросу пользователя и вернуть его turn_id.
+
+        Ход сохраняется сразу со статусом failed: ход, не дошедший до
+        finish_turn (сбой процесса, отключение клиента), таким и остаётся.
         """
-        empty = {"messages": [], "last_chart": None}
-        if self.table is None:
-            return empty
-        return self._state.setdefault("tables", {}).setdefault(self.table, empty)
+        self._turn = {
+            "turn_id": uuid.uuid4().hex,
+            "question": question,
+            "tables": [self.table] if self.table is not None else [],
+            "steps": [],
+            "result_table": None,
+            "result_columns": [],
+            "headline": None,
+            "chart": None,
+            "status": "failed",
+        }
+        self._state["turns"].append(self._turn)
+        self._persist()
+        return self._turn["turn_id"]
+
+    def resume_turn(self, turn_id: str | None) -> bool:
+        """Продолжить ход после уточнения; False — такого хода нет."""
+        for turn in self._state["turns"]:
+            if turn["turn_id"] == turn_id:
+                self._turn = turn
+                return True
+        return False
+
+    def record_step(self, step) -> None:
+        """Записать выполненный шаг в текущий ход (сохраняется в finish_turn)."""
+        self._turn["steps"].append(
+            {
+                "step_id": step.step_id,
+                "tool": step.tool,
+                "input": step.input,
+                "arguments": step.arguments,
+                "columns": step.columns,
+                "purpose": step.purpose,
+            }
+        )
+
+    def record_chart(self, chart_type: str, result_table: str, title: str = "") -> None:
+        """Запомнить график текущего хода (для смены вида без LLM)."""
+        self._turn["chart"] = {"type": chart_type, "title": title, "result_table": result_table}
+
+    def finish_turn(
+        self,
+        status: str,
+        headline: str | None = None,
+        result_table: str | None = None,
+        result_columns: list[str] | None = None,
+    ) -> None:
+        """Закрыть текущий ход ответом и статусом: ok, failed или clarification."""
+        self._turn.update(
+            status=status,
+            headline=headline,
+            result_table=result_table,
+            result_columns=list(result_columns or []),
+        )
+        self._persist()
+
+    def last_chart(self) -> dict | None:
+        """График последнего успешного хода, в котором был график, или None."""
+        for turn in reversed(self._state["turns"]):
+            if turn["status"] == "ok" and turn["chart"] is not None:
+                return turn["chart"]
+        return None
+
+    def recent_turns(self) -> list[dict]:
+        """Последние CONTEXT_TURNS успешных ходов с планом, старые первыми."""
+        done = [t for t in self._state["turns"] if t["status"] == "ok" and t["steps"]]
+        return done[-CONTEXT_TURNS:]
 
     def build_context(self, question: str) -> dict:
-        """Собрать контекст: скользящее окно сообщений + выжимка шагов + колонки + словарь."""
-        window = self._history()["messages"][-5:]
-        summary = "; ".join(f"шаг {s['step_id']}: {s['purpose']}" for s in self._state["steps"])
-        columns = self._state.get("columns", [])
+        """Собрать контекст: прошлые ходы + колонки + паспорт таблицы по умолчанию."""
         datasource = self.table
 
         # Профиль данных (паспорт таблицы) для долгосрочного контекста;
         # без DuckDB (память открыта только ради истории) профиля нет.
         profile = None
         enrichment = []
+        columns: list[str] = []
         if self.db is not None and datasource is not None:
             passport = ProfileMemory(self.db)
             profile = passport.load_profile(datasource)
             enrichment = passport.load_enrichment(datasource)
-        # Колонки не задавались явно — берём их из паспорта таблицы.
-        if not columns and profile is not None:
-            columns = [column.name for column in profile.columns]
-
-        # Формируем краткое описание колонок для LLM
-        columns_summary = ", ".join(columns) if columns else "неизвестно"
+            if profile is not None:
+                columns = [column.name for column in profile.columns]
+            else:
+                # Без паспорта колонки из каталога; каталог недоступен — план
+                # строится без них, упавший шаг исправит планировщик.
+                try:
+                    columns = self.db.columns(datasource)
+                except duckdb.Error:
+                    columns = []
 
         return {
-            "messages": window,
-            "summary": summary,
+            "turns": self.recent_turns(),
             "question": question,
             "columns": columns,
-            "columns_summary": columns_summary,
             "datasource": datasource,
             "profile": profile,
             # Описание таблицы из паспорта: названия для отбора колонок, описания для промпта.
             "titles": {row.column: row.title for row in enrichment if row.title},
             "descriptions": {row.column: row.description for row in enrichment if row.description},
         }
-
-    def record_step(self, step, result_table: str) -> None:
-        """Запомнить выполненный шаг и его результат."""
-        self._state["steps"].append(
-            {"step_id": step.step_id, "purpose": step.purpose, "result": result_table}
-        )
-
-    def record_chart(self, chart_type: str, result_table: str, caption: str = "") -> None:
-        """Запомнить последний показанный график текущей таблицы (для смены вида без LLM)."""
-        self._history()["last_chart"] = {
-            "chart_type": chart_type,
-            "result_table": result_table,
-            "caption": caption,
-        }
-
-    def last_chart(self) -> dict | None:
-        """Последний показанный график текущей таблицы или None."""
-        return self._history()["last_chart"]
-
-    def record_answer(self, answer: str) -> None:
-        """Запомнить ответ агента в истории текущей таблицы."""
-        self._history()["messages"].append({"role": "agent", "content": answer})
-        self._persist()
 
     # --- pending_recovery (восстановление после ошибки шага) ---
 

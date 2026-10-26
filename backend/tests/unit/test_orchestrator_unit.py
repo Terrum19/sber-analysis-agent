@@ -54,7 +54,7 @@ def orchestrator():
     db.execute("CREATE TABLE raw AS SELECT 1 AS a UNION ALL SELECT 2 AS a")
     db.execute("CREATE TABLE temp_result_v1 AS SELECT 1 AS a UNION ALL SELECT 2 AS a")
     for session in ("s1", "s2"):
-        SessionMemory(session).set_table("raw", db.columns("raw"))
+        SessionMemory(session).set_table("raw")
     return AgentOrchestrator(
         planner=FakePlanner(),
         executor=FakeExecutor(),
@@ -306,10 +306,10 @@ def test_done_counts_truncated_prompts(orchestrator):
     orchestrator.insight_gen = TruncatedInsightGen()
     events = collect(orchestrator, "s1")
 
-    assert events[-1] == {"type": "done", "data": {"prompt_truncated": 2}}
-    # Следующий ход без обрезок — done снова пустой.
+    assert events[-1]["data"]["prompt_truncated"] == 2
+    # Следующий ход без обрезок — в done только turn_id.
     orchestrator.planner, orchestrator.insight_gen = FakePlanner(), FakeInsightGen()
-    assert collect(orchestrator, "s2")[-1] == {"type": "done", "data": {}}
+    assert list(collect(orchestrator, "s2")[-1]["data"]) == ["turn_id"]
 
 
 def test_clarification_counts_truncated_prompts(orchestrator):
