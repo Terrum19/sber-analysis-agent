@@ -6,11 +6,14 @@
 вопрос пользователя
   |
   v
-[1] Planner (LLM + Instructor) --> ResearchPlan {steps[], final_viz, dashboard_requested}
+[1] Planner (LLM + Instructor) --> ResearchPlan {steps[], final_viz, dashboard_requested,
+  |        dashboard_title, template_id, dashboard_tiles[]} (план дашборда: docs/visualization.md)
   |        вход: вопрос, топ-5 релевантных колонок (semantic_select), контекст сессии
   v
 [2] StepExecutor: последовательное применение шагов
   |        тул = предзаписанный SQL/стат-тест (подстановка колонок)
+  |        аргументы шага: позиционные columns + именованные arguments; имя
+  |        аргумента может совпадать с параметром тула (columns у select_columns)
   |        нет тула -> WASM-песочница (кодогенерация LLM)
   |        каждый шаг -> temp_result_vN в DuckDB (state cache)
   |        устаревшие temp_result_vN удаляются по RESULT_TTL_S (docs/memory.md)
@@ -24,6 +27,8 @@
   |        смена вида: chart_morph (БЕЗ нового вызова LLM, из state cache)
   v
 [5] (опц.) DashboardGenerator -> DashboardStore (SQLite: плитки, Vega, снимки данных)
+  |        плитки — из dashboard_tiles плана: по плитке на шаг, вывод LLM — только
+  |        у insight_needed; плиток нет — одна плитка с графиком ответа
   v
 [6] (опц.) Экспорт: ExcelExporter (.xlsx) / PDFExporter (.pdf)
 ```
@@ -38,7 +43,7 @@
 | **WASM-песочница вместо Docker** | инкапсуляция кодогенерации без «жирного» контейнера |
 | **chart_morph без LLM** | «покажи в другом виде» — быстро и дёшево, не нагружая локальную модель |
 | **Vega-Lite JSON-конфиги** | фронт рендерит спеку; бэк не занимается отрисовкой |
-| **4 уровня памяти** | сессия (скользящее окно) / кеш результатов (DuckDB) / паспорт данных (DuckDB `_meta`) / реестр дашбордов |
+| **4 уровня памяти** | сессия (последние 3 хода) / кеш результатов (DuckDB) / паспорт данных (DuckDB `_meta`) / реестр дашбордов |
 | **Замкнутый контур** | Ollama/vLLM локально; интернет — только к разрешённым доменам (HuggingFace, пакеты) |
 | **Контекст LLM на сервере, проверка в клиенте** | Ollama молча обрезает начало длинного промпта, а `options.num_ctx` в `/v1` не действует (0.24, 0.35.1). Контекст задаёт сервер (`LLM_NUM_CTX` = `OLLAMA_CONTEXT_LENGTH` / `--max-model-len`); клиент сверяет `usage.prompt_tokens` с контекстом сервера (0.24 упирается в него) и с оценкой по символам вместе со схемой тулов (0.35.1 оставляет ~половину контекста); контекст сервера спрашивается при старте бэкенда и переспрашивается, пока сервер его не назовёт; бюджет промпта — `core/llm/budget.py` |
 
@@ -55,8 +60,8 @@
 |---|---|---|
 | `progress` | `ProgressPayload` (ниже) | по ходу хода: план, шаги, начало инсайта и графика |
 | `text` | `{headline, details}` | инсайт готов |
-| `chart` | `{spec, caption, result_table?}` | Vega-Lite спека; `result_table` — `temp_result_vN` ответа (нет, если ответ без шагов): по нему плитка пересчитывается, а результат выгружается в Excel |
-| `dashboard` | `{dashboard_id}` | дашборд собран по запросу |
+| `chart` | `{spec, caption, result_table?}` | Vega-Lite спека (нет, если план выбрал `final_viz: "none"`); `result_table` — `temp_result_vN` ответа (нет, если ответ без шагов): по нему плитка пересчитывается, а результат выгружается в Excel |
+| `dashboard` | `DashboardPayload {dashboard_id, title, tiles}` | дашборд собран по запросу; приходит после `chart` (график и инсайт ответа отдаются и при запросе дашборда) |
 | `clarification_needed` | `{step_id, error, suggestions}`, может быть `prompt_truncated` | шаг не выполнился, ждём `recovery_response`; `prompt_truncated` — как в `done` |
 | `error` | `{message}` | сбой хода; дальше `done` |
 | `done` | `{}` или `{prompt_truncated}` | ход завершён; `prompt_truncated` — сколько промптов хода сервер LLM обрезал (только если > 0) |

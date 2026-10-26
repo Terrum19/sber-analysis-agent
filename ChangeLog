@@ -117,6 +117,241 @@
 	* docs/eval.md: Новый.  Запуск, проверки, recall отбора, формат отчёта.
 	* README.md (Eval агента), docs/repo_structure.md: То же кратко.
 
+2026-10-26  Alexander Yurits  <143354682+Terrum19@users.noreply.github.com>
+
+	Графики: тренд линией, гистограмма по колонке из вопроса (#176).
+	* backend/app/core/agent/orchestrator.py (_requested_view): Результат
+	analysis-шага с рядом по времени (trend_analysis, seasonal_decompose)
+	— line, остальное — table.
+	(AgentOrchestrator._histogram_values): Новая.  Для гистограммы —
+	только колонка из вопроса.
+	(AgentOrchestrator._finish): Сбой выборки для гистограммы не роняет
+	ход: показываются статистики шага.
+	* backend/app/core/viz/chart_selector.py (histogram_column): Новая.
+	(fits): Колонка гистограммы — аргументом.
+	(select_chart): Новый аргумент titles.
+	* docs/visualization.md: То же.
+
+2026-10-25  mb6ockatf  <smokenmirror@tutamail.com>
+
+	Графики: название из шага, тип по форме данных, «без графика» (#164).
+	* backend/app/core/viz/chart_selector.py (fits): Новая.  Проверка
+	вида по строкам результата: line/area — от 3 точек и с упорядоченной
+	осью, scatter — две числовые колонки, histogram — одна числовая
+	колонка и от 20 значений, bar — не больше 30 категорий.
+	(select_chart): Одна строка — kpi или table; выбор планировщика и
+	эвристика проверяются через fits, не подошло — table; "none" — без
+	графика.
+	* backend/app/core/viz/vega_spec_builder.py (ordered_column)
+	(chart_title): Новые.  Упорядоченная ось и запасной заголовок
+	«{метрика} по {категории}».
+	* backend/app/core/agent/orchestrator.py (AgentOrchestrator._turn):
+	Заголовок спеки — purpose шага-результата, инсайт остаётся подписью.
+	В select_chart идут строки результата, они же — в спеку.  При
+	final_viz="none" событий chart нет.
+	(AgentOrchestrator._finish): В Execution — purpose и вид шага, чей
+	результат показан.
+	(_requested_view): Новая.  Результат analysis/lookup-шага — table.
+	(AgentOrchestrator._distribution_values): Новая.  На вопрос о
+	распределении после describe_stats — histogram по выборке из 500
+	значений колонки, статистики уходят в инсайт.
+	* backend/app/core/viz/chart_selector.py (asks_distribution): Новая.
+	* backend/app/models/research_step.py (ResearchPlan.final_viz):
+	Добавлено "none".
+	* backend/app/core/llm/prompts/step_planner.py: То же.
+	* docs/visualization.md, docs/architecture.md: То же.
+
+2026-10-25  mb6ockatf  <smokenmirror@tutamail.com>
+
+	Дашборд по шаблону: все плитки шаблона или без шаблона (#43).
+	* backend/app/core/agent/planner.py (template_gap): Новая.  Плитки
+	шаблона, которых нет в плане.
+	(_validate_tiles): Недостающие плитки шаблона — ошибка
+	NO_TEMPLATE_TILES с их названиями для переспроса.
+	(StepPlanner.plan): Если после переспроса не хватает только плиток
+	шаблона, template_id сбрасывается и план принимается: ход не
+	обрывается, дашборд собирается из того, что есть.
+	* backend/app/core/llm/prompts/step_planner.py (NO_TEMPLATE_TILES):
+	Называет недостающие плитки.
+	* backend/tests/unit/test_planner.py: Тесты того же.
+	* docs/visualization.md: То же.
+
+2026-10-25  mb6ockatf  <smokenmirror@tutamail.com>
+
+	Плитки дашборда: KPI только по одному числу, шаблон без сдвига плиток.
+	* backend/app/core/agent/orchestrator.py
+	(AgentOrchestrator._dashboard_tile): Плитка KPI по результату не из
+	одного числа строится видом auto; is_kpi — построенный вид.
+	* backend/app/core/agent/planner.py (apply_template): Плитки модели
+	без совпадения по названию разбираются по порядку, только если их
+	столько же, сколько в шаблоне.
+	* backend/tests/unit/test_dashboard_assembly.py
+	* backend/tests/unit/test_planner.py: Тесты того же.
+	* docs/visualization.md: То же.
+
+2026-10-25  mb6ockatf  <smokenmirror@tutamail.com>
+
+	Шаблон дашборда применяется при совпадении колонок (#43).
+	* backend/app/core/agent/planner.py (StepPlanner._ask): Нашёлся
+	шаблон — dashboard_requested ставится в true и плитки переписываются
+	по шаблону, даже если модель дашборд не запланировала.
+	(_validate_tiles): План по шаблону без плиток — ошибка
+	NO_TEMPLATE_TILES для переспроса.
+	* backend/app/core/llm/prompts/step_planner.py (NO_TEMPLATE_TILES):
+	Новая.
+	* backend/tests/unit/test_planner.py: Шаблон применяется и при
+	ответе без дашборда; вопрос без дашборда шаблон не получает.
+	* docs/visualization.md: То же.
+
+2026-10-25  mb6ockatf  <smokenmirror@tutamail.com>
+
+	Дашборд из плиток плана (B-04, #44).
+	* backend/app/core/agent/orchestrator.py (Execution): Поля tables
+	и plan, их заполняет _finish.
+	(_build_dashboard, _dashboard_tile, _arrange): Новые.  Плитка на
+	каждую DashboardTilePlan: таблица её шага, вид из плана или
+	select_chart, вывод LLM только при insight_needed.  KPI первым
+	рядом по 3x2, графики по два в ряд 6x4.  Без плиток — прежняя
+	одна плитка с графиком ответа.
+	(_execute_plan, _apply_recovery): Плитки, название и шаблон плана
+	переживают достройку после lookup и пропуск упавшего шага.
+	* backend/app/core/agent/insight.py (generate_tile_insight): Новая.
+	* backend/app/core/llm/prompts/insight_summary.py (TILE_INSIGHT):
+	Новый.
+	* backend/tests/integration/test_agent_cycle.py
+	(test_agent_cycle_builds_dashboard_from_plan_tiles): Новый.
+	* backend/tests/unit/test_dashboard_assembly.py: Новый.
+	* backend/tests/unit/test_insight_generator.py
+	(test_tile_insight_sends_title_view_and_rows): Новый.
+	* docs/visualization.md (Сборка дашборда), docs/architecture.md,
+	docs/prompts.md: То же.
+
+2026-10-25  mb6ockatf  <smokenmirror@tutamail.com>
+
+	Плитки дашборда в плане исследования (B-03, #43).
+	* backend/app/models/research_step.py (DashboardTilePlan): Новая.
+	Плитка плана: title, step_id, chart_type, is_kpi, insight_needed.
+	(ResearchPlan): Поля dashboard_title, template_id, dashboard_tiles;
+	null в dashboard_tiles — пустой список; плитки ставят
+	dashboard_requested.
+	* backend/app/core/agent/planner.py (is_dashboard_question)
+	(dashboard_prompt, apply_template, renumber_steps): Новые.  Вопрос
+	про дашборд («дашборд», «панель», «сводка») — templates.match по
+	колонкам таблицы: плитки шаблона в промпт и в план (template_id),
+	без шаблона — просьба составить 3–6 плиток.  Ссылки плиток
+	переписываются вместе с номерами шагов.
+	(validate_plan, _validate_tiles): step_id плиток — среди шагов;
+	дашборд без плиток — ошибка для переспроса.
+	(_plan_json): В переспрос уходят и плитки.
+	* backend/app/core/llm/prompts/step_planner.py (DASHBOARD_PLAN)
+	(DASHBOARD_CUSTOM, DASHBOARD_TEMPLATE, NO_TILES): Новые.
+	* backend/tests/unit/test_planner.py: Тесты плиток, шаблона и
+	переспроса.
+	* docs/visualization.md (План дашборда), docs/architecture.md,
+	docs/prompts.md: То же.
+
+2026-10-26  mb6ockatf  <smokenmirror@tutamail.com>
+
+	Шаг с аргументом columns больше не падает (#59).
+	* backend/app/core/tools/base.py (BaseTool.run, BaseTool.arun):
+	db, input_table и позиционные columns — только позиционные
+	параметры: именованный аргумент тула columns (select_columns) уходит
+	в arguments, а не ломает вызов «got multiple values for argument
+	'columns'».
+	* backend/app/core/tools/codegen.py (CodegenTool.arun): То же.
+	* backend/tests/unit/test_step_chaining.py: Тест шага select_columns
+	с arguments.columns.
+	* docs/architecture.md: То же.
+2026-10-26  Alexander Yurits  <143354682+Terrum19@users.noreply.github.com>
+
+	Очистка CSV: исправления по ревью #161.
+	* backend/app/core/data/connectors/csv.py (kind_macro, kind_counts):
+	Вид значения считает макрос по различным значениям после UNPIVOT —
+	один запрос на всю таблицу; при пороге 1.0 сначала проба 2048 строк.
+	Разряды — группами ровно по 3 цифры, целые длиннее 15 цифр и ведущий
+	ноль (в т. ч. «007.5») — коды: телефоны, карты, паспорта, счета
+	остаются текстом. inf/NaN не числа. Даты «дд.мм.гггг», дата-время без
+	секунд, смесь даты и даты-времени (TIMESTAMP), true/false (BOOLEAN).
+	(header_condition): Повторный заголовок — списками, а не цепочкой AND
+	(файлы от ~1000 колонок падали на пределе глубины), пустые ячейки
+	пропускаются, имена дублей берутся из первой строки файла.
+	(rejects_options, materialize): Таблицы ошибок со своими именами на
+	загрузку, удаляются только они и без глотания ошибок; reject_errors
+	пользователя и файл reject_errors.csv больше не ломаются.
+	(materialize, retype_expression): Пересборка одним SELECT с
+	list_contains вместо IN (...); number_expression удалён.
+	(CSVReport.warnings): Литералы — только заменённые (оставшиеся в
+	тексте показывает профайлер), предупреждение о «1,234», списки колонок
+	обрезаются (column_list).
+	* backend/tests/unit/test_csv_connector.py: Случаи из ревью: номера,
+	коды, 1100 колонок, reject_errors в базе, порог для DATE/TIMESTAMP,
+	заголовок с дублями и пустыми ячейками, даты, BOOLEAN, «1,234».
+	* backend/tests/unit/test_datasources_api.py
+	(test_csv_brief_has_profile_warnings): Под новое поведение загрузчика.
+	* backend/tests/benchmark/test_csv_benchmark.py: 1 млн строк и
+	150 тыс. × 105 колонок, предел 6× голого read_csv.
+	* docs/data_connectors.md: Очистка и типы по новой схеме.
+
+2026-10-24  dmitriy-ya  <dmitriyyakushonok@yandex.ru>
+
+	Очистка CSV при загрузке: повторные заголовки, литералы пропусков, типы после all_varchar (#96, #103).
+	* backend/app/core/data/connectors/csv.py (CSVReport): Новые поля:
+	header_rows_removed, null_tokens, retyped, rejected_rows, unconverted.
+	(CSVReport.warnings): Предупреждения об удалённых заголовках, заменах
+	токенов пропусков, перетипизации и отклонённых строках.
+	(STRATEGIES): store_rejects=true для стратегии all_varchar + ignore_errors.
+	(scan): Одиночный агрегирующий запрос по всем VARCHAR-колонкам:
+	подсчёт заполненных ячеек, токенов пропусков (settings.csv_null_tokens),
+	BIGINT (с защитой ведущих нулей), DOUBLE (с нормализацией пробелов,
+	NBSP, narrow-NBSP и десятичной запятой), DATE (YYYY-MM-DD) и TIMESTAMP.
+	Оптимизация предикатами CASE WHEN.
+	(retype_expression): Выражение TRY_CAST с NULLIF для токенов пропусков.
+	(materialize): Удаление повторных заголовков в той же транзакции,
+	подсчёт отклонённых строк из таблиц reject, ALTER TABLE ... TYPE ... USING.
+	Сохранение литералов пропусков в колонках, остающихся текстом.
+	* backend/app/config.py (Settings.csv_retype_min_share): Новая настройка
+	минимальной доли валидных значений для перетипизации колонок.
+	* backend/tests/unit/test_csv_connector.py: 42 теста: удаление повторных
+	заголовков, защита 'NA' (Намибия) в country, защита кодов с ведущими
+	нулями, вещественные числа с запятой, целые числа с NBSP и narrow-NBSP,
+	подсчёт отклонённых строк с store_rejects, даты и таймстемпы, порог
+	csv_retype_min_share, подсчёт литералов в текстовых колонках и симуляция
+	105 колонок openPsych.
+	* backend/tests/benchmark/test_csv_benchmark.py: Бенчмарк на 1 млн строк
+	с замером базового времени read_csv и времени одиночного scan().
+	* docs/data_connectors.md: Документация очистки заголовков, сканирования,
+	автоприведения типов, токенов пропусков и store_rejects.
+
+2026-10-26  mb6ockatf  <smokenmirror@tutamail.com>
+
+	Eval-набор: дашборд в сценарии 5, отказ без уточнения (#56).
+	* data/eval/questions.yaml: У шести вопросов сценария 5
+	dashboard: true.
+	* scripts/check_eval_questions.py (expect_problems): Необязательный
+	ключ dashboard — true или false.
+	* data/eval/README.md: dashboard; уточнение, в том числе шаблонное
+	«Не удалось подобрать инструменты», отказом не считается.
+	* backend/tests/unit/test_eval_questions.py: Тест того же.
+
+2026-10-25  mb6ockatf  <smokenmirror@tutamail.com>
+
+	Eval-набор вопросов по датасетам хакатона (Q-01, #56).
+	* data/eval/questions.yaml: Новый.  51 вопрос: сценарии 1–6 по 6–10
+	вопросов, каждый на 6 таблицах, и 7 «неудобных» с refusal: true.
+	Кодовые колонки без описания (Q3 → Q3A, VCL5, TIPI2), шаблон «все
+	Q*A», вопросы по 6–21 колонке, склеенный openPsych data.csv с
+	повторным заголовком и NULL, NA как код страны.  columns_all
+	заполнен у всех вопросов, эталоны value.sql сверены в DuckDB.
+	* data/eval/README.md: Новый.  Формат записи, соглашения о допуске и
+	сравнении эталона с result_table, сборка openPsych data.csv, проверка
+	эталонов, как добавить вопрос.
+	* scripts/check_eval_questions.py: Новый.  Проверка схемы набора
+	(ключи, тулы из tool_registry, CHART_TYPES, follow_up_of, охват
+	сценариев); с --db — колонки columns_all и выполнение каждого
+	value.sql.  (matches): Сравнение эталона со значением с допуском.
+	* backend/tests/unit/test_eval_questions.py: Новый.  Тесты схемы,
+	matches и проверки по базе на синтетической таблице.
+
 2026-10-25  Alexander Yurits  <143354682+Terrum19@users.noreply.github.com>
 
 	Исправления по ревью #170.
@@ -162,6 +397,98 @@
 	(use_container_ollama): На GPU — модель LLM_MODEL_GPU, как make up-gpu.
 	(env_or_file): Новая, как в Makefile.
 	* README.md (Запуск): То же.
+
+2026-10-25  Alexander Yurits  <143354682+Terrum19@users.noreply.github.com>
+
+	* docs/reports/llm_perf/dialog_and_insight_25-10.md: Новый.  Отчёт о
+	памяти по ходам, reply_to и версиях стадии вывода.
+	* docs/reports/llm_perf/experiment_log.md (П9): Ссылка на отчёт.
+
+2026-10-25  Alexander Yurits  <143354682+Terrum19@users.noreply.github.com>
+
+	Eval диалогов и стадии вывода для R-01.
+	* scripts/llm_bench/run_dialog.sh: Новый.  Диалог полным циклом через
+	прокси; локальная Ollama или OpenRouter (UPSTREAM, RETRY).
+	* scripts/llm_bench/replay_insight.py: Новый.  Повтор вывода на
+	таблицах прогона любой версией backend.
+	* scripts/llm_bench/grade_insight.py: Новый.  Оценка заголовков по
+	таблице результата.
+	* scripts/llm_bench/show_turns.py: Новый.  Планы и ответы по ходам.
+	* scripts/llm_bench/record_proxy.py (make_handler): --retry повторяет
+	ошибки провайдера (429, 5xx, 200 с error в теле).
+	* scripts/llm_bench/questions/followups.txt,
+	scripts/llm_bench/questions/replies.txt: Новые.
+	* scripts/llm_bench/README.md: Новый.
+
+2026-10-25  Alexander Yurits  <143354682+Terrum19@users.noreply.github.com>
+
+	Вывод отвечает на вопрос по форме результата.
+	* backend/app/core/agent/quality_fixes.py (insight_facts): У мин и
+	макс подписана строка (arg_min/arg_max по первой нечисловой колонке).
+	(format_value, format_rows): Новые.  Строки результата компактной
+	таблицей с ISO-датами вместо repr Python-объектов.
+	* backend/app/core/llm/prompts/quality_rules.py (INSIGHT_RULES): Без
+	примера «Выручка за квартал — 12 345», его копировала модель.
+	(SINGLE_ROW, MANY_ROWS): Новые.  Правило headline по форме результата.
+	* backend/app/core/agent/insight.py (InsightGenerator.generate): То же;
+	steps — выполненные шаги плана идут в промпт («41» знает, что это
+	декабрь и сумма больше 150).
+	(describe_steps): Новая.
+	* backend/app/core/agent/orchestrator.py (Execution.steps): Новое.
+	* backend/app/core/tools/stats/describe_stats.py (DescribeStatsTool):
+	median: модели выбирают этот тул на «медиану».
+
+2026-10-25  Alexander Yurits  <143354682+Terrum19@users.noreply.github.com>
+
+	Вопрос по конкретному прошлому ответу: reply_to (бэкенд #166).
+	* backend/app/api/schemas/chat.py (ChatRequest): reply_to.
+	* backend/app/core/memory/session_memory.py (start_turn): Ход хранит
+	reply_to.
+	(reply_chain, _find): Новые.
+	(build_context): При ответе — цепочка ответа вместо прошлых ходов.
+	(last_chart): График хода, на который отвечают.
+	* backend/app/core/agent/planner.py (describe_history): Новая.
+	* backend/app/core/llm/prompts/step_planner.py (PAST_TURNS,
+	REPLY_DRAFT): Новые; план выбранного хода — черновик.
+	* backend/app/core/agent/orchestrator.py (AgentOrchestrator._turn):
+	reply_to в ход.
+	* scripts/run_full_llm_cycle.py: Вопрос с «↩» — ответ на прошлый ход.
+
+2026-10-25  Alexander Yurits  <143354682+Terrum19@users.noreply.github.com>
+
+	Память сессии по ходам вместо памяти по таблице (#163).
+	* backend/app/core/memory/session_memory.py (SessionMemory): Сессия —
+	список ходов.  start_turn, resume_turn, finish_turn, turn_id,
+	recent_turns: Новые.
+	(record_step): Пишет шаг с аргументами в текущий ход.
+	(record_chart, last_chart): График хода; last_chart — последнего
+	успешного хода с графиком.
+	(build_context): Последние CONTEXT_TURNS успешных ходов с планом
+	вместо summary и окна сообщений; колонки из паспорта или каталога.
+	(set_table): Только таблица по умолчанию; ходы не сбрасываются.
+	(record_answer, _history): Удалены.
+	* backend/app/core/agent/orchestrator.py (AgentOrchestrator._turn):
+	Ход на каждое сообщение, ответ на уточнение продолжает тот же ход;
+	turn_id в done и clarification_needed.
+	(_result_columns): Новая.
+	* backend/app/core/agent/planner.py (describe_turns): Новая.  Таблица
+	хода, ход по другой таблице помечен; шаги плана перенумерованы с 0
+	вместе со ссылками $step_N.
+	(_renumber_refs): Новая.
+	(StepPlanner.plan): Прошлые ходы в промпте для любого вопроса.
+	* backend/app/core/agent/quality_fixes.py (frame_context, FOLLOW_UP):
+	Удалены.
+	* backend/app/core/llm/prompts/quality_rules.py (PAST_CONTEXT): Удалён.
+	* backend/app/core/llm/prompts/step_planner.py (STEP_PLANNER): Блок
+	прошлых ходов и правило про вопрос-продолжение.
+	* backend/app/api/schemas/chat.py (SessionCreate): table
+	необязательна.
+	* backend/app/api/routes/sessions.py (create_session): Сессия без
+	таблицы.
+	* backend/app/core/data/result_retention.py (_session_charts):
+	Графики ходов.
+	* scripts/run_full_llm_cycle.py: То же.
+	* docs/memory.md, docs/architecture.md: То же.
 
 2026-10-25  Alexander Yurits  <143354682+Terrum19@users.noreply.github.com>
 

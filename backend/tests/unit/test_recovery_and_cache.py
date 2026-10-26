@@ -61,7 +61,7 @@ def db():
         "CREATE TABLE raw AS SELECT * FROM (VALUES ('msk', 10.0), ('spb', 4.0), ('msk', 2.5)) "
         "AS rows(region, revenue)"
     )
-    SessionMemory("s1").set_table("raw", manager.columns("raw"))
+    SessionMemory("s1").set_table("raw")
     yield manager
     manager.close()
 
@@ -122,7 +122,7 @@ async def test_wrong_column_is_fixed_by_planner(db) -> None:
     assert "Candidate bindings" in prompt
     assert "revenue: DECIMAL(3,1)" in prompt
     assert SessionMemory("s1").get_pending_recovery() is None
-    step = SessionMemory("s1")._state["steps"][0]
+    step = SessionMemory("s1").recent_turns()[-1]["steps"][0]
     # Исправленный шаг сохраняет номер и назначение исходного.
     assert (step["step_id"], step["purpose"]) == (0, "Выручка по регионам")
 
