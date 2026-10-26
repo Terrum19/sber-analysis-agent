@@ -61,7 +61,11 @@ export default function AnswerExport({
       );
       downloadBlob(blob, filename);
     } catch (err: any) {
-      setError(err?.detail || err?.message || t("chat.exportError"));
+      if (err?.status === 501) {
+        setError(t("chat.exportPdfInProgress"));
+      } else {
+        setError(err?.detail || err?.message || t("chat.exportError"));
+      }
     } finally {
       setBusy(null);
     }
@@ -89,15 +93,13 @@ export default function AnswerExport({
       </button>
       <button
         type="button"
-        onClick={() => handleExport("pdf")}
-        disabled={!canPdf || busy !== null}
+        disabled
         className={buttonClass}
-        title={canPdf ? t("chat.exportPdf") : t("chat.exportNoTable")}
+        title={t("chat.exportPdfSoon")}
       >
         <Icon
-          name={busy === "pdf" ? "refresh" : "download"}
+          name="download"
           size={compact ? 11 : 12}
-          className={busy === "pdf" ? "animate-spin" : ""}
         />
         <span>{t("chat.exportPdf")}</span>
       </button>

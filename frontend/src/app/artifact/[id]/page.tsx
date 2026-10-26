@@ -58,12 +58,6 @@ export default function ArtifactPage({ params }: { params: { id: string } }) {
             <DashboardTile
               tile={artifact.tile}
               large
-              onElaborate={
-                sessionId
-                  ? (selection) =>
-                      askAgent(sessionId, drillQuestion(t, artifact.tile.title, selection))
-                  : undefined
-              }
             />
           </div>
         </div>

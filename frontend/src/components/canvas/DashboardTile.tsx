@@ -7,8 +7,8 @@
  * - Или карточка KPI (большая цифра, изменение со стрелкой и смысловым цветом)
  * - Инсайт под графиком/KPI
  * - Режим редактирования (переименование, удаление)
- * - Клик по точке графика или по плитке — «дообследуй» (onElaborate, F-09);
- *   кнопка maximize по-прежнему открывает плитку на весь экран (onOpen)
+ * - Клик по точке графика — «дообследуй» (onElaborate, F-09);
+ *   клик по плитке открывает её на весь экран (onOpen)
  * - Вариант mini — маленькое превью для реестра, large — вкладка артефакта
  */
 import React, { useRef, useState } from "react";
@@ -212,11 +212,8 @@ export default function DashboardTile({
   const sign = kpi ? deltaSign(kpi.label) : 0;
   const canOpen = Boolean(onOpen) && !isEditing;
   const canDrill = Boolean(onElaborate) && !isEditing;
-  // Клик по точке уже обработан — следующий клик по обёртке плитки игнорируем.
-  const lastPointAt = useRef(0);
 
   function handlePointSelect(selection: ChartSelection) {
-    lastPointAt.current = Date.now();
     onElaborate?.(selection);
   }
 
@@ -312,17 +309,13 @@ export default function DashboardTile({
         if (isEditing) return;
         // Кнопки и поля внутри плитки работают как обычно
         if ((e.target as HTMLElement).closest("button, input, a")) return;
-        // Клик по марке графика уже отправил точечный вопрос — не дублируем.
-        if (Date.now() - lastPointAt.current < 300) return;
-        if (canDrill) {
-          onElaborate?.();
-          return;
+        if (canOpen) {
+          onOpen?.();
         }
-        if (canOpen) onOpen?.();
       }}
       className={`group relative flex h-full min-h-0 flex-col overflow-hidden rounded-xl border border-graphite-700/80 bg-graphite-900 shadow-sm transition-all duration-200 hover:border-graphite-600 hover:shadow-md ${
         dense ? "p-3" : "p-4"
-      } ${canDrill ? "cursor-pointer" : canOpen ? "cursor-zoom-in" : ""}`}
+      } ${canOpen ? "cursor-zoom-in" : ""}`}
     >
       {/* Верхняя строка плитки */}
       <div className={`flex shrink-0 items-start justify-between gap-2 ${dense ? "mb-1.5" : "mb-2"}`}>

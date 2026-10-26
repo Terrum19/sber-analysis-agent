@@ -244,7 +244,10 @@ export default function DashboardPage({ params }: { params: { id: string } }) {
 
   /** «Дообследовать»: вопрос агенту в чат сессии дашборда (F-09). */
   function handleElaborate(index: number, selection?: ChartSelection) {
-    if (!config || !config.session_id) return;
+    if (!config?.session_id) {
+      flash(t("drill.noSession"));
+      return;
+    }
     const tile = config.tiles[index];
     if (!tile) return;
     askAgent(config.session_id, drillQuestion(t, tile.title, selection));
@@ -316,6 +319,13 @@ export default function DashboardPage({ params }: { params: { id: string } }) {
 
   async function handleExport(format: "xlsx" | "pdf") {
     if (!config) return;
+    if (format === "xlsx") {
+      const source = [...config.tiles].reverse().find((tile) => tile.result_table);
+      if (!source?.result_table) {
+        flash(t("canvas.exportNoTable"), 3500);
+        return;
+      }
+    }
     setIsExporting(format);
     setExportMenuOpen(false);
     try {
@@ -335,7 +345,11 @@ export default function DashboardPage({ params }: { params: { id: string } }) {
       downloadBlob(blob, filename);
       flash(format === "pdf" ? t("canvas.pdfDone") : t("canvas.xlsxDone"), 3500);
     } catch (err: any) {
-      flash(t("canvas.exportError", { msg: err?.detail || err?.message || String(err) }), 3500);
+      if (err?.status === 501) {
+        flash(t("chat.exportPdfInProgress"), 4000);
+      } else {
+        flash(t("canvas.exportError", { msg: err?.detail || err?.message || String(err) }), 3500);
+      }
     } finally {
       setIsExporting(null);
     }
@@ -405,6 +419,7 @@ export default function DashboardPage({ params }: { params: { id: string } }) {
 
   const snapshotAt = dashboardSnapshotAt(config);
   const staleCount = config.tiles.filter((tile) => tile.stale).length;
+  const hasResultTable = config.tiles.some((tile) => Boolean(tile.result_table));
 
   return (
     <WorkspaceShell tab={tab}>
@@ -516,15 +531,21 @@ export default function DashboardPage({ params }: { params: { id: string } }) {
                 </button>
                 {exportMenuOpen && (
                   <div className="absolute right-0 top-full z-50 mt-1 w-40 rounded-lg border border-graphite-700 bg-graphite-850 p-1 shadow-2xl">
-                    {(["xlsx", "pdf"] as const).map((f) => (
-                      <button
-                        key={f}
-                        onClick={() => handleExport(f)}
-                        className="flex w-full rounded-md px-2.5 py-1.5 text-left text-[12px] text-graphite-200 hover:bg-graphite-700"
-                      >
-                        {f === "xlsx" ? t("canvas.exportXlsx") : t("canvas.exportPdf")}
-                      </button>
-                    ))}
+                    <button
+                      onClick={() => handleExport("xlsx")}
+                      disabled={!hasResultTable}
+                      title={!hasResultTable ? t("canvas.exportNoTable") : undefined}
+                      className="flex w-full rounded-md px-2.5 py-1.5 text-left text-[12px] text-graphite-200 hover:bg-graphite-700 disabled:cursor-not-allowed disabled:opacity-50"
+                    >
+                      {t("canvas.exportXlsx")}
+                    </button>
+                    <button
+                      disabled
+                      title={t("chat.exportPdfSoon")}
+                      className="flex w-full rounded-md px-2.5 py-1.5 text-left text-[12px] text-graphite-400 opacity-50 cursor-not-allowed"
+                    >
+                      {t("canvas.exportPdf")}
+                    </button>
                   </div>
                 )}
               </div>

@@ -93,6 +93,7 @@ export default function Canvas({ sessionId }: Props) {
   const sessionTiles = useSessionStore((s) => s.tiles);
 
   const displayTiles = dashboardId ? tiles : (sessionTiles.length > 0 ? sessionTiles : tiles);
+  const hasResultTable = displayTiles.some((tile) => Boolean(tile.result_table));
 
   // Координаты сетки react-grid-layout
   // В узкой панели график по умолчанию во всю ширину, KPI — в половину
@@ -297,6 +298,14 @@ export default function Canvas({ sessionId }: Props) {
   }
 
   async function handleExport(format: "xlsx" | "pdf") {
+    if (format === "xlsx") {
+      const source = [...displayTiles].reverse().find((tile) => tile.result_table);
+      if (!source?.result_table) {
+        setSaveStatus(tr("canvas.exportNoTable"));
+        setTimeout(() => setSaveStatus(null), 3500);
+        return;
+      }
+    }
     setIsExporting(format);
     setExportMenuOpen(false);
     try {
@@ -316,7 +325,11 @@ export default function Canvas({ sessionId }: Props) {
       downloadBlob(blob, filename);
       setSaveStatus(format === "pdf" ? tr("canvas.pdfDone") : tr("canvas.xlsxDone"));
     } catch (err: any) {
-      setSaveStatus(tr("canvas.exportError", { msg: err?.detail || err?.message || String(err) }));
+      if (err?.status === 501) {
+        setSaveStatus(tr("chat.exportPdfInProgress"));
+      } else {
+        setSaveStatus(tr("canvas.exportError", { msg: err?.detail || err?.message || String(err) }));
+      }
     } finally {
       setIsExporting(null);
       setTimeout(() => setSaveStatus(null), 3500);
@@ -430,13 +443,16 @@ export default function Canvas({ sessionId }: Props) {
               <div className="absolute right-0 top-full z-50 mt-1 w-40 rounded-lg border border-graphite-700 bg-graphite-850 p-1 shadow-2xl">
                 <button
                   onClick={() => handleExport("xlsx")}
-                  className="flex w-full items-center rounded-md px-2.5 py-1.5 text-left text-[12px] text-graphite-200 hover:bg-graphite-700 transition"
+                  disabled={!hasResultTable}
+                  title={!hasResultTable ? tr("canvas.exportNoTable") : undefined}
+                  className="flex w-full items-center rounded-md px-2.5 py-1.5 text-left text-[12px] text-graphite-200 hover:bg-graphite-700 transition disabled:cursor-not-allowed disabled:opacity-50"
                 >
                   {tr("canvas.exportXlsx")}
                 </button>
                 <button
-                  onClick={() => handleExport("pdf")}
-                  className="flex w-full items-center rounded-md px-2.5 py-1.5 text-left text-[12px] text-graphite-200 hover:bg-graphite-700 transition"
+                  disabled
+                  title={tr("chat.exportPdfSoon")}
+                  className="flex w-full items-center rounded-md px-2.5 py-1.5 text-left text-[12px] text-graphite-400 opacity-50 cursor-not-allowed"
                 >
                   {tr("canvas.exportPdf")}
                 </button>
