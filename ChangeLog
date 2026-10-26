@@ -1,3 +1,63 @@
+2026-10-26  Alexander Yurits  <143354682+Terrum19@users.noreply.github.com>
+
+	Очистка CSV: исправления по ревью #161.
+	* backend/app/core/data/connectors/csv.py (kind_macro, kind_counts):
+	Вид значения считает макрос по различным значениям после UNPIVOT —
+	один запрос на всю таблицу; при пороге 1.0 сначала проба 2048 строк.
+	Разряды — группами ровно по 3 цифры, целые длиннее 15 цифр и ведущий
+	ноль (в т. ч. «007.5») — коды: телефоны, карты, паспорта, счета
+	остаются текстом. inf/NaN не числа. Даты «дд.мм.гггг», дата-время без
+	секунд, смесь даты и даты-времени (TIMESTAMP), true/false (BOOLEAN).
+	(header_condition): Повторный заголовок — списками, а не цепочкой AND
+	(файлы от ~1000 колонок падали на пределе глубины), пустые ячейки
+	пропускаются, имена дублей берутся из первой строки файла.
+	(rejects_options, materialize): Таблицы ошибок со своими именами на
+	загрузку, удаляются только они и без глотания ошибок; reject_errors
+	пользователя и файл reject_errors.csv больше не ломаются.
+	(materialize, retype_expression): Пересборка одним SELECT с
+	list_contains вместо IN (...); number_expression удалён.
+	(CSVReport.warnings): Литералы — только заменённые (оставшиеся в
+	тексте показывает профайлер), предупреждение о «1,234», списки колонок
+	обрезаются (column_list).
+	* backend/tests/unit/test_csv_connector.py: Случаи из ревью: номера,
+	коды, 1100 колонок, reject_errors в базе, порог для DATE/TIMESTAMP,
+	заголовок с дублями и пустыми ячейками, даты, BOOLEAN, «1,234».
+	* backend/tests/unit/test_datasources_api.py
+	(test_csv_brief_has_profile_warnings): Под новое поведение загрузчика.
+	* backend/tests/benchmark/test_csv_benchmark.py: 1 млн строк и
+	150 тыс. × 105 колонок, предел 6× голого read_csv.
+	* docs/data_connectors.md: Очистка и типы по новой схеме.
+
+2026-10-24  dmitriy-ya  <dmitriyyakushonok@yandex.ru>
+
+	Очистка CSV при загрузке: повторные заголовки, литералы пропусков, типы после all_varchar (#96, #103).
+	* backend/app/core/data/connectors/csv.py (CSVReport): Новые поля:
+	header_rows_removed, null_tokens, retyped, rejected_rows, unconverted.
+	(CSVReport.warnings): Предупреждения об удалённых заголовках, заменах
+	токенов пропусков, перетипизации и отклонённых строках.
+	(STRATEGIES): store_rejects=true для стратегии all_varchar + ignore_errors.
+	(scan): Одиночный агрегирующий запрос по всем VARCHAR-колонкам:
+	подсчёт заполненных ячеек, токенов пропусков (settings.csv_null_tokens),
+	BIGINT (с защитой ведущих нулей), DOUBLE (с нормализацией пробелов,
+	NBSP, narrow-NBSP и десятичной запятой), DATE (YYYY-MM-DD) и TIMESTAMP.
+	Оптимизация предикатами CASE WHEN.
+	(retype_expression): Выражение TRY_CAST с NULLIF для токенов пропусков.
+	(materialize): Удаление повторных заголовков в той же транзакции,
+	подсчёт отклонённых строк из таблиц reject, ALTER TABLE ... TYPE ... USING.
+	Сохранение литералов пропусков в колонках, остающихся текстом.
+	* backend/app/config.py (Settings.csv_retype_min_share): Новая настройка
+	минимальной доли валидных значений для перетипизации колонок.
+	* backend/tests/unit/test_csv_connector.py: 42 теста: удаление повторных
+	заголовков, защита 'NA' (Намибия) в country, защита кодов с ведущими
+	нулями, вещественные числа с запятой, целые числа с NBSP и narrow-NBSP,
+	подсчёт отклонённых строк с store_rejects, даты и таймстемпы, порог
+	csv_retype_min_share, подсчёт литералов в текстовых колонках и симуляция
+	105 колонок openPsych.
+	* backend/tests/benchmark/test_csv_benchmark.py: Бенчмарк на 1 млн строк
+	с замером базового времени read_csv и времени одиночного scan().
+	* docs/data_connectors.md: Документация очистки заголовков, сканирования,
+	автоприведения типов, токенов пропусков и store_rejects.
+
 2026-10-25  Alexander Yurits  <143354682+Terrum19@users.noreply.github.com>
 
 	Исправления по ревью #170.
