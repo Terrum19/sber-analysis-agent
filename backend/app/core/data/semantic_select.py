@@ -129,6 +129,7 @@ def describe_columns(
     profile: TableProfile | None = None,
     descriptions: dict[str, str] | None = None,
     titles: dict[str, str] | None = None,
+    top_values: int = PROMPT_TOP_VALUES,
 ) -> str:
     """Выжимка паспорта по колонкам для промпта: по строке на колонку."""
     stats = {column.name: column for column in profile.columns} if profile else {}
@@ -142,7 +143,7 @@ def describe_columns(
             line += f" [{column.kind}, {column.dtype}]"
         if (descriptions or {}).get(name):
             line += f" — {descriptions[name]}"
-        facts = _column_facts(column) if column is not None else ""
+        facts = column_facts(column, top_values) if column is not None else ""
         if facts:
             line += f"; {facts}"
         marks = _flag_marks(column) if column is not None else ""
@@ -150,6 +151,35 @@ def describe_columns(
             line += f"; {marks}"
         lines.append(line)
     return "\n".join(lines) or "неизвестно"
+
+
+def describe_other_columns(
+    columns: list[str],
+    profile: TableProfile | None = None,
+    titles: dict[str, str] | None = None,
+    limit: int | None = None,
+) -> str:
+    """Колонки вне топ-K одной строкой: имя, название и вид, без выжимки паспорта.
+
+    Отбор по словам вопроса промахивается, когда вопрос называет колонку
+    иначе («деньги» — revenue, «когда» — order_date): без этого списка
+    планировщик о такой колонке не узнаёт вовсе.
+    """
+    limit = settings.semantic_other_columns if limit is None else limit
+    if not columns or limit <= 0:
+        return ""
+    kinds = {column.name: column.kind for column in profile.columns} if profile else {}
+    entries = []
+    for name in columns[:limit]:
+        entry = name
+        if (titles or {}).get(name):
+            entry += f" «{titles[name]}»"
+        if kinds.get(name):
+            entry += f" [{kinds[name]}]"
+        entries.append(entry)
+    rest = len(columns) - limit
+    tail = f" и ещё {rest}" if rest > 0 else ""
+    return "Остальные колонки таблицы (без выжимки): " + ", ".join(entries) + tail
 
 
 def _flag_marks(column: ColumnStats) -> str:
@@ -161,7 +191,7 @@ def _flag_marks(column: ColumnStats) -> str:
     return "; ".join(marks)
 
 
-def _column_facts(column: ColumnStats) -> str:
+def column_facts(column: ColumnStats, top_values: int = PROMPT_TOP_VALUES) -> str:
     if column.kind == "numeric":
         if column.min is None:
             return ""
@@ -175,7 +205,7 @@ def _column_facts(column: ColumnStats) -> str:
     free_text = column.is_unique and (column.distinct or 0) > PROMPT_TOP_VALUES
     if column.kind == "text" and column.top_values and not free_text:
         values = ", ".join(
-            f'"{_short(entry["value"])}"' for entry in column.top_values[:PROMPT_TOP_VALUES]
+            f'"{_short(entry["value"])}"' for entry in column.top_values[:top_values]
         )
         distinct = f"{column.distinct} разных, " if column.distinct is not None else ""
         return f"{distinct}частые значения: {values}"

@@ -6,6 +6,7 @@
 
 from functools import lru_cache
 from pathlib import Path
+from typing import Literal
 
 from pydantic import AliasChoices, Field, SecretStr, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -25,8 +26,35 @@ class Settings(BaseSettings):
     llm_model: str = "qwen2.5-coder:14b"
     # Ключ провайдера (OpenRouter и т.п.); локальным Ollama/vLLM не нужен.
     llm_api_key: SecretStr = SecretStr("not-needed")
-    llm_timeout_s: int = 120
+    # План на CPU строится 90-180 с (docs/reports/llm_perf); 120 с обрывали ход.
+    llm_timeout_s: int = 600
+    # Повторы клиента openai при 429, 5xx, обрыве и таймауте. Повтор таймаута
+    # стоит ещё до llm_timeout_s, поэтому по умолчанию один: локальной модели
+    # повторять нечего, облачному провайдеру с 429 можно поднять.
+    llm_max_retries: int = 1
     llm_temperature: float = 0.0
+    # Как просить structured output (docs/reports/llm_perf, П2-П4):
+    # json_schema — response_format=json_schema (грамматика на стороне
+    # Ollama/vLLM) + толерантный разбор + один переспрос с ошибкой;
+    # tools — instructor TOOLS с fallback-цепочкой. Локальный Qwen
+    # tool_call не возвращает, и каждый ответ стоил три вызова.
+    llm_structured_mode: Literal["json_schema", "tools"] = "json_schema"
+    # Предел токенов ответа (None — без предела; Ollama тогда может
+    # генерировать до конца контекста).
+    llm_max_tokens: int | None = None
+    # Исправления качества плана и инсайта (app/core/agent/quality_fixes.py).
+    agent_quality_fixes: bool = True
+    # H-R1: в промпт планировщика — только релевантные вопросу тулы.
+    # Быстрее вдвое, но сломал вопрос про тренд (П8) — выключено.
+    agent_tool_topk: bool = False
+    # Контекст модели в токенах. Задаётся на сервере (Ollama — OLLAMA_CONTEXT_LENGTH,
+    # vLLM — --max-model-len), здесь — сколько ждём; от него считается бюджет промпта.
+    llm_num_ctx: int = 16384
+    # Ollama: скачать LLM_MODEL, если её нет, и работать с её вариантом с
+    # контекстом llm_num_ctx (core/llm/ollama_setup.py). Другим серверам не мешает.
+    llm_prepare_model: bool = True
+    # Символов на токен для оценки длины промпта: с запасом под кириллицу (~2,6).
+    llm_chars_per_token: float = 2.5
 
     # Хранилище
     storage_dir: str = "backend/storage"
@@ -46,6 +74,8 @@ class Settings(BaseSettings):
     codegen_max_rows: int = 200_000
     agent_max_steps: int = 12
     semantic_top_k: int = 5
+    # Сколько колонок вне топ-K перечислить планировщику по именам (0 — не показывать).
+    semantic_other_columns: int = 80
 
     # POSTGRES_MAX_TABLES — прежнее имя; DB_MAX_TABLES важнее, если заданы оба.
     db_max_tables: int = Field(

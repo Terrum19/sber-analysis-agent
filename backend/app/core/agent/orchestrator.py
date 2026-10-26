@@ -11,9 +11,16 @@
 а уходят в инсайт как сопутствующие. После lookup-шага (разведка
 данных) план достраивается с учётом увиденного.
 
+Реплика без запроса к данным («привет», «спасибо», «что ты умеешь»)
+получает готовый ответ без планировщика (agent/triage.py).
+
 Просьба сменить вид прошлого графика («покажи в другом виде», «сделай
 таблицей») обслуживается без планировщика и без повторного SQL: спека
 перестраивается chart_morph из кешированной temp_result_vN.
+
+Вопрос про таблицу целиком («что передо мной?», «сколько строк и за какой
+период?») тоже идёт без планировщика: факты и таблица колонок — из
+паспорта, описание — из кеша паспорта или от LLM (core/data/overview.py).
 
 О ходе работы фронт узнаёт из событий ``progress``: планирование
 (started/finished), каждый шаг (started/finished/failed), начало
@@ -35,6 +42,7 @@ import logging
 import re
 import time
 from collections.abc import AsyncIterator, Callable
+from contextlib import aclosing
 from dataclasses import dataclass, field
 
 logger = logging.getLogger(__name__)
@@ -43,10 +51,13 @@ import duckdb
 
 from app.api.schemas.chat import ChatRequest, DashboardPayload, ProgressPayload
 from app.core.agent.insight import InsightGenerator
-from app.core.agent.planner import StepPlanner
+from app.core.agent.planner import PlanInvalid, StepPlanner
 from app.core.agent.recovery import STEP_FIX_ATTEMPTS, fixable
 from app.core.agent.step_executor import StepExecutor, resolve_input, tool_kind
+from app.core.agent.triage import small_talk_reply
+from app.core.data import overview
 from app.core.data.duckdb_manager import DuckDBManager
+from app.core.llm.budget import track_truncations
 from app.core.memory.profile_memory import ProfileMemory
 from app.core.memory.session_memory import SessionMemory
 from app.core.memory.state_cache import StateCache
@@ -61,6 +72,10 @@ NO_TABLE_MESSAGE = "Сначала подключите данные"
 FAILURE_MESSAGE = "Не удалось ответить на вопрос, попробуйте ещё раз"
 # Плитка дашборда и экспорт принимают только результаты шагов (temp_result_vN).
 RESULT_TABLE = re.compile(r"temp_result_v\d+")
+SUMMARY_UNAVAILABLE = "Описание данных сейчас недоступно: модель не ответила."
+OVERVIEW_CAPTION = "Колонки таблицы"
+# Событие, которым кончается ход: после него поток закрывается.
+TURN_END_EVENTS = ("done", "clarification_needed")
 
 # Отправка события фронту из глубины плана (progress), пока run() стримит.
 Emit = Callable[[dict], None]
@@ -179,9 +194,40 @@ class AgentOrchestrator:
         self.profiles = ProfileMemory(self.db)
 
     async def run(self, request: ChatRequest) -> AsyncIterator[dict]:
-        """Выполнить исследование и вернуть поток событий для фронта."""
+        """Выполнить исследование и вернуть поток событий для фронта.
+
+        Если сервер LLM обрезал промпты хода, последнее событие хода (done или
+        clarification_needed) несёт их число в prompt_truncated: eval (#58)
+        отбрасывает такие прогоны. Обрезанный промпт чаще всего и кончается
+        уточнением: модель без списка тулов строит план, шаг падает.
+        """
+        truncations = track_truncations()
+        # aclosing: клиент отключился — ход закрывается сразу, с отменой задачи плана.
+        async with aclosing(self._turn(request)) as events:
+            async for event in events:
+                if event["type"] in TURN_END_EVENTS and truncations:
+                    event["data"]["prompt_truncated"] = len(truncations)
+                yield event
+
+    async def _turn(self, request: ChatRequest) -> AsyncIterator[dict]:
+        """Один ход: события для фронта до done или clarification_needed."""
         logger.info(">>> run() session_id=%s question=%r", request.session_id, request.question)
         memory = SessionMemory(request.session_id, db=self.db)
+        pending = memory.get_pending_recovery()
+        if pending is not None and not request.recovery_response:
+            # Новый вопрос вместо ответа на уточнение — прошлый сбой забываем,
+            # иначе сессия навсегда застрянет в ожидании recovery_response.
+            memory.clear_pending_recovery()
+            pending = None
+
+        if pending is None and (reply := small_talk_reply(request.question)) is not None:
+            # «Привет», «спасибо», «что ты умеешь» — без плана, LLM и графика.
+            memory.record_answer(reply)
+            yield {"type": "text", "data": {"headline": reply, "details": []}}
+            yield {"type": "done", "data": {}}
+            return
+
+        # Small talk выше: «привет» отвечается и без подключённой таблицы.
         table = memory.table
         if table is None:
             yield {"type": "error", "data": {"message": NO_TABLE_MESSAGE}}
@@ -194,12 +240,10 @@ class AgentOrchestrator:
             }
         )
 
-        pending = memory.get_pending_recovery()
-        if pending is not None and not request.recovery_response:
-            # Новый вопрос вместо ответа на уточнение — прошлый сбой забываем,
-            # иначе сессия навсегда застрянет в ожидании recovery_response.
-            memory.clear_pending_recovery()
-            pending = None
+        if pending is None and overview.is_overview_question(request.question):
+            async for event in self._overview(memory, table):
+                yield event
+            return
 
         if pending is None:
             # Смена вида прошлого графика — из кеша, без планировщика и SQL.
@@ -258,7 +302,9 @@ class AgentOrchestrator:
 
             stage = "chart"
             yield _progress_event("chart", "started")
-            chart_type = select_chart(question, result_table, execution.final_viz)
+            # Две строки хватает, чтобы узнать ответ одним числом (kpi).
+            records = self.db.to_records(result_table, limit=2)
+            chart_type = select_chart(question, result_table, execution.final_viz, records)
             logger.info(">>> run() построение графика chart_type=%s", chart_type)
             spec = build_vega_spec(chart_type, result_table, db=self.db, titles=titles)
             logger.info(
@@ -326,7 +372,7 @@ class AgentOrchestrator:
         logger.info(">>> run() планируем шаги (planner.plan)")
         emit(_progress_event("planning", "started"))
         try:
-            plan = await self.planner.plan(request.question, context)
+            plan = await self._plan(request.question, context)
         except Exception as exc:
             emit(_progress_event("planning", "failed", error=str(exc)))
             raise
@@ -352,6 +398,17 @@ class AgentOrchestrator:
             memory, plan, memory.table, request.question, emit=emit
         )
         return request.question, execution
+
+    async def _plan(self, question: str, context: dict) -> ResearchPlan:
+        """План от планировщика; невалидный и после переспроса — уточнение у пользователя."""
+        try:
+            return await self.planner.plan(question, context)
+        except PlanInvalid as exc:
+            raise ClarificationNeeded(
+                step_id=-1,
+                error="Не удалось составить корректный план: " + "; ".join(exc.errors),
+                suggestions=["Переформулировать вопрос"],
+            ) from exc
 
     async def _execute_plan(
         self,
@@ -587,7 +644,7 @@ class AgentOrchestrator:
         context["executed"] = _describe_executed(executed, tables, observed)
         context["next_step_id"] = _next_step_id(tables)
         logger.info(">>> _replan_after_lookup после шага %d", executed[-1].step_id)
-        plan = await self.planner.plan(question, context)
+        plan = await self._plan(question, context)
         return _renumber(plan, context["next_step_id"])
 
     async def _apply_recovery(
@@ -664,9 +721,7 @@ class AgentOrchestrator:
         )
         context["next_step_id"] = _next_step_id(tables)
 
-        plan = _renumber(
-            await self.planner.plan(modified_question, context), context["next_step_id"]
-        )
+        plan = _renumber(await self._plan(modified_question, context), context["next_step_id"])
         _require_steps(plan)
         return await self._execute_plan(
             memory,
@@ -677,6 +732,44 @@ class AgentOrchestrator:
             source_table=source_table,
             emit=emit,
         )
+
+    async def _overview(self, memory: SessionMemory, table: str) -> AsyncIterator[dict]:
+        """Ответ на «что передо мной?»: факты, описание и таблица колонок, без планировщика.
+
+        Описание не построилось (LLM недоступна) — факты и таблица всё равно
+        отдаются. Таблица колонок не становится last_chart: «покажи в другом
+        виде» относится к прошлому графику исследования.
+        """
+        stage = "insight"
+        try:
+            yield _progress_event("insight", "started")
+            profile = overview.passport(self.db, table)
+            enrichment = self.profiles.load_enrichment(table)
+            headline = overview.facts(profile)
+            try:
+                summary = await overview.describe_dataset(
+                    self.db, table, getattr(self.planner, "llm", None)
+                )
+            except Exception:
+                logger.exception("<<< run() описание таблицы %s не построено", table)
+                summary = ""
+            details = overview.paragraphs(summary) or [SUMMARY_UNAVAILABLE]
+            yield {"type": "text", "data": {"headline": headline, "details": details}}
+
+            stage = "chart"
+            yield _progress_event("chart", "started")
+            spec = build_vega_spec(
+                "table", data=overview.profile_rows(profile, enrichment), title=OVERVIEW_CAPTION
+            )
+            yield {"type": "chart", "data": {"spec": spec, "caption": OVERVIEW_CAPTION}}
+        except Exception as exc:
+            logger.exception("<<< run() обзор таблицы: этап %s упал", stage)
+            yield _progress_event(stage, "failed", error=str(exc))
+            yield _failure_event()
+            yield {"type": "done", "data": {}}
+            return
+        memory.record_answer(headline)
+        yield {"type": "done", "data": {}}
 
     def _morph(self, memory: SessionMemory, question: str, titles: dict[str, str]) -> dict | None:
         """Сменить вид прошлого графика из кеша (None — нужен новый план).

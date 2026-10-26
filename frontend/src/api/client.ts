@@ -5,6 +5,7 @@
  * При ошибках сети или бэкенда выбрасывается ApiError.
  */
 import type { ChatStreamEvent } from "@/types/chat";
+import type { LlmStatus } from "@/types/llm";
 import type { Datasource, DatasourceDbRequest, SessionResponse } from "@/types/datasource";
 import type {
   DashboardConfig,
@@ -83,10 +84,17 @@ export function isMockMode(): boolean {
   return false;
 }
 
-export function setMockMode(enabled: boolean): void {
-  if (typeof window !== "undefined") {
-    localStorage.setItem("sber_force_mock", enabled ? "true" : "false");
-    window.location.reload();
+/** GET /api/llm/status: готова ли модель (скачивание и подготовку бэкенд делает сам). */
+export async function getLlmStatus(): Promise<LlmStatus> {
+  if (isMockMode()) {
+    return { state: "ok", model: "mock" };
+  }
+  try {
+    const res = await fetch(`${API}/llm/status`);
+    if (!res.ok) throw await parseApiError(res);
+    return (await res.json()) as LlmStatus;
+  } catch (err) {
+    throw toApiError(err);
   }
 }
 
@@ -299,6 +307,8 @@ export function streamChat(
         const lines = buffer.split("\n\n");
         buffer = lines.pop() ?? "";
         for (const line of lines) {
+          // SSE-комментарий (": ping" бэкенда) держит соединение, событием не является
+          if (line.startsWith(":")) continue;
           const data = line.replace(/^data: /, "").trim();
           if (!data) continue;
           let event: ChatStreamEvent;

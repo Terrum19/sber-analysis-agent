@@ -1,3 +1,4 @@
+import asyncio
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -12,12 +13,24 @@ from app.api.deps import get_db
 from app.api.routes import datasources
 from app.api.schemas.datasource import DatasourceCreate
 from app.config import settings
-from app.core.data import ingest, schema_enrichment
+from app.core.data import ingest, overview, schema_enrichment
 from app.core.data.connectors.base import BaseConnector
 from app.core.data.duckdb_manager import DuckDBManager
 from app.core.memory.profile_memory import ProfileMemory
 from app.main import app
 from app.models.enrichment import ColumnEnrichment, EnrichmentBatch
+
+
+@pytest.fixture(autouse=True)
+def summarized(monkeypatch: pytest.MonkeyPatch) -> list[list[str]]:
+    """Описание «что передо мной» без LLM: какие таблицы описывались."""
+    calls: list[list[str]] = []
+
+    async def summarize(db, tables, llm=None) -> None:
+        calls.append(list(tables))
+
+    monkeypatch.setattr(ingest, "summarize", summarize)
+    return calls
 
 
 @pytest.fixture
@@ -245,7 +258,9 @@ def test_csv_without_description_does_not_build_enricher(client, storage, monkey
     assert response.status_code == 200
 
 
-def test_failed_description_does_not_fail_attach(client, storage, monkeypatch, caplog) -> None:
+def test_failed_description_does_not_fail_attach(
+    client, storage, monkeypatch, caplog, summarized
+) -> None:
     async def broken(connector, db, tables, document=None, llm=None, job=None):
         raise RuntimeError("LLM упала")
 
@@ -256,6 +271,34 @@ def test_failed_description_does_not_fail_attach(client, storage, monkeypatch, c
     )
     assert response.status_code == 200
     assert "не перенесено в паспорт" in caplog.text
+    assert summarized == [["orders"]]
+
+
+def test_summary_is_built_after_description(client, storage, monkeypatch) -> None:
+    order = []
+
+    async def describe(connector, db, tables, document=None, llm=None, job=None):
+        order.append(("describe", tables))
+        return {}
+
+    async def summarize(db, tables, llm=None) -> None:
+        order.append(("summarize", tables))
+
+    monkeypatch.setattr(ingest, "describe", describe)
+    monkeypatch.setattr(ingest, "summarize", summarize)
+    response = client.post("/api/datasources/csv", files=[("files", ("orders.csv", b"id\n1\n"))])
+    assert response.status_code == 200
+    assert order == [("describe", ["orders"]), ("summarize", ["orders"])]
+
+
+def test_failed_summary_does_not_fail_attach(client, storage, monkeypatch, caplog) -> None:
+    async def broken(db, tables, llm=None) -> None:
+        raise RuntimeError("LLM упала")
+
+    monkeypatch.setattr(ingest, "summarize", broken)
+    response = client.post("/api/datasources/csv", files=[("files", ("orders.csv", b"id\n1\n"))])
+    assert response.status_code == 200
+    assert "«что передо мной» для таблиц ['orders'] не построено" in caplog.text
 
 
 def test_too_large_description_is_413(client, storage) -> None:
@@ -356,6 +399,21 @@ def test_csv_brief_without_dates_has_no_period(client, storage) -> None:
     assert (brief["period_from"], brief["period_to"], brief["warnings"]) == (None, None, [])
 
 
+def test_csv_brief_has_profile_warnings(client, storage) -> None:
+    survey = b"Q1A,Q1I,age\n1,2,25\n5,NULL,31\nQ1A,Q1I,age\n3,4,NULL\n,,\n"
+    response = client.post("/api/datasources/csv", files=[("files", ("survey.csv", survey))])
+    [brief] = response.json()["profiles"]
+    assert brief["warnings"] == [
+        "Числа записаны текстом в колонках «Q1A», «Q1I», «age».",
+        "Литералы пропусков (NULL, N/A и т. п.) в колонках «Q1I» (1), «age» (1).",
+        (
+            "Значение, равное имени колонки (похоже на повторённый заголовок), "
+            "в колонках «Q1A», «Q1I», «age»."
+        ),
+        "Пустых строк (все колонки пустые): 1.",
+    ]
+
+
 class DocumentLLM:
     def __init__(self, fail: bool = False) -> None:
         self.fail = fail
@@ -451,6 +509,30 @@ def test_db_response_marks_described_tables_pending(monkeypatch) -> None:
         db.close()
     [brief] = result.profiles
     assert (brief.table, brief.rows, brief.description_status) == ("orders", 1, "pending")
+
+
+class SurveyConnector(RecordingConnector):
+    """Источник БД без очистки: числа и литерал NULL в текстовой колонке."""
+
+    def connect(self, db) -> list[str]:
+        db.execute(
+            "CREATE OR REPLACE TABLE survey AS SELECT * FROM (VALUES ('1'), ('2'), ('NULL')) t(score)"
+        )
+        return ["survey"]
+
+
+def test_db_brief_has_profile_warnings(monkeypatch) -> None:
+    monkeypatch.setattr(datasources, "build_connector", lambda kind, dsn, schema: SurveyConnector())
+    db = DuckDBManager(":memory:")
+    payload = DatasourceCreate(kind="postgres", dsn="host=x")
+    try:
+        result = datasources.attach_db(payload, db, BackgroundTasks())
+    finally:
+        db.close()
+    assert result.profiles[0].warnings == [
+        "Числа записаны текстом в колонках «score».",
+        "Литералы пропусков (NULL, N/A и т. п.) в колонках «score» (1).",
+    ]
 
 
 def test_unknown_description_status_is_rejected() -> None:
@@ -569,3 +651,43 @@ def test_db_attach_reads_column_comments_once(client, storage, monkeypatch) -> N
     db = app.dependency_overrides[get_db]()
     assert ProfileMemory(db).load_description_status("orders") == "ready"
     assert ProfileMemory(db).load_enrichment("orders")[0].description == "номер заказа"
+
+
+class SummaryLLM:
+    async def complete(self, system: str, user: str, **kwargs) -> str:
+        return "Передо мной заказы."
+
+
+ORDERS_CSV = [("files", ("orders.csv", b"day,amount\n2024-01-01,10\n2024-02-01,20\n"))]
+
+
+def test_table_brief_shows_summary_built_in_background(client, storage) -> None:
+    assert client.post("/api/datasources/csv", files=ORDERS_CSV).status_code == 200
+    brief = client.get("/api/datasources/tables/orders").json()
+    assert brief == {
+        "table": "orders",
+        "rows": 2,
+        "columns": 2,
+        "period_from": "2024-01-01",
+        "period_to": "2024-02-01",
+        "description_status": "none",
+        "summary": None,
+        "warnings": [],
+    }
+    db = app.dependency_overrides[get_db]()
+    asyncio.run(overview.describe_dataset(db, "orders", SummaryLLM()))
+    assert client.get("/api/datasources/tables/orders").json()["summary"] == "Передо мной заказы."
+
+
+def test_reattach_returns_saved_summary(client, storage) -> None:
+    first = client.post("/api/datasources/csv", files=ORDERS_CSV).json()
+    assert "profile_summary" not in first
+    assert first["profiles"][0]["summary"] is None
+    db = app.dependency_overrides[get_db]()
+    asyncio.run(overview.describe_dataset(db, "orders", SummaryLLM()))
+    second = client.post("/api/datasources/csv", files=ORDERS_CSV).json()
+    assert second["profiles"][0]["summary"] == "Передо мной заказы."
+
+
+def test_table_brief_of_unknown_table(client) -> None:
+    assert client.get("/api/datasources/tables/missing").status_code == 404

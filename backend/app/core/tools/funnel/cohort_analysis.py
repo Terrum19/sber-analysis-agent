@@ -1,9 +1,9 @@
 """Cohort aggregation by cohort and analysis period."""
 
-from app.core.tools.base import BaseTool, Ident, ToolArgs, identifier
+from app.core.tools.base import BaseTool, Ident, MetricArgs, identifier
 
 
-class CohortArgs(ToolArgs):
+class CohortArgs(MetricArgs):
     cohort_column: Ident
     period_column: Ident
     metric_column: Ident

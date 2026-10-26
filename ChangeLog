@@ -1,5 +1,117 @@
+2026-10-25  Alexander Yurits  <143354682+Terrum19@users.noreply.github.com>
+
+	Исправления по ревью #170.
+	* backend/app/core/llm/ollama_setup.py (_version): 5xx от
+	/api/version — повтор (connecting), а не «сервер не Ollama»: иначе
+	один ответ 502/503 при старте навсегда выключал скачивание модели и
+	вариант с num_ctx.  401/403/404 — по-прежнему не Ollama.
+	(ModelMissing, _pull_error, _error_text): Новые.  Модели нет в реестре
+	(опечатка в LLM_MODEL) — состояние missing: pull больше не
+	повторяется, бэкенд только ждёт модель в /api/tags.
+	* backend/app/api/schemas/llm.py, frontend/src/types/llm.ts: Состояние
+	missing.
+	* frontend/src/components/chat/LlmStatusBanner.tsx: Для missing —
+	«Модели нет в Ollama, проверьте LLM_MODEL» без «повторяю».
+	* start.sh, scripts/start/start.ps1: Метка .ollama-started, если Ollama
+	запустил скрипт.
+	* start.sh (install_linux_ollama, bind_ollama_service_to_bridge): Новые.
+	На Linux без Ollama — установка официальным install.sh (п. 5 #167), а не
+	сразу контейнер; поставленная службой Ollama слушает адрес моста docker.
+	(any_ollama_up): Новая.  Такую Ollama ждём и по адресу моста.
+	* stop.sh, stop.bat: Останавливают Ollama по метке; Ollama, запущенную
+	до start, не трогают.
+	* README.md (Запуск): То же.
+
+2026-10-25  mb6ockatf  <smokenmirror@tutamail.com>
+
+	Исправления по ревью #170.
+	* backend/app/core/llm/ollama_setup.py (_version): Любой ответ
+	/api/version, кроме 200 с полем version, — сервер не Ollama: шлюз
+	с авторизацией (401/403) больше не держит чат в «Подключаюсь».
+	(prepare_once): Новая.  Неожиданная ошибка подготовки (битая строка
+	прогресса, HTML вместо JSON) — повтор с причиной в detail, а не
+	смерть фоновой задачи и вечный индикатор.
+	(prepare_forever): Через prepare_once; ошибка warm_up не прерывает
+	слежение за Ollama.
+	* backend/tests/unit/test_ollama_setup.py: Тесты на 401/403/500 от
+	/api/version, битую строку /api/pull и HTML вместо /api/tags.
+	* start.sh (start_service, has_service, has_systemd): Новые.  Docker
+	и Ollama запускаются и без systemd (service); не запустился Docker —
+	понятная ошибка вместо молчаливого выхода.
+	(start_linux_ollama): Новая.  Ollama без службы запускается на адресе
+	моста docker, чтобы контейнеры её видели.
+	(use_container_ollama): На GPU — модель LLM_MODEL_GPU, как make up-gpu.
+	(env_or_file): Новая, как в Makefile.
+	* README.md (Запуск): То же.
+
+2026-10-25  Alexander Yurits  <143354682+Terrum19@users.noreply.github.com>
+
+	Исправления по ревью #144.
+	* backend/app/core/agent/quality_fixes.py (insight_facts): Числовые
+	типы сверяются точно (INTERVAL больше не попадает в SUM), имена
+	через identifier(), итоги всех колонок одним запросом.
+	(ungrounded_numbers): Сверка только с вопросом, результатом и
+	фактами; допускается округление до точности заголовка; проценты не
+	проверяются.
+	(FOLLOW_UP): Вопрос с «а»/«и» в начале — продолжение; «прошлый» и
+	«предыдущий» сами по себе — нет.
+	* backend/app/core/agent/insight.py (InsightGenerator.generate):
+	Если факты не посчитались, инсайт строится без них.
+	* backend/app/core/llm/structured.py (parse_structured): Ошибка во
+	вложенных "arguments" тоже даёт переспрос.
+	(merge_tool_calls): Удалена, не использовалась.
+	* backend/app/core/llm/prompts/quality_rules.py,
+	backend/app/core/llm/prompts/structured_repair.py: Новые.  Промпты
+	из quality_fixes.py и structured.py.
+	* backend/app/core/tools/sql/atomic.py (GroupByTool.execute): by=[]
+	работает и без agent_quality_fixes.
+	(TimeBucketTool.execute): Убрана проверка, которую уже делает
+	TimeBucketArgs.
+	* backend/app/config.py: llm_max_retries (1); llm_structured_mode —
+	Literal.
+	* backend/app/core/llm/client.py (LLMClient.__init__): max_retries
+	из настроек.
+	* .env.example, docs/prompts.md: То же.
+	* CHANGELOG.md, docs/reports/architecture_compliance_report.md:
+	Удалены, устарели (историю ведёт ChangeLog).
+
 2026-10-24  Alexander Yurits  <terruwork@gmail.com>
 
+	JSON по схеме и исправления качества агента по умолчанию (#143).
+	* backend/app/core/llm/client.py (LLMClient.complete_structured): В
+	режиме json_schema — один запрос с response_format=json_schema,
+	толерантный разбор и один переспрос с текстом ошибки.
+	(LLMClient.__init__): Необязательный http_client.
+	* backend/app/core/llm/structured.py: Новый.  Толерантный разбор
+	ответа по схеме Pydantic и промпт переспроса.
+	* backend/app/core/agent/quality_fixes.py: Новый.  Факты для
+	инсайта, посчитанные SQL; проверка чисел заголовка; подсказки к
+	тулам и правила планировщика; прошлые шаги только для
+	вопроса-продолжения; отбор тулов под вопрос.
+	* backend/app/core/agent/planner.py (StepPlanner.plan): Правила и
+	обрамление контекста при agent_quality_fixes, отбор тулов при
+	agent_tool_topk.
+	* backend/app/core/agent/insight.py (InsightGenerator.generate):
+	Факты и проверка чисел при agent_quality_fixes.
+	* backend/app/core/tools/registry.py (ToolRegistry.describe):
+	Подсказки к описаниям тулов при agent_quality_fixes.
+	* backend/app/core/tools/sql/atomic.py (GroupByTool.execute):
+	by=[] — один итог по таблице при agent_quality_fixes.
+	(TimeBucketArgs): AVG/SUM без metric_column отклоняются при
+	проверке плана.
+	* backend/app/config.py: llm_structured_mode (json_schema),
+	llm_max_tokens, agent_quality_fixes (вкл.), agent_tool_topk
+	(выкл.); llm_timeout_s 120 -> 600.
+	* .env.example: То же.
+	* scripts/run_full_llm_cycle.py: Ожидание API (429, 5xx, таймауты)
+	отдельно от чистого времени.
+	* scripts/llm_bench: Новый.  Записывающий прокси, прогон варианта,
+	сводка вызовов, бенчмарк потоков; сырые логи вне git.
+	* docs/reports/llm_perf: Новый.  Гипотезы и журнал прогонов V1-V5.
+	* backend/tests/unit/test_llm_structured.py,
+	backend/tests/unit/test_quality_fixes.py: Новые.
+	* backend/tests/unit/test_llm_client_retries.py
+	(test_invalid_answer_is_asked_again): Режим tools задан явно.
 	Карточки таблиц после подключения (#69).
 	* frontend/src/types/datasource.ts (TableBrief, DescriptionStatus):
 	Новые типы по api/schemas/datasource.py; Datasource.profiles.
@@ -18,7 +130,158 @@
 	* backend/app/core/dashboards/models.py (DashboardTile): layout —
 	целые, snapshot_data — строки или словарь KPI вместо Any.
 
+2026-10-24  thebulkapro  <saitbatalovbulat200@gmail.com>
+
+	Флаги качества профиля в TableBrief.warnings (#139).
+	* backend/app/core/data/profiling.py (profile_warnings): Новая
+	функция: флаги и empty_rows фразами для карточки таблицы, одна фраза
+	на вид флага, не больше WARNING_COLUMNS колонок, остальные «и ещё N».
+	Литералы пропусков — по убыванию их числа.  Флаги без фразы в
+	WARNING_PHRASES пропускает, а не падает KeyError (500 у ручки).
+	(column_list): Новая функция.
+	(quality_fields): Счётчик distinct_values: различные значения без
+	литералов пропусков и значений-заголовков.
+	(is_text_code): unique и fixed_width сравнивают с distinct_values, а
+	не с distinct: «NULL» и повторённый заголовок делали почти
+	уникальную колонку кодом, и она не получала numeric_as_text.
+	* backend/app/api/schemas/datasource.py (TableBrief.from_profile):
+	После предупреждений загрузчика — флаги профиля: у PostgreSQL и
+	ClickHouse карточка была без предупреждений.
+	* backend/tests/unit/test_profiling.py,
+	backend/tests/unit/test_datasources_api.py: Фразы по флагам, «и ещё
+	N», чистый профиль, одна колонка, грязный CSV и источник БД,
+	литералы и заголовок не делают колонку уникальной, незнакомый флаг.
+	* docs/data_connectors.md: Поле warnings, profile_warnings.
+
+	Длина контекста LLM: исправления по ревью #136.
+	* backend/app/core/agent/orchestrator.py (AgentOrchestrator.run):
+	prompt_truncated несёт и clarification_needed: обрезанный промпт
+	чаще всего кончается уточнением, и eval (#58) терял такие прогоны.
+	(TURN_END_EVENTS): Новая.
+	* backend/app/core/llm/budget.py (should_ask_server_context): Вместо
+	known_server_context.  «Сервер не назвал контекст» не кешируется:
+	переспрашиваем не чаще раза в SERVER_CTX_RETRY_S.  Раньше один
+	таймаут при старте отключал признак «упёрся в контекст» до
+	перезапуска бэкенда.
+	(remember_server_context): Запоминает только число.
+	* backend/app/core/llm/client.py (LLMClient._check_context): В длину
+	промпта входит схема тулов из tools: сервер считает её в
+	prompt_tokens, и без неё обрезка на Ollama 0.35.1 проходила незаметно.
+	(LLMClient.warm_up): Новый.  Короткий запрос при старте, чтобы
+	бюджет первого промпта считался от контекста сервера.
+	* backend/app/core/llm/fake_client.py (FakeLLM.warm_up): Новый.
+	* backend/app/main.py (lifespan): Вызывает LLMClient.warm_up.
+	* scripts/run_full_llm_cycle.py (run_turn): Обрезка и из
+	clarification_needed, по всем повторам хода.
+	* docs/architecture.md: prompt_truncated в clarification_needed.
+	* backend/tests/unit/test_budget.py
+	(test_unknown_server_context_is_asked_again_later): Новый тест.
+	* backend/tests/unit/test_llm_client_retries.py
+	(test_tools_schema_counts_toward_prompt_length)
+	(test_server_context_is_asked_again_after_failure)
+	(test_warm_up_learns_server_context)
+	(test_warm_up_survives_unavailable_llm): Новые тесты.
+	* backend/tests/unit/test_orchestrator_unit.py
+	(test_clarification_counts_truncated_prompts): Новый тест.
+
+2026-10-23  Alexander Yurits  <terruwork@gmail.com>
+
+	Длина контекста LLM: проверка обрезки промпта и его бюджет (#102).
+	* backend/app/config.py (llm_num_ctx, llm_chars_per_token): Новые.
+	* backend/app/core/llm/budget.py: Новый.  Реальный контекст сервера
+	(server_context, num_ctx — меньшее из него и LLM_NUM_CTX),
+	prompt_budget, признаки обрезки (check_prompt), сбор обрезок хода
+	(track_truncations, report_truncation), probe_context для проверочных
+	скриптов.
+	* backend/app/core/llm/client.py (LLMClient._check_context): Новый
+	response-хук httpx: сверяет usage.prompt_tokens каждого ответа, включая
+	повторы instructor и fallback, с длиной промпта и контекстом сервера;
+	обрезку пишет warning'ом.
+	(LLMClient._server_context): Новый.  Контекст из /v1/models (vLLM,
+	max_model_len) или /api/ps (Ollama, context_length), один раз на модель.
+	* backend/app/core/agent/orchestrator.py (AgentOrchestrator.run): done
+	несёт prompt_truncated, если сервер обрезал промпты хода.
+	(AgentOrchestrator._turn): Прежнее тело run.
+	* scripts/check_llm_client.py: Проверка промпта заданной длины с
+	паролем в начале.
+	* scripts/run_full_llm_cycle.py (check_llm): Контекст сервера;
+	--check-context CHARS — та же проверка.  Обрезка из done — в
+	предупреждения отчёта.
+	* infra/vllm/serve.sh: --max-model-len (MAX_MODEL_LEN, по умолчанию
+	LLM_NUM_CTX).
+	* scripts/download_model.sh: OLLAMA_CONTEXT_LENGTH в подсказке.
+	* .env.example: LLM_NUM_CTX, LLM_CHARS_PER_TOKEN.
+	* README.md (Длина контекста LLM): Новый раздел.
+	* docs/architecture.md: prompt_truncated в done; решение о контексте.
+	* backend/tests/unit/test_budget.py: Новый.
+	* backend/tests/unit/test_llm_client_retries.py
+	(test_ollama_truncation_is_reported)
+	(test_far_fewer_tokens_than_estimate_is_reported)
+	(test_full_prompt_is_not_reported)
+	(test_broken_server_info_does_not_fail_the_call): Новые тесты.
+	* backend/tests/unit/test_orchestrator_unit.py
+	(test_done_counts_truncated_prompts): Новый тест.
+
 2026-10-23  thebulkapro  <saitbatalovbulat200@gmail.com>
+
+	«Что передо мной?»: описание таблицы от LLM в паспорте (#54).
+	* backend/app/core/data/overview.py: Новый модуль.
+	(describe_dataset): Промпт SCHEMA_DESCRIBE из паспорта; LLM только
+	при новом отпечатке промпта, описание сохраняется в паспорте.
+	(build_prompt, profile_lines, family_line, clip): Промпт с системным
+	не длиннее PROMPT_MAX_CHARS (контекст 4096 токенов при 1,5 символа
+	на токен, ответ до 600 токенов): однотипные колонки (Q1A…Q35A) одной
+	строкой, 5 частых значений, остальное — «… и ещё N».
+	(quality_block, grouped_notes, split_note, group_line): «Качество
+	данных» до 1000 символов, по строке на вид замечания со списком
+	колонок («пропуски: «A» (10%), «B» (15%)»); каждому виду хватает
+	места хотя бы на число колонок.
+	(facts, profile_rows): Объём, период и таблица колонок без LLM.
+	(is_overview_question): Вопрос целиком из обзорных фраз.
+	(passport): Нет паспорта — профиль строится и сохраняется.
+	(cached_summary): Сохранённое описание по текущему паспорту, без LLM.
+	* backend/app/core/memory/profile_memory.py (SCHEMA): Колонка
+	summary_fingerprint (ADD COLUMN IF NOT EXISTS).
+	(save_summary, load_summary): Новые методы.
+	* backend/app/core/data/ingest.py (summarize): Новая функция:
+	описание таблиц после переноса описания колонок; без LLM прогон
+	прекращается.
+	* backend/app/api/routes/datasources.py (describe_tables): После
+	describe — summarize; сбой только в лог.
+	(briefs): TableBrief.summary — описание, сохранённое по тем же
+	данным.  (table_brief): Новый GET /api/datasources/tables/{table}:
+	TableBrief по паспорту с итогом переноса и описанием, 404 без
+	паспорта.
+	* backend/app/api/schemas/datasource.py (TableBrief.from_profile):
+	Параметр summary; период через TableProfile.temporal_column.
+	(DatasourceOut.profile_summary): Удалено, описание — в TableBrief.
+	* backend/app/core/data/profiling.py (TableProfile.temporal_column):
+	Новый метод: колонка периода, общая для TableBrief и overview.facts.
+	* backend/app/core/agent/orchestrator.py (AgentOrchestrator._overview):
+	Обзорный вопрос без планировщика: insight started, text (факты и
+	описание), chart started, chart table, done.  LLM не ответила —
+	факты и таблица без описания.
+	* backend/app/core/data/semantic_select.py (column_facts): Бывшая
+	_column_facts; параметр top_values, как у describe_columns.
+	* backend/app/core/llm/prompts/schema_describe.py
+	(SCHEMA_DESCRIBE_SYSTEM): Новый системный промпт.  (SCHEMA_DESCRIBE):
+	Не пересчитывать объём и период, строки семейств, 3-6 предложений.
+	* backend/tests/unit/test_overview.py: Новые тесты: кеш, смена
+	профиля и названий, сбой и пустой ответ LLM, лимит промпта, семейства,
+	замечания по видам, детектор вопросов, summarize.
+	* backend/tests/unit/test_profile_memory.py,
+	backend/tests/unit/test_orchestrator_unit.py,
+	backend/tests/unit/test_datasources_api.py,
+	backend/tests/unit/test_datasource_restore.py: Тесты сводки в
+	паспорте, обзорного хода и фоновой задачи, GET сводки таблицы и
+	описание при повторном подключении; summarize подменён.
+	* backend/tests/e2e/test_scenarios.py (test_scenario_1): Новый тест:
+	ответ содержит число строк и период.  Колонка date — DATE.
+	* backend/tests/benchmark/test_orchestrator_benchmark.py: Вопрос с
+	планом вместо обзорного.
+	* docs/memory.md, docs/architecture.md, docs/prompts.md,
+	docs/repo_structure.md, docs/data_connectors.md: Описание таблицы,
+	обзорный ход, TableBrief.summary и GET сводки таблицы.
 
 	Флаги качества в профиле (#105).
 	* backend/app/core/data/profiling.py (ColumnStats.flags): Новое поле:

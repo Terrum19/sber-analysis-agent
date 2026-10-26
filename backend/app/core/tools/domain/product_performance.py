@@ -3,10 +3,10 @@
 Оставлен для совместимости; планировщику показывается group_by с metrics.
 """
 
-from app.core.tools.base import BaseTool, Ident, ToolArgs, identifier
+from app.core.tools.base import BaseTool, Ident, MetricArgs, identifier
 
 
-class ProductPerformanceArgs(ToolArgs):
+class ProductPerformanceArgs(MetricArgs):
     metric_column: Ident
     group_column: Ident
 

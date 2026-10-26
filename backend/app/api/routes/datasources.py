@@ -4,7 +4,9 @@
 грузятся в DuckDB, вся трансформация внутри платформы (см. core/data/).
 Сразу после подключения таблицы профилируются (ingest.attach); если к
 источнику есть описание — комментарии колонок или приложенный документ, —
-названия и описания колонок переносятся в паспорт в фоне (ingest.describe).
+названия и описания колонок переносятся в паспорт в фоне (ingest.describe),
+затем там же строится описание «что передо мной» (ingest.summarize).
+Готовое описание и итог переноса отдаёт GET /tables/{table}.
 Источник БД запоминается и переподключается после рестарта (core/data/restore.py).
 CSV-источник — это файлы в storage/uploads/<id> и постоянные таблицы DuckDB,
 помеченные комментарием «csv:<id>/<файл>»; DELETE удаляет и то и другое.
@@ -23,7 +25,7 @@ from fastapi import APIRouter, BackgroundTasks, Depends, File, HTTPException, Up
 from app.api.deps import get_db
 from app.api.schemas.datasource import DatasourceCreate, DatasourceOut, TableBrief
 from app.config import settings
-from app.core.data import ingest, restore
+from app.core.data import ingest, overview, restore
 from app.core.data.connectors.base import BaseConnector
 from app.core.data.connectors.clickhouse import (
     ClickHouseConnectionError,
@@ -76,6 +78,22 @@ def list_tables(db: Annotated[DuckDBManager, Depends(get_db)]) -> list[str]:
     return db.user_tables()
 
 
+@router.get("/tables/{table}", response_model=TableBrief)
+def table_brief(table: str, db: Annotated[DuckDBManager, Depends(get_db)]) -> TableBrief:
+    """Сводка паспорта таблицы: итог фонового переноса описания и описание «что передо мной».
+
+    Предупреждения загрузчика (warnings) есть только в ответе подключения:
+    в паспорте они не хранятся.
+    """
+    memory = ProfileMemory(db)
+    profile = memory.load_profile(table)
+    if profile is None:
+        raise HTTPException(status_code=404, detail=f"Паспорта таблицы «{table}» нет.")
+    return TableBrief.from_profile(
+        profile, memory.load_description_status(table), [], overview.cached_summary(db, table)
+    )
+
+
 def too_large(name: str) -> HTTPException:
     return HTTPException(
         status_code=413, detail=f"Описание «{name}» больше {DESCRIPTION_MAX_BYTES >> 20} МБ."
@@ -99,23 +117,38 @@ async def describe_tables(
     document: str | None,
     job: ingest.DescribeJob,
 ) -> None:
-    """Фоновый перенос описания в паспорт: сбой не затрагивает подключение."""
+    """Фоновый перенос описания в паспорт, затем описание «что передо мной».
+
+    Сбой не затрагивает подключение; описание таблицы строится и после
+    сбоя переноса — без названий колонок из документа.
+    """
     try:
         await ingest.describe(connector, db, tables, document, job=job)
     except Exception:
         logger.exception("Описание таблиц %s не перенесено в паспорт", tables)
         with db.lock:
             ProfileMemory(db).fail_pending(job.run)
+    try:
+        await ingest.summarize(db, tables)
+    except Exception:
+        logger.exception("Описание «что передо мной» для таблиц %s не построено", tables)
 
 
 def briefs(
     connector: BaseConnector, db: DuckDBManager, profiles: dict[str, TableProfile]
 ) -> list[TableBrief]:
-    """Сводки паспортов подключённых таблиц. Под db.lock, после ingest.mark_pending."""
+    """Сводки паспортов подключённых таблиц. Под db.lock, после ingest.mark_pending.
+
+    summary — описание, сохранённое по тем же данным (повторное подключение);
+    новое строится в фоне, его отдаёт GET /tables/{table}.
+    """
     memory = ProfileMemory(db)
     return [
         TableBrief.from_profile(
-            profile, memory.load_description_status(table), connector.warnings(table)
+            profile,
+            memory.load_description_status(table),
+            connector.warnings(table),
+            overview.cached_summary(db, table),
         )
         for table, profile in profiles.items()
     ]
