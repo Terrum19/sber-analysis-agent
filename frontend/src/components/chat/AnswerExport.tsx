@@ -22,6 +22,8 @@ interface Props {
   resultTable?: string;
   /** Компактный вид для узкой панели. */
   compact?: boolean;
+  /** Встроить в шапку плитки: без внешнего отступа и служебных подписей. */
+  inline?: boolean;
 }
 
 export default function AnswerExport({
@@ -32,6 +34,7 @@ export default function AnswerExport({
   spec,
   resultTable,
   compact = false,
+  inline = false,
 }: Props) {
   const t = useT();
   const [busy, setBusy] = useState<"xlsx" | "pdf" | null>(null);
@@ -71,12 +74,17 @@ export default function AnswerExport({
     }
   }
 
-  const buttonClass = `inline-flex items-center gap-1 rounded-md border border-graphite-700 bg-graphite-850 text-graphite-300 transition hover:bg-graphite-800 hover:text-graphite-50 disabled:cursor-not-allowed disabled:opacity-50 ${
-    compact ? "px-1.5 py-0.5 text-[10px]" : "px-2 py-1 text-[11px]"
-  }`;
+  const buttonClass = inline
+    ? "inline-flex h-6 items-center gap-1 rounded-md px-1.5 text-[10px] font-medium text-graphite-400 transition hover:bg-graphite-800 hover:text-graphite-100 disabled:cursor-not-allowed disabled:opacity-50"
+    : `inline-flex items-center gap-1 rounded-md border border-graphite-700 bg-graphite-850 text-graphite-300 transition hover:bg-graphite-800 hover:text-graphite-50 disabled:cursor-not-allowed disabled:opacity-50 ${
+        compact ? "px-1.5 py-0.5 text-[10px]" : "px-2 py-1 text-[11px]"
+      }`;
 
   return (
-    <div className="mt-2 flex flex-wrap items-center gap-1.5">
+    <div
+      className={inline ? "flex items-center gap-1" : "mt-2 flex flex-wrap items-center gap-1.5"}
+      title={inline && error ? error : undefined}
+    >
       <button
         type="button"
         onClick={() => handleExport("xlsx")}
@@ -103,8 +111,8 @@ export default function AnswerExport({
         />
         <span>{t("chat.exportPdf")}</span>
       </button>
-      {busy && <span className="text-[11px] text-graphite-500">{t("chat.exporting")}</span>}
-      {error && <span className="text-[11px] leading-snug text-bad">{error}</span>}
+      {busy && !inline && <span className="text-[11px] text-graphite-500">{t("chat.exporting")}</span>}
+      {error && !inline && <span className="text-[11px] leading-snug text-bad">{error}</span>}
     </div>
   );
 }

@@ -19,6 +19,7 @@ import {
   updateDashboard,
 } from "@/api/client";
 import DashboardTile, { isKpiTile } from "@/components/canvas/DashboardTile";
+import AnswerExport from "@/components/chat/AnswerExport";
 import Icon from "@/components/ui/Icon";
 import ZoomControl from "@/components/ui/ZoomControl";
 import { MIN_SIZE, STACK_BELOW, applyGridLayout, tileGridLayout } from "@/lib/tileLayout";
@@ -616,6 +617,16 @@ export default function Canvas({ sessionId }: Props) {
                   <div key={tile.id || i} style={{ height: Math.round(340 * zoom) }}>
                     <DashboardTile
                       tile={tile}
+                      actions={
+                        <AnswerExport
+                          sessionId={sessionId}
+                          headline={tile.title}
+                          spec={tile.spec}
+                          resultTable={tile.result_table}
+                          compact
+                          inline
+                        />
+                      }
                       onOpen={() => openArtifact(tile, sessionId)}
                       onElaborate={(selection) => handleElaborate(tile, selection)}
                     />

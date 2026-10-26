@@ -52,6 +52,8 @@ interface Props {
   dense?: boolean;
   /** Плитка во всю вкладку: крупнее цифра, инсайт целиком. */
   large?: boolean;
+  /** Дополнительные действия в шапке плитки (например, экспорт графика, F-12). */
+  actions?: React.ReactNode;
 }
 
 function kpiFromTile(tile: DashboardTileType, fallbackLabel: string): { value: string; label: string } {
@@ -200,6 +202,7 @@ export default function DashboardTile({
   preview = false,
   dense = false,
   large = false,
+  actions,
 }: Props) {
   const t = useT();
   const colors = useChartColors();
@@ -389,6 +392,7 @@ export default function DashboardTile({
         </div>
 
         <div className="flex shrink-0 items-center gap-1">
+          {actions && !dense && <div className="flex shrink-0 items-center gap-1">{actions}</div>}
           {canDrill && (
             <button
               onClick={() => onElaborate?.()}
