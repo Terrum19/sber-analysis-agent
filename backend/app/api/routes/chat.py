@@ -24,6 +24,21 @@ SSE_PING_INTERVAL_S = 15.0
 SSE_PING = ": ping\n\n"
 
 
+class ClosingStreamingResponse(StreamingResponse):
+    """Гарантированно закрывает body_iterator при обрыве клиента.
+
+    Так отмена доходит до orchestrator.run() -> aclosing(_turn) -> стрим LLM.
+    """
+
+    async def __call__(self, scope, receive, send) -> None:
+        try:
+            await super().__call__(scope, receive, send)
+        finally:
+            aclose = getattr(self.body_iterator, "aclose", None)
+            if aclose is not None:
+                await aclose()
+
+
 async def with_pings(chunks: AsyncIterator[str], interval: float) -> AsyncIterator[str]:
     """Отдаёт chunks как есть; если следующего нет interval секунд — SSE-комментарий.
 
@@ -81,7 +96,7 @@ async def chat(
             ):
                 yield f"data: {chat_event.model_dump_json()}\n\n"
 
-    response = StreamingResponse(
+    response = ClosingStreamingResponse(
         with_pings(event_stream(), SSE_PING_INTERVAL_S),
         media_type="text/event-stream",
         headers=STREAM_HEADERS,
