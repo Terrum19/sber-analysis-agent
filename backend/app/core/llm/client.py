@@ -221,6 +221,10 @@ class LLMClient:
             user,
             kwargs,
         )
+        if settings.llm_reasoning_effort:
+            effort = settings.llm_reasoning_effort
+            reasoning = {"enabled": False} if effort == "none" else {"effort": effort}
+            kwargs["extra_body"] = {**kwargs.get("extra_body", {}), "reasoning": reasoning}
         started_at = time.perf_counter()
         try:
             resp = await self._client.chat.completions.create(
