@@ -165,11 +165,12 @@ def test_persist_and_load(tmp_path):
     settings.sqlite_path = str(tmp_path / "sessions2.sqlite")
     try:
         mem1 = SessionMemory("persist-session")
-        mem1.set_table("raw", ["a"])
-        mem1.record_answer("Первый ответ")
+        mem1.set_table("raw")
+        mem1.start_turn("Первый вопрос")
+        mem1.finish_turn("ok", headline="Первый ответ")
         mem2 = SessionMemory("persist-session")
-        ctx = mem2.build_context("Проверка")
-        assert "Первый ответ" in ctx["messages"][-1]["content"]
+        assert mem2.table == "raw"
+        assert mem2._state["turns"][-1]["headline"] == "Первый ответ"
     finally:
         settings.sqlite_path = old_path
 

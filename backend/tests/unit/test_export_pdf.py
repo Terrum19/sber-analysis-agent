@@ -489,3 +489,40 @@ def test_long_user_text_does_not_raise_layout_error(tmp_path: Path) -> None:
     assert len(reader.pages) >= 3, "Многостраничный контент должен распределиться между страницами"
     for page in reader.pages:
         assert len(page.extract_text()) > 0, "Каждая страница должна содержать валидный текст"
+
+
+def test_api_export_with_turn_lifecycle(client: TestClient) -> None:
+    """Тест экспорта по сессии с современной походовой архитектурой (start_turn -> finish_turn)."""
+    db: DuckDBManager = client.app.dependency_overrides[get_db]()
+    db.execute("CREATE TABLE temp_result_v50 AS SELECT 'Ноутбуки' AS product, 500000 AS revenue")
+
+    memory = SessionMemory("turn_session_50", db)
+    memory.set_table("raw")
+    memory.start_turn("Какая выручка по ноутбукам?")
+    memory.record_chart("bar", "temp_result_v50", "Выручка по ноутбукам")
+    memory.finish_turn(
+        "ok",
+        headline="Выручка составила 500 тыс. руб.",
+        result_table="temp_result_v50",
+        result_columns=["product", "revenue"],
+    )
+
+    assert memory.owns_result("temp_result_v50") is True
+
+    payload = {
+        "session_id": "turn_session_50",
+        "format": "pdf",
+        "result_ref": "temp_result_v50",
+        "question": "Какая выручка по ноутбукам?",
+        "headline": "Выручка составила 500 тыс. руб.",
+        "details": ["План выполнен на 100%"],
+        "spec": SAMPLE_SPEC,
+    }
+    resp = client.post("/api/artifacts/export", json=payload)
+    assert resp.status_code == 200
+    assert resp.headers["content-type"] == "application/pdf"
+    reader = pypdf.PdfReader(io.BytesIO(resp.content))
+    assert len(reader.pages) >= 2
+    full_text = "".join(p.extract_text() for p in reader.pages)
+    assert "Выручка составила 500 тыс. руб." in full_text
+    assert "Ноутбуки" in full_text

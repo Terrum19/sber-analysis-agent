@@ -29,6 +29,7 @@ import time
 import uuid
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any
 
 import duckdb
 
@@ -184,7 +185,7 @@ class SessionMemory:
         self._state["title"] = title
         self._persist()
 
-    def set_table(self, table: str) -> None:
+    def set_table(self, table: str, columns: list[str] | None = None) -> None:
         """Сделать таблицу таблицей по умолчанию ($source) для следующих ходов.
 
         Ходы остаются: вопрос по новой таблице может продолжать прошлый.
@@ -192,7 +193,11 @@ class SessionMemory:
         При смене таблицы сбрасывается и ``datasource_id``: новая таблица
         может быть из другого источника.
         """
+        if columns is not None:
+            self._state["columns"] = list(columns)
         if table == self.table:
+            if columns is not None:
+                self._persist()
             return
         if self.table is not None:
             self._state["datasource_id"] = None
@@ -258,22 +263,68 @@ class SessionMemory:
             chain.append(parent)
         return chain[::-1]
 
-    def record_step(self, step) -> None:
+    def record_step(self, step: Any, result_table: str | None = None) -> None:
         """Записать выполненный шаг в текущий ход (сохраняется в finish_turn)."""
-        self._turn["steps"].append(
-            {
-                "step_id": step.step_id,
-                "tool": step.tool,
-                "input": step.input,
-                "arguments": step.arguments,
-                "columns": step.columns,
-                "purpose": step.purpose,
-            }
+        step_id = (
+            getattr(step, "step_id", None)
+            if hasattr(step, "step_id")
+            else (step.get("step_id") if isinstance(step, dict) else None)
         )
+        tool = (
+            getattr(step, "tool", None)
+            if hasattr(step, "tool")
+            else (step.get("tool") if isinstance(step, dict) else None)
+        )
+        inp = (
+            getattr(step, "input", None)
+            if hasattr(step, "input")
+            else (step.get("input") if isinstance(step, dict) else None)
+        )
+        args = (
+            getattr(step, "arguments", None)
+            if hasattr(step, "arguments")
+            else (step.get("arguments") if isinstance(step, dict) else None)
+        )
+        cols = (
+            getattr(step, "columns", None)
+            if hasattr(step, "columns")
+            else (step.get("columns") if isinstance(step, dict) else None)
+        )
+        purpose = (
+            getattr(step, "purpose", "")
+            if hasattr(step, "purpose")
+            else (step.get("purpose", "") if isinstance(step, dict) else "")
+        )
+
+        step_data: dict[str, Any] = {
+            "step_id": step_id,
+            "tool": tool,
+            "input": inp,
+            "arguments": args,
+            "columns": cols,
+            "purpose": purpose,
+        }
+        if result_table:
+            step_data["result"] = result_table
+
+        if self._turn is not None:
+            self._turn["steps"].append(step_data)
+            if result_table and not self._turn.get("result_table"):
+                self._turn["result_table"] = result_table
+        else:
+            self._state.setdefault("steps", []).append(step_data)
+            self._persist()
 
     def record_chart(self, chart_type: str, result_table: str, title: str = "") -> None:
         """Запомнить график текущего хода (для смены вида без LLM)."""
-        self._turn["chart"] = {"type": chart_type, "title": title, "result_table": result_table}
+        chart_data = {"type": chart_type, "title": title, "result_table": result_table}
+        if self._turn is not None:
+            self._turn["chart"] = chart_data
+        else:
+            self._state.setdefault("tables", {})
+            tbl = self.table or "$default"
+            self._state["tables"].setdefault(tbl, {})["last_chart"] = chart_data
+            self._persist()
 
     def finish_turn(
         self,
@@ -347,15 +398,40 @@ class SessionMemory:
         if not result_table:
             return False
 
+        # 1. Походовая модель: проверка всех ходов сессии
+        for turn in self._state.get("turns", []):
+            if turn.get("result_table") == result_table:
+                return True
+            chart = turn.get("chart")
+            if isinstance(chart, dict) and chart.get("result_table") == result_table:
+                return True
+            for step in turn.get("steps", []):
+                if isinstance(step, dict) and step.get("result") == result_table:
+                    return True
+
+        # 2. Текущий активный ход (если не закрыт finish_turn)
+        if self._turn is not None:
+            if self._turn.get("result_table") == result_table:
+                return True
+            chart = self._turn.get("chart")
+            if isinstance(chart, dict) and chart.get("result_table") == result_table:
+                return True
+            for step in self._turn.get("steps", []):
+                if isinstance(step, dict) and step.get("result") == result_table:
+                    return True
+
+        # 3. Устаревшая модель состояния (шаги и таблицы до #163)
         for step in self._state.get("steps", []):
-            if step.get("result") == result_table:
+            if isinstance(step, dict) and step.get("result") == result_table:
                 return True
 
         for tbl_data in self._state.get("tables", {}).values():
-            chart = tbl_data.get("last_chart")
-            if chart and chart.get("result_table") == result_table:
-                return True
+            if isinstance(tbl_data, dict):
+                chart = tbl_data.get("last_chart")
+                if isinstance(chart, dict) and chart.get("result_table") == result_table:
+                    return True
 
+        # 4. Состояние восстановления после ошибки шага
         pending = self._state.get("pending_recovery")
         if pending and isinstance(pending, dict):
             step_tables = pending.get("step_tables", {})
@@ -363,6 +439,7 @@ class SessionMemory:
                 return True
             if pending.get("input_table") == result_table:
                 return True
+
         return False
 
     # --- pending_recovery (восстановление после ошибки шага) ---

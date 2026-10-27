@@ -501,21 +501,37 @@ export async function recalculateDashboard(id: string): Promise<DashboardConfig>
   }
 }
 
+export interface ExportArtifactOptions {
+  question?: string;
+  headline?: string;
+  details?: string[];
+  spec?: Record<string, any>;
+}
+
 /** Выгрузка артефактов (Excel / PDF). */
 export async function exportArtifact(
   sessionId: string,
   format: "xlsx" | "pdf",
   resultRef?: string,
+  options?: ExportArtifactOptions,
 ): Promise<Blob> {
   if (isMockMode()) {
-    const content = `Экспорт дашборда (${format.toUpperCase()})\nСессия: ${sessionId}\nДата: ${new Date().toLocaleString("ru-RU")}`;
+    const content = `Экспорт отчёта (${format.toUpperCase()})\nСессия: ${sessionId}\nДата: ${new Date().toLocaleString("ru-RU")}`;
     return new Blob([content], { type: format === "xlsx" ? "application/vnd.ms-excel" : "application/pdf" });
   }
   try {
     const res = await fetch(`${API}/artifacts/export`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ session_id: sessionId, format, result_ref: resultRef || null }),
+      body: JSON.stringify({
+        session_id: sessionId,
+        format,
+        result_ref: resultRef || null,
+        question: options?.question || null,
+        headline: options?.headline || null,
+        details: options?.details || null,
+        spec: options?.spec || null,
+      }),
     });
     if (!res.ok) throw await parseApiError(res);
     return await res.blob();
