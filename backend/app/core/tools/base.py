@@ -23,6 +23,7 @@ from pydantic import AfterValidator, BaseModel, ConfigDict, ValidationError, mod
 
 if TYPE_CHECKING:
     from app.core.llm.client import LLMClient
+    from app.core.memory.session_memory import SessionMemory
     from app.core.sandbox.wasm_runtime import WASMSandbox
 
 ToolKind = Literal["transform", "analysis", "lookup"]
@@ -30,10 +31,14 @@ ToolKind = Literal["transform", "analysis", "lookup"]
 
 @dataclass(frozen=True)
 class ToolContext:
-    """Что исполнитель даёт тулу помимо таблицы: LLM и песочница (None — по умолчанию)."""
+    """Что исполнитель даёт тулу помимо таблицы: LLM, песочница, память сессии.
+
+    None — по умолчанию; ``history`` есть только у шагов хода (read_history).
+    """
 
     llm: "LLMClient | None" = None
     sandbox: "WASMSandbox | None" = None
+    history: "SessionMemory | None" = None
 
 
 _FORBIDDEN_FUNCTIONS = frozenset({"current_setting", "getenv", "getvariable"})

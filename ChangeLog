@@ -1,3 +1,40 @@
+2026-10-28  Alexander Yurits  <143354682+Terrum19@users.noreply.github.com>
+
+	Контекст хода: последние ходы всегда, история по запросу,
+	воспоминания (#197).
+	* backend/app/core/memory/session_memory.py (recent_turns): Последние
+	settings.context_turns ходов любого статуса, кроме идущего, с
+	номером хода; шаги — только у ходов ok (#107).
+	(find_turns): Новая.  Ход по номеру или поиск по вопросам и ответам.
+	(memories, remember): Новые.  Воспоминания сессии в state["memories"].
+	(build_context): Поле memories — все включённые записи.
+	(CONTEXT_TURNS): Удалена, вместо неё settings.context_turns.
+	* backend/app/config.py (context_turns): Новая, по умолчанию 5.
+	* backend/app/core/tools/read_history.py: Новый lookup-тул.
+	* backend/app/core/tools/base.py (ToolContext.history): Новое поле.
+	* backend/app/core/agent/step_executor.py (execute): Аргумент history.
+	* backend/app/core/agent/orchestrator.py (_research): Записи из
+	plan.remember — в воспоминания; просьба без вопроса к данным
+	отвечается подтверждением.  (_turn): Воспоминания — в инсайт,
+	подтверждение — в details.  (_run_step): Память сессии — в шаг.
+	* backend/app/core/agent/planner.py (describe_memories): Новая.
+	(describe_history, describe_turns): Номер хода, ответ упавшего хода,
+	указание на read_history для ходов старше окна.
+	* backend/app/core/agent/insight.py (generate): Аргумент memories.
+	* backend/app/core/llm/prompts/step_planner.py (MEMORIES, OLDER_TURNS):
+	Новые.  (STEP_PLANNER): Поле remember.  (PAST_TURNS): Продолжается
+	последний ход с планом.
+	* backend/app/core/llm/prompts/insight_summary.py (INSIGHT_MEMORIES):
+	Новый.
+	* backend/app/models/research_step.py (ResearchPlan.remember): Новое.
+	* backend/app/core/agent/quality_fixes.py (CORE_TOOLS): read_history.
+	* docs/memory.md, docs/prompts.md, .env.example: То же.
+	* backend/tests/unit/test_context_memory.py,
+	backend/tests/unit/test_context_memory_flow.py: Новые.
+	* backend/tests/unit/test_session_memory.py,
+	backend/tests/unit/test_orchestrator_viz.py: Упавшие ходы — в
+	контексте без шагов, окно — 5 ходов.
+
 2026-10-28  mb6ockatf  <smokenmirror@tutamail.com>
 
 	Время шага без «0.0 с» (#185).

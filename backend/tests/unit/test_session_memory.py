@@ -98,7 +98,7 @@ def test_turn_keeps_question_plan_and_answer(memory):
     ]
 
 
-def test_failed_and_clarification_turns_stay_out_of_context(memory):
+def test_failed_and_clarification_turns_are_in_context_without_steps(memory):
     answered(memory, "Выручка по регионам")
     answered(memory, "Упал", status="failed")
     answered(memory, "Нужно уточнение", status="clarification")
@@ -106,21 +106,44 @@ def test_failed_and_clarification_turns_stay_out_of_context(memory):
     memory.start_turn("Оборвался")
     memory.record_step(step())
     restored = SessionMemory("test-session")
-    assert [t["question"] for t in restored.build_context("?")["turns"]] == ["Выручка по регионам"]
-    assert restored._state["turns"][-1]["status"] == "failed"
+    turns = restored.build_context("?")["turns"]
+    assert [t["question"] for t in turns] == [
+        "Выручка по регионам",
+        "Упал",
+        "Нужно уточнение",
+        "Оборвался",
+    ]
+    assert [t["status"] for t in turns] == ["ok", "failed", "clarification", "failed"]
+    # План — только у успешного хода (#107): шаги упавших не путают планировщик.
+    assert [len(t["steps"]) for t in turns] == [1, 0, 0, 0]
+    assert len(restored._state["turns"][1]["steps"]) == 1
 
 
-def test_turns_without_plan_stay_out_of_context(memory):
+def test_turn_without_plan_is_in_context_and_current_turn_is_not(memory):
     memory.start_turn("Привет")
     memory.finish_turn("ok", headline="Здравствуйте")
-    assert memory.build_context("?")["turns"] == []
+    memory.start_turn("Выручка по регионам")
+    turns = memory.build_context("Выручка по регионам")["turns"]
+    assert [(t["question"], t["headline"], t["steps"]) for t in turns] == [
+        ("Привет", "Здравствуйте", [])
+    ]
 
 
-def test_context_does_not_grow_past_three_turns(memory):
-    for number in range(6):
+def test_context_keeps_last_n_turns_with_their_numbers(memory):
+    for number in range(1, 9):
         answered(memory, f"Вопрос {number}")
-    turns = memory.build_context("?")["turns"]
-    assert [t["question"] for t in turns] == ["Вопрос 3", "Вопрос 4", "Вопрос 5"]
+    memory.start_turn("Вопрос 9")
+    turns = memory.build_context("Вопрос 9")["turns"]
+    assert settings.context_turns == 5
+    assert [t["question"] for t in turns] == [f"Вопрос {n}" for n in range(4, 9)]
+    assert [t["number"] for t in turns] == [4, 5, 6, 7, 8]
+
+
+def test_context_turns_comes_from_settings(memory, monkeypatch):
+    monkeypatch.setattr(settings, "context_turns", 2)
+    for number in range(1, 5):
+        answered(memory, f"Вопрос {number}")
+    assert [t["question"] for t in memory.build_context("?")["turns"]] == ["Вопрос 3", "Вопрос 4"]
 
 
 def test_resume_turn_continues_the_same_turn(memory):
@@ -218,12 +241,13 @@ def test_reply_gets_chain_instead_of_recent_turns(memory):
     assert context["turns"] == []
 
 
-def test_reply_chain_is_limited_to_three_turns(memory):
+def test_reply_chain_is_limited_to_context_turns(memory):
     turn_id = answered(memory, "Вопрос 0")
-    for number in range(1, 5):
+    for number in range(1, 7):
         turn_id = replied(memory, f"Вопрос {number}", reply_to=turn_id)
     memory.start_turn("Дальше", reply_to=turn_id)
-    assert [t["question"] for t in memory.reply_chain()] == ["Вопрос 2", "Вопрос 3", "Вопрос 4"]
+    chain = [t["question"] for t in memory.reply_chain()]
+    assert chain == [f"Вопрос {n}" for n in range(2, 7)]
 
 
 def test_reply_to_unknown_or_failed_turn_falls_back_to_recent_turns(memory):
@@ -233,7 +257,7 @@ def test_reply_to_unknown_or_failed_turn_falls_back_to_recent_turns(memory):
         memory.start_turn("А только Москва?", reply_to=reply_to)
         context = memory.build_context("А только Москва?")
         assert context["reply"] == []
-        assert [t["question"] for t in context["turns"]] == ["Выручка по регионам"]
+        assert [t["question"] for t in context["turns"]][:2] == ["Выручка по регионам", "Упал"]
 
 
 def test_reply_takes_chart_of_the_chosen_turn(memory):

@@ -5,9 +5,15 @@
 закрывает его ответом и статусом (ok / failed / clarification). Ответ
 на уточнение продолжает тот же ход (``resume_turn``).
 
-В контекст планировщика идут последние ``CONTEXT_TURNS`` успешных ходов
-с планом: вопрос, шаги с аргументами, итог и колонки результата. Размер
-контекста не растёт с числом ходов, шаги упавших ходов в него не попадают.
+В контекст планировщика идут последние ``settings.context_turns`` ходов
+любого статуса: вопрос и ответ, у успешных — ещё шаги с аргументами и
+колонки результата. Шаги упавших и прерванных уточнением ходов в контекст
+не попадают (#107). Ходы старше окна планировщик получает по запросу:
+тул ``read_history`` ищет их через ``find_turns``.
+
+Воспоминания (``memories``) — короткие записи сессии: что пользователь
+попросил запомнить. Включённые идут в контекст планировщика и инсайта
+каждого хода целиком, без отбора по вопросу (#197): их мало.
 
 Ход-ответ на прошлое сообщение (``reply_to``) вместо прошлых ходов получает
 цепочку ответов: выбранный ход и его предков по ``reply_to``. План выбранного
@@ -17,13 +23,15 @@
 таблицу сам (#165); её смена ходы не сбрасывает. Метаданные сессии
 (``title``, ``datasource_id``, ``created_at``) лежат в том же состоянии,
 поэтому сессия переживает перезапуск приложения. Состояние до списка ходов
-(``tables``, ``steps``, ``columns``) открывается, но не читается.
+(``tables``, ``steps``, ``columns``) открывается, но не читается; состояние
+без ``memories`` открывается с пустым списком.
 
 Состояние сессии хранится в SQLite (таблица ``session_state`` по адресу
 ``settings.sqlite_path``) вместо отдельных JSON-файлов.
 """
 
 import json
+import re
 import sqlite3
 import time
 import uuid
@@ -36,8 +44,10 @@ from app.config import settings
 from app.core.data.duckdb_manager import DuckDBManager
 from app.core.memory.profile_memory import ProfileMemory
 
-# Сколько прошлых успешных ходов видит планировщик.
-CONTEXT_TURNS = 3
+# Сколько ходов отдаёт поиск по истории (read_history).
+HISTORY_HITS = 3
+# Первые буквы слова при поиске по истории: «выручка» и «выручку» совпадают.
+STEM_LETTERS = 5
 
 
 def _connect(path: Path) -> sqlite3.Connection:
@@ -66,7 +76,10 @@ class SessionMemory:
         self.db = db
         self._state = self._load()
         self._state.setdefault("turns", [])
+        self._state.setdefault("memories", [])
         self._turn: dict | None = None
+        # Текущий ход ещё не закрыт finish_turn: в прошлые ходы он не входит.
+        self._open = False
 
     @staticmethod
     def list_sessions(limit: int, offset: int = 0) -> list[dict]:
@@ -109,7 +122,7 @@ class SessionMemory:
             conn.close()
         if row is not None:
             return json.loads(row[0])
-        return {"datasource": None, "pending_recovery": None, "turns": []}
+        return {"datasource": None, "pending_recovery": None, "turns": [], "memories": []}
 
     def exists(self) -> bool:
         """Сохранена ли сессия в SQLite."""
@@ -224,6 +237,7 @@ class SessionMemory:
             "reply_to": reply_to,
         }
         self._state["turns"].append(self._turn)
+        self._open = True
         self._persist()
         return self._turn["turn_id"]
 
@@ -233,6 +247,7 @@ class SessionMemory:
         if turn is None:
             return False
         self._turn = turn
+        self._open = True
         return True
 
     def _find(self, turn_id: str | None) -> dict | None:
@@ -251,7 +266,7 @@ class SessionMemory:
         if target is None or target["status"] != "ok" or not target["steps"]:
             return []
         chain = [target]
-        while len(chain) < CONTEXT_TURNS:
+        while len(chain) < settings.context_turns:
             parent = self._find(chain[-1].get("reply_to"))
             if parent is None or parent["status"] != "ok":
                 break
@@ -289,6 +304,7 @@ class SessionMemory:
             result_table=result_table,
             result_columns=list(result_columns or []),
         )
+        self._open = False
         self._persist()
 
     def last_chart(self) -> dict | None:
@@ -301,13 +317,68 @@ class SessionMemory:
                 return turn["chart"]
         return None
 
+    def _past_turns(self) -> list[dict]:
+        """Ходы, кроме идущего, с номером в сессии (с 1); шаги — только у успешных."""
+        return [
+            {**turn, "number": number, "steps": turn["steps"] if turn["status"] == "ok" else []}
+            for number, turn in enumerate(self._state["turns"], 1)
+            if not (self._open and turn is self._turn)
+        ]
+
     def recent_turns(self) -> list[dict]:
-        """Последние CONTEXT_TURNS успешных ходов с планом, старые первыми."""
-        done = [t for t in self._state["turns"] if t["status"] == "ok" and t["steps"]]
-        return done[-CONTEXT_TURNS:]
+        """Последние ``settings.context_turns`` ходов любого статуса, старые первыми."""
+        return self._past_turns()[-settings.context_turns :] if settings.context_turns else []
+
+    def find_turns(self, query: str | None = None, number: int | None = None) -> list[dict]:
+        """Прошлые ходы для read_history: ход по номеру или поиск по вопросам и ответам.
+
+        Поиск — по словам запроса в вопросе и ответе хода (совпадение первых
+        ``STEM_LETTERS`` букв), лучшие ``HISTORY_HITS`` ходов, старые первыми.
+        """
+        past = self._past_turns()
+        if number is not None:
+            return [turn for turn in past if turn["number"] == number]
+        wanted = _stems(query or "")
+        scored = [
+            (len(wanted & _stems(f"{turn['question']} {turn.get('headline') or ''}")), turn)
+            for turn in past
+        ]
+        hits = sorted((pair for pair in scored if pair[0]), key=lambda pair: -pair[0])
+        return sorted((turn for _, turn in hits[:HISTORY_HITS]), key=lambda turn: turn["number"])
+
+    # --- Воспоминания ---
+
+    def memories(self) -> list[dict]:
+        """Включённые воспоминания сессии, старые первыми."""
+        return [item for item in self._state["memories"] if item["enabled"]]
+
+    def remember(self, text: str, source: str = "user") -> dict | None:
+        """Добавить воспоминание и вернуть его запись; пустой текст — None.
+
+        Уже записанный текст (без учёта регистра и пробелов) не дублируется:
+        возвращается прежняя запись. ``source`` — откуда запись: ``user``
+        (просьба запомнить), позже — результаты глубокого исследования.
+        """
+        text = " ".join(text.split())
+        if not text:
+            return None
+        for item in self._state["memories"]:
+            if item["text"].casefold() == text.casefold():
+                return item
+        item = {
+            "memory_id": uuid.uuid4().hex,
+            "text": text,
+            "source": source,
+            "created_at": datetime.now(UTC).isoformat(),
+            "enabled": True,
+            "turn_id": self.turn_id,
+        }
+        self._state["memories"].append(item)
+        self._persist()
+        return item
 
     def build_context(self, question: str) -> dict:
-        """Собрать контекст: прошлые ходы или цепочка ответа + колонки + паспорт таблицы."""
+        """Собрать контекст: прошлые ходы или цепочка ответа, воспоминания, колонки, паспорт."""
         datasource = self.table
 
         # Профиль данных (паспорт таблицы) для долгосрочного контекста;
@@ -333,6 +404,7 @@ class SessionMemory:
         return {
             "turns": [] if reply else self.recent_turns(),
             "reply": reply,
+            "memories": [item["text"] for item in self.memories()],
             "question": question,
             "columns": columns,
             "datasource": datasource,
@@ -357,3 +429,8 @@ class SessionMemory:
         """Очистить состояние ожидания уточнения после успешного восстановления."""
         self._state["pending_recovery"] = None
         self._persist()
+
+
+def _stems(text: str) -> set[str]:
+    """Основы слов для поиска по истории: слова от 3 букв, первые STEM_LETTERS букв."""
+    return {word[:STEM_LETTERS] for word in re.findall(r"\w{3,}", text.casefold())}

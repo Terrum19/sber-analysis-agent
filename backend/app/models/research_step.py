@@ -111,8 +111,12 @@ class ResearchPlan(BaseModel):
     dashboard_title: str | None = None
     template_id: str | None = None
     dashboard_tiles: list[DashboardTilePlan] = Field(default_factory=list)
+    # Что пользователь попросил запомнить в этом вопросе (воспоминания сессии, #197).
+    remember: list[str] = Field(default_factory=list)
 
-    @field_validator("final_viz", "dashboard_requested", "dashboard_tiles", mode="before")
+    @field_validator(
+        "final_viz", "dashboard_requested", "dashboard_tiles", "remember", mode="before"
+    )
     @classmethod
     def _null_is_default(cls, value: Any, info) -> Any:
         """LLM присылает null вместо значения по умолчанию: final_viz=null -> auto."""
@@ -120,6 +124,12 @@ class ResearchPlan(BaseModel):
             field_info = cls.model_fields[info.field_name]
             return field_info.get_default(call_default_factory=True)
         return value
+
+    @field_validator("remember", mode="before")
+    @classmethod
+    def _one_note_is_list(cls, value: Any) -> Any:
+        """Одна запись строкой вместо списка: "remember": "выручка без НДС"."""
+        return [value] if isinstance(value, str) else value
 
     @model_validator(mode="after")
     def _tiles_mean_dashboard(self) -> "ResearchPlan":

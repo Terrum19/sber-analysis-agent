@@ -11,7 +11,7 @@ from app.config import settings
 from app.core.agent.quality_fixes import format_rows, insight_facts, ungrounded_numbers
 from app.core.data.duckdb_manager import DuckDBManager
 from app.core.llm.client import LLMClient
-from app.core.llm.prompts.insight_summary import INSIGHT_SUMMARY, TILE_INSIGHT
+from app.core.llm.prompts.insight_summary import INSIGHT_MEMORIES, INSIGHT_SUMMARY, TILE_INSIGHT
 from app.core.llm.prompts.quality_rules import (
     INSIGHT_RULES,
     MANY_ROWS,
@@ -46,13 +46,15 @@ class InsightGenerator:
         result_table: str,
         supporting: list[tuple[str, str]] | None = None,
         steps: list[ResearchStep] | None = None,
+        memories: list[str] | None = None,
     ) -> Insight:
         """Сформировать Insight по финальной таблице.
 
         supporting — (purpose, таблица) результатов стат-тестов и других
         analysis-шагов, которые дополняют основную таблицу. steps —
         выполненные шаги плана: без них «41» в одной строке не знает, что
-        это декабрь и сумма больше 150.
+        это декабрь и сумма больше 150. memories — воспоминания сессии
+        («выручка — без НДС»): все включённые, применимость решает модель.
         """
         from app.core.data.duckdb_manager import DuckDBManager
 
@@ -61,16 +63,18 @@ class InsightGenerator:
         supporting = [
             (purpose, db.to_records(table, limit=10)) for purpose, table in supporting or []
         ]
+        notes = describe_memories(memories or [])
         if not settings.agent_quality_fixes:
             extra = "\n".join(f"- {purpose}: {rows}" for purpose, rows in supporting)
             prompt = INSIGHT_SUMMARY.format(
                 question=question, result=result, supporting=extra or "нет"
             )
-            return await self.llm.complete_structured("Ты — аналитик.", prompt, Insight)
+            return await self.llm.complete_structured("Ты — аналитик.", prompt + notes, Insight)
         # Строки — компактной таблицей с ISO-датами: repr datetime мешает модели читать ряд.
         shown = format_rows(result)
         extra = "\n".join(f"- {purpose}:\n{format_rows(rows)}" for purpose, rows in supporting)
         prompt = INSIGHT_SUMMARY.format(question=question, result=shown, supporting=extra or "нет")
+        prompt += notes
         try:
             facts = insight_facts(db, result_table, shown=SHOWN_ROWS)
         except Exception:
@@ -83,8 +87,10 @@ class InsightGenerator:
         shape = SINGLE_ROW if rows <= 1 else MANY_ROWS.format(rows=rows)
         plan = describe_steps(steps or [])
         prompt += INSIGHT_RULES.format(plan=plan, facts=facts, shape=shape)
-        # Числа условий из шагов плана («> 150», «2024») — тоже опора, не выдумка.
-        return await self._grounded(prompt, f"{question}\n{shown}\n{extra}\n{facts}\n{plan}")
+        # Числа условий из шагов плана («> 150», «2024») и воспоминаний — тоже опора.
+        return await self._grounded(
+            prompt, f"{question}\n{shown}\n{extra}\n{facts}\n{plan}\n{notes}"
+        )
 
     async def generate_tile_insight(self, title: str, result_table: str, chart_type: str) -> str:
         from app.core.data.duckdb_manager import DuckDBManager
@@ -114,3 +120,10 @@ def describe_steps(steps: list[ResearchStep]) -> str:
         for number, step in enumerate(steps, 1)
     ]
     return "\n".join(lines) or "нет"
+
+
+def describe_memories(memories: list[str]) -> str:
+    """Блок воспоминаний для вывода; без воспоминаний — пусто."""
+    if not memories:
+        return ""
+    return INSIGHT_MEMORIES.format(memories="\n".join(f"- {text}" for text in memories))

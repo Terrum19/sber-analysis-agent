@@ -39,6 +39,12 @@ SessionMemory состояние ожидания уточнения (``pending_
 шаги плана пишутся в него, итог и статус — в ``finish_turn``. Ответ на
 уточнение продолжает тот же ход. ``turn_id`` хода фронт получает в
 событии ``done`` (и ``clarification_needed``).
+
+Просьбу запомнить («запомни, что выручка — без НДС») распознаёт планировщик:
+поле плана ``remember``. Оркестратор пишет записи в воспоминания сессии и
+подтверждает их в ответе; просьба без вопроса к данным отвечается одним
+подтверждением, без шагов и инсайта. Воспоминания сессии идут в инсайт.
+Шаги получают память сессии: по ней read_history ищет прошлые ходы.
 """
 
 import asyncio
@@ -96,6 +102,9 @@ FAILURE_MESSAGE = "Не удалось ответить на вопрос, по�
 # Плитка дашборда и экспорт принимают только результаты шагов (temp_result_vN).
 RESULT_TABLE = re.compile(r"temp_result_v\d+")
 
+# Подтверждение записи в воспоминания сессии (#197).
+REMEMBERED = "Запомнено: {notes}"
+
 SUMMARY_UNAVAILABLE = "Описание данных сейчас недоступно: модель не ответила."
 OVERVIEW_CAPTION = "Колонки таблицы"
 # Событие, которым кончается ход: после него поток закрывается.
@@ -144,6 +153,8 @@ class Execution:
     steps: list[ResearchStep] = field(default_factory=list)
     result_purpose: str = ""
     result_kind: str = "transform"
+    # Что записано в воспоминания по просьбе этого хода.
+    remembered: list[str] = field(default_factory=list)
 
 
 class ClarificationNeeded(Exception):
@@ -332,6 +343,14 @@ class AgentOrchestrator:
             # Клиент отключился посреди плана — задача больше не нужна.
             task.cancel()
         result_table = execution.result_table
+        confirmation = _confirmation(execution.remembered)
+
+        if confirmation and not execution.steps:
+            # Только просьба запомнить: вопроса к данным нет.
+            memory.finish_turn("ok", headline=confirmation)
+            yield {"type": "text", "data": {"headline": confirmation, "details": []}}
+            yield _done(turn_id)
+            return
 
         # --- Финальный блок: инсайт -> чарт -> дашборд -> done ---
         stage = "insight"
@@ -339,8 +358,14 @@ class AgentOrchestrator:
             logger.info(">>> run() генерация инсайта")
             yield _progress_event("insight", "started")
             insight = await self.insight_gen.generate(
-                question, result_table, supporting=execution.supporting, steps=execution.steps
+                question,
+                result_table,
+                supporting=execution.supporting,
+                steps=execution.steps,
+                memories=[item["text"] for item in memory.memories()],
             )
+            if confirmation:
+                insight.details.append(confirmation)
             logger.info(
                 "<<< run() инсайт: headline=%r details=%r", insight.headline, insight.details
             )
@@ -451,6 +476,11 @@ class AgentOrchestrator:
             plan.final_viz,
             plan.dashboard_requested,
         )
+        remembered = [item["text"] for text in plan.remember if (item := memory.remember(text))]
+        if remembered:
+            logger.info("<<< run() запомнено: %s", remembered)
+            if not plan.steps:
+                return request.question, Execution(result_table="", remembered=remembered)
         for s in plan.steps:
             logger.info(
                 "    шаг %d: tool=%s input=%s args=%s columns=%s purpose=%r",
@@ -465,6 +495,7 @@ class AgentOrchestrator:
         execution = await self._execute_plan(
             memory, plan, memory.table, request.question, emit=emit
         )
+        execution.remembered = remembered
         return request.question, execution
 
     async def _plan(self, question: str, context: dict) -> ResearchPlan:
@@ -523,7 +554,7 @@ class AgentOrchestrator:
             emit(_step_event(step, "started"))
             started_at = time.perf_counter()
             try:
-                step, table = await self._run_step(step, current, tables, source, emit)
+                step, table = await self._run_step(step, current, tables, source, emit, memory)
             except _StepFailed as failed:
                 emit(
                     _step_event(
@@ -603,6 +634,7 @@ class AgentOrchestrator:
         tables: dict[int, str],
         source: str,
         emit: Emit,
+        memory: SessionMemory | None = None,
     ) -> tuple[ResearchStep, str]:
         """Выполнить шаг, исправляя его по тексту ошибки; вернуть шаг и его таблицу.
 
@@ -618,7 +650,7 @@ class AgentOrchestrator:
 
         async def execute(candidate: ResearchStep) -> str:
             return await self.executor.execute(
-                candidate, current, step_tables=tables, source_table=source
+                candidate, current, step_tables=tables, source_table=source, history=memory
             )
 
         try:
@@ -1012,6 +1044,13 @@ def _requested_view(execution: Execution, records: list[dict]) -> str:
     if not fits("line", records, infer_field_types(records)):
         return "table"
     return requested if requested in ("line", "area") else "line"
+
+
+def _confirmation(remembered: list[str]) -> str:
+    """Подтверждение записи в воспоминания; ничего не записано — пусто."""
+    return (
+        REMEMBERED.format(notes="; ".join(f"«{text}»" for text in remembered)) if remembered else ""
+    )
 
 
 def _next_step_id(tables: dict[int, str]) -> int:
