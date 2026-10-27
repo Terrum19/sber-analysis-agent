@@ -128,7 +128,8 @@ def test_prompt_shows_failed_turn_without_plan_and_points_to_older_turns():
 
     history = describe_history({"turns": [ok, failed]})
     assert "Ходы 1–2 здесь не показаны" in history
-    assert "read_history" in history
+    # Без примера шага модель на вопрос о раннем ходе возвращала пустой план.
+    assert '"tool": "read_history", "arguments": {"turn": 1}' in history
     assert "не показаны" not in describe_history({"turns": [{**ok, "number": 1}]})
 
 
