@@ -21,7 +21,8 @@ SCHEMA = (
         glossary      JSON,
         summary       VARCHAR,
         profiled_at   TIMESTAMPTZ NOT NULL,
-        enriched_at   TIMESTAMPTZ
+        enriched_at   TIMESTAMPTZ,
+        empty_rows    BIGINT
     )""",
     """CREATE TABLE IF NOT EXISTS _meta.column_passport (
         table_name           VARCHAR NOT NULL,
@@ -57,6 +58,7 @@ SCHEMA = (
         is_unique            BOOLEAN NOT NULL,
         outlier_count        BIGINT,
         identifier_by        VARCHAR,
+        flags                JSON,
         lower_fence          DOUBLE,
         upper_fence          DOUBLE,
         title                VARCHAR,
@@ -69,16 +71,27 @@ SCHEMA = (
     # Паспорта, созданные до появления названий колонок (aliases и
     # description_original в них остаются и больше не читаются).
     "ALTER TABLE _meta.column_passport ADD COLUMN IF NOT EXISTS title VARCHAR",
+    "ALTER TABLE _meta.column_passport ADD COLUMN IF NOT EXISTS flags JSON",
+    "ALTER TABLE _meta.table_passport ADD COLUMN IF NOT EXISTS empty_rows BIGINT",
+    (
+        "ALTER TABLE _meta.table_passport "
+        "ADD COLUMN IF NOT EXISTS description_status VARCHAR DEFAULT 'none'"
+    ),
+    "ALTER TABLE _meta.table_passport ADD COLUMN IF NOT EXISTS description_run VARCHAR",
+    "ALTER TABLE _meta.table_passport ADD COLUMN IF NOT EXISTS summary_fingerprint VARCHAR",
 )
 
+DESCRIPTION_STATUSES = ("none", "pending", "ready", "failed")
+
 SAVE_TABLE = """INSERT INTO _meta.table_passport
-    (table_name, row_count, column_count, glossary, profiled_at)
-    VALUES ($table, $row_count, $column_count, $glossary, $profiled_at)
+    (table_name, row_count, column_count, glossary, profiled_at, empty_rows)
+    VALUES ($table, $row_count, $column_count, $glossary, $profiled_at, $empty_rows)
     ON CONFLICT (table_name) DO UPDATE SET
         row_count = excluded.row_count,
         column_count = excluded.column_count,
         glossary = COALESCE(excluded.glossary, glossary),
-        profiled_at = excluded.profiled_at"""
+        profiled_at = excluded.profiled_at,
+        empty_rows = excluded.empty_rows"""
 
 COLUMN_FIELDS = ("table_name", "position", *ROW_FIELDS)
 UPDATED_FIELDS = [name for name in COLUMN_FIELDS if name not in ("table_name", "column_name")]
@@ -100,7 +113,7 @@ SAVE_ENRICHMENT = """UPDATE _meta.column_passport SET
         enriched_at = now()
     WHERE table_name = $table AND column_name = $column"""
 
-LOAD_TABLE = """SELECT table_name, row_count, column_count,
+LOAD_TABLE = """SELECT table_name, row_count, column_count, empty_rows,
         strftime(profiled_at AT TIME ZONE 'UTC', '%Y-%m-%dT%H:%M:%S+00:00') AS profiled_at
     FROM _meta.table_passport WHERE table_name = $table"""
 
@@ -136,6 +149,7 @@ class ProfileMemory:
                     if glossary is None
                     else json.dumps(glossary, ensure_ascii=False),
                     "profiled_at": profile.profiled_at,
+                    "empty_rows": profile.empty_rows,
                 },
             )
             names = [column.name for column in profile.columns]
@@ -199,6 +213,80 @@ class ProfileMemory:
             )
             for row in rows
         ]
+
+    def save_summary(self, table: str, text: str, fingerprint: str) -> None:
+        """Сохранить описание таблицы «что передо мной» и отпечаток его промпта."""
+        self.db.execute(
+            "UPDATE _meta.table_passport SET summary = $text, summary_fingerprint = $fingerprint "
+            "WHERE table_name = $table",
+            {"table": table, "text": text, "fingerprint": fingerprint},
+        )
+
+    def load_summary(self, table: str) -> tuple[str, str] | None:
+        """Описание таблицы и отпечаток его промпта (None, если описания нет)."""
+        rows = self.db.query(
+            "SELECT summary, summary_fingerprint FROM _meta.table_passport "
+            "WHERE table_name = $table",
+            {"table": table},
+        )
+        if not rows or rows[0]["summary"] is None:
+            return None
+        return rows[0]["summary"], rows[0]["summary_fingerprint"]
+
+    def set_description_status(self, table: str, status: str, run: str | None = None) -> None:
+        """Статус переноса описания в паспорт: none, pending, ready или failed.
+
+        run — запуск переноса (begin_description): статус меняется, только если
+        таблицу с тех пор не подключили заново. None — без проверки.
+        """
+        if status not in DESCRIPTION_STATUSES:
+            raise ValueError(f"Неизвестный статус описания «{status}»")
+        self.db.execute(
+            "UPDATE _meta.table_passport SET description_status = $status "
+            "WHERE table_name = $table AND ($run IS NULL OR description_run = $run)",
+            {"table": table, "status": status, "run": run},
+        )
+
+    def begin_description(self, table: str, run: str, described: bool) -> None:
+        """Новый запуск переноса описания: pending (есть описание) или none.
+
+        Перенос прошлого запуска по этой таблице больше ничего не запишет.
+        """
+        self.db.execute(
+            "UPDATE _meta.table_passport SET description_status = $status, description_run = $run "
+            "WHERE table_name = $table",
+            {"table": table, "status": "pending" if described else "none", "run": run},
+        )
+
+    def load_description_run(self, table: str) -> str | None:
+        """Текущий запуск переноса описания (begin_description) или None."""
+        rows = self.db.query(
+            "SELECT description_run FROM _meta.table_passport WHERE table_name = $table",
+            {"table": table},
+        )
+        return rows[0]["description_run"] if rows else None
+
+    def load_description_status(self, table: str) -> str:
+        """Статус переноса описания; без паспорта — none."""
+        rows = self.db.query(
+            "SELECT description_status FROM _meta.table_passport WHERE table_name = $table",
+            {"table": table},
+        )
+        return rows[0]["description_status"] if rows and rows[0]["description_status"] else "none"
+
+    def fail_pending(self, run: str | None = None) -> list[str]:
+        """pending → failed; вернуть имена таблиц.
+
+        Без run — у всех таблиц: при старте фоновый describe() прошлого
+        процесса уже не доработает. С run — только у таблиц этого запуска.
+        """
+        rows = self.db.query(
+            "UPDATE _meta.table_passport SET description_status = 'failed' "
+            "WHERE description_status = 'pending' AND ($run IS NULL OR description_run = $run) "
+            "RETURNING table_name",
+            {"run": run},
+        )
+        return sorted(row["table_name"] for row in rows)
 
     def delete(self, table: str) -> None:
         """Удалить паспорт таблицы."""

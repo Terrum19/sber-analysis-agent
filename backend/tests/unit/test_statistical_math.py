@@ -99,6 +99,7 @@ def test_describe_stats_returns_known_sample_statistics(math_db: DuckDBManager) 
     row = execute_tool(math_db, "describe_stats", ["x"])
     assert row["n"] == 4
     assert number(row["mean"]) == pytest.approx(2.5)
+    assert number(row["median"]) == pytest.approx(2.5)
     assert number(row["std"]) == pytest.approx(1.2909944487358056)
     assert number(row["min"]) == pytest.approx(1.0)
     assert number(row["max"]) == pytest.approx(4.0)

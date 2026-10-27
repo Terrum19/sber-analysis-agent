@@ -106,7 +106,7 @@ def test_atomic_tools_preserve_expected_values(db: DuckDBManager) -> None:
         (
             "describe_stats",
             ["amount"],
-            {"n", "mean", "std", "min", "max", "q1", "q3", "skew", "kurtosis"},
+            {"n", "mean", "median", "std", "min", "max", "q1", "q3", "skew", "kurtosis"},
         ),
         ("bootstrap_ci", ["amount"], {"statistic", "estimate", "ci_low", "ci_high"}),
         ("search_categorical_values", ["category", "a"], {"stored_value", "match_score"}),
@@ -209,3 +209,50 @@ def test_registry_is_extensible_without_orchestrator_changes(db: DuckDBManager) 
         assert "marker: marker" in tool_registry.describe()
     finally:
         tool_registry._tools.pop("marker", None)
+
+
+@pytest.mark.parametrize(
+    ("name", "arguments"),
+    [
+        ("time_bucket", {"date_column": "event_date", "function": "SUM"}),
+        ("time_series", {"date_column": "event_date"}),
+        ("seasonality", {"date_column": "event_date"}),
+        ("forecast", {"date_column": "event_date"}),
+        ("cohort_analysis", {"cohort_column": "category", "period_column": "event_date"}),
+        ("product_performance", {"group_column": "category"}),
+    ],
+)
+def test_column_is_alias_of_metric_column(name: str, arguments: dict) -> None:
+    # #150: модель пишет column, как у group_by/aggregate.
+    args = tool_registry.get(name).parse_args(arguments={**arguments, "column": "amount"})
+    assert args.metric_column == "amount"
+
+
+def test_time_bucket_explicit_metric_column_is_unchanged() -> None:
+    tool = tool_registry.get("time_bucket")
+    args = tool.parse_args(arguments={"date_column": "event_date", "metric_column": "amount"})
+    assert args.metric_column == "amount"
+    # Оба сразу — неоднозначно: не угадываем, план переспрашивается.
+    with pytest.raises(ValueError, match="Extra inputs"):
+        tool.parse_args(
+            arguments={"date_column": "event_date", "metric_column": "amount", "column": "id"}
+        )
+
+
+def test_time_bucket_with_column_runs(db: DuckDBManager) -> None:
+    table = tool_registry.get("time_bucket").run(
+        db, "raw", date_column="event_date", function="SUM", column="amount"
+    )
+    assert [row["sum_amount"] for row in db.to_records(table)] == [10.0, 20.0, 30.0, 40.0]
+
+
+def test_validate_plan_accepts_time_bucket_with_column() -> None:
+    from app.core.agent.planner import validate_plan
+    from app.models.research_step import ResearchPlan, ResearchStep
+
+    step = ResearchStep(
+        step_id=0,
+        tool="time_bucket",
+        arguments={"date_column": "event_date", "function": "SUM", "column": "amount"},
+    )
+    assert validate_plan(ResearchPlan(steps=[step])) == []

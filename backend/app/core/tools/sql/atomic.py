@@ -5,7 +5,16 @@ from typing import Literal
 
 from pydantic import Field, model_validator
 
-from app.core.tools.base import BaseTool, Expr, Ident, TableRef, ToolArgs, identifier, literal
+from app.core.tools.base import (
+    BaseTool,
+    Expr,
+    Ident,
+    MetricArgs,
+    TableRef,
+    ToolArgs,
+    identifier,
+    literal,
+)
 
 Scalar = str | int | float | bool
 
@@ -228,14 +237,17 @@ class GroupByTool(BaseTool):
 
     def execute(self, db, input_table: str, args: GroupByArgs) -> str:
         by = [args.by] if isinstance(args.by, str) else args.by
-        if not by:
-            raise ValueError("group_by requires at least one grouping column")
         metrics = args.metrics or [Metric(function=args.function, column=args.column)]
         selected = [
             f"{aggregate_sql(m.function, m.column)} AS "
             f"{identifier(m.alias or aggregate_alias(m.function, m.column))}"
             for m in metrics
         ]
+        if not by:
+            # by=[] — один итог по всей таблице (H-T1, agent/quality_fixes.py).
+            return db.save_step_result(
+                input_table, f"SELECT {', '.join(selected)} FROM {identifier(input_table)}"
+            )
         keys = ", ".join(identifier(column) for column in by)
         return db.save_step_result(
             input_table,
@@ -265,7 +277,7 @@ class PivotTool(BaseTool):
         )
 
 
-class TimeBucketArgs(ToolArgs):
+class TimeBucketArgs(MetricArgs):
     date_column: Ident
     interval: Interval = "month"
     metric_column: Ident | None = None
@@ -284,6 +296,14 @@ class TimeBucketArgs(ToolArgs):
                 data["by"] = [data["by"]]
         return data
 
+    @model_validator(mode="after")
+    def _metric_for_function(self) -> "TimeBucketArgs":
+        # Проверка до выполнения: validate_plan ловит её и переспрашивает план
+        # (дёшево, префикс промпта в кеше), а не step_fix после падения шага.
+        if self.metric_column is None and self.function != "COUNT":
+            raise ValueError(f"time_bucket: {self.function} requires metric_column")
+        return self
+
 
 class TimeBucketTool(BaseTool):
     name = "time_bucket"
@@ -294,8 +314,6 @@ class TimeBucketTool(BaseTool):
     Args = TimeBucketArgs
 
     def execute(self, db, input_table: str, args: TimeBucketArgs) -> str:
-        if args.metric_column is None and args.function != "COUNT":
-            raise ValueError(f"time_bucket: {args.function} requires metric_column")
         metric = (
             f"{aggregate_sql(args.function, args.metric_column)} AS "
             f"{identifier(aggregate_alias(args.function, args.metric_column))}"

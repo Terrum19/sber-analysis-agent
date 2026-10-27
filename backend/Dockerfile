@@ -17,7 +17,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends fonts-dejavu-co
 # контейнеру не нужна сеть и рестарт не тратил время на INSTALL.
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
-RUN python -c "import duckdb; duckdb.connect().execute('INSTALL postgres_scanner')"
+RUN python -c "import duckdb; con = duckdb.connect(); con.execute('INSTALL postgres_scanner'); con.execute('INSTALL clickhouse_scanner FROM community')"
 
 # Pyodide и колёса numpy/pandas/scipy/scikit-learn/statsmodels — тоже на сборке:
 # в рантайме песочница сети не имеет.

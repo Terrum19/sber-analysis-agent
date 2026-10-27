@@ -15,6 +15,8 @@ from app.config import settings
 
 T = TypeVar("T", bound=BaseModel)
 
+PLAN_COLUMNS = ("category", "user_id")
+
 
 class FakeLLM:
     """Заглушка LLMClient с фиксированным ответом для любого вопроса."""
@@ -27,6 +29,9 @@ class FakeLLM:
             timeout=settings.llm_timeout_s,
         )
         self._instructor = instructor.from_openai(self._client)
+
+    async def warm_up(self) -> None:
+        """Ничего: контекст сервера фейку не нужен."""
 
     async def complete(self, system: str, user: str, **kwargs: Any) -> str:
         """Возвращает фиксированную строку-ответ."""
@@ -42,12 +47,13 @@ class FakeLLM:
         if schema.__name__ == "ResearchPlan":
             from app.models.research_step import ResearchStep
 
+            column = next((name for name in PLAN_COLUMNS if name in user), PLAN_COLUMNS[0])
             return schema(
                 steps=[
                     ResearchStep(
                         step_id=0,
                         tool="aggregate",
-                        columns=["category"],
+                        columns=[column],
                         purpose="Агрегируем данные по категории",
                     )
                 ],

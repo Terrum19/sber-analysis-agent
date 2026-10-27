@@ -1,8 +1,8 @@
 """Схемы плана исследования: ResearchStep и ResearchPlan."""
 
-from typing import Any
+from typing import Any, Literal
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 # Ссылки на таблицы в плане: $prev — результат последнего transform-шага,
 # $source — исходная таблица источника, $step_N — результат шага N.
@@ -71,11 +71,63 @@ class ResearchStep(BaseModel):
         return data
 
 
+class DashboardTilePlan(BaseModel):
+    title: str
+    step_id: int
+    chart_type: Literal[
+        "bar", "line", "area", "scatter", "histogram", "box", "heatmap", "table", "kpi", "auto"
+    ] = "auto"
+    is_kpi: bool = False
+    insight_needed: bool = False
+
+    @field_validator("chart_type", "is_kpi", "insight_needed", mode="before")
+    @classmethod
+    def _null_is_default(cls, value: Any, info) -> Any:
+        if value is None:
+            return cls.model_fields[info.field_name].default
+        return value.strip().lower() if isinstance(value, str) else value
+
+
 class ResearchPlan(BaseModel):
     """Полный план исследования: упорядоченные шаги + мета."""
 
     steps: list[ResearchStep] = Field(default_factory=list)
-    final_viz: str = "auto"  # bar, line, scatter, histogram, table, auto
+    final_viz: Literal[
+        "bar",
+        "line",
+        "area",
+        "scatter",
+        "histogram",
+        "box",
+        "heatmap",
+        "table",
+        "kpi",
+        "auto",
+        "none",
+    ] = "auto"
     dashboard_requested: bool = False
     # Шаг, чей результат идёт в ответ и на график (None — последний шаг).
     result_step: int | None = None
+    dashboard_title: str | None = None
+    template_id: str | None = None
+    dashboard_tiles: list[DashboardTilePlan] = Field(default_factory=list)
+
+    @field_validator("final_viz", "dashboard_requested", "dashboard_tiles", mode="before")
+    @classmethod
+    def _null_is_default(cls, value: Any, info) -> Any:
+        """LLM присылает null вместо значения по умолчанию: final_viz=null -> auto."""
+        if value is None:
+            field_info = cls.model_fields[info.field_name]
+            return field_info.get_default(call_default_factory=True)
+        return value
+
+    @model_validator(mode="after")
+    def _tiles_mean_dashboard(self) -> "ResearchPlan":
+        if self.dashboard_tiles:
+            self.dashboard_requested = True
+        return self
+
+    @field_validator("final_viz", mode="before")
+    @classmethod
+    def normalize_final_viz(cls, value: Any) -> Any:
+        return value.strip().lower() if isinstance(value, str) else value

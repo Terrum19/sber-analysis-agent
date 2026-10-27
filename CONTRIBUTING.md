@@ -42,3 +42,24 @@ make hooks
 make lint   # ruff + next lint
 make test   # pytest
 ```
+
+## Smoke-тест чистого запуска
+
+Workflow Smoke (`.github/workflows/smoke.yml`, #79) на каждый PR и push в
+`dev`/`main` поднимает `docker compose up -d --build backend frontend` с
+надстройкой `docker-compose.ci.yml`: без профиля Ollama не стартует, бэкенд
+отвечает фейковой LLM (`USE_FAKE_LLM=true`). Затем `scripts/smoke.sh`
+загружает `data/sample_datasets/demo_events.csv`, создаёт сессию над первой
+таблицей из ответа, читает SSE чата до события `done` (событие `error`,
+обрыв или таймаут — провал) и проверяет, что фронтенд отдаёт `GET /` 200.
+
+Локально, на уже поднятом стеке:
+
+```bash
+make smoke
+```
+
+Переменные: `BACKEND_URL` (по умолчанию `http://localhost:8000`),
+`FRONTEND_URL` (`http://localhost:3000`), `SMOKE_CSV`, `SMOKE_TIMEOUT`
+(секунды, 120), `SKIP_FRONTEND=1` — только бэкенд (например, против
+`uvicorn` с `USE_FAKE_LLM=true`).

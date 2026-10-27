@@ -9,7 +9,7 @@ from app.core.agent.orchestrator import (
     AgentOrchestrator,
     ClarificationNeeded,
 )
-from app.core.agent.planner import StepPlanner, validate_plan
+from app.core.agent.planner import PlanInvalid, StepPlanner, validate_plan
 from app.core.agent.step_executor import StepExecutor
 from app.core.data.duckdb_manager import DuckDBManager
 from app.core.sandbox import codegen_runner
@@ -253,22 +253,52 @@ def test_planner_retries_once_with_validation_errors() -> None:
     assert '"tool": "bad_tool"' in llm.prompts[1]
 
 
+class PlansLLM:
+    """Отдаёт планы по очереди и запоминает промпты."""
+
+    def __init__(self, *tools: str) -> None:
+        self.tools = list(tools)
+        self.prompts: list[str] = []
+
+    async def complete_structured(self, system, user, schema):
+        self.prompts.append(user)
+        tool = self.tools.pop(0)
+        return ResearchPlan(steps=[ResearchStep(tool=tool, arguments={"column": "region"})])
+
+
+def test_planner_rejects_a_plan_still_invalid_after_the_retry() -> None:
+    llm = PlansLLM("bad_tool", "worse_tool")
+    with pytest.raises(PlanInvalid) as exc:
+        asyncio.run(StepPlanner(llm=llm).plan("вопрос", {"columns": ["region"]}))
+    assert len(llm.prompts) == 2
+    assert exc.value.errors == ["шаг 0: неизвестный инструмент 'worse_tool'"]
+
+
+def test_planner_checks_the_retry_and_returns_it_when_valid() -> None:
+    llm = PlansLLM("bad_tool", "aggregate")
+    plan = asyncio.run(StepPlanner(llm=llm).plan("вопрос", {"columns": ["region"]}))
+    assert [step.tool for step in plan.steps] == ["aggregate"]
+    assert len(llm.prompts) == 2
+
+
 # --- оркестратор: $prev, analysis, result_step, lookup ---
 
 
 class FakeMemory:
+    turn_id = "turn-1"
+
     def __init__(self) -> None:
-        self.steps: list[tuple[int, str]] = []
+        self.steps: list[int] = []
         self.pending: dict | None = None
 
-    def record_step(self, step, result_table: str) -> None:
-        self.steps.append((step.step_id, result_table))
+    def record_step(self, step) -> None:
+        self.steps.append(step.step_id)
 
     def set_pending_recovery(self, data: dict) -> None:
         self.pending = data
 
     def build_context(self, question: str) -> dict:
-        return {"columns": [], "summary": ""}
+        return {"columns": [], "turns": []}
 
 
 class ScriptedPlanner:
@@ -363,7 +393,7 @@ def test_lookup_step_triggers_replanning_with_observation(db: DuckDBManager) -> 
     execution = run_plan(orchestrator(db, planner), memory, plan)
     assert planner.contexts[0]["next_step_id"] == 1
     assert "spb" in planner.contexts[0]["executed"]
-    assert [step_id for step_id, _ in memory.steps] == [0, 1]
+    assert memory.steps == [0, 1]
     assert [row["id"] for row in db.to_records(execution.result_table)] == [3, 4]
 
 
@@ -449,3 +479,82 @@ def test_recovery_without_action_replans_and_rejects_an_empty_plan(
     with pytest.raises(ClarificationNeeded):
         asyncio.run(orchestrator(db, planner)._apply_recovery(FakeMemory(), pending, Request()))
     assert len(planner.contexts) == 1
+
+
+class InvalidPlanner(ScriptedPlanner):
+    async def plan(self, question: str, context: dict) -> ResearchPlan:
+        self.contexts.append(context)
+        raise PlanInvalid(["шаг 0: неизвестный инструмент 'bad_tool'"])
+
+
+class CountingExecutor(StepExecutor):
+    def __init__(self, db: DuckDBManager) -> None:
+        super().__init__(db=db)
+        self.calls = 0
+
+    async def execute(self, *args, **kwargs):
+        self.calls += 1
+        return await super().execute(*args, **kwargs)
+
+
+def invalid_plan_agent(db: DuckDBManager) -> tuple[AgentOrchestrator, CountingExecutor]:
+    executor = CountingExecutor(db)
+    agent = AgentOrchestrator(
+        planner=InvalidPlanner(), executor=executor, insight_gen=object(), db=db
+    )
+    return agent, executor
+
+
+def assert_plan_clarification(exc: pytest.ExceptionInfo) -> None:
+    assert exc.value.step_id == -1
+    assert "bad_tool" in exc.value.error
+    assert exc.value.suggestions == ["Переформулировать вопрос"]
+
+
+def test_invalid_plan_asks_to_rephrase_without_executing(db: DuckDBManager) -> None:
+    agent, executor = invalid_plan_agent(db)
+
+    class Memory(FakeMemory):
+        table = "raw"
+
+    class Request:
+        question = "вопрос"
+        recovery_response = None
+
+    events: list[dict] = []
+    with pytest.raises(ClarificationNeeded) as exc:
+        asyncio.run(agent._research(Memory(), None, Request(), events.append))
+    assert_plan_clarification(exc)
+    assert executor.calls == 0
+    assert events[-1]["data"]["status"] == "failed"
+
+
+def test_invalid_replan_after_lookup_asks_to_rephrase(db: DuckDBManager) -> None:
+    agent, executor = invalid_plan_agent(db)
+    lookup = ResearchStep(
+        step_id=0, tool="search_categorical_values", arguments={"column": "region", "query": "SPB"}
+    )
+    with pytest.raises(ClarificationNeeded) as exc:
+        run_plan(agent, FakeMemory(), ResearchPlan(steps=[lookup]))
+    assert_plan_clarification(exc)
+    assert executor.calls == 1
+
+
+def test_invalid_plan_after_recovery_text_asks_to_rephrase(db: DuckDBManager) -> None:
+    agent, executor = invalid_plan_agent(db)
+    pending = {
+        "question": "исходный вопрос",
+        "failed_step_id": 0,
+        "plan_steps": [ResearchStep(step_id=0, tool="aggregate").model_dump()],
+        "input_table": "raw",
+        "error": "ошибка",
+    }
+
+    class Request:
+        question = "уточнение"
+        recovery_response = "считай по region"
+
+    with pytest.raises(ClarificationNeeded) as exc:
+        asyncio.run(agent._apply_recovery(FakeMemory(), pending, Request()))
+    assert_plan_clarification(exc)
+    assert executor.calls == 0

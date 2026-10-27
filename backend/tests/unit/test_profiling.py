@@ -13,6 +13,7 @@ from app.core.data.profiling import (
     outlier_summary,
     plain,
     profile_table,
+    profile_warnings,
     quality_notes,
     quote_table,
     schema_overview,
@@ -496,3 +497,158 @@ def test_rows_rename_reserved_fields_and_restore_order(db) -> None:
     day = ColumnStats.from_row(rows[1])
     assert day.min_date == date(2024, 1, 1)
     assert day.mode is None
+
+
+def test_dirty_text_column_gets_three_flags(db) -> None:
+    make_table(
+        db,
+        "survey",
+        "Q1A VARCHAR, country VARCHAR",
+        [
+            ("1", "RU"),
+            ("5", "NA"),
+            ("3", "US"),
+            ("NULL", "RU"),
+            ("q1a ", "country"),
+            (None, None),
+        ],
+    )
+    counting = CountingDB(db)
+    profile = profile_table(counting, "survey", approx=False)
+    assert len(counting.queries) == 3
+    assert profile.column("Q1A").flags == ["numeric_as_text", "null_tokens:1", "header_value"]
+    assert profile.column("country").flags == ["header_value"]
+    assert profile.empty_rows == 1
+    notes = quality_notes(profile)
+    assert notes[0] == "пустых строк (все колонки NULL): 1"
+    assert "«Q1A»: числа записаны текстом" in notes
+    assert "«Q1A»: литералы пропусков в тексте: 1" in notes
+    assert "«country»: среди значений есть имя колонки" in notes
+
+
+def test_codes_are_not_numbers_written_as_text(db) -> None:
+    db.execute(
+        "CREATE TABLE codes AS SELECT "
+        "lpad((range % 50)::VARCHAR, 3, '0') AS zip, "
+        "(7707083000 + range % 20)::VARCHAR AS inn, "
+        "range::VARCHAR AS client_id, "
+        "(range + 1)::VARCHAR AS ticket, "
+        "(2000 + range % 20)::VARCHAR AS year "
+        "FROM range(120)"
+    )
+    profile = profile_table(db, "codes", approx=False)
+    flags = {column.name: column.flags for column in profile.columns}
+    assert flags == {
+        "zip": [],
+        "inn": [],
+        "client_id": [],
+        "ticket": [],
+        "year": ["numeric_as_text"],
+    }
+
+
+def test_null_tokens_and_headers_do_not_make_column_unique(db) -> None:
+    rows = [(str(7 * index), str(index)) for index in range(1, 119)]
+    rows += [("7", "119"), ("NULL", "NULL"), ("q1e", "ticket")]
+    make_table(db, "answers", "Q1E VARCHAR, ticket VARCHAR", rows)
+    profile = profile_table(db, "answers", approx=False)
+    assert profile.column("Q1E").flags == ["numeric_as_text", "null_tokens:1", "header_value"]
+    assert profile.column("ticket").flags == ["null_tokens:1", "header_value"]
+
+
+def test_non_finite_and_rare_numbers_are_not_flagged(db) -> None:
+    make_table(
+        db,
+        "readings",
+        "with_nan VARCHAR, with_inf VARCHAR, mostly VARCHAR, half VARCHAR",
+        [
+            ("NaN", "inf", "1" if index else "abc", "1" if index % 2 else "abc")
+            for index in range(20)
+        ],
+    )
+    profile = profile_table(db, "readings", approx=False)
+    assert profile.column("with_nan").flags == ["null_tokens:20"]
+    assert profile.column("with_inf").flags == []
+    assert profile.column("mostly").flags == ["numeric_as_text"]
+    assert profile.column("half").flags == []
+    assert profile.empty_rows == 0
+
+
+def test_null_tokens_come_from_settings(db, monkeypatch) -> None:
+    make_table(db, "dashes", "value VARCHAR", [("1",), ("-",), ("2",), ("?",)])
+    monkeypatch.setattr(settings, "csv_null_tokens", ["?"])
+    assert profile_table(db, "dashes").column("value").flags == ["null_tokens:1"]
+    monkeypatch.setattr(settings, "csv_null_tokens", [])
+    assert profile_table(db, "dashes").column("value").flags == []
+
+
+def test_flags_survive_rows(db) -> None:
+    make_table(
+        db, "dirty", "score VARCHAR, note VARCHAR", [("1", "a"), ("NULL", None), (None, None)]
+    )
+    profile = profile_table(db, "dirty", approx=False)
+    rows = [
+        column.to_row() | {"position": position} for position, column in enumerate(profile.columns)
+    ]
+    assert rows[0]["flags"] == '["numeric_as_text", "null_tokens:1"]'
+    table_row = {
+        "table_name": profile.table,
+        "row_count": profile.row_count,
+        "column_count": profile.column_count,
+        "profiled_at": profile.profiled_at,
+        "empty_rows": profile.empty_rows,
+    }
+    assert TableProfile.from_rows(table_row, rows) == profile
+    assert profile.to_dict()["empty_rows"] == 1
+    assert ColumnStats.from_row(rows[1] | {"flags": None}).flags == []
+
+
+def flagged_profile(flags: dict[str, list[str]], empty_rows: int = 0) -> TableProfile:
+    columns = [
+        ColumnStats(name=name, dtype="VARCHAR", kind="text", flags=marks)
+        for name, marks in flags.items()
+    ]
+    return TableProfile("survey", 10, len(columns), columns, "2026-10-24T00:00:00", empty_rows)
+
+
+def test_profile_warnings_one_phrase_per_flag() -> None:
+    profile = flagged_profile(
+        {
+            "Q1A": ["numeric_as_text", "null_tokens:2", "header_value"],
+            "Q1I": ["numeric_as_text", "null_tokens:6"],
+            "country": ["header_value"],
+        },
+        empty_rows=6,
+    )
+    assert profile_warnings(profile) == [
+        "Числа записаны текстом в колонках «Q1A», «Q1I».",
+        "Литералы пропусков (NULL, N/A и т. п.) в колонках «Q1I» (6), «Q1A» (2).",
+        (
+            "Значение, равное имени колонки (похоже на повторённый заголовок), "
+            "в колонках «Q1A», «country»."
+        ),
+        "Пустых строк (все колонки пустые): 6.",
+    ]
+
+
+def test_profile_warnings_name_five_columns() -> None:
+    profile = flagged_profile({f"c{index}": ["numeric_as_text"] for index in range(1, 9)})
+    assert profile_warnings(profile) == [
+        "Числа записаны текстом в колонках «c1», «c2», «c3», «c4», «c5» и ещё 3."
+    ]
+
+
+def test_clean_profile_has_no_warnings() -> None:
+    assert profile_warnings(flagged_profile({"a": [], "b": []})) == []
+
+
+def test_profile_warnings_skip_unknown_flags() -> None:
+    profile = flagged_profile({"a": ["future_flag:4", "numeric_as_text"], "b": ["future_flag"]})
+    assert profile_warnings(profile) == ["Числа записаны текстом в колонках «a»."]
+
+
+def test_single_column_has_no_empty_rows_warning() -> None:
+    profile = flagged_profile({"value": ["null_tokens:3"]}, empty_rows=2)
+    assert profile_warnings(profile) == [
+        "Литералы пропусков (NULL, N/A и т. п.) в колонках «value» (3)."
+    ]

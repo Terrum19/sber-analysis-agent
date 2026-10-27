@@ -16,8 +16,9 @@ from typing import Any
 
 VEGA_LITE_SCHEMA = "https://vega.github.io/schema/vega-lite/v5.json"
 SPEC_ROW_LIMIT = 500
-CHART_TYPES = ("bar", "line", "area", "scatter", "histogram", "box", "heatmap", "table")
+CHART_TYPES = ("bar", "line", "area", "scatter", "histogram", "box", "heatmap", "table", "kpi")
 COUNT_TITLE = "Количество"
+KPI_FORMAT = ",.2~f"
 ROW_FIELD = "_row"
 COLUMN_FIELD = "_column"
 VALUE_FIELD = "_value"
@@ -38,6 +39,7 @@ _MARKS = {
     "box": "boxplot",
     "heatmap": "rect",
     "table": "text",
+    "kpi": {"type": "text", "fontSize": 48},
 }
 
 
@@ -91,6 +93,25 @@ def infer_field_types(data: list[dict]) -> dict[str, str]:
     for record in data:
         columns.update(dict.fromkeys(record))
     return {column: infer_field_type([record.get(column) for record in data]) for column in columns}
+
+
+def ordered_column(types: dict[str, str]) -> str | None:
+    temporal = [column for column, kind in types.items() if kind == "temporal"]
+    if temporal:
+        return temporal[0]
+    return next((column for column in types if _ORDER_NAME.search(column)), None)
+
+
+def chart_title(data: list[dict], titles: dict[str, str] | None = None) -> str | None:
+    types = infer_field_types(data)
+    columns = _Columns(types, {column: (titles or {}).get(column, column) for column in types})
+    metric = columns.metric()
+    category = columns.category(exclude=(metric,) if metric else ())
+    metric_label = columns.labels[metric] if metric else COUNT_TITLE
+    if category is None:
+        return metric_label if metric else None
+    category_label = columns.labels[category]
+    return f"{metric_label} по {category_label[:1].lower()}{category_label[1:]}"
 
 
 def field_ref(column: str) -> str:
@@ -168,11 +189,9 @@ class _Columns:
         return next((column for column in self.numeric if column not in exclude), None)
 
     def order(self) -> tuple[str, str] | None:
-        if self.temporal:
-            return self.temporal[0], "temporal"
-        named = [column for column in self.types if _ORDER_NAME.search(column)]
-        if named:
-            return named[0], "ordinal"
+        ordered = ordered_column(self.types)
+        if ordered is not None:
+            return ordered, "temporal" if self.types[ordered] == "temporal" else "ordinal"
         if self.nominal:
             return self.nominal[0], "ordinal"
         if len(self.numeric) > 1:
@@ -310,6 +329,21 @@ def _table(columns: _Columns) -> tuple[str, dict]:
     return "table", {"transform": transform, "encoding": encoding}
 
 
+def _kpi(columns: _Columns) -> tuple[str, dict]:
+    metric = columns.metric()
+    if metric is None:
+        return _table(columns)
+    text_channel = columns.channel(metric, format=KPI_FORMAT)
+    return "kpi", {
+        "title": columns.labels[metric],
+        "transform": [
+            {"window": [{"op": "row_number", "as": ROW_FIELD}]},
+            {"filter": f"datum.{ROW_FIELD} == 1"},
+        ],
+        "encoding": {"text": text_channel, "tooltip": _tip(text_channel)},
+    }
+
+
 _ENCODERS = {
     "bar": _bar,
     "line": _line,
@@ -319,4 +353,5 @@ _ENCODERS = {
     "box": _box,
     "heatmap": _heatmap,
     "table": _table,
+    "kpi": _kpi,
 }

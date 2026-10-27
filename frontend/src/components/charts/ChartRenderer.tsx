@@ -66,19 +66,19 @@ function formatCell(value: unknown): string {
   return String(value);
 }
 
-function DataTable({ spec, height }: { spec: Spec; height: number }) {
+export function DataTable({ spec, height }: { spec: Spec; height: number }) {
   const rows = rowsOf(spec).slice(0, TABLE_ROW_LIMIT);
   const columns = columnsOf(spec, rows);
   if (!rows.length) {
-    return <p className="p-3 text-sm text-slate-500">Нет данных для отображения</p>;
+    return <p className="p-3 text-sm text-graphite-500">Нет данных для отображения</p>;
   }
   return (
-    <div className="overflow-auto rounded border border-slate-200" style={{ maxHeight: height }}>
+    <div className="overflow-auto rounded border border-graphite-200" style={{ maxHeight: height }}>
       <table className="min-w-full border-collapse text-sm">
-        <thead className="sticky top-0 bg-slate-50">
+        <thead className="sticky top-0 bg-graphite-50">
           <tr>
             {columns.map((column) => (
-              <th key={column.field} className="border-b border-slate-200 px-3 py-2 text-left font-medium text-slate-700">
+              <th key={column.field} className="border-b border-graphite-200 px-3 py-2 text-left font-medium text-graphite-700">
                 {column.title ?? column.field}
               </th>
             ))}
@@ -86,11 +86,11 @@ function DataTable({ spec, height }: { spec: Spec; height: number }) {
         </thead>
         <tbody>
           {rows.map((row, rowIndex) => (
-            <tr key={rowIndex} className="odd:bg-white even:bg-slate-50">
+            <tr key={rowIndex} className="odd:bg-graphite-50 even:bg-graphite-50">
               {columns.map((column) => (
                 <td
                   key={column.field}
-                  className={`border-b border-slate-100 px-3 py-1.5 ${column.type === "quantitative" ? "text-right tabular-nums" : ""}`}
+                  className={`border-b border-graphite-100 px-3 py-1.5 text-graphite-900 ${column.type === "quantitative" ? "text-right tabular-nums" : ""}`}
                 >
                   {formatCell(row[column.field])}
                 </td>

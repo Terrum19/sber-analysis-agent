@@ -38,6 +38,1013 @@
 	* docs/repo_structure.md, docs/roadmap.md, docs/architecture.md:
 	Актуализация документации по экспорту.
 
+2026-10-27  Alexander Yurits  <143354682+Terrum19@users.noreply.github.com>
+
+	Плитка-таблица на дашборде — HTML-таблицей, как в чате.
+	* frontend/src/components/canvas/DashboardTile.tsx (FittedChart):
+	Спека с usermeta.chart_type="table" рисуется DataTable, а не Vega:
+	текстовая сетка Vega на ширине плитки слепляла колонки.
+	* frontend/src/components/charts/ChartRenderer.tsx (DataTable):
+	Экспортирована.  Цвет текста ячеек задан явно: наследованный
+	светлый текст был не виден на светлом фоне таблицы.
+
+2026-10-26  Alexander Yurits  <143354682+Terrum19@users.noreply.github.com>
+
+	Графики: тренд линией, гистограмма по колонке из вопроса (#176).
+	* backend/app/core/agent/orchestrator.py (_requested_view): Результат
+	analysis-шага с рядом по времени (trend_analysis, seasonal_decompose)
+	— line, остальное — table.
+	(AgentOrchestrator._histogram_values): Новая.  Для гистограммы —
+	только колонка из вопроса.
+	(AgentOrchestrator._finish): Сбой выборки для гистограммы не роняет
+	ход: показываются статистики шага.
+	* backend/app/core/viz/chart_selector.py (histogram_column): Новая.
+	(fits): Колонка гистограммы — аргументом.
+	(select_chart): Новый аргумент titles.
+	* docs/visualization.md: То же.
+
+2026-10-25  mb6ockatf  <smokenmirror@tutamail.com>
+
+	Графики: название из шага, тип по форме данных, «без графика» (#164).
+	* backend/app/core/viz/chart_selector.py (fits): Новая.  Проверка
+	вида по строкам результата: line/area — от 3 точек и с упорядоченной
+	осью, scatter — две числовые колонки, histogram — одна числовая
+	колонка и от 20 значений, bar — не больше 30 категорий.
+	(select_chart): Одна строка — kpi или table; выбор планировщика и
+	эвристика проверяются через fits, не подошло — table; "none" — без
+	графика.
+	* backend/app/core/viz/vega_spec_builder.py (ordered_column)
+	(chart_title): Новые.  Упорядоченная ось и запасной заголовок
+	«{метрика} по {категории}».
+	* backend/app/core/agent/orchestrator.py (AgentOrchestrator._turn):
+	Заголовок спеки — purpose шага-результата, инсайт остаётся подписью.
+	В select_chart идут строки результата, они же — в спеку.  При
+	final_viz="none" событий chart нет.
+	(AgentOrchestrator._finish): В Execution — purpose и вид шага, чей
+	результат показан.
+	(_requested_view): Новая.  Результат analysis/lookup-шага — table.
+	(AgentOrchestrator._distribution_values): Новая.  На вопрос о
+	распределении после describe_stats — histogram по выборке из 500
+	значений колонки, статистики уходят в инсайт.
+	* backend/app/core/viz/chart_selector.py (asks_distribution): Новая.
+	* backend/app/models/research_step.py (ResearchPlan.final_viz):
+	Добавлено "none".
+	* backend/app/core/llm/prompts/step_planner.py: То же.
+	* docs/visualization.md, docs/architecture.md: То же.
+
+2026-10-25  mb6ockatf  <smokenmirror@tutamail.com>
+
+	Дашборд по шаблону: все плитки шаблона или без шаблона (#43).
+	* backend/app/core/agent/planner.py (template_gap): Новая.  Плитки
+	шаблона, которых нет в плане.
+	(_validate_tiles): Недостающие плитки шаблона — ошибка
+	NO_TEMPLATE_TILES с их названиями для переспроса.
+	(StepPlanner.plan): Если после переспроса не хватает только плиток
+	шаблона, template_id сбрасывается и план принимается: ход не
+	обрывается, дашборд собирается из того, что есть.
+	* backend/app/core/llm/prompts/step_planner.py (NO_TEMPLATE_TILES):
+	Называет недостающие плитки.
+	* backend/tests/unit/test_planner.py: Тесты того же.
+	* docs/visualization.md: То же.
+
+2026-10-25  mb6ockatf  <smokenmirror@tutamail.com>
+
+	Плитки дашборда: KPI только по одному числу, шаблон без сдвига плиток.
+	* backend/app/core/agent/orchestrator.py
+	(AgentOrchestrator._dashboard_tile): Плитка KPI по результату не из
+	одного числа строится видом auto; is_kpi — построенный вид.
+	* backend/app/core/agent/planner.py (apply_template): Плитки модели
+	без совпадения по названию разбираются по порядку, только если их
+	столько же, сколько в шаблоне.
+	* backend/tests/unit/test_dashboard_assembly.py
+	* backend/tests/unit/test_planner.py: Тесты того же.
+	* docs/visualization.md: То же.
+
+2026-10-25  mb6ockatf  <smokenmirror@tutamail.com>
+
+	Шаблон дашборда применяется при совпадении колонок (#43).
+	* backend/app/core/agent/planner.py (StepPlanner._ask): Нашёлся
+	шаблон — dashboard_requested ставится в true и плитки переписываются
+	по шаблону, даже если модель дашборд не запланировала.
+	(_validate_tiles): План по шаблону без плиток — ошибка
+	NO_TEMPLATE_TILES для переспроса.
+	* backend/app/core/llm/prompts/step_planner.py (NO_TEMPLATE_TILES):
+	Новая.
+	* backend/tests/unit/test_planner.py: Шаблон применяется и при
+	ответе без дашборда; вопрос без дашборда шаблон не получает.
+	* docs/visualization.md: То же.
+
+2026-10-25  mb6ockatf  <smokenmirror@tutamail.com>
+
+	Дашборд из плиток плана (B-04, #44).
+	* backend/app/core/agent/orchestrator.py (Execution): Поля tables
+	и plan, их заполняет _finish.
+	(_build_dashboard, _dashboard_tile, _arrange): Новые.  Плитка на
+	каждую DashboardTilePlan: таблица её шага, вид из плана или
+	select_chart, вывод LLM только при insight_needed.  KPI первым
+	рядом по 3x2, графики по два в ряд 6x4.  Без плиток — прежняя
+	одна плитка с графиком ответа.
+	(_execute_plan, _apply_recovery): Плитки, название и шаблон плана
+	переживают достройку после lookup и пропуск упавшего шага.
+	* backend/app/core/agent/insight.py (generate_tile_insight): Новая.
+	* backend/app/core/llm/prompts/insight_summary.py (TILE_INSIGHT):
+	Новый.
+	* backend/tests/integration/test_agent_cycle.py
+	(test_agent_cycle_builds_dashboard_from_plan_tiles): Новый.
+	* backend/tests/unit/test_dashboard_assembly.py: Новый.
+	* backend/tests/unit/test_insight_generator.py
+	(test_tile_insight_sends_title_view_and_rows): Новый.
+	* docs/visualization.md (Сборка дашборда), docs/architecture.md,
+	docs/prompts.md: То же.
+
+2026-10-25  mb6ockatf  <smokenmirror@tutamail.com>
+
+	Плитки дашборда в плане исследования (B-03, #43).
+	* backend/app/models/research_step.py (DashboardTilePlan): Новая.
+	Плитка плана: title, step_id, chart_type, is_kpi, insight_needed.
+	(ResearchPlan): Поля dashboard_title, template_id, dashboard_tiles;
+	null в dashboard_tiles — пустой список; плитки ставят
+	dashboard_requested.
+	* backend/app/core/agent/planner.py (is_dashboard_question)
+	(dashboard_prompt, apply_template, renumber_steps): Новые.  Вопрос
+	про дашборд («дашборд», «панель», «сводка») — templates.match по
+	колонкам таблицы: плитки шаблона в промпт и в план (template_id),
+	без шаблона — просьба составить 3–6 плиток.  Ссылки плиток
+	переписываются вместе с номерами шагов.
+	(validate_plan, _validate_tiles): step_id плиток — среди шагов;
+	дашборд без плиток — ошибка для переспроса.
+	(_plan_json): В переспрос уходят и плитки.
+	* backend/app/core/llm/prompts/step_planner.py (DASHBOARD_PLAN)
+	(DASHBOARD_CUSTOM, DASHBOARD_TEMPLATE, NO_TILES): Новые.
+	* backend/tests/unit/test_planner.py: Тесты плиток, шаблона и
+	переспроса.
+	* docs/visualization.md (План дашборда), docs/architecture.md,
+	docs/prompts.md: То же.
+
+2026-10-26  mb6ockatf  <smokenmirror@tutamail.com>
+
+	Шаг с аргументом columns больше не падает (#59).
+	* backend/app/core/tools/base.py (BaseTool.run, BaseTool.arun):
+	db, input_table и позиционные columns — только позиционные
+	параметры: именованный аргумент тула columns (select_columns) уходит
+	в arguments, а не ломает вызов «got multiple values for argument
+	'columns'».
+	* backend/app/core/tools/codegen.py (CodegenTool.arun): То же.
+	* backend/tests/unit/test_step_chaining.py: Тест шага select_columns
+	с arguments.columns.
+	* docs/architecture.md: То же.
+2026-10-26  Alexander Yurits  <143354682+Terrum19@users.noreply.github.com>
+
+	Очистка CSV: исправления по ревью #161.
+	* backend/app/core/data/connectors/csv.py (kind_macro, kind_counts):
+	Вид значения считает макрос по различным значениям после UNPIVOT —
+	один запрос на всю таблицу; при пороге 1.0 сначала проба 2048 строк.
+	Разряды — группами ровно по 3 цифры, целые длиннее 15 цифр и ведущий
+	ноль (в т. ч. «007.5») — коды: телефоны, карты, паспорта, счета
+	остаются текстом. inf/NaN не числа. Даты «дд.мм.гггг», дата-время без
+	секунд, смесь даты и даты-времени (TIMESTAMP), true/false (BOOLEAN).
+	(header_condition): Повторный заголовок — списками, а не цепочкой AND
+	(файлы от ~1000 колонок падали на пределе глубины), пустые ячейки
+	пропускаются, имена дублей берутся из первой строки файла.
+	(rejects_options, materialize): Таблицы ошибок со своими именами на
+	загрузку, удаляются только они и без глотания ошибок; reject_errors
+	пользователя и файл reject_errors.csv больше не ломаются.
+	(materialize, retype_expression): Пересборка одним SELECT с
+	list_contains вместо IN (...); number_expression удалён.
+	(CSVReport.warnings): Литералы — только заменённые (оставшиеся в
+	тексте показывает профайлер), предупреждение о «1,234», списки колонок
+	обрезаются (column_list).
+	* backend/tests/unit/test_csv_connector.py: Случаи из ревью: номера,
+	коды, 1100 колонок, reject_errors в базе, порог для DATE/TIMESTAMP,
+	заголовок с дублями и пустыми ячейками, даты, BOOLEAN, «1,234».
+	* backend/tests/unit/test_datasources_api.py
+	(test_csv_brief_has_profile_warnings): Под новое поведение загрузчика.
+	* backend/tests/benchmark/test_csv_benchmark.py: 1 млн строк и
+	150 тыс. × 105 колонок, предел 6× голого read_csv.
+	* docs/data_connectors.md: Очистка и типы по новой схеме.
+
+2026-10-24  dmitriy-ya  <dmitriyyakushonok@yandex.ru>
+
+	Очистка CSV при загрузке: повторные заголовки, литералы пропусков, типы после all_varchar (#96, #103).
+	* backend/app/core/data/connectors/csv.py (CSVReport): Новые поля:
+	header_rows_removed, null_tokens, retyped, rejected_rows, unconverted.
+	(CSVReport.warnings): Предупреждения об удалённых заголовках, заменах
+	токенов пропусков, перетипизации и отклонённых строках.
+	(STRATEGIES): store_rejects=true для стратегии all_varchar + ignore_errors.
+	(scan): Одиночный агрегирующий запрос по всем VARCHAR-колонкам:
+	подсчёт заполненных ячеек, токенов пропусков (settings.csv_null_tokens),
+	BIGINT (с защитой ведущих нулей), DOUBLE (с нормализацией пробелов,
+	NBSP, narrow-NBSP и десятичной запятой), DATE (YYYY-MM-DD) и TIMESTAMP.
+	Оптимизация предикатами CASE WHEN.
+	(retype_expression): Выражение TRY_CAST с NULLIF для токенов пропусков.
+	(materialize): Удаление повторных заголовков в той же транзакции,
+	подсчёт отклонённых строк из таблиц reject, ALTER TABLE ... TYPE ... USING.
+	Сохранение литералов пропусков в колонках, остающихся текстом.
+	* backend/app/config.py (Settings.csv_retype_min_share): Новая настройка
+	минимальной доли валидных значений для перетипизации колонок.
+	* backend/tests/unit/test_csv_connector.py: 42 теста: удаление повторных
+	заголовков, защита 'NA' (Намибия) в country, защита кодов с ведущими
+	нулями, вещественные числа с запятой, целые числа с NBSP и narrow-NBSP,
+	подсчёт отклонённых строк с store_rejects, даты и таймстемпы, порог
+	csv_retype_min_share, подсчёт литералов в текстовых колонках и симуляция
+	105 колонок openPsych.
+	* backend/tests/benchmark/test_csv_benchmark.py: Бенчмарк на 1 млн строк
+	с замером базового времени read_csv и времени одиночного scan().
+	* docs/data_connectors.md: Документация очистки заголовков, сканирования,
+	автоприведения типов, токенов пропусков и store_rejects.
+
+2026-10-25  Alexander Yurits  <143354682+Terrum19@users.noreply.github.com>
+
+	Исправления по ревью #170.
+	* backend/app/core/llm/ollama_setup.py (_version): 5xx от
+	/api/version — повтор (connecting), а не «сервер не Ollama»: иначе
+	один ответ 502/503 при старте навсегда выключал скачивание модели и
+	вариант с num_ctx.  401/403/404 — по-прежнему не Ollama.
+	(ModelMissing, _pull_error, _error_text): Новые.  Модели нет в реестре
+	(опечатка в LLM_MODEL) — состояние missing: pull больше не
+	повторяется, бэкенд только ждёт модель в /api/tags.
+	* backend/app/api/schemas/llm.py, frontend/src/types/llm.ts: Состояние
+	missing.
+	* frontend/src/components/chat/LlmStatusBanner.tsx: Для missing —
+	«Модели нет в Ollama, проверьте LLM_MODEL» без «повторяю».
+	* start.sh, scripts/start/start.ps1: Метка .ollama-started, если Ollama
+	запустил скрипт.
+	* start.sh (install_linux_ollama, bind_ollama_service_to_bridge): Новые.
+	На Linux без Ollama — установка официальным install.sh (п. 5 #167), а не
+	сразу контейнер; поставленная службой Ollama слушает адрес моста docker.
+	(any_ollama_up): Новая.  Такую Ollama ждём и по адресу моста.
+	* stop.sh, stop.bat: Останавливают Ollama по метке; Ollama, запущенную
+	до start, не трогают.
+	* README.md (Запуск): То же.
+
+2026-10-25  mb6ockatf  <smokenmirror@tutamail.com>
+
+	Исправления по ревью #170.
+	* backend/app/core/llm/ollama_setup.py (_version): Любой ответ
+	/api/version, кроме 200 с полем version, — сервер не Ollama: шлюз
+	с авторизацией (401/403) больше не держит чат в «Подключаюсь».
+	(prepare_once): Новая.  Неожиданная ошибка подготовки (битая строка
+	прогресса, HTML вместо JSON) — повтор с причиной в detail, а не
+	смерть фоновой задачи и вечный индикатор.
+	(prepare_forever): Через prepare_once; ошибка warm_up не прерывает
+	слежение за Ollama.
+	* backend/tests/unit/test_ollama_setup.py: Тесты на 401/403/500 от
+	/api/version, битую строку /api/pull и HTML вместо /api/tags.
+	* start.sh (start_service, has_service, has_systemd): Новые.  Docker
+	и Ollama запускаются и без systemd (service); не запустился Docker —
+	понятная ошибка вместо молчаливого выхода.
+	(start_linux_ollama): Новая.  Ollama без службы запускается на адресе
+	моста docker, чтобы контейнеры её видели.
+	(use_container_ollama): На GPU — модель LLM_MODEL_GPU, как make up-gpu.
+	(env_or_file): Новая, как в Makefile.
+	* README.md (Запуск): То же.
+
+2026-10-25  Alexander Yurits  <143354682+Terrum19@users.noreply.github.com>
+
+	* docs/reports/llm_perf/dialog_and_insight_25-10.md: Новый.  Отчёт о
+	памяти по ходам, reply_to и версиях стадии вывода.
+	* docs/reports/llm_perf/experiment_log.md (П9): Ссылка на отчёт.
+
+2026-10-25  Alexander Yurits  <143354682+Terrum19@users.noreply.github.com>
+
+	Eval диалогов и стадии вывода для R-01.
+	* scripts/llm_bench/run_dialog.sh: Новый.  Диалог полным циклом через
+	прокси; локальная Ollama или OpenRouter (UPSTREAM, RETRY).
+	* scripts/llm_bench/replay_insight.py: Новый.  Повтор вывода на
+	таблицах прогона любой версией backend.
+	* scripts/llm_bench/grade_insight.py: Новый.  Оценка заголовков по
+	таблице результата.
+	* scripts/llm_bench/show_turns.py: Новый.  Планы и ответы по ходам.
+	* scripts/llm_bench/record_proxy.py (make_handler): --retry повторяет
+	ошибки провайдера (429, 5xx, 200 с error в теле).
+	* scripts/llm_bench/questions/followups.txt,
+	scripts/llm_bench/questions/replies.txt: Новые.
+	* scripts/llm_bench/README.md: Новый.
+
+2026-10-25  Alexander Yurits  <143354682+Terrum19@users.noreply.github.com>
+
+	Вывод отвечает на вопрос по форме результата.
+	* backend/app/core/agent/quality_fixes.py (insight_facts): У мин и
+	макс подписана строка (arg_min/arg_max по первой нечисловой колонке).
+	(format_value, format_rows): Новые.  Строки результата компактной
+	таблицей с ISO-датами вместо repr Python-объектов.
+	* backend/app/core/llm/prompts/quality_rules.py (INSIGHT_RULES): Без
+	примера «Выручка за квартал — 12 345», его копировала модель.
+	(SINGLE_ROW, MANY_ROWS): Новые.  Правило headline по форме результата.
+	* backend/app/core/agent/insight.py (InsightGenerator.generate): То же;
+	steps — выполненные шаги плана идут в промпт («41» знает, что это
+	декабрь и сумма больше 150).
+	(describe_steps): Новая.
+	* backend/app/core/agent/orchestrator.py (Execution.steps): Новое.
+	* backend/app/core/tools/stats/describe_stats.py (DescribeStatsTool):
+	median: модели выбирают этот тул на «медиану».
+
+2026-10-25  Alexander Yurits  <143354682+Terrum19@users.noreply.github.com>
+
+	Вопрос по конкретному прошлому ответу: reply_to (бэкенд #166).
+	* backend/app/api/schemas/chat.py (ChatRequest): reply_to.
+	* backend/app/core/memory/session_memory.py (start_turn): Ход хранит
+	reply_to.
+	(reply_chain, _find): Новые.
+	(build_context): При ответе — цепочка ответа вместо прошлых ходов.
+	(last_chart): График хода, на который отвечают.
+	* backend/app/core/agent/planner.py (describe_history): Новая.
+	* backend/app/core/llm/prompts/step_planner.py (PAST_TURNS,
+	REPLY_DRAFT): Новые; план выбранного хода — черновик.
+	* backend/app/core/agent/orchestrator.py (AgentOrchestrator._turn):
+	reply_to в ход.
+	* scripts/run_full_llm_cycle.py: Вопрос с «↩» — ответ на прошлый ход.
+
+2026-10-25  Alexander Yurits  <143354682+Terrum19@users.noreply.github.com>
+
+	Память сессии по ходам вместо памяти по таблице (#163).
+	* backend/app/core/memory/session_memory.py (SessionMemory): Сессия —
+	список ходов.  start_turn, resume_turn, finish_turn, turn_id,
+	recent_turns: Новые.
+	(record_step): Пишет шаг с аргументами в текущий ход.
+	(record_chart, last_chart): График хода; last_chart — последнего
+	успешного хода с графиком.
+	(build_context): Последние CONTEXT_TURNS успешных ходов с планом
+	вместо summary и окна сообщений; колонки из паспорта или каталога.
+	(set_table): Только таблица по умолчанию; ходы не сбрасываются.
+	(record_answer, _history): Удалены.
+	* backend/app/core/agent/orchestrator.py (AgentOrchestrator._turn):
+	Ход на каждое сообщение, ответ на уточнение продолжает тот же ход;
+	turn_id в done и clarification_needed.
+	(_result_columns): Новая.
+	* backend/app/core/agent/planner.py (describe_turns): Новая.  Таблица
+	хода, ход по другой таблице помечен; шаги плана перенумерованы с 0
+	вместе со ссылками $step_N.
+	(_renumber_refs): Новая.
+	(StepPlanner.plan): Прошлые ходы в промпте для любого вопроса.
+	* backend/app/core/agent/quality_fixes.py (frame_context, FOLLOW_UP):
+	Удалены.
+	* backend/app/core/llm/prompts/quality_rules.py (PAST_CONTEXT): Удалён.
+	* backend/app/core/llm/prompts/step_planner.py (STEP_PLANNER): Блок
+	прошлых ходов и правило про вопрос-продолжение.
+	* backend/app/api/schemas/chat.py (SessionCreate): table
+	необязательна.
+	* backend/app/api/routes/sessions.py (create_session): Сессия без
+	таблицы.
+	* backend/app/core/data/result_retention.py (_session_charts):
+	Графики ходов.
+	* scripts/run_full_llm_cycle.py: То же.
+	* docs/memory.md, docs/architecture.md: То же.
+
+2026-10-25  Alexander Yurits  <143354682+Terrum19@users.noreply.github.com>
+
+	Исправления по ревью #144.
+	* backend/app/core/agent/quality_fixes.py (insight_facts): Числовые
+	типы сверяются точно (INTERVAL больше не попадает в SUM), имена
+	через identifier(), итоги всех колонок одним запросом.
+	(ungrounded_numbers): Сверка только с вопросом, результатом и
+	фактами; допускается округление до точности заголовка; проценты не
+	проверяются.
+	(FOLLOW_UP): Вопрос с «а»/«и» в начале — продолжение; «прошлый» и
+	«предыдущий» сами по себе — нет.
+	* backend/app/core/agent/insight.py (InsightGenerator.generate):
+	Если факты не посчитались, инсайт строится без них.
+	* backend/app/core/llm/structured.py (parse_structured): Ошибка во
+	вложенных "arguments" тоже даёт переспрос.
+	(merge_tool_calls): Удалена, не использовалась.
+	* backend/app/core/llm/prompts/quality_rules.py,
+	backend/app/core/llm/prompts/structured_repair.py: Новые.  Промпты
+	из quality_fixes.py и structured.py.
+	* backend/app/core/tools/sql/atomic.py (GroupByTool.execute): by=[]
+	работает и без agent_quality_fixes.
+	(TimeBucketTool.execute): Убрана проверка, которую уже делает
+	TimeBucketArgs.
+	* backend/app/config.py: llm_max_retries (1); llm_structured_mode —
+	Literal.
+	* backend/app/core/llm/client.py (LLMClient.__init__): max_retries
+	из настроек.
+	* .env.example, docs/prompts.md: То же.
+	* CHANGELOG.md, docs/reports/architecture_compliance_report.md:
+	Удалены, устарели (историю ведёт ChangeLog).
+
+2026-10-24  Alexander Yurits  <terruwork@gmail.com>
+
+	JSON по схеме и исправления качества агента по умолчанию (#143).
+	* backend/app/core/llm/client.py (LLMClient.complete_structured): В
+	режиме json_schema — один запрос с response_format=json_schema,
+	толерантный разбор и один переспрос с текстом ошибки.
+	(LLMClient.__init__): Необязательный http_client.
+	* backend/app/core/llm/structured.py: Новый.  Толерантный разбор
+	ответа по схеме Pydantic и промпт переспроса.
+	* backend/app/core/agent/quality_fixes.py: Новый.  Факты для
+	инсайта, посчитанные SQL; проверка чисел заголовка; подсказки к
+	тулам и правила планировщика; прошлые шаги только для
+	вопроса-продолжения; отбор тулов под вопрос.
+	* backend/app/core/agent/planner.py (StepPlanner.plan): Правила и
+	обрамление контекста при agent_quality_fixes, отбор тулов при
+	agent_tool_topk.
+	* backend/app/core/agent/insight.py (InsightGenerator.generate):
+	Факты и проверка чисел при agent_quality_fixes.
+	* backend/app/core/tools/registry.py (ToolRegistry.describe):
+	Подсказки к описаниям тулов при agent_quality_fixes.
+	* backend/app/core/tools/sql/atomic.py (GroupByTool.execute):
+	by=[] — один итог по таблице при agent_quality_fixes.
+	(TimeBucketArgs): AVG/SUM без metric_column отклоняются при
+	проверке плана.
+	* backend/app/config.py: llm_structured_mode (json_schema),
+	llm_max_tokens, agent_quality_fixes (вкл.), agent_tool_topk
+	(выкл.); llm_timeout_s 120 -> 600.
+	* .env.example: То же.
+	* scripts/run_full_llm_cycle.py: Ожидание API (429, 5xx, таймауты)
+	отдельно от чистого времени.
+	* scripts/llm_bench: Новый.  Записывающий прокси, прогон варианта,
+	сводка вызовов, бенчмарк потоков; сырые логи вне git.
+	* docs/reports/llm_perf: Новый.  Гипотезы и журнал прогонов V1-V5.
+	* backend/tests/unit/test_llm_structured.py,
+	backend/tests/unit/test_quality_fixes.py: Новые.
+	* backend/tests/unit/test_llm_client_retries.py
+	(test_invalid_answer_is_asked_again): Режим tools задан явно.
+	Карточки таблиц после подключения (#69).
+	* frontend/src/types/datasource.ts (TableBrief, DescriptionStatus):
+	Новые типы по api/schemas/datasource.py; Datasource.profiles.
+	* frontend/src/components/chat/TableBriefCard.tsx: Новый компонент:
+	строки и колонки, период, summary, бейдж pending/failed описания
+	колонок, предупреждения загрузчика.
+	* frontend/src/store/sessionStore.ts (DatabaseFolder.profiles):
+	Паспорта из ответа подключения.
+	* frontend/src/components/chat/ChatPanel.tsx: Карточка активной
+	таблицы на пустом экране сессии.
+	* frontend/src/components/modals/TableSelectModal.tsx (briefs):
+	Краткая карточка под каждой таблицей.
+	* frontend/src/api/mockData.ts: profiles в мок-ответах подключения.
+	* backend/app/api/routes/chat.py (chat): Сбой вне оркестратора
+	завершает стрим событием done после error.
+	* backend/app/core/dashboards/models.py (DashboardTile): layout —
+	целые, snapshot_data — строки или словарь KPI вместо Any.
+
+2026-10-24  thebulkapro  <saitbatalovbulat200@gmail.com>
+
+	Флаги качества профиля в TableBrief.warnings (#139).
+	* backend/app/core/data/profiling.py (profile_warnings): Новая
+	функция: флаги и empty_rows фразами для карточки таблицы, одна фраза
+	на вид флага, не больше WARNING_COLUMNS колонок, остальные «и ещё N».
+	Литералы пропусков — по убыванию их числа.  Флаги без фразы в
+	WARNING_PHRASES пропускает, а не падает KeyError (500 у ручки).
+	(column_list): Новая функция.
+	(quality_fields): Счётчик distinct_values: различные значения без
+	литералов пропусков и значений-заголовков.
+	(is_text_code): unique и fixed_width сравнивают с distinct_values, а
+	не с distinct: «NULL» и повторённый заголовок делали почти
+	уникальную колонку кодом, и она не получала numeric_as_text.
+	* backend/app/api/schemas/datasource.py (TableBrief.from_profile):
+	После предупреждений загрузчика — флаги профиля: у PostgreSQL и
+	ClickHouse карточка была без предупреждений.
+	* backend/tests/unit/test_profiling.py,
+	backend/tests/unit/test_datasources_api.py: Фразы по флагам, «и ещё
+	N», чистый профиль, одна колонка, грязный CSV и источник БД,
+	литералы и заголовок не делают колонку уникальной, незнакомый флаг.
+	* docs/data_connectors.md: Поле warnings, profile_warnings.
+
+	Длина контекста LLM: исправления по ревью #136.
+	* backend/app/core/agent/orchestrator.py (AgentOrchestrator.run):
+	prompt_truncated несёт и clarification_needed: обрезанный промпт
+	чаще всего кончается уточнением, и eval (#58) терял такие прогоны.
+	(TURN_END_EVENTS): Новая.
+	* backend/app/core/llm/budget.py (should_ask_server_context): Вместо
+	known_server_context.  «Сервер не назвал контекст» не кешируется:
+	переспрашиваем не чаще раза в SERVER_CTX_RETRY_S.  Раньше один
+	таймаут при старте отключал признак «упёрся в контекст» до
+	перезапуска бэкенда.
+	(remember_server_context): Запоминает только число.
+	* backend/app/core/llm/client.py (LLMClient._check_context): В длину
+	промпта входит схема тулов из tools: сервер считает её в
+	prompt_tokens, и без неё обрезка на Ollama 0.35.1 проходила незаметно.
+	(LLMClient.warm_up): Новый.  Короткий запрос при старте, чтобы
+	бюджет первого промпта считался от контекста сервера.
+	* backend/app/core/llm/fake_client.py (FakeLLM.warm_up): Новый.
+	* backend/app/main.py (lifespan): Вызывает LLMClient.warm_up.
+	* scripts/run_full_llm_cycle.py (run_turn): Обрезка и из
+	clarification_needed, по всем повторам хода.
+	* docs/architecture.md: prompt_truncated в clarification_needed.
+	* backend/tests/unit/test_budget.py
+	(test_unknown_server_context_is_asked_again_later): Новый тест.
+	* backend/tests/unit/test_llm_client_retries.py
+	(test_tools_schema_counts_toward_prompt_length)
+	(test_server_context_is_asked_again_after_failure)
+	(test_warm_up_learns_server_context)
+	(test_warm_up_survives_unavailable_llm): Новые тесты.
+	* backend/tests/unit/test_orchestrator_unit.py
+	(test_clarification_counts_truncated_prompts): Новый тест.
+
+2026-10-23  Alexander Yurits  <terruwork@gmail.com>
+
+	Длина контекста LLM: проверка обрезки промпта и его бюджет (#102).
+	* backend/app/config.py (llm_num_ctx, llm_chars_per_token): Новые.
+	* backend/app/core/llm/budget.py: Новый.  Реальный контекст сервера
+	(server_context, num_ctx — меньшее из него и LLM_NUM_CTX),
+	prompt_budget, признаки обрезки (check_prompt), сбор обрезок хода
+	(track_truncations, report_truncation), probe_context для проверочных
+	скриптов.
+	* backend/app/core/llm/client.py (LLMClient._check_context): Новый
+	response-хук httpx: сверяет usage.prompt_tokens каждого ответа, включая
+	повторы instructor и fallback, с длиной промпта и контекстом сервера;
+	обрезку пишет warning'ом.
+	(LLMClient._server_context): Новый.  Контекст из /v1/models (vLLM,
+	max_model_len) или /api/ps (Ollama, context_length), один раз на модель.
+	* backend/app/core/agent/orchestrator.py (AgentOrchestrator.run): done
+	несёт prompt_truncated, если сервер обрезал промпты хода.
+	(AgentOrchestrator._turn): Прежнее тело run.
+	* scripts/check_llm_client.py: Проверка промпта заданной длины с
+	паролем в начале.
+	* scripts/run_full_llm_cycle.py (check_llm): Контекст сервера;
+	--check-context CHARS — та же проверка.  Обрезка из done — в
+	предупреждения отчёта.
+	* infra/vllm/serve.sh: --max-model-len (MAX_MODEL_LEN, по умолчанию
+	LLM_NUM_CTX).
+	* scripts/download_model.sh: OLLAMA_CONTEXT_LENGTH в подсказке.
+	* .env.example: LLM_NUM_CTX, LLM_CHARS_PER_TOKEN.
+	* README.md (Длина контекста LLM): Новый раздел.
+	* docs/architecture.md: prompt_truncated в done; решение о контексте.
+	* backend/tests/unit/test_budget.py: Новый.
+	* backend/tests/unit/test_llm_client_retries.py
+	(test_ollama_truncation_is_reported)
+	(test_far_fewer_tokens_than_estimate_is_reported)
+	(test_full_prompt_is_not_reported)
+	(test_broken_server_info_does_not_fail_the_call): Новые тесты.
+	* backend/tests/unit/test_orchestrator_unit.py
+	(test_done_counts_truncated_prompts): Новый тест.
+
+2026-10-23  thebulkapro  <saitbatalovbulat200@gmail.com>
+
+	«Что передо мной?»: описание таблицы от LLM в паспорте (#54).
+	* backend/app/core/data/overview.py: Новый модуль.
+	(describe_dataset): Промпт SCHEMA_DESCRIBE из паспорта; LLM только
+	при новом отпечатке промпта, описание сохраняется в паспорте.
+	(build_prompt, profile_lines, family_line, clip): Промпт с системным
+	не длиннее PROMPT_MAX_CHARS (контекст 4096 токенов при 1,5 символа
+	на токен, ответ до 600 токенов): однотипные колонки (Q1A…Q35A) одной
+	строкой, 5 частых значений, остальное — «… и ещё N».
+	(quality_block, grouped_notes, split_note, group_line): «Качество
+	данных» до 1000 символов, по строке на вид замечания со списком
+	колонок («пропуски: «A» (10%), «B» (15%)»); каждому виду хватает
+	места хотя бы на число колонок.
+	(facts, profile_rows): Объём, период и таблица колонок без LLM.
+	(is_overview_question): Вопрос целиком из обзорных фраз.
+	(passport): Нет паспорта — профиль строится и сохраняется.
+	(cached_summary): Сохранённое описание по текущему паспорту, без LLM.
+	* backend/app/core/memory/profile_memory.py (SCHEMA): Колонка
+	summary_fingerprint (ADD COLUMN IF NOT EXISTS).
+	(save_summary, load_summary): Новые методы.
+	* backend/app/core/data/ingest.py (summarize): Новая функция:
+	описание таблиц после переноса описания колонок; без LLM прогон
+	прекращается.
+	* backend/app/api/routes/datasources.py (describe_tables): После
+	describe — summarize; сбой только в лог.
+	(briefs): TableBrief.summary — описание, сохранённое по тем же
+	данным.  (table_brief): Новый GET /api/datasources/tables/{table}:
+	TableBrief по паспорту с итогом переноса и описанием, 404 без
+	паспорта.
+	* backend/app/api/schemas/datasource.py (TableBrief.from_profile):
+	Параметр summary; период через TableProfile.temporal_column.
+	(DatasourceOut.profile_summary): Удалено, описание — в TableBrief.
+	* backend/app/core/data/profiling.py (TableProfile.temporal_column):
+	Новый метод: колонка периода, общая для TableBrief и overview.facts.
+	* backend/app/core/agent/orchestrator.py (AgentOrchestrator._overview):
+	Обзорный вопрос без планировщика: insight started, text (факты и
+	описание), chart started, chart table, done.  LLM не ответила —
+	факты и таблица без описания.
+	* backend/app/core/data/semantic_select.py (column_facts): Бывшая
+	_column_facts; параметр top_values, как у describe_columns.
+	* backend/app/core/llm/prompts/schema_describe.py
+	(SCHEMA_DESCRIBE_SYSTEM): Новый системный промпт.  (SCHEMA_DESCRIBE):
+	Не пересчитывать объём и период, строки семейств, 3-6 предложений.
+	* backend/tests/unit/test_overview.py: Новые тесты: кеш, смена
+	профиля и названий, сбой и пустой ответ LLM, лимит промпта, семейства,
+	замечания по видам, детектор вопросов, summarize.
+	* backend/tests/unit/test_profile_memory.py,
+	backend/tests/unit/test_orchestrator_unit.py,
+	backend/tests/unit/test_datasources_api.py,
+	backend/tests/unit/test_datasource_restore.py: Тесты сводки в
+	паспорте, обзорного хода и фоновой задачи, GET сводки таблицы и
+	описание при повторном подключении; summarize подменён.
+	* backend/tests/e2e/test_scenarios.py (test_scenario_1): Новый тест:
+	ответ содержит число строк и период.  Колонка date — DATE.
+	* backend/tests/benchmark/test_orchestrator_benchmark.py: Вопрос с
+	планом вместо обзорного.
+	* docs/memory.md, docs/architecture.md, docs/prompts.md,
+	docs/repo_structure.md, docs/data_connectors.md: Описание таблицы,
+	обзорный ход, TableBrief.summary и GET сводки таблицы.
+
+	Флаги качества в профиле (#105).
+	* backend/app/core/data/profiling.py (ColumnStats.flags): Новое поле:
+	numeric_as_text, null_tokens:N, header_value для VARCHAR-колонок.
+	Считаются в частотном подзапросе по различным значениям, без нового
+	запроса.  numeric_as_text не ставится кодам: ведущие нули, имя-
+	идентификатор, unique, fixed_width.
+	(TableProfile.empty_rows): Новое поле: строки, где все колонки NULL.
+	(quality_notes): Флаги и пустые строки в «Качество данных»: раньше
+	по грязному CSV паспорт писал «пропусков нет».
+	(flag_notes): Новая функция: флаги словами.
+	* backend/app/core/memory/profile_memory.py (SCHEMA): Колонки flags и
+	empty_rows, миграция ADD COLUMN IF NOT EXISTS.
+	* backend/app/core/data/semantic_select.py (describe_columns): Метки ⚠
+	в строке колонки; у numeric_as_text подсказка про TRY_CAST.
+	* backend/app/config.py (Settings.csv_null_tokens): Новая настройка,
+	общая с очисткой CSV (#103).
+	* .env.example: CSV_NULL_TOKENS.
+	* backend/tests/unit/test_profiling.py,
+	backend/tests/unit/test_profile_memory.py,
+	backend/tests/unit/test_semantic_select.py: Три флага на грязной
+	колонке, коды без numeric_as_text, NaN и inf, порог 95 %, настройка
+	литералов, сохранение и миграция паспорта, метки в выжимке.
+	* docs/data_connectors.md, docs/memory.md: Флаги качества, empty_rows.
+
+2026-10-22  mb6ockatf  <smokenmirror@tutamail.com>
+
+	Сводка паспорта в ответе подключения (#96).
+	* backend/app/api/schemas/datasource.py (TableBrief): Новая схема:
+	строки, колонки, период по первой temporal-колонке, статус описания,
+	summary и предупреждения загрузчика.
+	(DatasourceOut.profiles): Сводки подключённых таблиц.
+	* backend/app/api/routes/datasources.py (briefs): Помечает pending
+	таблицы с описанием и собирает сводки из профилей ingest.attach.
+	(describe_tables): Если перенос описания упал, pending становится
+	failed.
+	* backend/app/core/data/ingest.py (mark_pending): Новая функция: pending для таблиц с описанием, none
+	для остальных; новый запуск переноса (DescribeJob) с прочитанными
+	комментариями колонок.
+	(describe): Ставит статус ready или failed. С job не перечитывает
+	комментарии и пропускает таблицу, подключённую заново.
+	* backend/app/core/data/schema_enrichment.py (Superseded)
+	(SchemaEnricher.enrich): С run не вызывает LLM и не пишет описания,
+	если таблицу подключили заново.
+	* backend/app/core/memory/profile_memory.py (SCHEMA): Колонка
+	_meta.table_passport.description_status и description_run (ADD
+	COLUMN IF NOT EXISTS).
+	(set_description_status, load_description_status, fail_pending)
+	(begin_description, load_description_run): Новые методы.
+	* backend/app/main.py (lifespan): При старте pending становится
+	failed: фоновый перенос описания не пережил рестарт.
+	* backend/app/core/data/connectors/base.py (BaseConnector.warnings):
+	Новый метод, по умолчанию пустой список.
+	* backend/app/core/data/connectors/csv.py (CSVReport.warnings)
+	(CSVConnector.warnings): Перекодировка, числа из текста, нестрогий
+	разбор и загрузка всех колонок текстом.
+	* backend/tests/unit/test_datasources_api.py: Тесты сводок и статусов.
+	* docs/data_connectors.md, docs/memory.md: Описание полей.
+
+2026-10-23  Alexander Yurits  <terruwork@gmail.com>
+
+	Ollama из compose: релиз, доступ и готовность моделей.
+	* .github/workflows/release.yml (Assemble bundle): В архив релиза
+	кладётся infra/ollama/entrypoint.sh; без него Docker создавал на его
+	месте каталог, и Ollama не стартовала.
+	* infra/ollama/entrypoint.sh (check): Новый режим для healthcheck:
+	скачаны LLM_MODEL и EMBED_MODEL, если задан; имена сравниваются так
+	же, как при скачивании.
+	* docker-compose.yml (x-ollama): Healthcheck — entrypoint.sh check.
+	Порт Ollama публикуется только на 127.0.0.1.
+	* docker-compose.release.yml (x-ollama): Healthcheck — то же.
+	* Makefile (env_or_file): Новая функция: переменная окружения или
+	командной строки перекрывает .env.  .env больше не подключается
+	через include.  (up-gpu): Модель через env_or_file.
+	* README.md: Docker Engine 25+ и Compose 2.20+, готовность моделей,
+	порт Ollama, переопределение .env окружением.
+
+	Контекст LLM в compose задаётся одним числом (#102).
+	* docker-compose.yml (backend): LLM_NUM_CTX из OLLAMA_CONTEXT_LENGTH.
+	* docker-compose.release.yml (backend): То же.
+
+2026-10-22  mb6ockatf  <smokenmirror@tutamail.com>
+
+	Smoke-тест чистого запуска в CI (#79).
+	* scripts/smoke.sh: Новый.  Ждёт /health, загружает demo_events.csv,
+	создаёт сессию над tables[0] из ответа, читает SSE чата до done
+	(error, обрыв или таймаут — провал), проверяет GET / фронтенда.
+	* docker-compose.ci.yml: Новый.  USE_FAKE_LLM=true для backend.
+	* .github/workflows/smoke.yml: Новый.  Compose без профиля с
+	docker-compose.ci.yml и smoke.sh на каждый PR и push в dev/main.
+	* backend/app/core/llm/fake_client.py (FakeLLM.complete_structured):
+	План агрегирует по category или, если её нет в промпте, по user_id,
+	чтобы фейковый план работал и на demo_events.
+	* Makefile (smoke): Новая цель.
+	* CONTRIBUTING.md: Smoke-тест чистого запуска.
+
+	Ollama с моделью в docker compose (#78).
+	* docker-compose.yml (ollama-cpu, ollama-gpu): Новые сервисы Ollama
+	(ollama/ollama:0.35.1) в профилях cpu и gpu, оба с сетевым именем
+	ollama и общим томом ollama-models.  Healthcheck ждёт, пока модель
+	LLM_MODEL появится в ollama list; start_period — час, на первое
+	скачивание модели.  OLLAMA_CONTEXT_LENGTH по умолчанию 16384 (#102).
+	(backend): LLM_BASE_URL — http://ollama:11434/v1, LLM_MODEL — тот же,
+	что у Ollama; ждёт healthy Ollama из активного профиля, без профиля
+	стартует без неё.
+	* docker-compose.release.yml: Те же сервисы Ollama для запуска из
+	архива релиза.
+	* infra/ollama/entrypoint.sh: Новый.  Сервер Ollama, скачивание
+	LLM_MODEL и EMBED_MODEL, если их ещё нет в томе, корректная остановка.
+	* Makefile (up): Профиль cpu.  (up-gpu): Новая цель: профиль gpu и
+	модель LLM_MODEL_GPU.  (down): Останавливает и сервисы Ollama.
+	* .env.example: LLM_BASE_URL и LLM_MODEL заполнены; новые
+	LLM_MODEL_GPU, OLLAMA_CONTEXT_LENGTH, EMBED_MODEL, OLLAMA_PORT.
+	* README.md: Запуск в Docker.
+	* docs/repo_structure.md: infra/ollama, make up-gpu.
+
+2026-10-23  Alexander Yurits  <terruwork@gmail.com>
+
+	Плитки дашборда из запроса не ломают вставку и не читают чужие таблицы.
+	* backend/app/api/schemas/dashboard.py (DashboardTileIn): Новая
+	входная схема плитки: result_table только temp_result_vN, иначе 422.
+	DashboardCreate и DashboardUpdate принимают её.
+	* backend/app/api/routes/dashboards.py (own_tiles): Новая функция.
+	POST даёт плиткам новые id; PUT сохраняет id плиток этого дашборда,
+	чужие и повторные заменяет.  (update_dashboard): 404 до замены плиток.
+	* backend/app/core/dashboards/recalculate.py (recalculate): Проверка
+	таблицы и чтение под одним db.lock.
+	* backend/tests/unit/test_dashboards_api.py
+	(test_create_with_tiles_of_another_dashboard)
+	(test_create_with_duplicate_tile_ids)
+	(test_update_keeps_own_tile_ids_and_replaces_foreign)
+	(test_result_table_must_be_a_step_result): Новые тесты.
+	* docs/memory.md: Входная схема плитки и id плиток.
+
+2026-10-22  mb6ockatf  <smokenmirror@tutamail.com>
+
+	Типизированное событие dashboard и KPI-плитка (#48).
+	* backend/app/api/schemas/chat.py (DashboardPayload): tiles — список
+	DashboardTileOut вместо словарей.  (DashboardPayload.from_dashboard):
+	Событие из дашборда; snapshot_data в SSE не отправляется, данные уже в
+	spec.data.values.
+	* backend/app/core/viz/vega_spec_builder.py (CHART_TYPES, _MARKS)
+	(_kpi): Новый вид kpi: первая метрика первой строки крупным текстом
+	(fontSize 48) в формате ,.2~f, подпись — title спеки, без него —
+	название метрики; без чисел строится таблица.
+	* backend/app/core/viz/chart_selector.py (select_chart): Новый
+	аргумент records: одна строка с одним конечным числом — kpi.  TODO
+	удалён.  (is_single_number): Новая функция.
+	* backend/app/core/viz/chart_morph.py (MORPH_MAP): Из kpi — в table и
+	bar.
+	* backend/app/core/llm/prompts/step_planner.py (STEP_PLANNER): kpi в
+	списке final_viz, для ответа одним числом — kpi.
+	* backend/app/models/research_step.py (ResearchPlan.final_viz): Только
+	известные виды и auto, без учёта регистра.
+	* backend/tests/contract/test_chat_event_schema.py: Событие dashboard
+	проверяется по DashboardPayload.
+	* backend/tests/unit/test_chart_selector.py: Новые тесты.
+	* backend/tests/unit/test_vega_spec_builder.py: Тесты KPI.
+	* backend/tests/unit/test_chart_morph.py,
+	backend/tests/unit/test_research_step.py,
+	backend/tests/unit/test_dashboards_api.py: Морфинг KPI, final_viz,
+	KPI после пересчёта.
+	* docs/visualization.md: KPI-спека, выбор вида, событие dashboard.
+
+2026-10-22  mb6ockatf  <smokenmirror@tutamail.com>
+
+	REST API дашбордов и пересчёт плиток (#47).
+	* backend/app/api/routes/dashboards.py: Эндпоинты GET (список,
+	session_id необязателен), GET по id, POST (201), PUT, DELETE (204) и
+	POST /{id}/recalculate.  На неизвестный id — 404 вместо пустого
+	объекта.
+	* backend/app/api/schemas/dashboard.py (DashboardTileOut, DashboardOut)
+	(DashboardCreate, DashboardUpdate): Новые схемы вместо неиспользуемых
+	DashboardTile и DashboardConfig; DashboardSummary берётся из модели.
+	* backend/app/core/dashboards/recalculate.py (recalculate): Новый
+	модуль.  Плитка с result_table перечитывает таблицу, пересобирает
+	спеку запрошенным типом графика (usermeta.requested_type, иначе
+	chart_type) с прежними подписями колонок и заголовком и обновляет
+	снимок.  В спеке без usermeta, собранной не построителем, меняются
+	только данные.  Если таблицы нет, снимок остаётся, а плитка
+	помечается stale.
+	* backend/tests/unit/test_dashboards_api.py: Тесты всех эндпоинтов,
+	404 и пересчёта.
+	* docs/memory.md: Таблица эндпоинтов и пересчёт.
+	* docs/repo_structure.md: recalculate.py, схемы и маршруты дашбордов.
+
+2026-10-23  Alexander Yurits  <terruwork@gmail.com>
+
+	Восстановление источника пропускает таблицу без прав, как attach.
+	* backend/app/core/data/ingest.py (restore): Сбой профиля —
+	connector.skip(), при пропуске паспорт таблицы удаляется; иначе
+	connector.rollback().  Возвращает таблицы без пропущенных.
+	* backend/tests/unit/test_datasource_restore.py
+	(test_ingest_restore_skips_unreadable_table)
+	(test_ingest_restore_rolls_back_on_read_error): Новые тесты.
+	* docs/data_connectors.md (Восстановление после перезапуска): skip и
+	rollback при восстановлении.
+
+2026-10-23  Alexander Yurits  <terruwork@gmail.com>
+
+	Сбой дашборда не перечёркивает показанный ответ.
+	* backend/app/core/agent/orchestrator.py (AgentOrchestrator.run):
+	Дашборд собирается вне общего try инсайта и графика: при сбое —
+	dashboard failed и обычный done, без error; ответ записывается в
+	память сессии.
+	* backend/tests/unit/test_orchestrator_unit.py
+	(test_dashboard_failure_keeps_the_answer): Новый тест.
+	* docs/architecture.md (События стрима чата): dashboard failed
+	без error.
+
+2026-10-23  Alexander Yurits  <terruwork@gmail.com>
+
+	Сбой LLM вне шагов больше не обрывает стрим.
+	* backend/app/core/agent/orchestrator.py (FAILURE_MESSAGE)
+	(_failure_event): Новые: событие error для пользователя.
+	(AgentOrchestrator._research): planning failed с текстом ошибки,
+	если планировщик упал.
+	(AgentOrchestrator.run): Сбой плана — error и done; сбой инсайта,
+	графика или дашборда — failed этапа, error и done.
+	* backend/tests/unit/test_orchestrator_unit.py
+	(test_planner_failure_ends_the_stream)
+	(test_insight_failure_ends_the_stream): Новые тесты.
+	* docs/architecture.md (События стрима чата): События failed этапов
+	и гарантия done.
+
+2026-10-22  mb6ockatf  <smokenmirror@tutamail.com>
+
+	Источники PostgreSQL переживают перезапуск бэкенда (#118).
+	* backend/app/core/memory/datasource_store.py (DatasourceRecord)
+	(DatasourceStore): Новое хранилище подключённых источников в SQLite
+	(таблица datasources по SQLITE_PATH): upsert по identity, get, list,
+	delete.  DSN хранится только маскированным.
+	* backend/app/core/data/restore.py (remember): Новая функция:
+	запомнить источник PostgreSQL после подключения.  (password_for):
+	Пароль из POSTGRES_PASSWORD__<identity> или POSTGRES_PASSWORD
+	(окружение важнее .env).  (connection_string): DSN из хранилища с
+	паролем из env; None, если пароль нужен, но не задан.
+	(restore_saved_sources): Переподключить источники по очереди, каждый
+	в потоке с таймаутом; ошибка источника только пишется в лог.
+	(forget): Снять представления источника, удалить паспорта его таблиц и
+	запись.
+	* backend/app/core/data/ingest.py (restore): Новая функция:
+	переподключение без повторного профилирования таблиц, у которых
+	паспорт совпадает с колонками представления.
+	* backend/app/core/data/duckdb_manager.py (DuckDBManager.columns):
+	Искать и во временных представлениях; при совпадении имени брать
+	колонки из temp, как SELECT * FROM.  Тот же текст, что в #111.
+	* backend/app/api/routes/datasources.py (attach_db): Запоминать
+	источник.  (detach_db): Новый DELETE /api/datasources/{id}: 204 или
+	404.
+	* backend/app/main.py (lifespan): Фоновое восстановление источников,
+	задача отменяется при остановке.
+	* backend/app/config.py (Settings): postgres_restore_timeout_s.
+	* .env.example: POSTGRES_PASSWORD, POSTGRES_RESTORE_TIMEOUT_S.
+	* backend/tests/unit/test_datasource_restore.py: Новые тесты:
+	хранилище и upsert, пароль не попадает на диск, порядок источников
+	пароля, восстановление без перепрофилирования и с ним, сбой, таймаут и
+	нет пароля у одного источника, DELETE, фоновая задача lifespan,
+	columns() для TEMP VIEW.
+	* backend/tests/integration/test_postgres_connector.py
+	(test_saved_source_is_restored_after_restart): Подключить через API,
+	закрыть DuckDBManager, открыть новый на том же файле, восстановить,
+	проверить SELECT, columns() и имена, удалить через DELETE.
+	* docs/data_connectors.md: Восстановление после перезапуска, пароли в
+	env, DELETE.
+	* docs/repo_structure.md: restore.py, datasource_store.py.
+
+2026-10-22  mb6ockatf  <smokenmirror@tutamail.com>
+
+	События прогресса хода (S-01, #49).
+	* backend/app/core/agent/orchestrator.py (_progress_event)
+	(_step_event, _elapsed_ms): Новые функции: событие progress и время
+	шага в миллисекундах.  (_fixing_event): Через _step_event.
+	(AgentOrchestrator._research): planning started и planning finished
+	с total_steps вокруг планировщика.
+	(AgentOrchestrator._execute_plan): По каждому шагу step started,
+	затем step finished или step failed с elapsed_ms (failed — с текстом
+	ошибки).
+	(AgentOrchestrator.run): insight started перед инсайтом, chart
+	started перед графиком.
+	* backend/tests/unit/test_orchestrator_unit.py
+	(test_progress_events_precede_the_answer)
+	(test_failed_step_reports_progress)
+	(test_empty_plan_reports_zero_steps): Новые тесты: порядок и поля
+	событий.
+	* backend/tests/unit/test_recovery_and_cache.py (kinds, fixing):
+	События progress сравниваются как «этап:статус».
+	* backend/tests/unit/test_orchestrator_viz.py (collect): Без событий
+	progress.  (test_recovery_answers_the_original_question): Ответ на
+	уточнение идёт без planning.
+	* backend/tests/integration/test_memory_integration.py
+	(test_chart_view_change_uses_chart_of_current_table): Первым после
+	progress приходит text.
+	* backend/tests/contract/test_sse_serialization.py
+	(test_sse_progress_events): Новый тест: progress в SSE-стриме.
+	* docs/architecture.md (События стрима чата): Все события прогресса.
+	ClickHouse-коннектор по ревью #122: совместимость с #126 и #130.
+	* backend/app/core/data/connectors/clickhouse.py
+	(ClickHouseConnector.warnings): Метод вместо атрибута-списка, как
+	BaseConnector.warnings(table) из #126.  Атрибут перекрывал метод:
+	после мержа с #126 подключение ClickHouse падало на вызове списка.
+	(ClickHouseConnector.notes): Новый атрибут, предупреждение об обрезке
+	по DB_MAX_TABLES.
+	(ClickHouseConnector.scrub): Новый метод.  Ошибка профиля (422) теперь
+	без пароля.
+	(CLICKHOUSE_ERROR_CODES): Убран код 241 (MEMORY_LIMIT_EXCEEDED, а не
+	«нет прав»), добавлены 193, 194, 209.
+	(describe_failure): Код ищется в тексте ошибки («Code: 81»): у
+	исключений DuckDB нет атрибута code.  Убраны маркеры «401»/«403»,
+	ловившие любые числа.  «Table ... doesn't exist» больше не выдаётся
+	за отсутствие базы.
+	* backend/app/api/routes/datasources.py (attach_db)
+	* backend/app/api/schemas/datasource.py (DatasourceOut.warnings)
+	* frontend/src/types/datasource.ts: Поле warnings убрано.
+	getattr(connector, "warnings") после мержа с #126 возвращал метод, и
+	любой POST /api/datasources/db по PostgreSQL отвечал 500.
+	* backend/app/config.py (Settings.db_max_tables): POSTGRES_MAX_TABLES —
+	прежнее имя этой же настройки; если заданы обе, важнее DB_MAX_TABLES.
+	(Settings.postgres_max_tables): Удалена.
+	* backend/app/core/data/connectors/postgres.py (PostgresConnector):
+	Лимит из settings.db_max_tables.  Раньше выбирался сравнением с 50.
+
+2026-10-22  dmitriy-ya  <dmitriyyakushonok@yandex.ru>
+
+	Новый ClickHouse-коннектор через DuckDB community extension
+	clickhouse_scanner. Реализация подключает ClickHouse в lazy-режиме через
+	ATTACH и создаёт временные представления без копирования таблиц в Python,
+	без временных файлов и без HTTP-клиента/fallback.
+	* backend/app/core/data/connectors/clickhouse.py: Новый коннектор с разбором
+	DSN clickhouse:// и clickhouses://, native-портами 9000/9440, поддержкой
+	логина, пароля и database/schema, маскировкой секретов, DuckDB Secret,
+	установкой/загрузкой clickhouse_scanner, ATTACH READ_ONLY, discovery через
+	каталог DuckDB с фильтром выбранной базы, созданием TEMP VIEW, разрешением
+	коллизий имён, ограничением числа таблиц DB_MAX_TABLES, чтением комментариев
+	колонок, очисткой старых
+	подключений и понятными ошибками подключения/недоступного расширения без
+	утечки пароля.
+	* backend/app/core/data/connectors/factory.py: Регистрация ClickHouse в
+	фабрике коннекторов и передача schema/database.
+	* backend/app/core/data/connectors/postgres.py: Лимит таблиц из
+	DB_MAX_TABLES.
+	* backend/app/api/routes/datasources.py: Подключение ClickHouse к API
+	POST /api/datasources/db, преобразование ошибок коннектора в HTTP 502/503
+	и возврат списка таблиц.
+	* backend/app/api/schemas/datasource.py: Поддержка kind=clickhouse и
+	ClickHouse в ответной схеме datasource.
+	* frontend/src/types/datasource.ts, frontend/src/components/chat/DatasourcePanel.tsx:
+	Добавление ClickHouse в типы источников
+	данных frontend.
+	* backend/app/config.py, .env.example: DB_MAX_TABLES — лимит
+	подключаемых таблиц для PostgreSQL и ClickHouse.
+	* backend/Dockerfile: Предустановка postgres_scanner и
+	clickhouse_scanner для offline/runtime-образа.
+	* docker-compose.yml: Native-порт сервиса ClickHouse.
+	* .github/workflows/backend-ci.yml: Запуск integration job с ClickHouse
+	и проверка коннектора в CI без маскировки отсутствующей реализации через
+	NotImplementedError/skip.
+	* backend/tests/integration/test_clickhouse_connector.py: Integration-тесты
+	lazy TEMP VIEW, чтения по требованию, удалённого scan, фильтрации, API
+	attach, комментариев колонок, кириллических имён колонок, существующей
+	пустой таблицы, изоляции таблиц других баз и неверного пароля без его
+	появления в ошибке.
+	* backend/tests/unit/test_connectors_clickhouse.py: Unit-тесты без сервера
+	для DSN, secure-портов, маскировки/передачи секретов, SQL ATTACH/VIEW,
+	каталога выбранной базы, TLS-строки ATTACH, коллизий имён, лимита таблиц,
+	пустого результата, cleanup, rollback, классификации реальных ошибок и
+	отсутствия расширения.
+	* backend/tests/unit/test_datasources_api.py: API-тесты регистрации
+	ClickHouse, списка таблиц и обработки ошибок подключения.
+	* backend/tests/unit/test_duckdb_extensions.py: Проверки загрузки и
+	доступности ClickHouse community extension.
+	* docs/data_connectors.md: Полное описание ClickHouse DSN, native-портов,
+	секретов, clickhouse_scanner, ATTACH, filtered catalog discovery, lazy views, ограничений,
+	DB_MAX_TABLES, отсутствия HTTP/clickhouse-connect fallback и отсутствия
+	встроенного лимита строк.
+
+2026-10-22  Alexander Yurits  <terruwork@gmail.com>
+
+	Повторное подключение и сбой профиля PostgreSQL по ревью #97 (#115).
+	* backend/app/core/data/schema_enrichment.py (SchemaEnricher.enrich):
+	Без документа колонка обрабатывается заново, только если изменился
+	её комментарий; название из документа сохраняется.  Раньше
+	повторное подключение без description стирало названия и описания
+	из документа у всех колонок.
+	(previous_comment): Новая функция.
+	* backend/app/core/data/connectors/base.py (BaseConnector.skip)
+	(BaseConnector.rollback, BaseConnector.scrub): Новые методы.
+	* backend/app/core/data/connectors/postgres.py
+	(PostgresConnector.skip): Таблица без прав на SELECT пропускается с
+	предупреждением, её представление удаляется.
+	(PostgresConnector.rollback): Снимает представления и ATTACH этого
+	подключения.  Раньше после сбоя профиля представления оставались
+	без паспорта.
+	(PostgresConnector.scrub): Новый метод.
+	* backend/app/core/data/ingest.py (attach): Вызывает connector.skip
+	при duckdb.Error профиля и connector.rollback без getattr.
+	* backend/app/api/routes/datasources.py (attach_db): duckdb.Error ->
+	422 с текстом без пароля вместо 500; description больше 1 МБ -> 413.
+	* backend/tests/unit/test_schema_enrichment.py,
+	backend/tests/unit/test_ingest.py,
+	backend/tests/unit/test_connectors_postgres.py,
+	backend/tests/unit/test_datasources_api.py: Тесты.
+	* docs/data_connectors.md: Поле description, коды 413/422, откат;
+	путь к run_full_llm_cycle.py.
+	* scripts/run_full_llm_cycle.py: Перенесён из backend/.  Каталог
+	прогона по-прежнему backend/storage/runs/.
+	(bind_session): SessionMemory.set_table вместо удалённого
+	set_datasource; подмена SOURCE_TABLE оркестратора убрана: константы
+	больше нет, паспорт и подписи берутся из таблицы сессии.
+
+	* backend/app/models/research_step.py (ResearchPlan._null_is_default):
+	null в final_viz и dashboard_requested от LLM даёт значение по
+	умолчанию (auto, False).  Раньше такой план не проходил валидацию.
+	* backend/tests/unit/test_research_step.py: Тест.
+>>>>>>> dev
+
 2026-10-22  thebulkapro  <saitbatalovbulat200@gmail.com>
 
 	Исправления API сессий по ревью #111.
