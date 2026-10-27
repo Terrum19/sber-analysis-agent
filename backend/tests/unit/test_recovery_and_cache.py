@@ -137,7 +137,7 @@ async def test_unfixed_step_asks_the_user(db) -> None:
     failed = events[-2]["data"]
     assert failed["step_id"] == 0
     assert "revenu3" in failed["error"]
-    assert failed["elapsed_ms"] >= 0
+    assert failed["elapsed_ms"] >= 1
     assert "revenu3" in events[-1]["data"]["error"]
     pending = SessionMemory("s1").get_pending_recovery()
     assert pending["attempts_made"] == STEP_FIX_ATTEMPTS + 1 == 3

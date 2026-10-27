@@ -210,7 +210,7 @@ def _done(turn_id: str) -> dict:
 
 
 def _elapsed_ms(started_at: float) -> int:
-    return round((time.perf_counter() - started_at) * 1000)
+    return max(1, round((time.perf_counter() - started_at) * 1000))
 
 
 class AgentOrchestrator:

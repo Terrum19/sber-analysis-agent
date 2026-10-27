@@ -7,7 +7,7 @@
  */
 import { useState } from "react";
 import Icon from "@/components/ui/Icon";
-import { useT } from "@/i18n/useT";
+import { useT, type Translate } from "@/i18n/useT";
 import { useUiStore, type Locale } from "@/store/uiStore";
 import type { StepState, TurnProgress } from "@/types/chat";
 
@@ -22,6 +22,11 @@ function stepsLabel(locale: Locale, count: number): string {
 
 function seconds(ms: number): string {
   return `${(ms / 1000).toFixed(ms < 10000 ? 1 : 0)}`;
+}
+
+function duration(t: Translate, ms: number): string {
+  if (ms < 1000) return t("progress.milliseconds", { ms: Math.max(1, Math.round(ms)) });
+  return t("progress.seconds", { s: seconds(ms) });
 }
 
 function StepRow({ step }: { step: StepState }) {
@@ -48,7 +53,7 @@ function StepRow({ step }: { step: StepState }) {
       <span className="min-w-0 flex-1 truncate">{step.purpose || step.tool || `#${step.step_id}`}</span>
       {note && <span className={`shrink-0 ${step.status === "failed" ? "text-bad" : "text-warn"}`}>{note}</span>}
       {step.elapsed_ms !== undefined && step.status !== "fixing" && (
-        <span className="shrink-0 tabular-nums text-graphite-500">{t("progress.seconds", { s: seconds(step.elapsed_ms) })}</span>
+        <span className="shrink-0 tabular-nums text-graphite-500">{duration(t, step.elapsed_ms)}</span>
       )}
     </li>
   );
