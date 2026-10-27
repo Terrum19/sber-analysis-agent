@@ -1,3 +1,19 @@
+2026-10-28  Alexander Yurits  <143354682+Terrum19@users.noreply.github.com>
+
+	DuckDB не останавливает loop сервера (#189).
+	* backend/app/api/routes/chat.py (iterate_in_thread): Новая.  Ход
+	агента идёт в своём потоке и loop, loop сервера только пересылает
+	события: запрос DuckDB или ожидание db.lock, который держит загрузка
+	CSV, больше не останавливают пинги SSE, /health и другие запросы.
+	(chat): Импорт и создание оркестратора — в потоке хода.
+	* backend/app/core/tools/base.py (BaseTool.arun): SQL тула — через
+	asyncio.to_thread: события шагов уходят, пока идёт запрос.
+	* backend/app/api/routes/datasources.py (describe_tables): Синхронная,
+	в потоке пула со своим loop.
+	* backend/app/api/routes/artifacts.py (export_artifact): Синхронный.
+	* backend/tests/unit/test_chat_api.py, backend/tests/unit/test_tools.py:
+	Тесты того же.
+
 2026-10-27  Alexander Yurits  <143354682+Terrum19@users.noreply.github.com>
 
 	Плитка-таблица на дашборде — HTML-таблицей, как в чате.

@@ -25,12 +25,13 @@ RESULT_REF = re.compile(r"temp_result_v\d+")
 
 
 @router.post("/export")
-async def export_artifact(
+def export_artifact(
     payload: ExportRequest, db: Annotated[DuckDBManager, Depends(get_db)]
 ) -> FileResponse:
     """Сгенерировать .xlsx / .pdf по итогам исследования и отдать файл.
 
-    Реализован только Excel (PDF — TODO round-2).
+    Реализован только Excel (PDF — TODO round-2). Синхронный: FastAPI
+    запускает его в потоке пула, и чтение DuckDB не держит loop сервера (#189).
     """
     if payload.format == "pdf":
         raise HTTPException(
