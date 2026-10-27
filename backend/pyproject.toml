@@ -25,6 +25,7 @@ dev = [
     "pytest-asyncio>=0.23",
     "httpx2>=2.0",
     "coverage>=7.5",
+    "pyyaml>=6.0",         # набор вопросов eval (scripts/eval.py)
     "ruff>=0.5",
 ]
 
