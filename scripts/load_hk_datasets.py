@@ -8,7 +8,9 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "backend"))
 
 
-def describe(db, connector, table: str, document: str | None, runner: asyncio.Runner | None):
+def describe(
+    db, connector, table: str, document: str | None, runner: asyncio.Runner | None
+):
     """Перенести документ-описание в паспорт таблицы; замечания для отчёта."""
     from app.core.data import ingest
 
@@ -58,7 +60,10 @@ def render(results: list[dict]) -> str:
     ]
     for result in results:
         cells = [result["file"], f"`{result['table']}`"]
-        cells += [str(result.get(key, "")) for key in ("rows", "columns", "load_s", "describe_s")]
+        cells += [
+            str(result.get(key, ""))
+            for key in ("rows", "columns", "load_s", "describe_s")
+        ]
         cells.append("; ".join(result["notes"]))
         lines.append("| " + " | ".join(cells) + " |")
     return "\n".join(lines)
@@ -66,11 +71,12 @@ def render(results: list[dict]) -> str:
 
 def main() -> int:
     import duckdb
-
     from app.config import settings
     from app.core.data.duckdb_manager import DuckDBManager
 
-    parser = argparse.ArgumentParser(description="Загрузка и профилирование датасетов хакатона")
+    parser = argparse.ArgumentParser(
+        description="Загрузка и профилирование датасетов хакатона"
+    )
     parser.add_argument("--dir", type=Path, default=ROOT / "data" / "hk_datasets")
     parser.add_argument("--db", default=settings.duckdb_path)
     parser.add_argument(
@@ -78,7 +84,9 @@ def main() -> int:
         type=Path,
         help="документ-описание колонок (по умолчанию <dir>/description.md, если есть)",
     )
-    parser.add_argument("--no-llm", action="store_true", help="только профиль, без описания")
+    parser.add_argument(
+        "--no-llm", action="store_true", help="только профиль, без описания"
+    )
     arguments = parser.parse_args()
 
     files = sorted(arguments.dir.glob("*.csv"))
@@ -91,7 +99,9 @@ def main() -> int:
         print(f"Не открыть {arguments.db} (backend запущен?): {error}", file=sys.stderr)
         return 1
     description = arguments.description or arguments.dir / "description.md"
-    document = description.read_text(encoding="utf-8") if description.is_file() else None
+    document = (
+        description.read_text(encoding="utf-8") if description.is_file() else None
+    )
     runner = None if arguments.no_llm else asyncio.Runner()
     try:
         results = []

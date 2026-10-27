@@ -26,7 +26,9 @@ def mentions(headline: str, value: object) -> bool:
         return False
     text = re.sub(r"(?<=\d)[\s  ](?=\d{3}\b)", "", headline).replace(",", ".")
     tolerance = max(0.6, abs(value) * 0.002)
-    return any(abs(float(n) - value) <= tolerance for n in re.findall(r"\d+(?:\.\d+)?", text))
+    return any(
+        abs(float(n) - value) <= tolerance for n in re.findall(r"\d+(?:\.\d+)?", text)
+    )
 
 
 def names(headline: str, label: object) -> bool:
@@ -65,7 +67,9 @@ def grade(item: dict, headline: str) -> str:
     else:
         top = max(rows, key=lambda r: r[column] if column else 0)
         low = min(rows, key=lambda r: r[column] if column else 0)
-        named = [r for r in (top, low) if label is not None and names(headline, r[label])]
+        named = [
+            r for r in (top, low) if label is not None and names(headline, r[label])
+        ]
         if asks_label:
             ok = bool(named)
         else:

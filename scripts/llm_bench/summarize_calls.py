@@ -58,38 +58,55 @@ def main() -> None:
         user = next((m["content"] for m in msgs if m.get("role") == "user"), "")
         resp = rec.get("response")
         usage = resp.get("usage", {}) if isinstance(resp, dict) else {}
-        rows.append({
-            "id": rec["id"], "kind": kind_of(user), "mode": request_mode(req),
-            "shape": response_shape(resp), "seconds": rec.get("seconds", 0),
-            "pt": usage.get("prompt_tokens"), "ct": usage.get("completion_tokens"),
-            "finish": (resp or {}).get("choices", [{}])[0].get("finish_reason")
-            if isinstance(resp, dict) else None,
-            "disconnected": rec.get("client_disconnected", False),
-            "chars": sum(len(m.get("content") or "") for m in msgs)
-            + len(json.dumps(req.get("tools") or [])),
-        })
+        rows.append(
+            {
+                "id": rec["id"],
+                "kind": kind_of(user),
+                "mode": request_mode(req),
+                "shape": response_shape(resp),
+                "seconds": rec.get("seconds", 0),
+                "pt": usage.get("prompt_tokens"),
+                "ct": usage.get("completion_tokens"),
+                "finish": (resp or {}).get("choices", [{}])[0].get("finish_reason")
+                if isinstance(resp, dict)
+                else None,
+                "disconnected": rec.get("client_disconnected", False),
+                "chars": sum(len(m.get("content") or "") for m in msgs)
+                + len(json.dumps(req.get("tools") or [])),
+            }
+        )
 
-    print("| # | вид | запрос | ответ | finish | prompt tok | compl tok | сек | клиент ушёл |")
+    print(
+        "| # | вид | запрос | ответ | finish | prompt tok | compl tok | сек | клиент ушёл |"
+    )
     print("|---|---|---|---|---|---|---|---|---|")
     for r in rows:
-        print(f"| {r['id']} | {r['kind']} | {r['mode'][:40]} | {r['shape']} | {r['finish']} | "
-              f"{r['pt']} | {r['ct']} | {r['seconds']:.0f} | {'да' if r['disconnected'] else ''} |")
+        print(
+            f"| {r['id']} | {r['kind']} | {r['mode'][:40]} | {r['shape']} | {r['finish']} | "
+            f"{r['pt']} | {r['ct']} | {r['seconds']:.0f} | {'да' if r['disconnected'] else ''} |"
+        )
 
     by_kind = defaultdict(list)
     for r in rows:
         by_kind[r["kind"]].append(r)
-    print("\n| вид | вызовов | сек всего | сек медиана | prompt tok медиана | compl tok медиана |")
+    print(
+        "\n| вид | вызовов | сек всего | сек медиана | prompt tok медиана | compl tok медиана |"
+    )
     print("|---|---|---|---|---|---|")
     for kind, items in by_kind.items():
         pts = [r["pt"] for r in items if r["pt"]]
         cts = [r["ct"] for r in items if r["ct"]]
-        print(f"| {kind} | {len(items)} | {sum(r['seconds'] for r in items):.0f} | "
-              f"{statistics.median(r['seconds'] for r in items):.0f} | "
-              f"{statistics.median(pts) if pts else '—'} | {statistics.median(cts) if cts else '—'} |")
+        print(
+            f"| {kind} | {len(items)} | {sum(r['seconds'] for r in items):.0f} | "
+            f"{statistics.median(r['seconds'] for r in items):.0f} | "
+            f"{statistics.median(pts) if pts else '—'} | {statistics.median(cts) if cts else '—'} |"
+        )
     total = sum(r["seconds"] for r in rows)
     wasted = sum(r["seconds"] for r in rows if r["disconnected"])
-    print(f"\nВсего вызовов: {len(rows)}, время LLM: {total:.0f} с, "
-          f"из них клиент не дождался: {wasted:.0f} с")
+    print(
+        f"\nВсего вызовов: {len(rows)}, время LLM: {total:.0f} с, "
+        f"из них клиент не дождался: {wasted:.0f} с"
+    )
 
 
 if __name__ == "__main__":

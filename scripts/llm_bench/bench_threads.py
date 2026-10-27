@@ -16,15 +16,24 @@ from pathlib import Path
 
 SHORT = "Напиши SQL: число событий по месяцам из таблицы events(event_date DATE). Только SQL."
 # ~1.5k токенов: повторяем описание, чтобы мерить prefill без кеша.
-LONG_UNIT = ("- group_by [transform]: Сгруппировать по одной или нескольким колонкам (by) и "
-             "посчитать агрегат function(column); arguments={by: list[column], column: column}\n")
+LONG_UNIT = (
+    "- group_by [transform]: Сгруппировать по одной или нескольким колонкам (by) и "
+    "посчитать агрегат function(column); arguments={by: list[column], column: column}\n"
+)
 
 
 def chat(base: str, model: str, prompt: str, options: dict) -> dict:
-    payload = {"model": model, "stream": False, "options": options,
-               "messages": [{"role": "user", "content": prompt}]}
-    req = urllib.request.Request(f"{base}/api/chat", data=json.dumps(payload).encode(),
-                                 headers={"Content-Type": "application/json"})
+    payload = {
+        "model": model,
+        "stream": False,
+        "options": options,
+        "messages": [{"role": "user", "content": prompt}],
+    }
+    req = urllib.request.Request(
+        f"{base}/api/chat",
+        data=json.dumps(payload).encode(),
+        headers={"Content-Type": "application/json"},
+    )
     t0 = time.time()
     with urllib.request.urlopen(req, timeout=3600) as resp:
         d = json.loads(resp.read())
@@ -32,7 +41,8 @@ def chat(base: str, model: str, prompt: str, options: dict) -> dict:
         "wall_s": time.time() - t0,
         "load_s": d.get("load_duration", 0) / 1e9,
         "prompt_tokens": d.get("prompt_eval_count"),
-        "prefill_tps": d.get("prompt_eval_count", 0) / max(d.get("prompt_eval_duration", 1) / 1e9, 1e-9),
+        "prefill_tps": d.get("prompt_eval_count", 0)
+        / max(d.get("prompt_eval_duration", 1) / 1e9, 1e-9),
         "gen_tokens": d.get("eval_count"),
         "gen_tps": d.get("eval_count", 0) / max(d.get("eval_duration", 1) / 1e9, 1e-9),
     }
@@ -48,11 +58,18 @@ def main() -> None:
     args = ap.parse_args()
     for num_ctx in args.num_ctx:
         for threads in args.threads:
-            opts = {"temperature": 0, "num_thread": threads, "num_ctx": num_ctx,
-                    "num_predict": 64}
+            opts = {
+                "temperature": 0,
+                "num_thread": threads,
+                "num_ctx": num_ctx,
+                "num_predict": 64,
+            }
             # Прогрев: загрузка раннера с новыми параметрами не идёт в замер.
             chat(args.base, args.model, "ok", opts | {"num_predict": 1})
-            for kind, prompt in (("short", SHORT), ("long", LONG_UNIT * 30 + "\nКратко: что делает group_by?")):
+            for kind, prompt in (
+                ("short", SHORT),
+                ("long", LONG_UNIT * 30 + "\nКратко: что делает group_by?"),
+            ):
                 # Уникальный префикс — чтобы KV-кеш прошлого запроса не помог.
                 res = chat(args.base, args.model, f"[{time.time()}] {prompt}", opts)
                 res |= {"num_thread": threads, "num_ctx": num_ctx, "prompt": kind}

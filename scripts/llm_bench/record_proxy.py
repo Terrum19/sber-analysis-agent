@@ -37,7 +37,9 @@ def _transient(status: int, payload: bytes) -> bool:
     return status == 200 and b'"error"' in payload[:300] and b'"choices"' not in payload
 
 
-def make_handler(upstream: str, log_path: Path, retry: int = 0) -> type[BaseHTTPRequestHandler]:
+def make_handler(
+    upstream: str, log_path: Path, retry: int = 0
+) -> type[BaseHTTPRequestHandler]:
     class Handler(BaseHTTPRequestHandler):
         def do_GET(self) -> None:
             self._forward(None)
@@ -61,7 +63,10 @@ def make_handler(upstream: str, log_path: Path, retry: int = 0) -> type[BaseHTTP
             attempt = 0
             while True:
                 req = urllib.request.Request(
-                    upstream + self.path, data=body, headers=headers, method=self.command
+                    upstream + self.path,
+                    data=body,
+                    headers=headers,
+                    method=self.command,
                 )
                 try:
                     with urllib.request.urlopen(req, timeout=None) as resp:
@@ -117,7 +122,9 @@ def main() -> None:
     parser.add_argument("--port", type=int, default=11500)
     parser.add_argument("--upstream", default="http://localhost:11434")
     parser.add_argument("--log", type=Path, required=True)
-    parser.add_argument("--retry", type=int, default=0, help="повторы ошибок провайдера")
+    parser.add_argument(
+        "--retry", type=int, default=0, help="повторы ошибок провайдера"
+    )
     args = parser.parse_args()
     handler = make_handler(args.upstream, args.log, args.retry)
     server = ThreadingHTTPServer(("127.0.0.1", args.port), handler)
