@@ -56,10 +56,33 @@ export default function ChatPanel({ sessionId }: Props) {
   // Сообщение с карточкой уточнения, на которую ещё можно ответить
   const [activeClarificationId, setActiveClarificationId] = useState<string | null>(null);
   const messagesEndRef = useRef<HTMLDivElement | null>(null);
+  const scrollContainerRef = useRef<HTMLDivElement | null>(null);
+  const isAtBottomRef = useRef(true);
+
+  const handleScroll = () => {
+    const el = scrollContainerRef.current;
+    if (!el) return;
+    const distanceFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
+    isAtBottomRef.current = distanceFromBottom <= 60;
+  };
+
+  const scrollToBottom = (behavior: ScrollBehavior = "auto") => {
+    if (behavior === "smooth") {
+      messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
+    } else {
+      const el = scrollContainerRef.current;
+      if (el) {
+        el.scrollTop = el.scrollHeight;
+      } else {
+        messagesEndRef.current?.scrollIntoView({ behavior: "auto" });
+      }
+    }
+  };
 
   const messages = useSessionStore((s) => s.messages);
   const addMessage = useSessionStore((s) => s.addMessage);
   const appendToLastMessage = useSessionStore((s) => s.appendToLastMessage);
+  const appendToMessage = useSessionStore((s) => s.appendToMessage);
   const updateLastMessage = useSessionStore((s) => s.updateLastMessage);
   const updateMessage = useSessionStore((s) => s.updateMessage);
   const removeMessage = useSessionStore((s) => s.removeMessage);
@@ -158,8 +181,9 @@ export default function ChatPanel({ sessionId }: Props) {
   }, [streaming]);
 
   useEffect(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [messages, streaming]);
+    isAtBottomRef.current = true;
+    scrollToBottom("auto");
+  }, [sessionId, activeTable]);
 
   /**
    * Отправить вопрос. recoveryResponse — ответ на уточнение: тогда q — то, что
@@ -207,8 +231,10 @@ export default function ChatPanel({ sessionId }: Props) {
     if (!textToSend) setInput("");
     setStreaming(true);
     setStreamingSessionId(sessionId);
+    isAtBottomRef.current = true;
+    setTimeout(() => scrollToBottom("smooth"), 0);
 
-    let answerStarted = false;
+    let answerMessageId: string | null = null;
     let streamHadError = false;
     // Поток без done и без уточнения — оборван, это ошибка
     let streamFinished = false;
@@ -223,11 +249,20 @@ export default function ChatPanel({ sessionId }: Props) {
       }
     };
     const appendText = (text: string) => {
-      if (answerStarted) {
-        appendToLastMessage(text);
+      if (answerMessageId) {
+        appendToMessage(answerMessageId, text);
       } else {
-        answerStarted = true;
-        addMessage({ role: "agent", content: text });
+        answerMessageId = `msg-answer-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
+        addMessage({
+          id: answerMessageId,
+          role: "agent",
+          content: text,
+          isStreaming: true,
+        });
+      }
+      if (isAtBottomRef.current) {
+        const el = scrollContainerRef.current;
+        if (el) el.scrollTop = el.scrollHeight;
       }
     };
 
@@ -236,28 +271,40 @@ export default function ChatPanel({ sessionId }: Props) {
       q,
       (event) => {
         if (event.type === "done") {
+          if (answerMessageId) {
+            updateMessage(answerMessageId, { isStreaming: false });
+          }
           streamFinished = true;
           finishProgress();
         } else if (event.type === "progress") {
           if (!progress) {
             progress = applyProgress({ planning: false, steps: [], started_at: Date.now() }, event.data);
-            answerStarted = false;
             addMessage({ id: progressId, role: "agent", content: "", progress });
           } else {
             progress = applyProgress(progress, event.data);
             updateMessage(progressId, { progress });
           }
+          if (isAtBottomRef.current) {
+            const el = scrollContainerRef.current;
+            if (el) el.scrollTop = el.scrollHeight;
+          }
         } else if (event.type === "clarification_needed") {
           // Бэкенд закрывает поток без done: ждёт recovery_response
-          answerStarted = false;
+          if (answerMessageId) {
+            updateMessage(answerMessageId, { isStreaming: false });
+          }
           streamFinished = true;
           const id = `msg-clarify-${Date.now().toString(36)}`;
           addMessage({ id, role: "agent", content: "", clarification: event.data });
           setActiveClarificationId(id);
+          if (isAtBottomRef.current) scrollToBottom("auto");
         } else if (event.type === "refusal") {
-          answerStarted = false;
+          if (answerMessageId) {
+            updateMessage(answerMessageId, { isStreaming: false });
+          }
           streamFinished = true;
           addMessage({ role: "agent", content: event.data.reason || t("chat.refusal"), refusal: event.data });
+          if (isAtBottomRef.current) scrollToBottom("auto");
         } else if (event.type === "text") {
           const raw = event as any;
           const content = event.data?.headline || event.data?.chunk || raw.headline || raw.chunk || "";
@@ -267,7 +314,9 @@ export default function ChatPanel({ sessionId }: Props) {
             appendText("\n\n" + details.map((d: string) => `• ${d}`).join("\n"));
           }
         } else if (event.type === "chart") {
-          answerStarted = false;
+          if (answerMessageId) {
+            updateMessage(answerMessageId, { isStreaming: false });
+          }
           const chartData = { ...((event.data || (event as any)) as any), tile_id: `chart-${Date.now().toString(36)}` };
           // График — на правую панель, в ленте только ссылка на него
           addTile(chartTile(chartData, t("chat.chartDefault")));
@@ -277,8 +326,11 @@ export default function ChatPanel({ sessionId }: Props) {
             content: chartData.caption ? t("chat.chartDoneNamed", { name: chartData.caption }) : t("chat.chartDone"),
             chart: chartData,
           });
+          if (isAtBottomRef.current) scrollToBottom("auto");
         } else if (event.type === "dashboard") {
-          answerStarted = false;
+          if (answerMessageId) {
+            updateMessage(answerMessageId, { isStreaming: false });
+          }
           const dashData = (event.data || (event as any)) as DashboardEvent["data"];
           addMessage({
             role: "agent",
@@ -290,8 +342,11 @@ export default function ChatPanel({ sessionId }: Props) {
           if (dashData.tiles && dashData.tiles.length > 0) {
             setCanvasDashboard(dashData.dashboard_id, dashData.title || t("chat.dashboardDefault"), dashData.tiles);
           }
+          if (isAtBottomRef.current) scrollToBottom("auto");
         } else if (event.type === "error") {
-          answerStarted = false;
+          if (answerMessageId) {
+            updateMessage(answerMessageId, { isStreaming: false });
+          }
           streamHadError = true;
           setLastFailedQuestion(retryQuestion);
           const raw = event as any;
@@ -304,17 +359,23 @@ export default function ChatPanel({ sessionId }: Props) {
               ? raw.detail
               : t("chat.genericError"));
           addMessage({ role: "agent", content: t("chat.error", { msg }), failed: true, failedQuestion: q });
+          if (isAtBottomRef.current) scrollToBottom("auto");
         }
       },
       (error) => {
         finishProgress();
+        if (answerMessageId) {
+          updateMessage(answerMessageId, { isStreaming: false });
+        }
         if (error) {
           streamHadError = true;
           setLastFailedQuestion(retryQuestion);
           addMessage({ role: "agent", content: t("chat.connectionLost", { msg: error }), failed: true, failedQuestion: retryQuestion });
+          if (isAtBottomRef.current) scrollToBottom("auto");
         } else if (!streamFinished && !streamHadError && !cancelled) {
           setLastFailedQuestion(retryQuestion);
           addMessage({ role: "agent", content: t("chat.streamIncomplete"), failed: true, failedQuestion: retryQuestion });
+          if (isAtBottomRef.current) scrollToBottom("auto");
         } else if (!streamHadError) {
           setLastFailedQuestion(null);
         }
@@ -326,7 +387,11 @@ export default function ChatPanel({ sessionId }: Props) {
     );
     stopRef.current = () => {
       cancelled = true;
+      if (answerMessageId) {
+        updateMessage(answerMessageId, { isStreaming: false });
+      }
       stop();
+      setStreaming(false);
       setStreamingSessionId(null);
     };
   }
@@ -392,7 +457,11 @@ export default function ChatPanel({ sessionId }: Props) {
       </div>
 
       {/* Лента сообщений */}
-      <div className="flex-1 space-y-5 overflow-y-auto px-4 py-6 md:px-8">
+      <div
+        ref={scrollContainerRef}
+        onScroll={handleScroll}
+        className="flex-1 space-y-5 overflow-y-auto px-4 py-6 md:px-8"
+      >
         {messages.length === 0 ? (
           <div className="mx-auto flex h-full max-w-xl flex-col justify-center">
             <div className="flex items-center gap-2 text-[13px] text-graphite-400">
@@ -445,9 +514,15 @@ export default function ChatPanel({ sessionId }: Props) {
                 {m.progress && <StepProgress progress={m.progress} />}
 
                 {/* Текст сообщения */}
-                {m.content && (
+                {(m.content || m.isStreaming) && (
                   <div className={`whitespace-pre-wrap ${m.refusal ? "border-l-2 border-warn/60 pl-3 text-graphite-300" : ""}`}>
                     {m.content}
+                    {m.isStreaming && streaming && (
+                      <span
+                        className="inline-block ml-1 w-1.5 h-4 bg-graphite-400 align-middle animate-pulse rounded-sm"
+                        aria-label="Генерация ответа"
+                      />
+                    )}
                   </div>
                 )}
 
