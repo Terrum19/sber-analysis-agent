@@ -7,15 +7,21 @@
  * - Или карточка KPI (большая цифра, изменение со стрелкой и смысловым цветом)
  * - Инсайт под графиком/KPI
  * - Режим редактирования (переименование, удаление)
- * - Клик открывает плитку на весь экран во вкладке (onOpen)
+ * - Клик по точке графика — «дообследуй» (onElaborate, F-09);
+ *   клик по плитке открывает её на весь экран (onOpen)
  * - Вариант mini — маленькое превью для реестра, large — вкладка артефакта
  */
-import React, { useState } from "react";
+import React, { useRef, useState } from "react";
 import dynamic from "next/dynamic";
 import { VegaLite, type VisualizationSpec } from "react-vega";
 import type { EChartsOption } from "echarts";
 import type { DashboardTile as DashboardTileType } from "@/types/dashboard";
 import { deltaSign, echartsBase, themeVegaSpec, useChartColors, type ChartColors } from "@/lib/chartTheme";
+import {
+  selectionFromECharts,
+  selectionFromVega,
+  type ChartSelection,
+} from "@/lib/chartSelection";
 import { useElementSize } from "@/hooks/useElementSize";
 import { useT } from "@/i18n/useT";
 import { isKpiTile } from "@/lib/tileLayout";
@@ -34,6 +40,8 @@ interface Props {
   onDelete?: () => void;
   /** Открыть плитку на весь экран (клик по плитке вне режима редактирования). */
   onOpen?: () => void;
+  /** «Дообследовать»: клик по точке графика или по плитке (без точки). */
+  onElaborate?: (selection?: ChartSelection) => void;
   /** Меню действий плитки: anchorRect — координаты кнопки «⋯». */
   onMenu?: (anchorRect: DOMRect) => void;
   /** Маленькое превью без осей и инсайта. */
@@ -105,15 +113,45 @@ function withoutAxes(spec: Record<string, any>): Record<string, any> {
 }
 
 /** График, растянутый на весь доступный контейнер. */
-function FittedChart({ tile, colors, bare }: { tile: DashboardTileType; colors: ChartColors; bare?: boolean }) {
+function FittedChart({
+  tile,
+  colors,
+  bare,
+  onSelect,
+}: {
+  tile: DashboardTileType;
+  colors: ChartColors;
+  bare?: boolean;
+  onSelect?: (selection: ChartSelection) => void;
+}) {
   const { ref, width, height } = useElementSize<HTMLDivElement>();
   const ready = width > 20 && height > 20;
+  // Обработчик держим в ref: Vega-вью переиспользуется при изменении размера,
+  // а колбэк из родителя меняется на каждом рендере.
+  const onSelectRef = useRef(onSelect);
+  onSelectRef.current = onSelect;
+  const listeningViews = useRef<WeakSet<object>>(new WeakSet());
 
   let content: React.ReactNode = null;
   if (ready && isEChartsTile(tile)) {
     const raw = (tile.spec?.option && typeof tile.spec.option === "object" ? tile.spec.option : tile.spec) as EChartsOption;
     content = (
-      <ReactECharts option={{ ...echartsBase(colors), ...raw }} notMerge lazyUpdate style={{ width, height }} />
+      <ReactECharts
+        option={{ ...echartsBase(colors), ...raw }}
+        notMerge
+        lazyUpdate
+        style={{ width, height }}
+        onEvents={{
+          click: (params: unknown) => {
+            if (!onSelectRef.current) return;
+            const selection = selectionFromECharts(params, tile.spec);
+            if (!selection) return;
+            // Клик по точке не должен открывать плитку/артефакт.
+            (params as { event?: { event?: { stopPropagation?: () => void } } })?.event?.event?.stopPropagation?.();
+            onSelectRef.current(selection);
+          },
+        }}
+      />
     );
   } else if (ready && tile.spec && Object.keys(tile.spec).length > 0) {
     let spec: Record<string, any> = {
@@ -128,6 +166,17 @@ function FittedChart({ tile, colors, bare }: { tile: DashboardTileType; colors: 
         spec={spec as VisualizationSpec}
         actions={false}
         onError={(err) => console.warn("VegaLite specification error:", err)}
+        onNewView={(view: any) => {
+          if (listeningViews.current.has(view)) return;
+          listeningViews.current.add(view);
+          view.addEventListener("click", (event: any, item: any) => {
+            if (!item?.datum || !onSelectRef.current) return;
+            const selection = selectionFromVega(item.datum, tile.spec);
+            if (!selection) return;
+            event?.stopPropagation?.();
+            onSelectRef.current(selection);
+          });
+        }}
       />
     );
   }
@@ -145,6 +194,7 @@ export default function DashboardTile({
   onRename,
   onDelete,
   onOpen,
+  onElaborate,
   onMenu,
   mini = false,
   preview = false,
@@ -161,6 +211,11 @@ export default function DashboardTile({
   const kpi = isKpi ? kpiFromTile(tile, t("tile.kpiDefault")) : null;
   const sign = kpi ? deltaSign(kpi.label) : 0;
   const canOpen = Boolean(onOpen) && !isEditing;
+  const canDrill = Boolean(onElaborate) && !isEditing;
+
+  function handlePointSelect(selection: ChartSelection) {
+    onElaborate?.(selection);
+  }
 
   function handleSaveTitle() {
     setEditingTitle(false);
@@ -251,10 +306,12 @@ export default function DashboardTile({
   return (
     <div
       onClick={(e) => {
-        if (!canOpen) return;
+        if (isEditing) return;
         // Кнопки и поля внутри плитки работают как обычно
         if ((e.target as HTMLElement).closest("button, input, a")) return;
-        onOpen?.();
+        if (canOpen) {
+          onOpen?.();
+        }
       }}
       className={`group relative flex h-full min-h-0 flex-col overflow-hidden rounded-xl border border-graphite-700/80 bg-graphite-900 shadow-sm transition-all duration-200 hover:border-graphite-600 hover:shadow-md ${
         dense ? "p-3" : "p-4"
@@ -325,11 +382,22 @@ export default function DashboardTile({
             </div>
           )}
           {tile.result_table && !dense && (
-            <span className="mt-0.5 block truncate font-mono text-[10px] text-graphite-500">src: {tile.result_table}</span>
+            <span className="mt-0.5 block truncate font-mono text-[10px] text-graphite-500">
+              {t("tile.source")}: {tile.result_table}
+            </span>
           )}
         </div>
 
         <div className="flex shrink-0 items-center gap-1">
+          {canDrill && (
+            <button
+              onClick={() => onElaborate?.()}
+              className="flex h-6 w-6 shrink-0 items-center justify-center rounded-md text-graphite-400 hover:bg-graphite-800 hover:text-graphite-100 transition"
+              title={t("drill.menu")}
+            >
+              <Icon name="sparkle" size={13} />
+            </button>
+          )}
           {isEditing && onMenu && (
             <button
               onClick={(e) => onMenu(e.currentTarget.getBoundingClientRect())}
@@ -384,7 +452,11 @@ export default function DashboardTile({
           </div>
         </div>
       ) : hasChart ? (
-        <FittedChart tile={tile} colors={colors} />
+        <FittedChart
+          tile={tile}
+          colors={colors}
+          onSelect={canDrill ? handlePointSelect : undefined}
+        />
       ) : (
         <div className="flex min-h-0 flex-1 items-center justify-center rounded bg-graphite-800/50 text-xs text-graphite-500">
           {t("tile.noData")}
