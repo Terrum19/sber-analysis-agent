@@ -67,7 +67,7 @@ function formatCell(value: unknown, locale: string): string {
   return String(value);
 }
 
-function DataTable({ spec, height }: { spec: Spec; height: number }) {
+export function DataTable({ spec, height }: { spec: Spec; height: number }) {
   const t = useT();
   const locale = useDateLocale();
   const rows = rowsOf(spec).slice(0, TABLE_ROW_LIMIT);
