@@ -1,3 +1,13 @@
+2026-10-27  Alexander Yurits  <143354682+Terrum19@users.noreply.github.com>
+
+	Плитка-таблица на дашборде — HTML-таблицей, как в чате.
+	* frontend/src/components/canvas/DashboardTile.tsx (FittedChart):
+	Спека с usermeta.chart_type="table" рисуется DataTable, а не Vega:
+	текстовая сетка Vega на ширине плитки слепляла колонки.
+	* frontend/src/components/charts/ChartRenderer.tsx (DataTable):
+	Экспортирована.  Цвет текста ячеек задан явно: наследованный
+	светлый текст был не виден на светлом фоне таблицы.
+
 2026-10-26  Alexander Yurits  <143354682+Terrum19@users.noreply.github.com>
 
 	Графики: тренд линией, гистограмма по колонке из вопроса (#176).
