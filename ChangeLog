@@ -1,5 +1,22 @@
 2026-10-28  Alexander Yurits  <143354682+Terrum19@users.noreply.github.com>
 
+	API воспоминаний сессии: список, добавление, выключение (#197).
+	* backend/app/api/routes/sessions.py (list_memories, add_memory)
+	(update_memory): Новые.  GET, POST и PATCH /{id}/memories.
+	(existing): Новая.  Сессия или 404.
+	* backend/app/api/schemas/chat.py (MemoryCreate, MemoryUpdate)
+	(MemoryOut): Новые.
+	* backend/app/core/memory/session_memory.py (memories): Аргумент
+	include_disabled.  (set_memory_enabled): Новая.  (remember): Тот же
+	текст включает выключенную запись.
+	* frontend/src/types/datasource.ts (MemoryItem, MemoryCreatePayload)
+	(MemoryPatchPayload): Новые.
+	* docs/memory.md: То же.
+	* backend/tests/unit/test_sessions_api.py,
+	backend/tests/unit/test_context_memory.py: Тесты API и выключения.
+
+2026-10-28  Alexander Yurits  <143354682+Terrum19@users.noreply.github.com>
+
 	Контекст хода: последние ходы всегда, история по запросу,
 	воспоминания (#197).
 	* backend/app/core/memory/session_memory.py (recent_turns): Последние

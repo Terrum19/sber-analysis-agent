@@ -348,23 +348,24 @@ class SessionMemory:
 
     # --- Воспоминания ---
 
-    def memories(self) -> list[dict]:
-        """Включённые воспоминания сессии, старые первыми."""
-        return [item for item in self._state["memories"] if item["enabled"]]
+    def memories(self, include_disabled: bool = False) -> list[dict]:
+        """Воспоминания сессии, старые первыми: включённые или все."""
+        return [item for item in self._state["memories"] if include_disabled or item["enabled"]]
 
     def remember(self, text: str, source: str = "user") -> dict | None:
         """Добавить воспоминание и вернуть его запись; пустой текст — None.
 
         Уже записанный текст (без учёта регистра и пробелов) не дублируется:
-        возвращается прежняя запись. ``source`` — откуда запись: ``user``
-        (просьба запомнить), позже — результаты глубокого исследования.
+        возвращается прежняя запись, выключенная — снова включается. ``source`` —
+        откуда запись: ``user`` (просьба в чате или кнопка), позже — результаты
+        глубокого исследования.
         """
         text = " ".join(text.split())
         if not text:
             return None
         for item in self._state["memories"]:
             if item["text"].casefold() == text.casefold():
-                return item
+                return self.set_memory_enabled(item["memory_id"], True)
         item = {
             "memory_id": uuid.uuid4().hex,
             "text": text,
@@ -413,6 +414,16 @@ class SessionMemory:
             "titles": {row.column: row.title for row in enrichment if row.title},
             "descriptions": {row.column: row.description for row in enrichment if row.description},
         }
+
+    def set_memory_enabled(self, memory_id: str, enabled: bool) -> dict | None:
+        """Включить или выключить воспоминание; None — такой записи нет."""
+        for item in self._state["memories"]:
+            if item["memory_id"] == memory_id:
+                if item["enabled"] != enabled:
+                    item["enabled"] = enabled
+                    self._persist()
+                return item
+        return None
 
     # --- pending_recovery (восстановление после ошибки шага) ---
 

@@ -202,3 +202,12 @@ def test_insight_prompt_has_memories(db):
     assert "- выручка без НДС" in llm.prompt
     asyncio.run(gen.generate("Выручка?", "temp_result_v1"))
     assert "Воспоминания сессии" not in llm.prompt
+
+
+def test_set_memory_enabled_persists_and_unknown_is_none(memory):
+    item = memory.remember("выручка без НДС")
+    assert memory.set_memory_enabled(item["memory_id"], False)["enabled"] is False
+    assert memory.set_memory_enabled("nope", True) is None
+    restored = SessionMemory("ctx")
+    assert restored.memories() == []
+    assert [m["enabled"] for m in restored.memories(include_disabled=True)] == [False]

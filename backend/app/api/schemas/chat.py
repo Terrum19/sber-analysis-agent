@@ -45,6 +45,33 @@ class SessionOut(BaseModel):
     created_at: datetime | None = None
 
 
+MemoryText = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=500)]
+
+
+class MemoryCreate(BaseModel):
+    """Тело POST /sessions/{id}/memories: текст воспоминания."""
+
+    text: MemoryText
+
+
+class MemoryUpdate(BaseModel):
+    """Тело PATCH /sessions/{id}/memories/{memory_id}: включить или выключить запись."""
+
+    enabled: bool
+
+
+class MemoryOut(BaseModel):
+    """Воспоминание сессии (#197): выключенное не идёт в контекст планировщика и инсайта."""
+
+    memory_id: str
+    text: str
+    source: str
+    created_at: datetime
+    enabled: bool
+    # Ход, в котором запись сделана из чата; у добавленной через API — None.
+    turn_id: str | None = None
+
+
 class ChatRequest(BaseModel):
     """Один ход диалога."""
 
