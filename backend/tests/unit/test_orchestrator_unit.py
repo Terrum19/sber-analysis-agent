@@ -440,3 +440,27 @@ def test_closing_stream_cancels_insight_stream(orchestrator, monkeypatch):
         await asyncio.wait_for(closed.wait(), 1)
 
     asyncio.run(_run())
+
+
+def test_insight_stream_skips_empty_and_whitespace_deltas(orchestrator, monkeypatch):
+    """Пустая дельта не превращается в событие, пробельная — не делает стрим успешным."""
+    from app.config import settings
+    from app.models.insight import Insight
+
+    monkeypatch.setattr(settings, "insight_stream", True)
+
+    class DeltasInsight:
+        async def generate(self, question, result_table, **_):
+            raise AssertionError("при включённом стриме generate не вызывается")
+
+        async def stream(self, question, result_table, *, supporting=None, steps=None, emit=None):
+            emit("")
+            emit(" \n")
+            emit("Вывод")
+            return Insight(headline="Вывод", details=[], limits="")
+
+    orchestrator.insight_gen = DeltasInsight()
+    events = collect(orchestrator, "s1")
+    chunks = [event["data"]["chunk"] for event in events if event["type"] == "text"]
+
+    assert chunks == [" \n", "Вывод"]
