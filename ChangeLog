@@ -569,6 +569,7 @@
 	* backend/tests/unit/test_orchestrator_unit.py
 	(test_done_counts_truncated_prompts): Новый тест.
 
+  
 2026-10-23  thebulkapro  <saitbatalovbulat200@gmail.com>
 
 	«Что передо мной?»: описание таблицы от LLM в паспорте (#54).
@@ -1043,7 +1044,6 @@
 	null в final_viz и dashboard_requested от LLM даёт значение по
 	умолчанию (auto, False).  Раньше такой план не проходил валидацию.
 	* backend/tests/unit/test_research_step.py: Тест.
->>>>>>> dev
 
 2026-10-22  thebulkapro  <saitbatalovbulat200@gmail.com>
 
