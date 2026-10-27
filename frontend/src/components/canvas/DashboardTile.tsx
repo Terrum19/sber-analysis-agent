@@ -4,6 +4,7 @@
  * Плитка дашборда:
  * - График Vega-Lite или ECharts, оформленный под текущую тему и вписанный
  *   в размер ячейки (ничего не выходит за её границы)
+ * - Таблица (usermeta.chart_type === "table") — HTML-таблицей, как в чате
  * - Или карточка KPI (большая цифра, изменение со стрелкой и смысловым цветом)
  * - Инсайт под графиком/KPI
  * - Режим редактирования (переименование, удаление)
@@ -25,6 +26,7 @@ import {
 import { useElementSize } from "@/hooks/useElementSize";
 import { useT } from "@/i18n/useT";
 import { isKpiTile } from "@/lib/tileLayout";
+import { DataTable, chartKind } from "@/components/charts/ChartRenderer";
 import Icon from "@/components/ui/Icon";
 
 // isKpiTile живёт в lib/tileLayout (общая логика с раскладкой); реэкспорт —
@@ -135,7 +137,10 @@ function FittedChart({
   const listeningViews = useRef<WeakSet<object>>(new WeakSet());
 
   let content: React.ReactNode = null;
-  if (ready && isEChartsTile(tile)) {
+  if (ready && tile.spec && chartKind(tile.spec) === "table") {
+    // Vega рисует таблицу текстовой сеткой: на ширине плитки колонки слипаются.
+    content = <DataTable spec={tile.spec} height={height} />;
+  } else if (ready && isEChartsTile(tile)) {
     const raw = (tile.spec?.option && typeof tile.spec.option === "object" ? tile.spec.option : tile.spec) as EChartsOption;
     content = (
       <ReactECharts

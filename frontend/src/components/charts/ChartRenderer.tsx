@@ -93,7 +93,7 @@ function DataTable({ spec, height }: { spec: Spec; height: number }) {
               {columns.map((column) => (
                 <td
                   key={column.field}
-                  className={`border-b border-graphite-100 px-3 py-1.5 ${column.type === "quantitative" ? "text-right tabular-nums" : ""}`}
+                  className={`border-b border-graphite-100 px-3 py-1.5 text-graphite-900 ${column.type === "quantitative" ? "text-right tabular-nums" : ""}`}
                 >
                   {formatCell(row[column.field], locale)}
                 </td>
