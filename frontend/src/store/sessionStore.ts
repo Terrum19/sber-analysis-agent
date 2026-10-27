@@ -22,6 +22,7 @@ export interface ChatMessage {
   id?: string;
   role: "user" | "agent";
   content: string;
+  isStreaming?: boolean;
   dashboard?: DashboardEvent["data"];
   chart?: ChartEvent["data"];
   timestamp?: string;
@@ -110,8 +111,9 @@ interface SessionState {
   consumeQuestion: (sessionId: string, id: string) => void;
 
   setSession: (id: string) => void;
-  addMessage: (msg: ChatMessage) => void;
+  addMessage: (msg: ChatMessage) => string;
   appendToLastMessage: (chunk: string) => void;
+  appendToMessage: (id: string, chunk: string) => void;
   updateLastMessage: (patch: Partial<ChatMessage>) => void;
   updateMessage: (id: string, patch: Partial<ChatMessage>) => void;
   removeMessage: (id: string) => void;
@@ -211,13 +213,14 @@ export const useSessionStore = create<SessionState>()(
             selectedTile: null,
           };
         }),
-      addMessage: (msg) =>
+      addMessage: (msg) => {
+        const assignedId = msg.id || `msg-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+        const newMsg: ChatMessage = {
+          ...msg,
+          id: assignedId,
+          timestamp: msg.timestamp || new Date().toLocaleTimeString("ru-RU", { hour: "2-digit", minute: "2-digit" }),
+        };
         set((s) => {
-          const newMsg: ChatMessage = {
-            ...msg,
-            id: msg.id || `msg-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
-            timestamp: msg.timestamp || new Date().toLocaleTimeString("ru-RU", { hour: "2-digit", minute: "2-digit" }),
-          };
           const nextMessages = [...s.messages, newMsg];
           let nextTableCache = s.sessionTableCache;
           if (s.sessionId && s.sessionActiveTable[s.sessionId]) {
@@ -231,7 +234,9 @@ export const useSessionStore = create<SessionState>()(
             };
           }
           return { messages: nextMessages, sessionTableCache: nextTableCache };
-        }),
+        });
+        return assignedId;
+      },
       removeMessage: (id) =>
         set((s) => {
           const nextMessages = s.messages.filter((m) => m.id !== id);
@@ -273,6 +278,29 @@ export const useSessionStore = create<SessionState>()(
           const nextMessages = [
             ...s.messages.slice(0, -1),
             { ...last, content: last.content + chunk },
+          ];
+          let nextTableCache = s.sessionTableCache;
+          if (s.sessionId && s.sessionActiveTable[s.sessionId]) {
+            const curTable = s.sessionActiveTable[s.sessionId];
+            nextTableCache = {
+              ...s.sessionTableCache,
+              [s.sessionId]: {
+                ...(s.sessionTableCache[s.sessionId] || {}),
+                [curTable]: { messages: nextMessages, tiles: s.tiles },
+              },
+            };
+          }
+          return { messages: nextMessages, sessionTableCache: nextTableCache };
+        }),
+      appendToMessage: (id, chunk) =>
+        set((s) => {
+          const idx = s.messages.findIndex((m) => m.id === id);
+          if (idx === -1) return {};
+          const target = s.messages[idx];
+          const nextMessages = [
+            ...s.messages.slice(0, idx),
+            { ...target, content: (target.content || "") + chunk },
+            ...s.messages.slice(idx + 1),
           ];
           let nextTableCache = s.sessionTableCache;
           if (s.sessionId && s.sessionActiveTable[s.sessionId]) {

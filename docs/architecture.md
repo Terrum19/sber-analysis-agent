@@ -59,7 +59,7 @@
 | type | data | когда |
 |---|---|---|
 | `progress` | `ProgressPayload` (ниже) | по ходу хода: план, шаги, начало инсайта и графика |
-| `text` | `{headline, details}` | инсайт готов |
+| `text` | `{chunk}` — дельта текста при `INSIGHT_STREAM=true`; `{headline, details}` — вывод целиком, когда стрим выключен или сработал фолбэк | инсайт готов / стримится |
 | `chart` | `{spec, caption, result_table?}` | Vega-Lite спека (нет, если план выбрал `final_viz: "none"`); `result_table` — `temp_result_vN` ответа (нет, если ответ без шагов): по нему плитка пересчитывается, а результат выгружается в Excel |
 | `dashboard` | `DashboardPayload {dashboard_id, title, tiles}` | дашборд собран по запросу; приходит после `chart` (график и инсайт ответа отдаются и при запросе дашборда) |
 | `clarification_needed` | `{step_id, error, suggestions}`, может быть `prompt_truncated` | шаг не выполнился, ждём `recovery_response`; `prompt_truncated` — как в `done` |
@@ -82,7 +82,7 @@
 | `step` | `fixing` | `step_id`, `tool`, `purpose`, `attempt`, `error` | шаг упал, планировщик исправляет его |
 | `step` | `finished` | `step_id`, `tool`, `purpose`, `elapsed_ms` | шаг выполнен (время — с учётом исправлений) |
 | `step` | `failed` | `step_id`, `tool`, `purpose`, `elapsed_ms`, `error` | шаг не исправился, дальше `clarification_needed` |
-| `insight` | `started` | — | план выполнен, генерируется инсайт (дальше `text`) |
+| `insight` | `started` | — | план выполнен, генерируется инсайт (дальше `text {chunk}` или один `text {headline, details}` при выключенном стриме/фолбэке) |
 | `chart` | `started` | — | строится график (дальше `chart`) |
 | `insight` / `chart` | `failed` | `error` | этап упал, дальше `error` и `done` |
 | `dashboard` | `failed` | `error` | дашборд не собран; ответ и график уже отданы, дальше `done` без `error` |
@@ -93,6 +93,32 @@ lookup-шага, ни ответ на уточнение (`recovery_response`) �
 `step/failed` поля `tool` и `purpose` — от последней версии шага (после
 исправления). Смена вида прошлого графика («сделай таблицей») идёт без
 плана: сразу `chart` и `done`. Этап `dashboard` шлёт только `failed`.
+
+### Стриминг вывода
+
+При `INSIGHT_STREAM=true` (по умолчанию) финальный инсайт идёт дельтами:
+
+`insight/started` → N × `text {chunk}` → `chart/started` → `chart` → `done`.
+
+- Итоговый `text {headline, details}` не отправляется, если была хотя бы одна
+  непустая дельта: фронт дописывает подряд идущие `text {chunk}` в одно сообщение.
+- Первая строка текста — headline: она же `caption` графика, запасной заголовок
+  плитки дашборда и headline в памяти сессии.
+- Формат текста: первая строка — вывод; затем строки `- ` с уточнениями;
+  последняя строка — `Ограничения: ...` (необязательна).
+- Нет `complete_stream` или ошибка до первой дельты — structured-фолбэк
+  (`generate()`): приходит один `text {headline, details}`.
+- Ошибка после первой дельты не фолбэчится: `insight/failed` → `error` → `done`,
+  уже показанный префикс остаётся в чате.
+- `INSIGHT_STREAM=false` — прежний контракт: один `text {headline, details}`.
+- Обрыв SSE (кнопка «стоп» на фронте) закрывает поток LLM: `run()` →
+  `aclosing(_turn)` → отмена задачи стрима → `LLMClient.complete_stream`
+  закрывает `AsyncStream`.
+- Стримится только финальный инсайт; обзор таблицы и плитки дашборда —
+  по-прежнему нестриминговые.
+- Хук `_check_context` не читает SSE (иначе `aread()` забуферизует поток),
+  поэтому для стримингового инсайта проверка `usage.prompt_tokens` не
+  выполняется: промпт ограничен `SHOWN_ROWS=50`.
 
 Вопрос про таблицу целиком («что передо мной?», «сколько строк и за какой
 период?», «опиши данные») тоже идёт без плана (`core/data/overview.py`):
@@ -112,7 +138,8 @@ lookup-шага, ни ответ на уточнение (`recovery_response`) �
 `fixing` и `clarification_needed`. Сбой дашборда ход не проваливает:
 после `dashboard/failed` сразу `done`, ответ сохраняется в памяти сессии.
 
-Пример успешного хода из одного шага:
+Пример успешного хода из одного шага без стриминга (`INSIGHT_STREAM=false`
+или structured-фолбэк):
 
 ```json
 {"type": "progress", "data": {"stage": "planning", "status": "started"}}
@@ -125,6 +152,19 @@ lookup-шага, ни ответ на уточнение (`recovery_response`) �
 {"type": "text", "data": {"headline": "...", "details": ["..."]}}
 {"type": "progress", "data": {"stage": "chart", "status": "started"}}
 {"type": "chart", "data": {"spec": {}, "caption": "..."}}
+{"type": "done", "data": {}}
+```
+
+Тот же ход со стримингом (`INSIGHT_STREAM=true`): те же события плана и шагов,
+затем дельты текста и график с подписью из первой строки.
+
+```json
+{"type": "progress", "data": {"stage": "insight", "status": "started"}}
+{"type": "text", "data": {"chunk": "Выручка "}}
+{"type": "text", "data": {"chunk": "выросла "}}
+{"type": "text", "data": {"chunk": "на 10%\n- Рост в январе\nОграничения: только 2024 год"}}
+{"type": "progress", "data": {"stage": "chart", "status": "started"}}
+{"type": "chart", "data": {"spec": {}, "caption": "Выручка выросла на 10%"}}
 {"type": "done", "data": {}}
 ```
 

@@ -1,3 +1,41 @@
+2026-10-27  Cline  <cline@users.noreply.github.com>
+
+	Стриминг финального инсайта по дельтам в SSE (F-12 / #135).
+	* backend/app/config.py (Settings.insight_stream): Новый флаг
+	(env INSIGHT_STREAM, по умолчанию true); false — прежний контракт
+	одного text {headline, details}.
+	* backend/app/core/llm/client.py (LLMClient.complete_stream): Новый.
+	Дельты chat.completions.create(stream=True); пустые и usage-чанки
+	пропускаются, finish_reason=length логируется.
+	(LLMClient._check_context): SSE-ответы и запросы со stream=true
+	не читаются хуком — aread() забуферизовал бы поток.
+	* backend/app/core/llm/fake_client.py (FakeLLM.complete_stream):
+	Новый.  INSIGHT_TEXT отдаётся кусками для CI без модели.
+	* backend/app/core/llm/prompts/insight_summary.py (INSIGHT_STREAM):
+	Новый текстовый промпт: headline, "- " details, Ограничения.
+	* backend/app/core/agent/insight.py (InsightGenerator.stream):
+	Новый.  Стрим через emit, structured-фолбэк до первой дельты,
+	разбор текста и headline из первой строки.
+	(parse_insight_text, _first_sentence, _clean_line): Новые.
+	(_Materials, InsightGenerator._materials): Новые.  Общая подготовка
+	промпта для generate() и stream().
+	(InsightGenerator.generate): Промпт собирается из _materials.
+	* backend/app/core/agent/orchestrator.py (_text_event)
+	(_text_chunk_event): Новые.  (AgentOrchestrator._turn): Стрим инсайта
+	идёт задачей с очередью; финальный text не дублируется, при отмене
+	SSE задача отменяется.
+	* backend/app/api/routes/chat.py (ClosingStreamingResponse): Новый.
+	Закрывает body_iterator при обрыве клиента, чтобы отмена дошла до LLM.
+	* backend/tests/unit/test_insight_stream.py
+	backend/tests/unit/test_llm_stream.py
+	backend/tests/unit/test_orchestrator_unit.py
+	backend/tests/unit/test_fake_llm_env.py
+	backend/tests/unit/test_config_env.py
+	backend/tests/contract/test_sse_serialization.py: Тесты стрима,
+	парсера, фолбэка, SSE и отмены.
+	* .env.example, docs/architecture.md, docs/prompts.md: То же.
+
+
 2026-10-26  Alexander Yurits  <143354682+Terrum19@users.noreply.github.com>
 
 	Графики: тренд линией, гистограмма по колонке из вопроса (#176).

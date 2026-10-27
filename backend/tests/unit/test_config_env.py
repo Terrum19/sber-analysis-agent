@@ -22,6 +22,16 @@ def test_llm_settings_defaults():
     assert defaults.llm_model == "qwen2.5-coder:14b"
 
 
+def test_insight_stream_is_on_by_default(monkeypatch):
+    monkeypatch.delenv("INSIGHT_STREAM", raising=False)
+    assert Settings(_env_file=None).insight_stream is True
+
+
+def test_insight_stream_can_be_disabled_from_env(monkeypatch):
+    monkeypatch.setenv("INSIGHT_STREAM", "false")
+    assert Settings(_env_file=None).insight_stream is False
+
+
 def test_storage_dir_defaults():
     assert settings.storage_dir == str(REPO_ROOT / "backend" / "storage")
 

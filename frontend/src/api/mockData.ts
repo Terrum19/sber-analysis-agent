@@ -316,7 +316,13 @@ export function mockRenameSession(sessionId: string, title: string): SessionResp
 }
 
 /**
- * Эмуляция стриминга ответов агента с текстом, инсайтами и карточкой дашборда.
+ * Эмуляция стриминга ответов агента по контракту S-01 + S-02:
+ * 1. progress (planning started -> finished)
+ * 2. progress (step 1 started -> finished)
+ * 3. progress (insight started)
+ * 4. 4-6 последовательных событий text { chunk: "..." } с интервалом ~100-150 мс
+ * 5. chart (или dashboard)
+ * 6. done
  */
 export function mockStreamChat(
   sessionId: string,
@@ -327,71 +333,121 @@ export function mockStreamChat(
 ): () => void {
   let isCancelled = false;
   const isDashboardRequest = /дашборд|панел|график|kpi|отчет|показател/i.test(question);
-
-  const steps = [
-    { delay: 300, chunk: "Изучаю схему данных в DuckDB...\n" },
-    { delay: 700, chunk: "Выполняю расчет шага 1: агрегация продаж по регионам (temp_result_v1).\n" },
-    {
-      delay: 1200,
-      headline: isDashboardRequest
-        ? "Дашборд успешно сформирован на основе промежуточных результатов DuckDB"
-        : "Анализ данных завершён: выявлен рост выручки на 18.4%",
-      details: [
-        "Москва лидирует с результатом 12.5 млн ₽",
-        "Темп роста относительно Q2 составил +18.4%",
-        "SQL не генерировался заново: использован кэш шага",
-      ],
-    },
-  ];
-
   const timeouts: NodeJS.Timeout[] = [];
 
-  steps.forEach((step, idx) => {
+  const schedule = (delay: number, fn: () => void) => {
     const t = setTimeout(() => {
-      if (isCancelled) return;
-      if (step.chunk) {
-        onEvent({ type: "text", data: { chunk: step.chunk } });
-      }
-      if (step.headline) {
-        onEvent({
-          type: "text",
-          data: { headline: step.headline, details: step.details },
-        });
-
-        // Если вопрос о графиках/дашборде — отправляем превью дашборда
-        if (isDashboardRequest) {
-          const dashId = `dash-${Date.now().toString(36)}`;
-          onEvent({
-            type: "dashboard",
-            data: {
-              dashboard_id: dashId,
-              title: "Аналитический срез: продажи и KPI",
-              tiles: DEFAULT_TILES,
-            },
-          });
-        } else {
-          onEvent({
-            type: "chart",
-            data: {
-              caption: "Выручка по ключевым регионам",
-              spec: DEFAULT_TILES[2].spec,
-              result_table: "temp_result_v1",
-            },
-          });
-        }
-      }
-
-      if (idx === steps.length - 1) {
-        const finishTimer = setTimeout(() => {
-          if (!isCancelled) {
-            onEvent({ type: "done", data: {} });
-            onClose?.();
-          }
-        }, 400);
-        timeouts.push(finishTimer);
-      }
-    }, step.delay);
+      if (!isCancelled) fn();
+    }, delay);
     timeouts.push(t);
+  };
+
+  // 1. Progress: planning started -> finished
+  schedule(200, () => {
+    onEvent({
+      type: "progress",
+      data: { stage: "planning", status: "started" },
+    });
+  });
+
+  schedule(450, () => {
+    onEvent({
+      type: "progress",
+      data: { stage: "planning", status: "finished", total_steps: 1 },
+    });
+  });
+
+  // 2. Progress: step 1 started -> finished
+  schedule(650, () => {
+    onEvent({
+      type: "progress",
+      data: {
+        stage: "step",
+        status: "started",
+        step_id: 1,
+        tool: "duckdb_sql",
+        purpose: "Агрегация продаж по регионам",
+        total_steps: 1,
+      },
+    });
+  });
+
+  schedule(1000, () => {
+    onEvent({
+      type: "progress",
+      data: {
+        stage: "step",
+        status: "finished",
+        step_id: 1,
+        elapsed_ms: 350,
+      },
+    });
+  });
+
+  // 3. Progress: insight started
+  schedule(1150, () => {
+    onEvent({
+      type: "progress",
+      data: { stage: "insight", status: "started" },
+    });
+  });
+
+  // 4. 5 последовательных событий text { chunk: "..." } с интервалом ~130 мс
+  const chunks = isDashboardRequest
+    ? [
+        "Формирую аналитический дашборд ",
+        "на основе структуры таблицы DuckDB. ",
+        "Выделены ключевые метрики выручки и среднего чека, ",
+        "а также региональная разбивка с долей лидера. ",
+        "Дашборд подготовлен для отображения.",
+      ]
+    : [
+        "По итогам анализа данных продаж в DuckDB ",
+        "общий объём выручки показал устойчивый рост на 18.4%. ",
+        "Лидирующую позицию сохраняет Москва с результатом 12.5 млн ₽ ",
+        "(более 75% всей региональной выручки). ",
+        "Темпы прироста в мае–июне ускорились, тренд остаётся положительным.",
+      ];
+
+  chunks.forEach((chunk, idx) => {
+    schedule(1300 + idx * 130, () => {
+      onEvent({
+        type: "text",
+        data: { chunk },
+      });
+    });
+  });
+
+  const chartDelay = 1300 + chunks.length * 130 + 150;
+
+  // 5. Chart или Dashboard
+  schedule(chartDelay, () => {
+    if (isDashboardRequest) {
+      const dashId = `dash-${Date.now().toString(36)}`;
+      onEvent({
+        type: "dashboard",
+        data: {
+          dashboard_id: dashId,
+          title: "Аналитический срез: продажи и KPI",
+          tiles: DEFAULT_TILES,
+        },
+      });
+    } else {
+      onEvent({
+        type: "chart",
+        data: {
+          caption: "Выручка по ключевым регионам",
+          spec: DEFAULT_TILES[2].spec,
+          result_table: "temp_result_v1",
+        },
+      });
+    }
+  });
+
+  // 6. Done
+  schedule(chartDelay + 250, () => {
+    onEvent({ type: "done", data: {} });
+    onClose?.();
   });
 
   return () => {
