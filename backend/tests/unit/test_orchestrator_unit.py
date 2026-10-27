@@ -1,9 +1,11 @@
 """Unit-тесты AgentOrchestrator с моками компонентов."""
 
+import time
+
 import pytest
 
 from app.api.schemas.chat import ChatRequest
-from app.core.agent.orchestrator import AgentOrchestrator
+from app.core.agent.orchestrator import AgentOrchestrator, _elapsed_ms
 from app.core.data.duckdb_manager import DuckDBManager
 from app.core.memory.session_memory import SessionMemory
 
@@ -161,7 +163,7 @@ def test_progress_events_precede_the_answer(orchestrator):
     }
     assert progress[3]["status"] == "finished"
     assert progress[3]["step_id"] == 0
-    assert progress[3]["elapsed_ms"] >= 0
+    assert progress[3]["elapsed_ms"] >= 1
     assert progress[4] == {"stage": "insight", "status": "started"}
     assert progress[5] == {"stage": "chart", "status": "started"}
 
@@ -184,7 +186,7 @@ def test_failed_step_reports_progress(orchestrator):
     failed = events[3]["data"]
     assert failed["step_id"] == 0
     assert failed["error"] == "Инструмент недоступен"
-    assert failed["elapsed_ms"] >= 0
+    assert failed["elapsed_ms"] >= 1
 
 
 def test_empty_plan_reports_zero_steps(orchestrator):
@@ -402,3 +404,8 @@ def test_overview_failure_ends_the_stream(orchestrator, monkeypatch):
 
     assert stages(events) == ["insight:started", "insight:failed", "error", "done"]
     assert events[1]["data"]["error"] == "профиль не построен"
+
+
+def test_elapsed_ms_is_never_zero() -> None:
+    assert _elapsed_ms(time.perf_counter()) == 1
+    assert _elapsed_ms(time.perf_counter() - 2.5) == 2500

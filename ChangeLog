@@ -13,6 +13,18 @@
 	* backend/app/api/routes/artifacts.py (export_artifact): Синхронный.
 	* backend/tests/unit/test_chat_api.py, backend/tests/unit/test_tools.py:
 	Тесты того же.
+2026-10-28  mb6ockatf  <smokenmirror@tutamail.com>
+
+	Время шага без «0.0 с» (#185).
+	* backend/app/core/agent/orchestrator.py (_elapsed_ms): Не меньше
+	1 мс: шаг DuckDB быстрее 0,5 мс давал elapsed_ms = 0.
+	* frontend/src/components/chat/StepProgress.tsx (duration): Новая.
+	Шаг короче секунды — в миллисекундах («18 мс»), дольше — в секундах,
+	как раньше.  Итог хода в свёрнутой строке — в секундах.
+	* frontend/src/i18n/dictionary.ts (progress.milliseconds): Новый ключ.
+	* backend/tests/unit/test_orchestrator_unit.py
+	(test_elapsed_ms_is_never_zero): Новый.
+	* backend/tests/unit/test_recovery_and_cache.py: elapsed_ms >= 1.
 
 2026-10-27  Alexander Yurits  <143354682+Terrum19@users.noreply.github.com>
 
