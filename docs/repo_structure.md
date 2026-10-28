@@ -148,7 +148,8 @@ backend/
 │   │   │
 │   │   └── export/         — выгрузка инсайта в делимый файл
 │   │       ├── excel.py           — openpyxl: таблицы + графики -> .xlsx
-│   │       └── pdf.py             — Typst/ReportLab -> .pdf-отчёт
+│   │       ├── pdf.py             — ReportLab -> .pdf-отчёт
+│   │       └── charts.py          — vl-convert: Vega-Lite -> PNG для экспорта
 │   │
 │   ├── models/            — доменные Pydantic-модели (контракты конвейера)
 │   │   ├── research_step.py   — ResearchStep: тул, колонки, parameters, флаг LLM-кодген

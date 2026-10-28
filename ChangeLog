@@ -1,5 +1,82 @@
 2026-10-28  mb6ockatf  <smokenmirror@tutamail.com>
 
+	Экспорт (#145): владение таблицей для дашбордов и шагов, проверка
+	спецификации только в объектах data, лимит одновременных рендеров.
+	* backend/app/api/routes/artifacts.py (result_owner): С dashboard_id
+	result_ref должен быть таблицей плитки этого дашборда; без него —
+	таблицей хода сессии, как раньше.  Экспорт с дашборда больше не
+	получает 404 за таблицу промежуточного шага или дашборд без сессии.
+	* backend/app/api/schemas/chat.py (ExportRequest): Поле dashboard_id.
+	* backend/app/core/memory/session_memory.py (record_step): Таблица
+	шага пишется в results хода.  (owns_result): Итог, график и таблицы
+	шагов ходов, таблицы ожидающего уточнения.  Возвращение старой модели
+	состояния (steps и tables вне ходов, set_table с колонками) отменено.
+	* backend/app/core/agent/orchestrator.py (_execute_plan): Передаёт
+	таблицу шага в record_step.
+	* backend/app/core/export/charts.py (validate_chart_spec): url,
+	sequence, graticule и sphere запрещены только внутри объектов data;
+	колонка данных с таким именем больше не убирает график из отчёта.
+	datasets обрезаются до 1000 строк.  (render_chart_png): Не больше
+	двух рендеров одновременно (MAX_PARALLEL_RENDERS).
+	* frontend/src/api/client.ts, frontend/src/app/dashboard/[id]/page.tsx,
+	frontend/src/components/canvas/Canvas.tsx: Экспорт дашборда передаёт
+	dashboard_id.
+	* scripts/, docs/team_plans/, backend/run_llm_agent.py: Возвращены к
+	dev: изменения в них были только форматированием.
+	* docs/architecture.md: Правила владения, проверки спецификации и
+	лимит рендеров.
+
+2026-10-28  dmitriy-ya  <dmitriyyakushonok@yandex.ru>
+
+	Экспорт аналитического отчёта по ответу агента в PDF (#62, E-01).
+	* backend/app/core/export/pdf.py (PdfExporter): Новый класс генерации
+	представительского отчёта в формате Executive Business Memo (Platypus).
+	(ensure_fonts_registered): Регистрация TrueType шрифта DejaVu Sans
+	для корректного рендеринга кириллицы; явная ошибка RuntimeError при
+	отсутствии системных шрифтов с инструкциями по установке.
+	(sanitize_text): XML-экранирование спецсимволов (<, >, &) через
+	xml.sax.saxutils.escape и нормализация символа рубля (₽ -> руб.).
+	(truncate_text): Защитное усечение сверхдлинных текстовых полей для
+	предотвращения LayoutError.
+	(NumberedCanvas): Двухпроходный канвас с динамической нумерацией
+	страниц («Страница X из Y») и корпоративным колонтитулом.
+	(_build_logo, _build_header): Фирменный векторный логотип Сбера (зелёный
+	круг с белой галочкой) в шапке отчёта.
+	(export_answer): Сборка отчёта: шапка с логотипом, вопрос исследования, блок
+	ключевых выводов (многострочная карточка), автономный график, таблица
+	результатов (до 50 строк) с переносом текста ячеек.
+	* backend/app/core/export/charts.py (render_chart_png, normalize_spec,
+	validate_chart_spec): Offline-рендеринг Vega-Lite графиков в PNG с помощью
+	vl-convert-python; валидация спецификаций (запрет генераторов sequence,
+	внешних data.url, ограничение строк до 1000) и изоляция рендера в отдельном
+	подпроцессе с таймаутом и allowed_base_urls=[] для защиты от OOM и DoS.
+	* backend/app/api/routes/artifacts.py (export_artifact): Поддержка
+	format="pdf"; синхронное исполнение в threadpool starlette во избежание
+	блокировки event loop и SSE-потоков; унифицированная проверка владения
+	result_ref для xlsx и pdf через memory.owns_result (404 при отсутствии
+	сессии или чужих данных); чтение DuckDB до 50 строк для PDF.
+	* backend/app/core/memory/session_memory.py (SessionMemory.owns_result):
+	Новый метод проверки принадлежности промежуточной таблицы шагам,
+	графикам или состоянию восстановления текущей сессии.
+	(record_step): Упрощение извлечения полей шага, устранение лишнего I/O.
+	* backend/app/api/schemas/chat.py (ExportRequest): Поля question,
+	headline, details, spec с валидацией длины max_length.
+	* backend/requirements.txt, backend/pyproject.toml: Зависимости
+	reportlab, vl-convert-python, pypdf.
+	* backend/Dockerfile: Установка пакета fonts-dejavu-core.
+	* backend/tests/unit/test_export_pdf.py: Набор unit-тестов (28 тестов)
+	со 100% покрытием строк и ветвей (branch coverage) всех модулей экспорта
+	и API: рендеринг графиков, защита от DoS/OOM в Vega-Lite, структура PDF
+	(pypdf), кириллица, картинки, экранирование XML, защита от LayoutError,
+	изоляция сессий, обработка отсутствия шрифтов, таймаутов подпроцесса
+	и API 500.
+	* backend/tests/unit/test_session_memory.py: Полное 100% покрытие строк
+	и ветвей для owns_result, record_step, record_chart и set_table.
+	* docs/repo_structure.md, docs/roadmap.md, docs/architecture.md:
+	Актуализация документации по экспорту и конвейеру генерации PDF.
+  
+2026-10-28  mb6ockatf  <smokenmirror@tutamail.com>
+
 	Логи агента: ход целиком в docker compose logs (#202).
 	* backend/app/core/logging_setup.py: Новый.
 	(configure_logging): Корневой логгер: уровень LOG_LEVEL, формат

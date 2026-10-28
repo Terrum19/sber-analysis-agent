@@ -592,7 +592,7 @@ class AgentOrchestrator:
             logger.info("шаг %d готов за %d мс: %s", step.step_id, elapsed_ms, table)
             inputs[step.step_id] = resolve_input(step, current, tables, source)
             tables[step.step_id] = table
-            memory.record_step(step)
+            memory.record_step(step, table)
             if kind == "transform":
                 current = table
             index += 1
