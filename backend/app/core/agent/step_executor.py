@@ -72,7 +72,7 @@ class StepExecutor:
             logger.error(msg)
             raise ValueError(msg)
 
-        logger.info(
+        logger.debug(
             ">>> StepExecutor.execute() шаг purpose=%r tool=%s args=%s columns=%s input_table=%s",
             step.purpose,
             step.tool,
@@ -96,7 +96,7 @@ class StepExecutor:
             resolve.value(step.columns),
             **resolve.value(step.arguments),
         )
-        logger.info("<<< StepExecutor.execute() УСПЕШНО result_table=%s", result)
+        logger.debug("<<< StepExecutor.execute() УСПЕШНО result_table=%s", result)
         return result
 
 

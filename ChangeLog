@@ -1,3 +1,18 @@
+2026-10-28  Alexander Yurits  <143354682+Terrum19@users.noreply.github.com>
+
+	DuckDB не останавливает loop сервера (#189).
+	* backend/app/api/routes/chat.py (iterate_in_thread): Новая.  Ход
+	агента идёт в своём потоке и loop, loop сервера только пересылает
+	события: запрос DuckDB или ожидание db.lock, который держит загрузка
+	CSV, больше не останавливают пинги SSE, /health и другие запросы.
+	(chat): Импорт и создание оркестратора — в потоке хода.
+	* backend/app/core/tools/base.py (BaseTool.arun): SQL тула — через
+	asyncio.to_thread: события шагов уходят, пока идёт запрос.
+	* backend/app/api/routes/datasources.py (describe_tables): Синхронная,
+	в потоке пула со своим loop.
+	* backend/tests/unit/test_chat_api.py, backend/tests/unit/test_tools.py:
+	Тесты того же.
+
 2026-10-28  mb6ockatf  <smokenmirror@tutamail.com>
 
 	Тулы сценария 3: аномалии, лаги, «каждый июль» (#65).
@@ -25,6 +40,130 @@
 	* backend/tests/unit/test_tool_registry.py (EXPECTED_TOOLS):
 	* backend/tests/unit/test_source_names.py: Новые тулы.
 	* docs/repo_structure.md, docs/roadmap.md: Новые тулы.
+
+	Экспорт (#145): владение таблицей для дашбордов и шагов, проверка
+	спецификации только в объектах data, лимит одновременных рендеров.
+	* backend/app/api/routes/artifacts.py (result_owner): С dashboard_id
+	result_ref должен быть таблицей плитки этого дашборда; без него —
+	таблицей хода сессии, как раньше.  Экспорт с дашборда больше не
+	получает 404 за таблицу промежуточного шага или дашборд без сессии.
+	* backend/app/api/schemas/chat.py (ExportRequest): Поле dashboard_id.
+	* backend/app/core/memory/session_memory.py (record_step): Таблица
+	шага пишется в results хода.  (owns_result): Итог, график и таблицы
+	шагов ходов, таблицы ожидающего уточнения.  Возвращение старой модели
+	состояния (steps и tables вне ходов, set_table с колонками) отменено.
+	* backend/app/core/agent/orchestrator.py (_execute_plan): Передаёт
+	таблицу шага в record_step.
+	* backend/app/core/export/charts.py (validate_chart_spec): url,
+	sequence, graticule и sphere запрещены только внутри объектов data;
+	колонка данных с таким именем больше не убирает график из отчёта.
+	datasets обрезаются до 1000 строк.  (render_chart_png): Не больше
+	двух рендеров одновременно (MAX_PARALLEL_RENDERS).
+	* frontend/src/api/client.ts, frontend/src/app/dashboard/[id]/page.tsx,
+	frontend/src/components/canvas/Canvas.tsx: Экспорт дашборда передаёт
+	dashboard_id.
+	* scripts/, docs/team_plans/, backend/run_llm_agent.py: Возвращены к
+	dev: изменения в них были только форматированием.
+	* docs/architecture.md: Правила владения, проверки спецификации и
+	лимит рендеров.
+
+2026-10-28  dmitriy-ya  <dmitriyyakushonok@yandex.ru>
+
+	Экспорт аналитического отчёта по ответу агента в PDF (#62, E-01).
+	* backend/app/core/export/pdf.py (PdfExporter): Новый класс генерации
+	представительского отчёта в формате Executive Business Memo (Platypus).
+	(ensure_fonts_registered): Регистрация TrueType шрифта DejaVu Sans
+	для корректного рендеринга кириллицы; явная ошибка RuntimeError при
+	отсутствии системных шрифтов с инструкциями по установке.
+	(sanitize_text): XML-экранирование спецсимволов (<, >, &) через
+	xml.sax.saxutils.escape и нормализация символа рубля (₽ -> руб.).
+	(truncate_text): Защитное усечение сверхдлинных текстовых полей для
+	предотвращения LayoutError.
+	(NumberedCanvas): Двухпроходный канвас с динамической нумерацией
+	страниц («Страница X из Y») и корпоративным колонтитулом.
+	(_build_logo, _build_header): Фирменный векторный логотип Сбера (зелёный
+	круг с белой галочкой) в шапке отчёта.
+	(export_answer): Сборка отчёта: шапка с логотипом, вопрос исследования, блок
+	ключевых выводов (многострочная карточка), автономный график, таблица
+	результатов (до 50 строк) с переносом текста ячеек.
+	* backend/app/core/export/charts.py (render_chart_png, normalize_spec,
+	validate_chart_spec): Offline-рендеринг Vega-Lite графиков в PNG с помощью
+	vl-convert-python; валидация спецификаций (запрет генераторов sequence,
+	внешних data.url, ограничение строк до 1000) и изоляция рендера в отдельном
+	подпроцессе с таймаутом и allowed_base_urls=[] для защиты от OOM и DoS.
+	* backend/app/api/routes/artifacts.py (export_artifact): Поддержка
+	format="pdf"; синхронное исполнение в threadpool starlette во избежание
+	блокировки event loop и SSE-потоков; унифицированная проверка владения
+	result_ref для xlsx и pdf через memory.owns_result (404 при отсутствии
+	сессии или чужих данных); чтение DuckDB до 50 строк для PDF.
+	* backend/app/core/memory/session_memory.py (SessionMemory.owns_result):
+	Новый метод проверки принадлежности промежуточной таблицы шагам,
+	графикам или состоянию восстановления текущей сессии.
+	(record_step): Упрощение извлечения полей шага, устранение лишнего I/O.
+	* backend/app/api/schemas/chat.py (ExportRequest): Поля question,
+	headline, details, spec с валидацией длины max_length.
+	* backend/requirements.txt, backend/pyproject.toml: Зависимости
+	reportlab, vl-convert-python, pypdf.
+	* backend/Dockerfile: Установка пакета fonts-dejavu-core.
+	* backend/tests/unit/test_export_pdf.py: Набор unit-тестов (28 тестов)
+	со 100% покрытием строк и ветвей (branch coverage) всех модулей экспорта
+	и API: рендеринг графиков, защита от DoS/OOM в Vega-Lite, структура PDF
+	(pypdf), кириллица, картинки, экранирование XML, защита от LayoutError,
+	изоляция сессий, обработка отсутствия шрифтов, таймаутов подпроцесса
+	и API 500.
+	* backend/tests/unit/test_session_memory.py: Полное 100% покрытие строк
+	и ветвей для owns_result, record_step, record_chart и set_table.
+	* docs/repo_structure.md, docs/roadmap.md, docs/architecture.md:
+	Актуализация документации по экспорту и конвейеру генерации PDF.
+  
+2026-10-28  mb6ockatf  <smokenmirror@tutamail.com>
+
+	Логи агента: ход целиком в docker compose logs (#202).
+	* backend/app/core/logging_setup.py: Новый.
+	(configure_logging): Корневой логгер: уровень LOG_LEVEL, формат
+	«время уровень [сессия/ход] модуль: сообщение», консоль и файл
+	STORAGE_DIR/logs/backend.log с ротацией 5 МБ × 3.  httpx, httpcore,
+	openai и instructor — на WARNING; uvicorn (кроме access) пишет через
+	те же обработчики.  Повторный вызов заменяет свои обработчики.
+	(TurnContext, bound_turn, set_turn_id, TurnContextFilter): session_id и
+	turn_id хода в contextvars; фильтр подставляет их в каждую запись.
+	(public_url): Адрес без логина, пароля и query.
+	(startup_summary): Строка эффективной конфигурации без ключей.
+	* backend/app/core/agent/turn_log.py: Новый.
+	(TurnLog): Смотрит события хода: время инсайта и графика, строка
+	итога ok | failed | clarification | disconnected с общим временем,
+	этапом и причиной сбоя.
+	(describe_plan): Шаги плана с тулами одной строкой.
+	* backend/app/core/agent/orchestrator.py (AgentOrchestrator.run):
+	Контекст хода задаётся на каждый шаг генератора _turn и наследуется
+	задачей плана и to_thread; итог хода — через TurnLog, в том числе при
+	отключении клиента и исключении.
+	(AgentOrchestrator._turn): Строки «ход начат» и маршрута; turn_id — в
+	контекст логов.  Строки построения графика — на DEBUG.
+	(AgentOrchestrator._research): Строки «планируем шаги» и «план
+	получен» — на DEBUG.
+	(AgentOrchestrator._plan): Строка плана с временем планирования.
+	(AgentOrchestrator._execute_plan): Время готового шага, число
+	выполнений упавшего; «все шаги завершены» — на DEBUG.
+	* backend/app/core/agent/planner.py (StepPlanner.plan)
+	* backend/app/core/agent/step_executor.py (StepExecutor.execute): Дубли
+	строк оркестратора — на DEBUG.
+	* backend/app/core/llm/client.py (LLMClient.complete): Строка вызова:
+	модель, схема, время, prompt_tokens, длина ответа; ответ целиком —
+	только на DEBUG.
+	(LLMClient._log_failure, _failure_kind): Сбой: таймаут, соединение
+	или HTTP-код, адрес и время ожидания.
+	(LLMClient.complete_structured): Результат и сырой ответ — на DEBUG.
+	* backend/app/config.py (Settings.log_level): Новый, LOG_LEVEL.
+	* backend/app/main.py (lifespan): configure_logging и строка «старт:».
+	* backend/tests/conftest.py (_restore_root_logging): Новая: тесты с
+	lifespan не оставляют обработчики логов следующим.
+	* backend/tests/unit/test_logging_setup.py,
+	backend/tests/unit/test_turn_log.py: Новые.
+	* backend/tests/unit/test_llm_client_retries.py: Тесты строки вызова и
+	сбоя LLM.
+	* README.md (Логи), .env.example (LOG_LEVEL), docs/repo_structure.md:
+	Описаны логи.
 
 	Остальные колонки широкой таблицы — по близости к вопросу (#162).
 	* backend/app/core/data/semantic_select.py (rank_columns): Новая.

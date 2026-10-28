@@ -296,13 +296,24 @@ export default function Canvas({ sessionId }: Props) {
     setIsExporting(format);
     setExportMenuOpen(false);
     try {
-      // Excel — по таблице результата последнего графика с ней (temp_result_vN)
-      const resultRef = [...displayTiles].reverse().find((tile) => tile.result_table)?.result_table;
-      const blob = await exportArtifact(sessionId, format, resultRef);
+      // Ищем плитку с таблицей результата или спецификацией
+      const targetTile = [...displayTiles].reverse().find((tile) => tile.result_table) || displayTiles[0];
+      const resultRef = targetTile?.result_table;
+      const options =
+        format === "pdf" && targetTile
+          ? {
+              headline: targetTile.title || targetTile.insight,
+              details: targetTile.insight ? [targetTile.insight] : undefined,
+              spec: targetTile.spec,
+              dashboardId: dashboardId ?? undefined,
+            }
+          : { dashboardId: dashboardId ?? undefined };
+      const blob = await exportArtifact(sessionId, format, resultRef, options);
       const url = URL.createObjectURL(blob);
       const a = document.createElement("a");
       a.href = url;
-      a.download = `${dashboardTitle || "dashboard"}.${format}`;
+      const filename = format === "pdf" ? "отчет" : (dashboardTitle || "dashboard");
+      a.download = `${filename}.${format}`;
       a.click();
       URL.revokeObjectURL(url);
       setSaveStatus(format === "pdf" ? tr("canvas.pdfDone") : tr("canvas.xlsxDone"));
