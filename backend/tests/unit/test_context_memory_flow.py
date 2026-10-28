@@ -127,7 +127,7 @@ def test_remember_in_turn_1_reaches_turn_5_after_restart(db):
     ask(restarted, "Выручка по регионам")
     assert restarted_planner.contexts[-1]["memories"] == [note]
     assert restarted.insight_gen.memories[-1] == [note]
-    saved = SessionMemory("flow")._state["memories"]
+    saved = SessionMemory("flow").memories(include_disabled=True)
     assert [(m["text"], m["source"], m["enabled"]) for m in saved] == [(note, "user", True)]
 
 

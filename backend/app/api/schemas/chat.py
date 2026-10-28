@@ -7,6 +7,7 @@ from pydantic import BaseModel, Field, StringConstraints, model_validator
 
 from app.api.schemas.dashboard import DashboardTileOut
 from app.core.dashboards.models import Dashboard
+from app.models.research_step import NOTE_LIMIT
 
 
 class SessionCreate(BaseModel):
@@ -45,7 +46,9 @@ class SessionOut(BaseModel):
     created_at: datetime | None = None
 
 
-MemoryText = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=500)]
+MemoryText = Annotated[
+    str, StringConstraints(strip_whitespace=True, min_length=1, max_length=NOTE_LIMIT)
+]
 
 
 class MemoryCreate(BaseModel):

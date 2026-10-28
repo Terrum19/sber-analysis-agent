@@ -377,7 +377,7 @@ class AgentOrchestrator:
                 result_table,
                 supporting=execution.supporting,
                 steps=execution.steps,
-                memories=[item["text"] for item in memory.memories()],
+                memories=memory.context_memories(),
             )
             if confirmation:
                 insight.details.append(confirmation)

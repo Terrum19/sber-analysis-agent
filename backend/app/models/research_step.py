@@ -1,6 +1,6 @@
 """Схемы плана исследования: ResearchStep и ResearchPlan."""
 
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
@@ -8,6 +8,12 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 # $source — исходная таблица источника, $step_N — результат шага N.
 PREVIOUS = "$prev"
 SOURCE = "$source"
+
+# Воспоминание сессии: длина записи (та же у API) и записей за один план.
+# Пределы попадают в JSON-схему плана: свободная строка без них — место,
+# где слабая модель зацикливается (#81).
+NOTE_LIMIT = 500
+NOTES_PER_PLAN = 3
 
 
 class ResearchStep(BaseModel):
@@ -112,7 +118,9 @@ class ResearchPlan(BaseModel):
     template_id: str | None = None
     dashboard_tiles: list[DashboardTilePlan] = Field(default_factory=list)
     # Что пользователь попросил запомнить в этом вопросе (воспоминания сессии, #197).
-    remember: list[str] = Field(default_factory=list)
+    remember: list[Annotated[str, Field(max_length=NOTE_LIMIT)]] = Field(
+        default_factory=list, max_length=NOTES_PER_PLAN
+    )
 
     @field_validator(
         "final_viz", "dashboard_requested", "dashboard_tiles", "remember", mode="before"
@@ -128,8 +136,17 @@ class ResearchPlan(BaseModel):
     @field_validator("remember", mode="before")
     @classmethod
     def _one_note_is_list(cls, value: Any) -> Any:
-        """Одна запись строкой вместо списка: "remember": "выручка без НДС"."""
-        return [value] if isinstance(value, str) else value
+        """Одна запись строкой вместо списка; лишние записи и хвост длинной — отрезаются.
+
+        Провайдер может не соблюдать пределы схемы, а план из-за записи терять нельзя.
+        """
+        if isinstance(value, str):
+            value = [value]
+        if not isinstance(value, list):
+            return value
+        return [
+            note[:NOTE_LIMIT] if isinstance(note, str) else note for note in value[:NOTES_PER_PLAN]
+        ]
 
     @model_validator(mode="after")
     def _tiles_mean_dashboard(self) -> "ResearchPlan":

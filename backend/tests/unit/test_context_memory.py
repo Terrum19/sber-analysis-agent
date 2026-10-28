@@ -5,6 +5,7 @@ import json
 import sqlite3
 
 import pytest
+from pydantic import ValidationError
 
 from app.config import settings
 from app.core.agent.insight import InsightGenerator
@@ -15,7 +16,7 @@ from app.core.llm.fake_client import FakeLLM
 from app.core.memory.session_memory import SessionMemory
 from app.core.tools.read_history import NOT_FOUND
 from app.core.tools.registry import tool_registry
-from app.models.research_step import ResearchPlan, ResearchStep
+from app.models.research_step import NOTE_LIMIT, NOTES_PER_PLAN, ResearchPlan, ResearchStep
 
 
 @pytest.fixture
@@ -152,10 +153,43 @@ def test_remember_persists_dedups_and_goes_to_context(memory):
 
 
 def test_disabled_memory_stays_out_of_context(memory):
-    memory.remember("выручка без НДС")
+    first = memory.remember("выручка без НДС")
     memory.remember("клиенты — только юрлица")
-    memory._state["memories"][0]["enabled"] = False
+    memory.set_memory_enabled(first["memory_id"], False)
     assert memory.build_context("?")["memories"] == ["клиенты — только юрлица"]
+
+
+def test_context_has_only_last_enabled_memories(memory, monkeypatch):
+    for number in range(4):
+        memory.remember(f"запись {number}")
+    monkeypatch.setattr(settings, "context_memories", 2)
+    assert memory.build_context("?")["memories"] == ["запись 2", "запись 3"]
+    monkeypatch.setattr(settings, "context_memories", 0)
+    assert memory.context_memories() == []
+
+
+def test_memory_added_during_turn_survives_the_turn(memory):
+    """Ход держит состояние до finish_turn, API пишет своим экземпляром (#203)."""
+    memory.start_turn("вопрос")
+    added = SessionMemory("ctx").remember("выручка без НДС")
+    memory.finish_turn("ok", headline="ответ")
+    assert [m["text"] for m in SessionMemory("ctx").memories()] == ["выручка без НДС"]
+
+    memory.start_turn("ещё вопрос")
+    SessionMemory("ctx").set_memory_enabled(added["memory_id"], False)
+    memory.finish_turn("ok", headline="ответ")
+    assert SessionMemory("ctx").memories() == []
+
+
+def test_memories_are_per_session_and_deleted_with_it(memory):
+    memory.set_table("sales")
+    memory.remember("выручка без НДС")
+    other = SessionMemory("other")
+    assert other.memories() == []
+    other.remember("выручка без НДС")
+    assert SessionMemory.delete("ctx")
+    assert SessionMemory("ctx").memories() == []
+    assert [m["text"] for m in SessionMemory("other").memories()] == ["выручка без НДС"]
 
 
 def test_state_before_memories_opens_without_migration(memory):
@@ -193,6 +227,18 @@ def test_plan_remember_accepts_string_and_null():
         "выручка без НДС"
     ]
     assert ResearchPlan.model_validate({"remember": None}).remember == []
+
+
+def test_plan_remember_is_bounded_in_schema_and_trimmed():
+    schema = ResearchPlan.model_json_schema()["properties"]["remember"]
+    assert schema["maxItems"] == NOTES_PER_PLAN
+    assert schema["items"]["maxLength"] == NOTE_LIMIT
+    notes = ["а" * (NOTE_LIMIT + 10)] + [f"запись {n}" for n in range(NOTES_PER_PLAN)]
+    remember = ResearchPlan.model_validate({"remember": notes}).remember
+    assert len(remember) == NOTES_PER_PLAN
+    assert remember[0] == "а" * NOTE_LIMIT
+    with pytest.raises(ValidationError):
+        ResearchPlan.model_validate({"remember": {"text": "выручка без НДС"}})
 
 
 def test_insight_prompt_has_memories(db):

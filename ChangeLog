@@ -1,5 +1,25 @@
 2026-10-28  Alexander Yurits  <143354682+Terrum19@users.noreply.github.com>
 
+	Воспоминания сессии — в своей таблице: запись через API во время
+	хода больше не затирается сохранением хода (ревью #203).
+	* backend/app/core/memory/session_memory.py (_connect): Таблица
+	session_memories, UNIQUE (session_id, text_key).
+	(memories, remember, set_memory_enabled): Читают и пишут строки
+	session_memories, а не state["memories"].  (context_memories): Новая.
+	Последние settings.context_memories включённых записей.
+	(delete): Удаляет и воспоминания сессии.
+	* backend/app/config.py (context_memories): Новая, по умолчанию 20.
+	* backend/app/models/research_step.py (NOTE_LIMIT, NOTES_PER_PLAN):
+	Новые.  (ResearchPlan.remember): Пределы в JSON-схеме; лишнее
+	отрезается при разборе.
+	* backend/app/api/schemas/chat.py (MemoryText): Предел — NOTE_LIMIT.
+	* backend/app/core/agent/orchestrator.py (_turn): Инсайт получает
+	context_memories.
+	* docs/memory.md: Хранение, пределы, запись при упавших шагах.
+	* backend/tests/unit/test_context_memory.py: Тесты того же.
+
+2026-10-28  Alexander Yurits  <143354682+Terrum19@users.noreply.github.com>
+
 	API воспоминаний сессии: список, добавление, выключение (#197).
 	* backend/app/api/routes/sessions.py (list_memories, add_memory)
 	(update_memory): Новые.  GET, POST и PATCH /{id}/memories.

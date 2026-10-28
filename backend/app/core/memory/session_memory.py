@@ -11,9 +11,12 @@
 не попадают (#107). Ходы старше окна планировщик получает по запросу:
 тул ``read_history`` ищет их через ``find_turns``.
 
-Воспоминания (``memories``) — короткие записи сессии: что пользователь
-попросил запомнить. Включённые идут в контекст планировщика и инсайта
-каждого хода целиком, без отбора по вопросу (#197): их мало.
+Воспоминания — короткие записи сессии: что пользователь попросил
+запомнить. Последние ``settings.context_memories`` включённых идут в
+контекст планировщика и инсайта каждого хода, без отбора по вопросу (#197):
+их мало. Они лежат в своей таблице ``session_memories``, по строке на
+запись, а не в состоянии сессии: ход держит состояние до ``finish_turn`` и
+пишет его целиком, запись через API во время хода иначе затиралась бы.
 
 Ход-ответ на прошлое сообщение (``reply_to``) вместо прошлых ходов получает
 цепочку ответов: выбранный ход и его предков по ``reply_to``. План выбранного
@@ -23,8 +26,7 @@
 таблицу сам (#165); её смена ходы не сбрасывает. Метаданные сессии
 (``title``, ``datasource_id``, ``created_at``) лежат в том же состоянии,
 поэтому сессия переживает перезапуск приложения. Состояние до списка ходов
-(``tables``, ``steps``, ``columns``) открывается, но не читается; состояние
-без ``memories`` открывается с пустым списком.
+(``tables``, ``steps``, ``columns``) открывается, но не читается.
 
 Состояние сессии хранится в SQLite (таблица ``session_state`` по адресу
 ``settings.sqlite_path``) вместо отдельных JSON-файлов.
@@ -51,7 +53,7 @@ STEM_LETTERS = 5
 
 
 def _connect(path: Path) -> sqlite3.Connection:
-    """Открыть SQLite сессий, создав таблицу ``session_state`` при первом обращении."""
+    """Открыть SQLite сессий, создав таблицы при первом обращении."""
     path.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(str(path))
     conn.execute(
@@ -60,6 +62,22 @@ def _connect(path: Path) -> sqlite3.Connection:
             session_id TEXT PRIMARY KEY,
             state TEXT NOT NULL,
             updated_at REAL
+        )
+        """
+    )
+    # text_key — текст без регистра и лишних пробелов: тот же текст не дублируется.
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS session_memories (
+            memory_id TEXT PRIMARY KEY,
+            session_id TEXT NOT NULL,
+            text TEXT NOT NULL,
+            text_key TEXT NOT NULL,
+            source TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            enabled INTEGER NOT NULL,
+            turn_id TEXT,
+            UNIQUE (session_id, text_key)
         )
         """
     )
@@ -76,7 +94,6 @@ class SessionMemory:
         self.db = db
         self._state = self._load()
         self._state.setdefault("turns", [])
-        self._state.setdefault("memories", [])
         self._turn: dict | None = None
         # Текущий ход ещё не закрыт finish_turn: в прошлые ходы он не входит.
         self._open = False
@@ -122,7 +139,7 @@ class SessionMemory:
             conn.close()
         if row is not None:
             return json.loads(row[0])
-        return {"datasource": None, "pending_recovery": None, "turns": [], "memories": []}
+        return {"datasource": None, "pending_recovery": None, "turns": []}
 
     def exists(self) -> bool:
         """Сохранена ли сессия в SQLite."""
@@ -138,13 +155,14 @@ class SessionMemory:
 
     @staticmethod
     def delete(session_id: str) -> bool:
-        """Удалить сессию из SQLite."""
+        """Удалить сессию и её воспоминания из SQLite."""
         conn = _connect(Path(settings.sqlite_path))
         try:
             cursor = conn.execute(
                 "DELETE FROM session_state WHERE session_id = ?",
                 (session_id,),
             )
+            conn.execute("DELETE FROM session_memories WHERE session_id = ?", (session_id,))
             conn.commit()
             return cursor.rowcount > 0
         finally:
@@ -362,8 +380,29 @@ class SessionMemory:
     # --- Воспоминания ---
 
     def memories(self, include_disabled: bool = False) -> list[dict]:
-        """Воспоминания сессии, старые первыми: включённые или все."""
-        return [item for item in self._state["memories"] if include_disabled or item["enabled"]]
+        """Воспоминания сессии, старые первыми: включённые или все.
+
+        Читаются из SQLite на каждый вызов: запись, добавленная через API
+        во время хода, видна сразу.
+        """
+        query = (
+            "SELECT memory_id, text, source, created_at, enabled, turn_id"
+            " FROM session_memories WHERE session_id = ?"
+        )
+        if not include_disabled:
+            query += " AND enabled"
+        conn = self._connect()
+        conn.row_factory = sqlite3.Row
+        try:
+            rows = conn.execute(query + " ORDER BY rowid", (self.session_id,)).fetchall()
+        finally:
+            conn.close()
+        return [{**row, "enabled": bool(row["enabled"])} for row in map(dict, rows)]
+
+    def context_memories(self) -> list[str]:
+        """Тексты последних ``settings.context_memories`` включённых воспоминаний."""
+        limit = settings.context_memories
+        return [item["text"] for item in self.memories()[-limit:]] if limit else []
 
     def remember(self, text: str, source: str = "user") -> dict | None:
         """Добавить воспоминание и вернуть его запись; пустой текст — None.
@@ -376,20 +415,56 @@ class SessionMemory:
         text = " ".join(text.split())
         if not text:
             return None
-        for item in self._state["memories"]:
-            if item["text"].casefold() == text.casefold():
-                return self.set_memory_enabled(item["memory_id"], True)
-        item = {
-            "memory_id": uuid.uuid4().hex,
-            "text": text,
-            "source": source,
-            "created_at": datetime.now(UTC).isoformat(),
-            "enabled": True,
-            "turn_id": self.turn_id,
-        }
-        self._state["memories"].append(item)
-        self._persist()
-        return item
+        conn = self._connect()
+        try:
+            conn.execute(
+                """
+                INSERT INTO session_memories
+                    (memory_id, session_id, text, text_key, source, created_at, enabled, turn_id)
+                VALUES (?, ?, ?, ?, ?, ?, 1, ?)
+                ON CONFLICT (session_id, text_key) DO UPDATE SET enabled = 1
+                """,
+                (
+                    uuid.uuid4().hex,
+                    self.session_id,
+                    text,
+                    text.casefold(),
+                    source,
+                    datetime.now(UTC).isoformat(),
+                    self.turn_id,
+                ),
+            )
+            conn.commit()
+            (memory_id,) = conn.execute(
+                "SELECT memory_id FROM session_memories WHERE session_id = ? AND text_key = ?",
+                (self.session_id, text.casefold()),
+            ).fetchone()
+        finally:
+            conn.close()
+        return self._memory(memory_id)
+
+    def set_memory_enabled(self, memory_id: str, enabled: bool) -> dict | None:
+        """Включить или выключить воспоминание; None — такой записи нет."""
+        conn = self._connect()
+        try:
+            conn.execute(
+                "UPDATE session_memories SET enabled = ? WHERE session_id = ? AND memory_id = ?",
+                (int(enabled), self.session_id, memory_id),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+        return self._memory(memory_id)
+
+    def _memory(self, memory_id: str) -> dict | None:
+        return next(
+            (
+                item
+                for item in self.memories(include_disabled=True)
+                if item["memory_id"] == memory_id
+            ),
+            None,
+        )
 
     def build_context(self, question: str) -> dict:
         """Собрать контекст: прошлые ходы или цепочка ответа, воспоминания, колонки, паспорт."""
@@ -418,7 +493,7 @@ class SessionMemory:
         return {
             "turns": [] if reply else self.recent_turns(),
             "reply": reply,
-            "memories": [item["text"] for item in self.memories()],
+            "memories": self.context_memories(),
             "question": question,
             "columns": columns,
             "datasource": datasource,
@@ -427,16 +502,6 @@ class SessionMemory:
             "titles": {row.column: row.title for row in enrichment if row.title},
             "descriptions": {row.column: row.description for row in enrichment if row.description},
         }
-
-    def set_memory_enabled(self, memory_id: str, enabled: bool) -> dict | None:
-        """Включить или выключить воспоминание; None — такой записи нет."""
-        for item in self._state["memories"]:
-            if item["memory_id"] == memory_id:
-                if item["enabled"] != enabled:
-                    item["enabled"] = enabled
-                    self._persist()
-                return item
-        return None
 
     # --- pending_recovery (восстановление после ошибки шага) ---
 
