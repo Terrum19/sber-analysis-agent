@@ -178,6 +178,7 @@
 	брать period_compare, detect_anomalies и lag_correlation.
 	* data/eval/questions.yaml (sales-03, psych-age): Новые тулы в
 	tools_any.
+	* data/eval/hk/questions.yaml (sales-s3-july): То же.
 	* backend/tests/unit/test_advanced_tools.py: Тесты с выбросом, лагом 3,
 	всплеском в июле и проверкой аргументов.
 	* backend/tests/unit/test_quality_fixes.py
