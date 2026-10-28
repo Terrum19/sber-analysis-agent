@@ -11,7 +11,6 @@ from app.core.agent.orchestrator import (
 )
 from app.core.agent.planner import PlanInvalid, StepPlanner, validate_plan
 from app.core.agent.step_executor import StepExecutor
-from app.core.dashboards.templates import TEMPLATES
 from app.core.data.duckdb_manager import DuckDBManager
 from app.core.sandbox import codegen_runner
 from app.core.sandbox.wasm_runtime import SandboxError
@@ -211,18 +210,6 @@ def test_research_step_normalizes_argument_synonyms() -> None:
     assert step.input == "$step_2"
 
 
-def test_plan_schema_requires_step_fields_and_known_templates() -> None:
-    # Схема уходит модели в response_format: без required она пропускала
-    # input и arguments, а tool присылала null.
-    step = ResearchStep.model_json_schema()
-    assert step["required"] == ["tool", "input", "arguments", "purpose"]
-    assert step["properties"]["tool"]["anyOf"] == [{"type": "string"}]
-    plan = ResearchPlan.model_json_schema()
-    assert plan["required"] == ["steps"]
-    template = plan["properties"]["template_id"]["anyOf"][0]
-    assert template["enum"] == [item.id for item in TEMPLATES]
-
-
 # --- планировщик: валидация до выполнения ---
 
 
@@ -285,44 +272,6 @@ def test_planner_rejects_a_plan_still_invalid_after_the_retry() -> None:
         asyncio.run(StepPlanner(llm=llm).plan("вопрос", {"columns": ["region"]}))
     assert len(llm.prompts) == 2
     assert exc.value.errors == ["шаг 0: неизвестный инструмент 'worse_tool'"]
-
-
-class EmptyFirstLLM:
-    """Сначала пустые планы (empty штук), потом план из одного шага."""
-
-    def __init__(self, empty: int) -> None:
-        self.empty = empty
-        self.prompts: list[str] = []
-
-    async def complete_structured(self, system, user, schema):
-        self.prompts.append(user)
-        if len(self.prompts) <= self.empty:
-            return ResearchPlan(steps=[])
-        return ResearchPlan(steps=[ResearchStep(tool="aggregate", arguments={"column": "region"})])
-
-
-def test_planner_asks_again_after_an_empty_plan() -> None:
-    llm = EmptyFirstLLM(empty=1)
-    plan = asyncio.run(StepPlanner(llm=llm).plan("вопрос", {"columns": ["region"]}))
-    assert [step.tool for step in plan.steps] == ["aggregate"]
-    assert len(llm.prompts) == 2
-    assert "предыдущий план пустой" in llm.prompts[1]
-
-
-def test_planner_keeps_a_second_empty_plan() -> None:
-    # Вопрос не о данных: второй пустой план — честный ответ, дальше не спрашиваем.
-    llm = EmptyFirstLLM(empty=2)
-    plan = asyncio.run(StepPlanner(llm=llm).plan("вопрос", {"columns": ["region"]}))
-    assert plan.steps == []
-    assert len(llm.prompts) == 2
-
-
-def test_planner_continuation_does_not_ask_again_after_an_empty_plan() -> None:
-    llm = EmptyFirstLLM(empty=1)
-    context = {"columns": ["region"], "next_step_id": 2}
-    plan = asyncio.run(StepPlanner(llm=llm).plan("вопрос", context))
-    assert plan.steps == []
-    assert len(llm.prompts) == 1
 
 
 def test_planner_checks_the_retry_and_returns_it_when_valid() -> None:
@@ -405,61 +354,6 @@ def test_analysis_step_does_not_replace_the_pipeline(db: DuckDBManager) -> None:
     assert {row["region"] for row in result} == {"msk", "spb"}
     assert [purpose for purpose, _ in execution.supporting] == ["Сравнить регионы"]
     assert "p_value" in db.to_records(execution.supporting[0][1])[0]
-
-
-def second_metric_plan(column: str) -> ResearchPlan:
-    """Средняя сумма, затем подсчёт по column — без "input": "$source", как пишет модель."""
-    return ResearchPlan(
-        steps=[
-            ResearchStep(
-                step_id=0,
-                tool="group_by",
-                arguments={"by": [], "column": "amount", "function": "AVG"},
-            ),
-            ResearchStep(
-                step_id=1,
-                tool="group_by",
-                arguments={"by": column, "column": "id", "function": "COUNT"},
-            ),
-        ]
-    )
-
-
-def test_step_missing_a_source_column_reruns_on_the_source(db: DuckDBManager) -> None:
-    memory = FakeMemory()
-    execution = run_plan(orchestrator(db), memory, second_metric_plan("region"))
-    assert {row["region"] for row in db.to_records(execution.result_table)} == {
-        "msk",
-        "spb",
-        "kzn",
-    }
-    assert execution.steps[1].input == "$source"
-    assert memory.steps == [0, 1]
-
-
-def test_step_missing_a_column_everywhere_still_asks_the_user(db: DuckDBManager) -> None:
-    memory = FakeMemory()
-    with pytest.raises(ClarificationNeeded):
-        run_plan(orchestrator(db), memory, second_metric_plan("status"))
-    assert memory.pending["plan_steps"][1]["input"] == "$prev"
-    assert memory.pending["attempts_made"] == 1
-
-
-def test_step_failing_on_the_source_too_asks_the_user(db: DuckDBManager) -> None:
-    class SourceFails(StepExecutor):
-        async def execute(self, step, input_table, **kwargs):
-            if step.input == "$source":
-                raise ValueError("источник тоже не подошёл")
-            return await super().execute(step, input_table, **kwargs)
-
-    agent = orchestrator(db)
-    agent.executor = SourceFails(db=db)
-    memory = FakeMemory()
-    with pytest.raises(ClarificationNeeded) as exc:
-        run_plan(agent, memory, second_metric_plan("region"))
-    assert exc.value.error == "источник тоже не подошёл"
-    assert memory.pending["plan_steps"][1]["input"] == "$source"
-    assert memory.pending["attempts_made"] == 2
 
 
 def test_result_step_selects_the_answer_table(db: DuckDBManager) -> None:

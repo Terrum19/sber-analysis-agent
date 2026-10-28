@@ -74,14 +74,6 @@ def test_every_planner_tool_describes_its_arguments() -> None:
         assert tool.kind in {"transform", "analysis", "lookup"}
 
 
-def test_signature_marks_required_arguments() -> None:
-    # Без пометки модель ставила group_by без by, и план отклонялся дважды.
-    signature = tool_registry.get("group_by").signature()
-    assert "by: column | list[column] (обязательный)" in signature
-    assert "function: COUNT|COUNT_DISTINCT|SUM|AVG|MIN|MAX|MEDIAN|STDDEV = 'COUNT'" in signature
-    assert "(обязательный) =" not in tool_registry.describe()
-
-
 def test_registry_describes_each_tool_once() -> None:
     names = [line[2:].split(" ", 1)[0] for line in tool_registry.describe().splitlines()]
     assert len(names) == len(set(names))

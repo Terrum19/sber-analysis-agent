@@ -1,10 +1,12 @@
 """Pydantic-схемы источников данных."""
 
-from typing import Literal
+from typing import Annotated, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, StringConstraints
 
+from app.core.data.overview import DISPLAY_NAME_MAX_CHARS, key_columns, starter_questions
 from app.core.data.profiling import TableProfile, profile_warnings
+from app.models.enrichment import ColumnEnrichment
 
 
 class DatasourceCreate(BaseModel):
@@ -19,9 +21,14 @@ class DatasourceCreate(BaseModel):
 
 
 class TableBrief(BaseModel):
-    """Сводка паспорта таблицы для карточки на фронте."""
+    """Сводка паспорта таблицы для карточки на фронте.
+
+    table — имя таблицы в DuckDB для SQL; display_name — название для
+    пользователя (его или от LLM), None — названия ещё нет.
+    """
 
     table: str
+    display_name: str | None = None
     rows: int
     columns: int
     period_from: str | None = None
@@ -29,6 +36,9 @@ class TableBrief(BaseModel):
     description_status: Literal["none", "pending", "ready", "failed"] = "none"
     summary: str | None = None
     warnings: list[str] = Field(default_factory=list)
+    entities: list[str] = Field(default_factory=list)
+    metrics: list[str] = Field(default_factory=list)
+    suggested_questions: list[str] = Field(default_factory=list)
 
     @classmethod
     def from_profile(
@@ -37,14 +47,20 @@ class TableBrief(BaseModel):
         description_status: str,
         warnings: list[str],
         summary: str | None = None,
+        display_name: str | None = None,
+        enrichment: list[ColumnEnrichment] | None = None,
     ) -> "TableBrief":
         """Период — min_date/max_date первой temporal-колонки профиля.
 
         warnings — что исправил загрузчик, за ними флаги качества профиля (profile_warnings).
+        Сущности, метрики и подсказки к вопросам — из профиля и названий колонок, без LLM.
         """
         temporal = profile.temporal_column()
+        enrichment = enrichment or []
+        entities, metrics = key_columns(profile, enrichment)
         return cls(
             table=profile.table,
+            display_name=display_name,
             rows=profile.row_count,
             columns=profile.column_count,
             period_from=None if temporal is None else iso(temporal.min_date),
@@ -52,7 +68,19 @@ class TableBrief(BaseModel):
             description_status=description_status,
             summary=summary,
             warnings=warnings + profile_warnings(profile),
+            entities=entities,
+            metrics=metrics,
+            suggested_questions=starter_questions(profile, enrichment),
         )
+
+
+class TableRename(BaseModel):
+    """Тело PATCH /api/datasources/tables/{table}: название таблицы от пользователя."""
+
+    display_name: Annotated[
+        str,
+        StringConstraints(strip_whitespace=True, min_length=1, max_length=DISPLAY_NAME_MAX_CHARS),
+    ]
 
 
 def iso(value: object) -> str | None:

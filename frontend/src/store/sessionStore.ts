@@ -59,7 +59,12 @@ export interface SessionItem {
 
 export interface DatabaseFolder {
   id: string;
+  /** Название в сайдбаре: пользователя, таблицы-единственной (display_name) или fileName. */
   title: string;
+  /** Имена файлов или базы при подключении: подпись в тултипе. */
+  fileName?: string;
+  /** Пользователь переименовал базу: название таблицы его больше не заменяет. */
+  renamed?: boolean;
   kind: Datasource["kind"] | "duckdb";
   tables: string[];
   /** Одно предложение о том, что за данные (profile_summary бэкенда). */
@@ -130,6 +135,8 @@ interface SessionState {
   addDatabase: (datasource: Datasource, title: string) => DatabaseFolder;
   toggleDatabase: (databaseId: string) => void;
   renameDatabase: (databaseId: string, title: string) => void;
+  /** Новая сводка таблицы с бэкенда; у базы из одной таблицы — и её название. */
+  updateBrief: (databaseId: string, brief: TableBrief) => void;
   togglePinDatabase: (databaseId: string) => void;
   deleteDatabase: (databaseId: string) => string[];
   bindSession: (sessionId: string, databaseId: string, initialTable?: string) => void;
@@ -387,9 +394,11 @@ export const useSessionStore = create<SessionState>()(
         }),
 
       addDatabase: (datasource, title) => {
+        const single = datasource.tables.length === 1 ? datasource.profiles?.[0]?.display_name : null;
         const folder: DatabaseFolder = {
           id: datasource.datasource_id,
-          title,
+          title: single || title,
+          fileName: title,
           kind: datasource.kind,
           tables: datasource.tables,
           description: datasource.profile_summary,
@@ -408,7 +417,23 @@ export const useSessionStore = create<SessionState>()(
         })),
       renameDatabase: (databaseId, title) =>
         set((s) => ({
-          databases: s.databases.map((d) => (d.id === databaseId ? { ...d, title: title.trim() || d.title } : d)),
+          databases: s.databases.map((d) =>
+            d.id === databaseId && title.trim() ? { ...d, title: title.trim(), renamed: true } : d
+          ),
+        })),
+      updateBrief: (databaseId, brief) =>
+        set((s) => ({
+          databases: s.databases.map((d) => {
+            if (d.id !== databaseId) return d;
+            const profiles = d.profiles ?? [];
+            const known = profiles.some((x) => x.table === brief.table);
+            const named = !d.renamed && d.tables.length === 1 && d.tables[0] === brief.table && brief.display_name;
+            return {
+              ...d,
+              profiles: known ? profiles.map((x) => (x.table === brief.table ? brief : x)) : [...profiles, brief],
+              ...(named ? { title: brief.display_name! } : {}),
+            };
+          }),
         })),
       togglePinDatabase: (databaseId) =>
         set((s) => ({
@@ -655,6 +680,11 @@ export const useSessionStore = create<SessionState>()(
     }
   )
 );
+
+/** Название таблицы для пользователя: display_name из сводки или имя таблицы в DuckDB. */
+export function tableTitle(database: DatabaseFolder | null | undefined, table: string): string {
+  return database?.profiles?.find((brief) => brief.table === table)?.display_name || table;
+}
 
 /** База данных, к которой относится сессия. */
 export function useSessionDatabase(sessionId: string | null | undefined): DatabaseFolder | null {
