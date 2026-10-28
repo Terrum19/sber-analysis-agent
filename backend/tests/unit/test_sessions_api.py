@@ -40,6 +40,13 @@ def client(new_client) -> TestClient:
     return new_client()
 
 
+def asked(client: TestClient, body: dict) -> dict:
+    """Новая сессия с одним вопросом: в список попадают только сессии с ходами."""
+    created = client.post("/api/sessions", json=body).json()
+    SessionMemory(created["session_id"]).start_turn("Что передо мной?")
+    return created
+
+
 @pytest.fixture
 def clock(monkeypatch: pytest.MonkeyPatch) -> None:
     """updated_at растёт на секунду с каждой записью: порядок не зависит от таймера."""
@@ -155,8 +162,8 @@ def test_patch_to_other_table_clears_datasource_id(client) -> None:
 
 def test_list_sessions_recent_first_after_restart(new_client, clock) -> None:
     client = new_client()
-    first = client.post("/api/sessions", json={"table": "sales"}).json()["session_id"]
-    second = client.post("/api/sessions", json={"table": "users"}).json()["session_id"]
+    first = asked(client, {"table": "sales"})["session_id"]
+    second = asked(client, {"table": "users"})["session_id"]
     client.patch(f"/api/sessions/{first}", json={"table": "users"})
     response = new_client().get("/api/sessions")
     assert response.status_code == 200
@@ -166,14 +173,19 @@ def test_list_sessions_recent_first_after_restart(new_client, clock) -> None:
 
 def test_list_sessions_is_limited(client, clock, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(sessions, "SESSION_LIST_LIMIT", 2)
-    ids = [
-        client.post("/api/sessions", json={"table": "sales"}).json()["session_id"] for _ in range(3)
-    ]
+    ids = [asked(client, {"table": "sales"})["session_id"] for _ in range(3)]
     assert [s["session_id"] for s in client.get("/api/sessions").json()] == [ids[2], ids[1]]
 
 
 def test_list_sessions_empty(client) -> None:
     assert client.get("/api/sessions").json() == []
+
+
+def test_list_sessions_skips_sessions_without_questions(client) -> None:
+    client.post("/api/sessions", json={"table": "sales"})
+    client.post("/api/sessions", json={"table": "sales", "title": "Продажи"})
+    session_id = asked(client, {"table": "sales"})["session_id"]
+    assert [s["session_id"] for s in client.get("/api/sessions").json()] == [session_id]
 
 
 def test_create_session_over_temp_view(client) -> None:
@@ -203,24 +215,20 @@ def test_patch_same_table_keeps_pending_recovery(client) -> None:
 
 
 def test_list_sessions_returns_same_fields_as_get(client) -> None:
-    body = {"table": "sales", "title": "Продажи", "datasource_id": "csv_1"}
-    created = client.post("/api/sessions", json=body).json()
+    created = asked(client, {"table": "sales", "title": "Продажи", "datasource_id": "csv_1"})
     assert client.get("/api/sessions").json() == [created]
 
 
 def test_list_sessions_offset_reaches_older(client, clock, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(sessions, "SESSION_LIST_LIMIT", 2)
-    ids = [
-        client.post("/api/sessions", json={"table": "sales"}).json()["session_id"] for _ in range(3)
-    ]
+    ids = [asked(client, {"table": "sales"})["session_id"] for _ in range(3)]
     page = client.get("/api/sessions", params={"offset": 2}).json()
     assert [s["session_id"] for s in page] == [ids[0]]
     assert client.get("/api/sessions", params={"offset": -1}).status_code == 422
 
 
 def test_patch_title_renames_session_after_restart(new_client) -> None:
-    body = {"table": "sales", "title": "Продажи", "datasource_id": "csv_1"}
-    created = new_client().post("/api/sessions", json=body).json()
+    created = asked(new_client(), {"table": "sales", "title": "Продажи", "datasource_id": "csv_1"})
     session_id = created["session_id"]
     response = new_client().patch(f"/api/sessions/{session_id}", json={"title": "  Выручка  "})
     assert response.status_code == 200

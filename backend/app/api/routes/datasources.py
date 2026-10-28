@@ -5,8 +5,10 @@
 Сразу после подключения таблицы профилируются (ingest.attach); если к
 источнику есть описание — комментарии колонок или приложенный документ, —
 названия и описания колонок переносятся в паспорт в фоне (ingest.describe),
-затем там же строится описание «что передо мной» (ingest.summarize).
-Готовое описание и итог переноса отдаёт GET /tables/{table}.
+затем там же строится описание «что передо мной» и название таблицы
+(ingest.summarize). Готовое описание, название и итог переноса отдаёт
+GET /tables/{table}; PATCH /tables/{table} сохраняет название, которое
+задал пользователь. Имя таблицы в DuckDB при этом не меняется.
 Источник БД запоминается и переподключается после рестарта (core/data/restore.py).
 CSV-источник — это файлы в storage/uploads/<id> и постоянные таблицы DuckDB,
 помеченные комментарием «csv:<id>/<файл>»; DELETE удаляет и то и другое.
@@ -24,7 +26,7 @@ import duckdb
 from fastapi import APIRouter, BackgroundTasks, Depends, File, HTTPException, UploadFile
 
 from app.api.deps import get_db
-from app.api.schemas.datasource import DatasourceCreate, DatasourceOut, TableBrief
+from app.api.schemas.datasource import DatasourceCreate, DatasourceOut, TableBrief, TableRename
 from app.config import settings
 from app.core.dashboards.store import DashboardStore
 from app.core.data import ingest, overview, relations, restore
@@ -88,12 +90,35 @@ def table_brief(table: str, db: Annotated[DuckDBManager, Depends(get_db)]) -> Ta
     Предупреждения загрузчика (warnings) есть только в ответе подключения:
     в паспорте они не хранятся.
     """
-    memory = ProfileMemory(db)
-    profile = memory.load_profile(table)
+    profile = ProfileMemory(db).load_profile(table)
     if profile is None:
         raise HTTPException(status_code=404, detail=f"Паспорта таблицы «{table}» нет.")
+    return brief(db, profile, [])
+
+
+@router.patch("/tables/{table}", response_model=TableBrief)
+def rename_table(
+    table: str, payload: TableRename, db: Annotated[DuckDBManager, Depends(get_db)]
+) -> TableBrief:
+    """Название таблицы от пользователя: LLM его больше не перезаписывает."""
+    with db.lock:
+        memory = ProfileMemory(db)
+        if not memory.save_display_name(table, payload.display_name):
+            raise HTTPException(status_code=404, detail=f"Паспорта таблицы «{table}» нет.")
+        profile = memory.load_profile(table)
+    return brief(db, profile, [])
+
+
+def brief(db: DuckDBManager, profile: TableProfile, warnings: list[str]) -> TableBrief:
+    memory = ProfileMemory(db)
+    table = profile.table
     return TableBrief.from_profile(
-        profile, memory.load_description_status(table), [], overview.cached_summary(db, table)
+        profile,
+        memory.load_description_status(table),
+        warnings,
+        overview.cached_summary(db, table),
+        memory.load_display_name(table),
+        memory.load_enrichment(table),
     )
 
 
@@ -154,18 +179,9 @@ def briefs(
     """Сводки паспортов подключённых таблиц. Под db.lock, после ingest.mark_pending.
 
     summary — описание, сохранённое по тем же данным (повторное подключение);
-    новое строится в фоне, его отдаёт GET /tables/{table}.
+    новое строится в фоне, его и название таблицы отдаёт GET /tables/{table}.
     """
-    memory = ProfileMemory(db)
-    return [
-        TableBrief.from_profile(
-            profile,
-            memory.load_description_status(table),
-            connector.warnings(table),
-            overview.cached_summary(db, table),
-        )
-        for table, profile in profiles.items()
-    ]
+    return [brief(db, profile, connector.warnings(table)) for table, profile in profiles.items()]
 
 
 @router.post("/csv", response_model=DatasourceOut)

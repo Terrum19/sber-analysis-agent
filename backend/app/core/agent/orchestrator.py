@@ -96,13 +96,7 @@ from app.core.viz.vega_spec_builder import (
     column_aliases,
     infer_field_types,
 )
-from app.models.research_step import (
-    PREVIOUS,
-    SOURCE,
-    DashboardTilePlan,
-    ResearchPlan,
-    ResearchStep,
-)
+from app.models.research_step import DashboardTilePlan, ResearchPlan, ResearchStep
 
 NO_TABLE_MESSAGE = "Сначала подключите данные"
 # pending_recovery уточнения «какие данные взять?» и вопрос пользователю (#165).
@@ -112,8 +106,6 @@ TABLE_QUESTION = "Вопрос подходит к разным данным. П
 FAILURE_MESSAGE = "Не удалось ответить на вопрос, попробуйте ещё раз"
 # Плитка дашборда и экспорт принимают только результаты шагов (temp_result_vN).
 RESULT_TABLE = re.compile(r"temp_result_v\d+")
-# DuckDB: колонки нет во входной таблице шага.
-MISSING_COLUMN = re.compile(r'Referenced column "([^"]+)" not found')
 
 # Подтверждение записи в воспоминания сессии (#197).
 REMEMBERED = "Запомнено: {notes}"
@@ -760,24 +752,11 @@ class AgentOrchestrator:
             return step, await execute(step)
         except Exception as exc:  # noqa: BLE001 — решает recovery.fixable
             error = exc
-        executions = 1
-        rerouted = self._from_source(step, error, current, tables, source)
-        if rerouted is not None:
-            # Исправление через LLM видит только колонки $prev и чинить вход
-            # не догадывается: две попытки уходили впустую.
-            logger.warning(
-                "    шаг %d: колонки нет в $prev, есть в $source — беру $source", step.step_id
-            )
-            step = rerouted
-            executions += 1
-            try:
-                return step, await execute(step)
-            except Exception as exc:  # noqa: BLE001
-                error = exc
         # error — последняя ошибка выполнения: её видят фронт и пользователь.
         # feedback — что получает планировщик: та же ошибка и, если его
         # исправление отклонила валидация, этот шаг с причиной отказа.
         feedback = str(error)
+        executions = 1
         for attempt in range(1, STEP_FIX_ATTEMPTS + 1):
             if not fixable(error):
                 break
@@ -806,28 +785,6 @@ class AgentOrchestrator:
                 error = exc
                 feedback = str(exc)
         raise _StepFailed(step, error, executions)
-
-    def _from_source(
-        self,
-        step: ResearchStep,
-        error: Exception,
-        current: str,
-        tables: dict[int, str],
-        source: str,
-    ) -> ResearchStep | None:
-        """Тот же шаг на $source, если колонки из ошибки нет в $prev, но есть в источнике.
-
-        Модель ставит второй независимый расчёт после первого без
-        "input": "$source", и он ищет исходную колонку в таблице результата
-        (группировка по «Статус» после средней суммы).
-        """
-        missing = MISSING_COLUMN.search(str(error))
-        if missing is None or step.input != PREVIOUS or current == source:
-            return None
-        rerouted = step.model_copy(update={"input": SOURCE})
-        if missing.group(1) not in self._input_columns(rerouted, current, tables, source):
-            return None
-        return rerouted
 
     def _input_columns(
         self, step: ResearchStep, current: str, tables: dict[int, str], source: str
@@ -1170,7 +1127,6 @@ class AgentOrchestrator:
             labels, details, rows = [], [], []
             for number, name in enumerate(order, 1):
                 profile = overview.passport(self.db, name)
-                title = relations.table_title(self.db, name)
                 try:
                     summary = await overview.describe_dataset(
                         self.db, name, getattr(self.planner, "llm", None)
@@ -1178,6 +1134,8 @@ class AgentOrchestrator:
                 except Exception:
                     logger.exception("<<< run() описание таблицы %s не построено", name)
                     summary = ""
+                # Название LLM пишет вместе с описанием (#211): читаем после него.
+                title = relations.table_title(self.db, name)
                 role = relations.role(links, name)
                 labels.append(f"«{title}» ({name})" if title else name)
                 facts = overview.facts(profile).removeprefix(f"{name}: ")

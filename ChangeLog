@@ -27,6 +27,75 @@
 	* backend/tests/unit/test_relations.py
 	* backend/tests/integration/test_postgres_connector.py: Тесты того же.
 
+2026-10-28  thebulkapro  <saitbatalovbulat200@gmail.com>
+
+	Подключение ClickHouse из сайдбара.
+	* frontend/src/components/layout/LeftSidebar.tsx: Вариант ClickHouse
+	в окне подключения БД больше не заблокирован с пометкой «Скоро»:
+	коннектор на бэкенде уже есть.  (DSN_PLACEHOLDER): Порт 9000
+	(native-протокол коннектора) вместо HTTP-порта 8123.
+	* frontend/src/i18n/dictionary.ts (modal.comingSoon): Удалён.
+
+	Названия таблиц для пользователя и карточка данных в пустом чате.
+	* backend/app/core/llm/prompts/schema_describe.py
+	(SCHEMA_DESCRIBE_JSON): Новый.  Тот же вызов описания отвечает JSON
+	{display_name, summary}: название таблицы в 2-5 слов и описание.
+	* backend/app/models/enrichment.py (DatasetDescription): Новая схема.
+	* backend/app/core/data/overview.py (describe_dataset): Описание и
+	название одним вызовом complete_structured; JSON не разобрался —
+	описание простым текстом, без названия.  Недоступная LLM второго
+	запроса не получает.  (fingerprint): С SCHEMA_DESCRIBE_JSON: старые
+	описания один раз перестраиваются вместе с названием.
+	(build_prompt): Лимит промпта считается с SCHEMA_DESCRIBE_JSON.
+	(display_name): Новая.  Название без кавычек, до 60 символов.
+	(key_columns, starter_questions, is_category, column_label): Новые.
+	Сущности, метрики и подсказки к первому вопросу по колонкам таблицы,
+	без LLM.
+	* backend/app/core/memory/profile_memory.py (SCHEMA): Колонки
+	display_name и name_source в _meta.table_passport (ADD COLUMN IF NOT
+	EXISTS).  (save_summary): Параметр display_name; название
+	пользователя не перезаписывается.  (save_display_name)
+	(load_display_name): Новые.
+	* backend/app/api/schemas/datasource.py (TableBrief): Поля
+	display_name, entities, metrics, suggested_questions.
+	(TableRename): Новая схема.
+	* backend/app/api/routes/datasources.py (rename_table): Новый PATCH
+	/api/datasources/tables/{table}: название от пользователя, имя
+	таблицы в DuckDB прежнее.  (brief): Новая: сводка с названием,
+	сущностями и подсказками для подключения и GET /tables/{table}.
+	* backend/app/core/memory/session_memory.py
+	(SessionMemory.list_sessions): Только сессии с ходами: пустые сессии
+	больше не появляются в сайдбаре под именем таблицы.
+	* backend/app/api/routes/sessions.py (list_sessions): То же в
+	описании.
+	* frontend/src/hooks/useTableBrief.ts: Новый.  Опрос сводки активной
+	таблицы, пока не придёт описание (каждые 3 с, до 2 мин).
+	* frontend/src/api/client.ts (getTableBrief, renameTableApi): Новые.
+	* frontend/src/store/sessionStore.ts (DatabaseFolder.fileName)
+	(DatabaseFolder.renamed): Новые поля.  (updateBrief): Новый: у базы
+	из одной таблицы название берётся из сводки, пока его не поменял
+	пользователь.  (tableTitle): Новая.  (renameDatabase): renamed.
+	* frontend/src/components/chat/ChatPanel.tsx: Названия таблиц в
+	шапке, заголовок пустого чата с переименованием таблицы, подсказки
+	из suggested_questions.
+	* frontend/src/components/chat/TableBriefCard.tsx: Описание,
+	сущности и метрики, затем объём, период и замечания.
+	* frontend/src/components/layout/TopHeader.tsx: Вкладка пустой сессии
+	и подсказка — по названию таблицы.
+	* frontend/src/components/layout/LeftSidebar.tsx
+	* frontend/src/lib/describeDatabase.ts
+	* frontend/src/components/modals/TableSelectModal.tsx: Названия
+	таблиц; имя файла и имя в SQL — в подсказке или подписи.
+	* frontend/src/types/datasource.ts, frontend/src/api/mockData.ts,
+	frontend/src/i18n/dictionary.ts: То же.
+	* backend/tests/unit/test_overview.py,
+	backend/tests/unit/test_datasources_api.py,
+	backend/tests/unit/test_sessions_api.py,
+	backend/tests/unit/test_orchestrator_unit.py: Название от LLM и
+	текстовый повтор, название пользователя, PATCH, сущности и подсказки,
+	список без пустых сессий.
+	* docs/memory.md, docs/data_connectors.md, docs/prompts.md: То же.
+
 2026-10-28  Dmitriy Yakushonok  <dmitriyyakushonok@yandex.ru>
 
 	Каскадное удаление дашбордов и графиков при удалении базы данных или сессии.
@@ -160,55 +229,6 @@
 	контексте без шагов, окно — 5 ходов.
 
 2026-10-28  Alexander Yurits  <143354682+Terrum19@users.noreply.github.com>
-
-	Тестовый конфиг: размышления low, провайдер DeepInfra обязателен.
-	* .env.example: LLM_REASONING_EFFORT=low и LLM_PROVIDER=deepinfra в
-	строках тестового конфига вместо none.
-	* docs/eval.md (Тестовый конфиг): Почему с размышлениями (3 из 15
-	проверок без них, 11 из 15 с ними) и почему провайдер закреплён.
-
-	Провайдер OpenRouter закрепляется флагом LLM_PROVIDER.
-	* backend/app/config.py (Settings.llm_provider),
-	backend/app/core/llm/client.py (LLMClient.complete): Список
-	провайдеров через запятую уходит в provider.only; без значения
-	параметр не передаётся.  С размышлениями JSON плана держит DeepInfra,
-	Near AI и Modal его ломают.
-	* .env.example: Строка LLM_PROVIDER, закомментирована.
-	* docs/eval.md (Тестовый конфиг): Замер 28.10: 3 из 15 без
-	размышлений, 11 из 15 с ними и DeepInfra; конфиг для оценки качества.
-	* backend/tests/unit/test_llm_client_retries.py
-	(test_provider_goes_to_request): Новый тест.
-
-	План без пустых аргументов, пустых планов и шагов не по той таблице.
-	* backend/app/models/research_step.py (ResearchStep, ResearchPlan):
-	В JSON-схеме обязательны tool, input, arguments, purpose и steps,
-	tool не null, template_id — только id шаблонов (97c10fc, thebulkapro,
-	дополнено полем input).
-	* backend/app/core/tools/base.py (BaseTool.signature): Обязательные
-	аргументы помечены «(обязательный)»: модель пропускала by у group_by.
-	* backend/app/core/llm/prompts/step_planner.py (STEP_PLANNER): Правило
-	обязательных аргументов; input указывать всегда, независимый расчёт —
-	"$source".  (EMPTY_PLAN): Новый.
-	* backend/app/core/agent/planner.py (StepPlanner.plan): Пустой план на
-	новый вопрос переспрашивается один раз.
-	* backend/app/core/agent/orchestrator.py (AgentOrchestrator._from_source):
-	Новая.  (_run_step): Колонки из ошибки DuckDB нет в $prev, но она есть
-	в источнике — шаг повторяется на $source без вызова LLM.
-	* backend/app/core/data/overview.py (_OVERVIEW): «что это», «что это
-	такое», «что тут есть» — обзор таблицы, а не планировщик.
-	* backend/tests/unit/test_plan_execution.py, test_planner.py,
-	test_tool_registry.py, test_overview.py: Тесты того же.
-
-	Тестовый конфиг команды: qwen3.8-27b в OpenRouter без размышлений.
-	* backend/app/config.py (Settings.llm_reasoning_effort),
-	backend/app/core/llm/client.py (LLMClient.complete): Флаг
-	LLM_REASONING_EFFORT из testing/first_test (thebulkapro): none
-	передаёт OpenRouter reasoning.enabled=false, low/medium/high —
-	reasoning.effort, без значения параметр не передаётся.
-	* .env.example: Строки тестового конфига, закомментированы.
-	* docs/eval.md (Тестовый конфиг): Конфиг и почему без размышлений.
-	* backend/tests/unit/test_llm_client_retries.py
-	(test_reasoning_effort_goes_to_request): Новый тест.
 
 	DuckDB не останавливает loop сервера (#189).
 	* backend/app/api/routes/chat.py (iterate_in_thread): Новая.  Ход

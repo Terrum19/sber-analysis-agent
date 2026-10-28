@@ -14,6 +14,7 @@ from app.core.data.connectors.base import BaseConnector
 from app.core.data.connectors.csv import CSVConnector
 from app.core.data.duckdb_manager import DuckDBManager
 from app.core.data.relations import Relation, TableChoice
+from app.core.memory.profile_memory import ProfileMemory
 from app.core.memory.session_memory import SessionMemory
 from app.core.tools.base import ToolContext
 from app.core.tools.registry import tool_registry
@@ -328,13 +329,9 @@ def test_tables_go_from_facts_to_references(shop) -> None:
 
 
 def set_titles(db, titles: dict[str, str]) -> None:
-    """Названия таблиц, как их пишет обогащение паспорта (#211)."""
-    db.execute("ALTER TABLE _meta.table_passport ADD COLUMN IF NOT EXISTS display_name VARCHAR")
+    """Названия таблиц в паспорте (#211)."""
     for table, title in titles.items():
-        db.execute(
-            "UPDATE _meta.table_passport SET display_name = $title WHERE table_name = $table",
-            {"table": table, "title": title},
-        )
+        ProfileMemory(db).save_display_name(table, title)
 
 
 def test_table_titles_come_from_the_passport(demo) -> None:
@@ -494,15 +491,19 @@ class StubInsight:
 
 
 class SummaryLLM:
-    """Описание таблицы «что передо мной»; failing — эти таблицы LLM не описывает."""
+    """Описание и название таблицы (#211); failing — эти таблицы LLM не описывает."""
 
-    def __init__(self, failing: tuple[str, ...] = ()) -> None:
+    def __init__(self, failing: tuple[str, ...] = (), names: dict[str, str] | None = None):
         self.failing = failing
+        self.names = names or {}
 
-    async def complete(self, system: str, prompt: str, **_: object) -> str:
+    async def complete_structured(self, system: str, prompt: str, schema):
         if any(f"{name}: " in prompt for name in self.failing):
             raise RuntimeError("LLM недоступна")
-        return "Описание данных.\nВторой абзац."
+        name = next((title for table, title in self.names.items() if f"{table}: " in prompt), "")
+        return schema.model_validate(
+            {"display_name": name, "summary": "Описание данных.\nВторой абзац."}
+        )
 
 
 def ask(
@@ -618,9 +619,10 @@ def test_new_question_instead_of_the_answer_drops_the_choice(two_sources) -> Non
 
 
 def test_overview_describes_linked_tables_by_priority(shop) -> None:
-    set_titles(shop, {"orders": "Заказы", "regions": "Регионы"})
+    set_titles(shop, {"orders": "Заказы"})
     SessionMemory("overview").set_table("regions")
-    planner = SpyPlanner(llm=SummaryLLM(failing=("cities",)))
+    # Название «Регионы» LLM пишет вместе с описанием — обзор показывает его сразу.
+    planner = SpyPlanner(llm=SummaryLLM(failing=("cities",), names={"regions": "Регионы"}))
     events, _ = ask(shop, planner, "overview", "Что передо мной?")
     text = next(event["data"] for event in events if event["type"] == "text")
     assert text["headline"] == (

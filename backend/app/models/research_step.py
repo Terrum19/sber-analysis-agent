@@ -2,9 +2,7 @@
 
 from typing import Annotated, Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
-
-from app.core.dashboards.templates import TEMPLATES
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 # Ссылки на таблицы в плане: $prev — результат последнего transform-шага,
 # $source — исходная таблица источника, $step_N — результат шага N.
@@ -21,15 +19,8 @@ NOTES_PER_PLAN = 3
 class ResearchStep(BaseModel):
     """Один шаг плана исследования."""
 
-    # input обязателен в схеме: без него модель молча продолжала с $prev,
-    # хотя второй независимый расчёт нужен по исходной таблице.
-    model_config = ConfigDict(
-        json_schema_extra={"required": ["tool", "input", "arguments", "purpose"]}
-    )
-
     step_id: int = 0
-    # null в схеме не разрешаем: шаг без инструмента валидация всё равно отклонит.
-    tool: str | None = Field(default=None, json_schema_extra={"anyOf": [{"type": "string"}]})
+    tool: str | None = None
     input: str = PREVIOUS
     arguments: dict[str, Any] = Field(default_factory=dict)
     # Старый позиционный формат: раскладывается по аргументам тула по порядку.
@@ -106,8 +97,6 @@ class DashboardTilePlan(BaseModel):
 class ResearchPlan(BaseModel):
     """Полный план исследования: упорядоченные шаги + мета."""
 
-    model_config = ConfigDict(json_schema_extra={"required": ["steps"]})
-
     steps: list[ResearchStep] = Field(default_factory=list)
     final_viz: Literal[
         "bar",
@@ -126,12 +115,7 @@ class ResearchPlan(BaseModel):
     # Шаг, чей результат идёт в ответ и на график (None — последний шаг).
     result_step: int | None = None
     dashboard_title: str | None = None
-    template_id: str | None = Field(
-        default=None,
-        json_schema_extra={
-            "anyOf": [{"type": "string", "enum": [t.id for t in TEMPLATES]}, {"type": "null"}]
-        },
-    )
+    template_id: str | None = None
     dashboard_tiles: list[DashboardTilePlan] = Field(default_factory=list)
     # Что пользователь попросил запомнить в этом вопросе (воспоминания сессии, #197).
     remember: list[Annotated[str, Field(max_length=NOTE_LIMIT)]] = Field(

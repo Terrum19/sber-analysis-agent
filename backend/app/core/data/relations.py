@@ -442,24 +442,11 @@ def role(relations: list[Relation], table: str) -> str:
 
 
 def table_title(db, table: str) -> str | None:
-    """Название таблицы для пользователя (display_name паспорта, #211) или None.
+    """Название таблицы для пользователя (display_name паспорта, #211) или None."""
+    from app.core.memory.profile_memory import ProfileMemory
 
-    Колонки display_name нет, пока паспорт не умеет хранить названия: тогда
-    названий нет ни у одной таблицы.
-    """
-    exists = db.query(
-        "SELECT 1 FROM duckdb_columns() WHERE schema_name = '_meta' "
-        "AND table_name = 'table_passport' AND column_name = 'display_name' "
-        "AND database_name = current_database()"
-    )
-    if not exists:
-        return None
-    rows = db.query(
-        "SELECT display_name FROM _meta.table_passport WHERE table_name = $table",
-        {"table": table},
-    )
-    title = rows[0]["display_name"] if rows else None
-    return title.strip() or None if title else None
+    title = ProfileMemory(db).load_display_name(table)
+    return (title.strip() or None) if title else None
 
 
 @dataclass

@@ -7,15 +7,34 @@ import pytest
 from app.core.data import ingest, overview
 from app.core.data.duckdb_manager import DuckDBManager
 from app.core.data.profiling import profile_table
-from app.core.llm.prompts.schema_describe import SCHEMA_DESCRIBE_SYSTEM
+from app.core.llm.prompts.schema_describe import SCHEMA_DESCRIBE_JSON, SCHEMA_DESCRIBE_SYSTEM
 from app.core.memory.profile_memory import ProfileMemory
-from app.models.enrichment import ColumnEnrichment
+from app.models.enrichment import ColumnEnrichment, DatasetDescription
 
 
 class CountingLLM:
-    def __init__(self, answer: str = "Передо мной заказы по регионам.\n\nПропусков нет.") -> None:
+    def __init__(
+        self,
+        answer: str = "Передо мной заказы по регионам.\n\nПропусков нет.",
+        name: str = "Заказы по регионам",
+    ) -> None:
+        self.answer = answer
+        self.name = name
+        self.calls: list[tuple[str, str, type]] = []
+
+    async def complete_structured(self, system: str, user: str, schema: type) -> object:
+        self.calls.append((system, user, schema))
+        return schema(display_name=self.name, summary=self.answer)
+
+
+class TextOnlyLLM:
+    def __init__(self, answer: str = "Передо мной заказы.") -> None:
         self.answer = answer
         self.calls: list[tuple[str, str, dict]] = []
+
+    async def complete_structured(self, system: str, user: str, schema: type) -> object:
+        self.calls.append((system, user, {"schema": schema}))
+        raise ValueError("LLM не вернул валидный JSON")
 
     async def complete(self, system: str, user: str, **kwargs) -> str:
         self.calls.append((system, user, kwargs))
@@ -27,7 +46,7 @@ class BrokenLLM:
         self.error = error
         self.calls = 0
 
-    async def complete(self, system: str, user: str, **kwargs) -> str:
+    async def complete_structured(self, system: str, user: str, schema: type) -> object:
         self.calls += 1
         raise self.error
 
@@ -59,10 +78,102 @@ async def test_second_call_does_not_reach_llm(db) -> None:
     second = await overview.describe_dataset(db, "orders", llm)
     assert first == second == llm.answer.strip()
     assert len(llm.calls) == 1
-    system, prompt, kwargs = llm.calls[0]
+    system, prompt, schema = llm.calls[0]
     assert system == SCHEMA_DESCRIBE_SYSTEM
     assert "orders: 3 строки, 3 колонки, данные с 2024-01-01 по 2024-01-03 («day»)" in prompt
+    assert prompt.endswith(SCHEMA_DESCRIBE_JSON)
+    assert schema is DatasetDescription
+    assert ProfileMemory(db).load_display_name("orders") == "Заказы по регионам"
+
+
+async def test_unparsed_json_asks_for_plain_text(db) -> None:
+    orders(db)
+    llm = TextOnlyLLM()
+    assert await overview.describe_dataset(db, "orders", llm) == "Передо мной заказы."
+    assert len(llm.calls) == 2
+    _, prompt, kwargs = llm.calls[1]
+    assert SCHEMA_DESCRIBE_JSON not in prompt
     assert kwargs == {"max_tokens": overview.ANSWER_MAX_TOKENS}
+    assert ProfileMemory(db).load_display_name("orders") is None
+    await overview.describe_dataset(db, "orders", llm)
+    assert len(llm.calls) == 2
+
+
+async def test_unreachable_llm_is_not_asked_for_text(db) -> None:
+    orders(db)
+    llm = BrokenLLM(connection_error())
+    with pytest.raises(openai.APIConnectionError):
+        await overview.describe_dataset(db, "orders", llm)
+    assert llm.calls == 1
+
+
+async def test_user_name_survives_new_summary(db) -> None:
+    orders(db)
+    memory = ProfileMemory(db)
+    await overview.describe_dataset(db, "orders", CountingLLM())
+    assert memory.save_display_name("orders", "Мои заказы")
+    orders(db, rows=5)
+    await overview.describe_dataset(db, "orders", CountingLLM(name="Другое название"))
+    assert memory.load_display_name("orders") == "Мои заказы"
+
+
+@pytest.mark.parametrize(
+    ("text", "name"),
+    [
+        ("  «События   пользователей». ", "События пользователей"),
+        ('"Клиенты"', "Клиенты"),
+        (" ", None),
+        ("а" * 80, "а" * overview.DISPLAY_NAME_MAX_CHARS),
+    ],
+)
+def test_display_name(text: str, name: str | None) -> None:
+    assert overview.display_name(text) == name
+
+
+def shop(db) -> list[ColumnEnrichment]:
+    db.execute(
+        "CREATE TABLE shop AS SELECT i AS order_id, DATE '2024-01-01' + i::INTEGER AS day, "
+        "['msk', 'spb', 'kzn'][i % 3 + 1] AS region, i * 10.0 AS amount, 'RUB' AS currency "
+        "FROM range(200) t(i)"
+    )
+    ProfileMemory(db).save_profile(profile_table(db, "shop"))
+    return [ColumnEnrichment(column="amount", title="Сумма заказа")]
+
+
+def test_key_columns(db) -> None:
+    enrichment = shop(db)
+    entities, metrics = overview.key_columns(ProfileMemory(db).load_profile("shop"), enrichment)
+    assert entities == ["order_id", "region"]
+    assert metrics == ["Сумма заказа"]
+
+
+def test_key_columns_text_codes(db) -> None:
+    """Текстовый код вроде user_id — сущность, даже когда значений больше 50."""
+    db.execute(
+        "CREATE TABLE events AS SELECT 'u' || lpad((i % 100)::VARCHAR, 3, '0') AS user_id, "
+        "'note ' || i AS comment, i * 1.5 AS amount FROM range(500) t(i)"
+    )
+    entities, metrics = overview.key_columns(profile_table(db, "events"), [])
+    assert entities == ["user_id"]
+    assert metrics == ["amount"]
+
+
+def test_starter_questions_use_columns(db) -> None:
+    enrichment = shop(db)
+    questions = overview.starter_questions(ProfileMemory(db).load_profile("shop"), enrichment)
+    assert questions == [
+        "Что передо мной?",
+        "Как менялась «Сумма заказа» по месяцам?",
+        "Сравни «Сумма заказа» по «region»",
+        "Топ-5 «region» по «Сумма заказа»",
+    ]
+    assert overview.is_overview_question(questions[0])
+
+
+def test_starter_questions_without_metrics_and_dates(db) -> None:
+    db.execute("CREATE TABLE tags AS SELECT ['a', 'b'][i % 2 + 1] AS tag FROM range(10) t(i)")
+    questions = overview.starter_questions(profile_table(db, "tags"), [])
+    assert questions == ["Что передо мной?", "Сколько записей по «tag»?"]
 
 
 async def test_summary_survives_a_new_memory_instance(db) -> None:
@@ -276,9 +387,6 @@ def test_profile_rows(db) -> None:
         "Опиши данные",
         "Какие колонки есть в таблице?",
         "сколько записей в таблице",
-        "ЧТО ЭТО",
-        "Что это такое?",
-        "что тут есть?",
     ],
 )
 def test_overview_questions(question: str) -> None:
@@ -293,7 +401,6 @@ def test_overview_questions(question: str) -> None:
         "Покажи в другом виде",
         "Опиши выручку по регионам",
         "Сколько продаж за март?",
-        "Что это за всплеск в марте?",
         "пожалуйста",
         "",
     ],
