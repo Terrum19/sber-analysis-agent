@@ -100,7 +100,7 @@ class StepPlanner:
             template = templates.match(all_columns, context.get("titles"))
             prompt += dashboard_prompt(template, all_columns, context.get("titles"))
             logger.info("    дашборд: шаблон=%s", template.id if template else None)
-        logger.info(">>> StepPlanner.plan() вопрос=%r", question)
+        logger.debug(">>> StepPlanner.plan() вопрос=%r", question)
         logger.debug("    промпт=%r", prompt)
         plan = await self._ask(prompt, start, template)
         # Проверяем и ответ на переспрос: непроверенный план упал бы уже при
@@ -120,7 +120,7 @@ class StepPlanner:
         if errors:
             logger.warning("<<< StepPlanner.plan() план отклонён после переспроса: %s", errors)
             raise PlanInvalid(errors)
-        logger.info("<<< StepPlanner.plan() шагов=%d", len(plan.steps))
+        logger.debug("<<< StepPlanner.plan() шагов=%d", len(plan.steps))
         return plan
 
     async def fix_step(

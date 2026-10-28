@@ -1,5 +1,52 @@
 2026-10-28  mb6ockatf  <smokenmirror@tutamail.com>
 
+	Логи агента: ход целиком в docker compose logs (#202).
+	* backend/app/core/logging_setup.py: Новый.
+	(configure_logging): Корневой логгер: уровень LOG_LEVEL, формат
+	«время уровень [сессия/ход] модуль: сообщение», консоль и файл
+	STORAGE_DIR/logs/backend.log с ротацией 5 МБ × 3.  httpx, httpcore,
+	openai и instructor — на WARNING; uvicorn (кроме access) пишет через
+	те же обработчики.  Повторный вызов заменяет свои обработчики.
+	(TurnContext, bound_turn, set_turn_id, TurnContextFilter): session_id и
+	turn_id хода в contextvars; фильтр подставляет их в каждую запись.
+	(public_url): Адрес без логина, пароля и query.
+	(startup_summary): Строка эффективной конфигурации без ключей.
+	* backend/app/core/agent/turn_log.py: Новый.
+	(TurnLog): Смотрит события хода: время инсайта и графика, строка
+	итога ok | failed | clarification | disconnected с общим временем,
+	этапом и причиной сбоя.
+	(describe_plan): Шаги плана с тулами одной строкой.
+	* backend/app/core/agent/orchestrator.py (AgentOrchestrator.run):
+	Контекст хода задаётся на каждый шаг генератора _turn и наследуется
+	задачей плана и to_thread; итог хода — через TurnLog, в том числе при
+	отключении клиента и исключении.
+	(AgentOrchestrator._turn): Строки «ход начат» и маршрута; turn_id — в
+	контекст логов.  Строки построения графика — на DEBUG.
+	(AgentOrchestrator._research): Строки «планируем шаги» и «план
+	получен» — на DEBUG.
+	(AgentOrchestrator._plan): Строка плана с временем планирования.
+	(AgentOrchestrator._execute_plan): Время готового шага, число
+	выполнений упавшего; «все шаги завершены» — на DEBUG.
+	* backend/app/core/agent/planner.py (StepPlanner.plan)
+	* backend/app/core/agent/step_executor.py (StepExecutor.execute): Дубли
+	строк оркестратора — на DEBUG.
+	* backend/app/core/llm/client.py (LLMClient.complete): Строка вызова:
+	модель, схема, время, prompt_tokens, длина ответа; ответ целиком —
+	только на DEBUG.
+	(LLMClient._log_failure, _failure_kind): Сбой: таймаут, соединение
+	или HTTP-код, адрес и время ожидания.
+	(LLMClient.complete_structured): Результат и сырой ответ — на DEBUG.
+	* backend/app/config.py (Settings.log_level): Новый, LOG_LEVEL.
+	* backend/app/main.py (lifespan): configure_logging и строка «старт:».
+	* backend/tests/conftest.py (_restore_root_logging): Новая: тесты с
+	lifespan не оставляют обработчики логов следующим.
+	* backend/tests/unit/test_logging_setup.py,
+	backend/tests/unit/test_turn_log.py: Новые.
+	* backend/tests/unit/test_llm_client_retries.py: Тесты строки вызова и
+	сбоя LLM.
+	* README.md (Логи), .env.example (LOG_LEVEL), docs/repo_structure.md:
+	Описаны логи.
+
 	Остальные колонки широкой таблицы — по близости к вопросу (#162).
 	* backend/app/core/data/semantic_select.py (rank_columns): Новая.
 	Оценка колонок из select_columns: слова вопроса в имени, названии и
