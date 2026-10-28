@@ -82,6 +82,11 @@ class StepPlanner:
         start = int(context.get("next_step_id", 0))
         if settings.agent_tool_topk:
             tools = select_tools(question)
+        if not context.get("related") and not context.get("catalog"):
+            # Связанных таблиц нет — join_related не нужен, промпт как без связей (#165).
+            tools = "\n".join(
+                line for line in tools.split("\n") if not line.startswith("- join_related ")
+            )
         described = describe_columns(
             columns, profile, context.get("descriptions"), context.get("titles")
         )

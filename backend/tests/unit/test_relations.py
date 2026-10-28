@@ -466,6 +466,13 @@ def test_planner_prompt_lists_related_tables(demo) -> None:
     asyncio.run(StepPlanner(llm=Spy()).plan("Сумма по region", built))
     assert "Связанные таблицы (текущая таблица $source — demo_events)" in Spy.prompt
     assert '"join_related", "arguments": {"tables": ["demo_users"]}' in Spy.prompt
+    assert "- join_related [transform]" in Spy.prompt
+
+    # Без связанных таблиц инструмента в промпте нет: он бесполезен и отвлекает.
+    built["related"] = []
+    asyncio.run(StepPlanner(llm=Spy()).plan("Сумма по region", built))
+    assert "join_related" not in Spy.prompt
+    assert "- join_tables [transform]" in Spy.prompt
 
 
 def test_joined_tables_are_recorded_in_the_turn(demo) -> None:
