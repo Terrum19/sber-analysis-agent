@@ -160,6 +160,48 @@ def test_set_table_keeps_turns_and_drops_pending_recovery(memory):
     assert memory.get_pending_recovery() is None
 
 
+def test_persist_and_load(tmp_path):
+    old_path = settings.sqlite_path
+    settings.sqlite_path = str(tmp_path / "sessions2.sqlite")
+    try:
+        mem1 = SessionMemory("persist-session")
+        mem1.set_table("raw")
+        mem1.start_turn("Первый вопрос")
+        mem1.finish_turn("ok", headline="Первый ответ")
+        mem2 = SessionMemory("persist-session")
+        assert mem2.table == "raw"
+        assert mem2._state["turns"][-1]["headline"] == "Первый ответ"
+    finally:
+        settings.sqlite_path = old_path
+
+
+def test_owns_result_covers_turn_results_charts_steps_and_recovery(memory):
+    from app.models.research_step import ResearchStep
+
+    memory.start_turn("Ход 1")
+    memory.finish_turn("ok", result_table="temp_result_v1")
+    memory.start_turn("Ход 2")
+    memory.record_chart("line", "temp_result_v2")
+    memory.finish_turn("ok")
+    memory.start_turn("Ход 3")
+    memory.record_step(ResearchStep(step_id=0, tool="aggregate", purpose="шаг"), "temp_result_v3")
+    memory.record_step(ResearchStep(step_id=1, tool="sort_limit", purpose="без таблицы"))
+
+    assert memory.owns_result("temp_result_v1")
+    assert memory.owns_result("temp_result_v2")
+    assert memory.owns_result("temp_result_v3")
+    assert not memory.owns_result("temp_result_v9")
+    assert "results" not in memory._turn["steps"][0]
+
+    memory.set_pending_recovery(
+        {"step_tables": {"1": "temp_result_v4"}, "input_table": "temp_result_v5"}
+    )
+    assert memory.owns_result("temp_result_v4")
+    assert memory.owns_result("temp_result_v5")
+    memory.clear_pending_recovery()
+    assert not memory.owns_result("temp_result_v4")
+
+
 def test_turn_records_the_default_table(memory):
     memory.start_turn("Без таблицы")
     memory.set_table("sales")

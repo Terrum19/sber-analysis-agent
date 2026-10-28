@@ -113,6 +113,9 @@ CATALOG = {
 }
 
 
+WIDE_FILLER = 80
+
+
 def build_table(db: DuckDBManager, rows: int = 2000) -> None:
     rnd = random.Random(0)
     values = []
@@ -179,6 +182,14 @@ def build_table(db: DuckDBManager, rows: int = 2000) -> None:
     con.executemany(f"INSERT INTO sales VALUES ({', '.join('?' * len(names))})", values)
 
 
+def build_wide_table(db: DuckDBManager, filler: int = WIDE_FILLER) -> None:
+    extras = ", ".join(
+        f"hash(order_id || '{index}') % 1000 AS extra_{index:03d}"
+        for index in range(1, filler + 1)
+    )
+    db.execute(f"CREATE TABLE wide AS SELECT {extras}, * FROM sales")
+
+
 def covered(visible: set[str], needs: list[set[str]]) -> bool:
     return all(need & visible for need in needs)
 
@@ -188,12 +199,13 @@ def visible_in_prompt(text: str, columns: list[str]) -> set[str]:
 
 
 def evaluate(profile, columns, verbose: bool) -> None:
-    def prompt_text(question: str, titles: dict | None = None) -> str:
+    def prompt_text(question: str, titles: dict | None = None, rank: bool = False) -> str:
         top = select_columns(question, columns, profile=profile, titles=titles)
         text = describe_columns(top, profile, titles=titles)
         if describe_other_columns is not None:
             rest = [name for name in columns if name not in top]
-            text += "\n" + describe_other_columns(rest, profile, titles)
+            asked = {"question": question} if rank else {}
+            text += "\n" + describe_other_columns(rest, profile, titles, **asked)
         return text
 
     modes = {
@@ -201,12 +213,18 @@ def evaluate(profile, columns, verbose: bool) -> None:
         "top5+titles": lambda q: set(select_columns(q, columns, profile=profile, titles=TITLES)),
         "prompt": lambda q: visible_in_prompt(prompt_text(q), columns),
         "prompt+titles": lambda q: visible_in_prompt(prompt_text(q, TITLES), columns),
+        "prompt+rank": lambda question: visible_in_prompt(
+            prompt_text(question, rank=True), columns
+        ),
+        "prompt+titles+rank": lambda question: visible_in_prompt(
+            prompt_text(question, TITLES, rank=True), columns
+        ),
     }
     sizes = [len(prompt_text(q)) for q, _, _ in QUESTIONS]
     print(f"Блок колонок в промпте: в среднем {sum(sizes) // len(sizes)} символов")
     kinds = sorted({kind for _, kind, _ in QUESTIONS})
     print(f"Колонок в таблице: {len(columns)}, top_k={settings.semantic_top_k}")
-    header = f"{'режим':<13}" + "".join(f"{k:>7}" for k in kinds) + f"{'всего':>9}"
+    header = f"{'режим':<19}" + "".join(f"{k:>7}" for k in kinds) + f"{'всего':>9}"
     print(header)
     for mode, pick in modes.items():
         hits = {k: [0, 0] for k in kinds}
@@ -219,7 +237,7 @@ def evaluate(profile, columns, verbose: bool) -> None:
                 misses.append((question, sorted(pick(question))[:8]))
         total = sum(h[0] for h in hits.values())
         print(
-            f"{mode:<13}"
+            f"{mode:<19}"
             + "".join(f"{h[0]:>4}/{h[1]:<2}" for h in hits.values())
             + f"{total:>6}/{len(QUESTIONS)}"
         )
@@ -234,9 +252,12 @@ def main() -> None:
     args = parser.parse_args()
     db = DuckDBManager(":memory:")
     build_table(db)
-    profile = profile_table(db, "sales")
-    columns = [column.name for column in profile.columns]
-    evaluate(profile, columns, args.verbose)
+    build_wide_table(db)
+    for table in ("sales", "wide"):
+        profile = profile_table(db, table)
+        columns = [column.name for column in profile.columns]
+        print(f"\nТаблица {table}")
+        evaluate(profile, columns, args.verbose)
 
 
 if __name__ == "__main__":

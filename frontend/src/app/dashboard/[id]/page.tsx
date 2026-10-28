@@ -303,13 +303,24 @@ export default function DashboardPage({ params }: { params: { id: string } }) {
     setIsExporting(format);
     setExportMenuOpen(false);
     try {
-      // Excel — по таблице результата последнего графика с ней (temp_result_vN)
-      const resultRef = [...config.tiles].reverse().find((tile) => tile.result_table)?.result_table;
-      const blob = await exportArtifact(config.session_id || params.id, format, resultRef);
+      // Ищем плитку с таблицей результата или спецификацией
+      const targetTile = [...config.tiles].reverse().find((tile) => tile.result_table) || config.tiles[0];
+      const resultRef = targetTile?.result_table;
+      const options =
+        format === "pdf" && targetTile
+          ? {
+              headline: targetTile.title || targetTile.insight,
+              details: targetTile.insight ? [targetTile.insight] : undefined,
+              spec: targetTile.spec,
+              dashboardId: params.id,
+            }
+          : { dashboardId: params.id };
+      const blob = await exportArtifact(config.session_id || params.id, format, resultRef, options);
       const url = URL.createObjectURL(blob);
       const a = document.createElement("a");
       a.href = url;
-      a.download = `${config.title || "dashboard"}.${format}`;
+      const filename = format === "pdf" ? "отчет" : (config.title || "dashboard");
+      a.download = `${filename}.${format}`;
       a.click();
       URL.revokeObjectURL(url);
       flash(format === "pdf" ? t("canvas.pdfDone") : t("canvas.xlsxDone"), 3500);
