@@ -105,6 +105,9 @@ from app.models.research_step import (
 )
 
 NO_TABLE_MESSAGE = "Сначала подключите данные"
+# pending_recovery уточнения «какие данные взять?» и вопрос пользователю (#165).
+TABLE_CHOICE = "table"
+TABLE_QUESTION = "Вопрос подходит к разным данным. По каким из них ответить?"
 # Ход упал вне шагов (планировщик, инсайт, график): текст ошибки — в progress.
 FAILURE_MESSAGE = "Не удалось ответить на вопрос, попробуйте ещё раз"
 # Плитка дашборда и экспорт принимают только результаты шагов (temp_result_vN).
@@ -117,6 +120,8 @@ REMEMBERED = "Запомнено: {notes}"
 
 SUMMARY_UNAVAILABLE = "Описание данных сейчас недоступно: модель не ответила."
 OVERVIEW_CAPTION = "Колонки таблицы"
+SCHEMA_CAPTION = "Связанные таблицы"
+TABLE_WORDS = ("таблица", "таблицы", "таблиц")
 # Событие, которым кончается ход: после него поток закрывается.
 TURN_END_EVENTS = ("done", "clarification_needed")
 
@@ -295,6 +300,19 @@ class AgentOrchestrator:
         set_turn_id(turn_id)
         logger.info("ход начат: вопрос=%r", request.question)
 
+        catalog: list[str] = []
+        if pending is not None and pending.get("kind") == TABLE_CHOICE:
+            # Ответ на «какие данные взять?»: дальше обычный ход по исходному вопросу.
+            memory.clear_pending_recovery()
+            chosen, request = _table_answer(pending, request)
+            logger.info("ответ на выбор таблицы: %s", chosen)
+            if chosen is None:
+                # Свободный текст вместо варианта — уточнение к вопросу, а таблицу
+                # выберет планировщик из предложенных.
+                catalog = list(pending["options"].values())
+            memory.use_table(chosen or catalog[0])
+            pending = None
+
         if pending is None and (reply := small_talk_reply(request.question)) is not None:
             # «Привет», «спасибо», «что ты умеешь» — без плана, LLM и графика.
             logger.info("маршрут: small talk")
@@ -305,15 +323,35 @@ class AgentOrchestrator:
 
         # Small talk выше: «привет» отвечается и без подключённой таблицы.
         table = memory.table
-        catalog: list[str] = []
         if table is None and pending is None:
-            # Таблица не выбрана — подбираем по словам вопроса без вызова LLM (#165);
-            # из нескольких равных таблицу выберет планировщик по каталогу.
-            candidates = relations.candidate_tables(self.db, request.question)
-            if candidates:
-                logger.info("таблицы по вопросу: %s", candidates)
-                table = candidates[0]
-                catalog = candidates if len(candidates) > 1 else []
+            # Таблица не выбрана — подбираем по словам вопроса без вызова LLM (#165).
+            choice = relations.choose_table(self.db, request.question)
+            if choice.options:
+                # Вопрос подходит к разным несвязанным данным: спрашиваем, какие взять.
+                logger.info("маршрут: уточнение таблицы %s", choice.options)
+                memory.set_pending_recovery(
+                    {
+                        "kind": TABLE_CHOICE,
+                        "question": request.question,
+                        "options": choice.options,
+                        "turn_id": turn_id,
+                    }
+                )
+                memory.finish_turn("clarification")
+                yield {
+                    "type": "clarification_needed",
+                    "data": {
+                        "step_id": -1,
+                        "error": TABLE_QUESTION,
+                        "suggestions": list(choice.options),
+                        "turn_id": turn_id,
+                        "kind": TABLE_CHOICE,
+                    },
+                }
+                return
+            if choice.table is not None:
+                logger.info("таблица по вопросу: %s, каталог: %s", choice.table, choice.catalog)
+                table, catalog = choice.table, choice.catalog
                 memory.use_table(table)
         if table is None:
             memory.finish_turn("failed")
@@ -1073,10 +1111,16 @@ class AgentOrchestrator:
     async def _overview(self, memory: SessionMemory, table: str) -> AsyncIterator[dict]:
         """Ответ на «что передо мной?»: факты, описание и таблица колонок, без планировщика.
 
-        Описание не построилось (LLM недоступна) — факты и таблица всё равно
-        отдаются. Таблица колонок не становится last_chart: «покажи в другом
-        виде» относится к прошлому графику исследования.
+        Таблица связана ключами с другими — обзор всех связанных таблиц
+        (_schema_overview). Описание не построилось (LLM недоступна) — факты и
+        таблица всё равно отдаются. Таблица колонок не становится last_chart:
+        «покажи в другом виде» относится к прошлому графику исследования.
         """
+        group = relations.component(relations.load(self.db), table)
+        if len(group) > 1:
+            async for event in self._schema_overview(memory, sorted(group)):
+                yield event
+            return
         stage = "insight"
         try:
             yield _progress_event("insight", "started")
@@ -1101,6 +1145,68 @@ class AgentOrchestrator:
             yield {"type": "chart", "data": {"spec": spec, "caption": OVERVIEW_CAPTION}}
         except Exception as exc:
             logger.exception("<<< run() обзор таблицы: этап %s упал", stage)
+            memory.finish_turn("failed")
+            yield _progress_event(stage, "failed", error=str(exc))
+            yield _failure_event()
+            yield _done(memory.turn_id)
+            return
+        memory.finish_turn("ok", headline=headline)
+        yield _done(memory.turn_id)
+
+    async def _schema_overview(
+        self, memory: SessionMemory, tables: list[str]
+    ) -> AsyncIterator[dict]:
+        """«Что передо мной?» по таблицам, связанным ключами (#165).
+
+        Таблицы — по важности данных (relations.priority_order: сначала факты,
+        затем справочники): название, роль, объём и период, первый абзац
+        описания; в конце — связи. График — сводка таблиц вместо колонок одной.
+        """
+        stage = "insight"
+        try:
+            yield _progress_event("insight", "started")
+            links = relations.load(self.db)
+            order = relations.priority_order(self.db, tables, links)
+            labels, details, rows = [], [], []
+            for number, name in enumerate(order, 1):
+                profile = overview.passport(self.db, name)
+                title = relations.table_title(self.db, name)
+                try:
+                    summary = await overview.describe_dataset(
+                        self.db, name, getattr(self.planner, "llm", None)
+                    )
+                except Exception:
+                    logger.exception("<<< run() описание таблицы %s не построено", name)
+                    summary = ""
+                role = relations.role(links, name)
+                labels.append(f"«{title}» ({name})" if title else name)
+                facts = overview.facts(profile).removeprefix(f"{name}: ")
+                first = (overview.paragraphs(summary) or [SUMMARY_UNAVAILABLE])[0]
+                details.append(f"{number}. {labels[-1]} — {role}: {facts}. {first}")
+                rows.append(
+                    {
+                        "Таблица": name,
+                        "Название": title or "",
+                        "Роль": role,
+                        "Строк": profile.row_count,
+                        "Колонок": profile.column_count,
+                        "Ссылается на": ", ".join(relations.references(links, name)),
+                    }
+                )
+            inside = [r for r in links if r.table in tables and r.ref_table in tables]
+            details.append("Связи: " + "; ".join(r.describe() for r in inside))
+            headline = (
+                f"Перед вами {overview.plural(len(order), TABLE_WORDS)}, связанные ключами; "
+                f"главные данные — {labels[0]}"
+            )
+            yield {"type": "text", "data": {"headline": headline, "details": details}}
+
+            stage = "chart"
+            yield _progress_event("chart", "started")
+            spec = build_vega_spec("table", data=rows, title=SCHEMA_CAPTION)
+            yield {"type": "chart", "data": {"spec": spec, "caption": SCHEMA_CAPTION}}
+        except Exception as exc:
+            logger.exception("<<< run() обзор связанных таблиц: этап %s упал", stage)
             memory.finish_turn("failed")
             yield _progress_event(stage, "failed", error=str(exc))
             yield _failure_event()
@@ -1144,6 +1250,27 @@ def _requested_view(execution: Execution, records: list[dict]) -> str:
     if not fits("line", records, infer_field_types(records)):
         return "table"
     return requested if requested in ("line", "area") else "line"
+
+
+def _table_answer(pending: dict, request: ChatRequest) -> tuple[str | None, ChatRequest]:
+    """Таблица из ответа на уточнение (название или имя таблицы) и запрос по исходному вопросу.
+
+    Ответ не совпал ни с одним вариантом — None, а ответ становится
+    уточнением к вопросу.
+    """
+    answer = (request.recovery_response or "").strip()
+    question = pending["question"]
+    chosen = next(
+        (
+            table
+            for title, table in pending["options"].items()
+            if answer.casefold() in (title.casefold(), table.casefold())
+        ),
+        None,
+    )
+    if chosen is None:
+        question = f"{question}\nУточнение пользователя: {answer}"
+    return chosen, request.model_copy(update={"question": question, "recovery_response": None})
 
 
 def _confirmation(remembered: list[str]) -> str:

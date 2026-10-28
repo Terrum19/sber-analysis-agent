@@ -15,6 +15,7 @@ from app.core.data.duckdb_manager import DuckDBManager
 from app.core.data.relations import Relation
 from app.core.memory.datasource_store import DatasourceStore
 from app.core.memory.profile_memory import ProfileMemory
+from app.core.tools.registry import tool_registry
 from app.main import app
 
 DSN = os.environ.get("TEST_POSTGRES_DSN", "postgresql://sber:sber@localhost:5432/sber_demo")
@@ -335,8 +336,12 @@ def test_foreign_keys_come_from_the_schema(admin: duckdb.DuckDBPyConnection, db)
         ]
         joined = relations.related_tables(db, "orders", "сумма по region")
         assert [item.table for item in joined] == ["clients", "shops"]
-        assert joined[1].relation.condition("orders") == (
-            "t.shop_city = t_right.city AND t.shop_num = t_right.num"
-        )
+        tool = tool_registry.get("join_related")
+        args = tool.Args.model_validate({"tables": ["clients", "shops"]})
+        table = tool.execute(db, "orders", args)
+        assert db.query(f"SELECT region, sum(amount) AS s FROM {table} GROUP BY 1 ORDER BY 1") == [
+            {"region": "msk", "s": 10},
+            {"region": "spb", "s": 5},
+        ]
     finally:
         run_admin(admin, f"DROP SCHEMA {name} CASCADE")

@@ -61,6 +61,8 @@ export interface ClarificationEvent {
     suggestions: string[];
     /** Ход, к которому относится уточнение (для полноты контракта #166). */
     turn_id?: string;
+    /** "table" — выбор данных (#165): suggestions — названия таблиц, ответ одним нажатием. */
+    kind?: "table";
   };
 }
 

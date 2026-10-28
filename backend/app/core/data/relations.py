@@ -16,8 +16,8 @@ _meta.table_relation: планировщик получает их на кажд
 
 import json
 import logging
-import re
-from dataclasses import dataclass
+from collections import Counter
+from dataclasses import dataclass, field
 
 import duckdb
 
@@ -32,7 +32,9 @@ MIN_COVERAGE = 0.9
 MIN_DISTINCT = 2
 # Колонки связанной таблицы в промпте планировщика и число связанных таблиц.
 PROMPT_COLUMNS = 12
-PROMPT_TABLES = 3
+PROMPT_TABLES = 5
+# Самая длинная цепочка соединений: orders -> clients -> cities -> regions.
+MAX_HOPS = 3
 # Сколько таблиц показать планировщику, если по словам вопроса таблицу не выбрать.
 CATALOG_TABLES = 6
 # Колонка «id» есть почти в каждой таблице: id = id связью не считаем.
@@ -67,20 +69,6 @@ class Relation:
     def other(self, table: str) -> str:
         return self.ref_table if table == self.table else self.table
 
-    def condition(self, table: str) -> str:
-        """Условие для join_tables, когда table — текущая таблица (t)."""
-        mine, theirs = (
-            (self.columns, self.ref_columns)
-            if table == self.table
-            else (self.ref_columns, self.columns)
-        )
-        return " AND ".join(
-            f"t.{quote_identifier(left)} = t_right.{quote_identifier(right)}"
-            if not _plain(left) or not _plain(right)
-            else f"t.{left} = t_right.{right}"
-            for left, right in zip(mine, theirs, strict=True)
-        )
-
     def describe(self) -> str:
         """«orders.user_id -> users.id (ключ из схемы)»."""
         origin = (
@@ -91,10 +79,6 @@ class Relation:
         left = ", ".join(self.columns)
         right = ", ".join(self.ref_columns)
         return f"{self.table}.{left} -> {self.ref_table}.{right} ({origin})"
-
-
-def _plain(name: str) -> bool:
-    return re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", name) is not None
 
 
 def ensure_schema(db) -> None:
@@ -330,31 +314,175 @@ def discover(db, connector, tables: list[str]) -> list[Relation]:
     return relations
 
 
+@dataclass(frozen=True)
+class Hop:
+    """Шаг пути соединения: from_table.from_columns = to_table.to_columns."""
+
+    relation: Relation
+    from_table: str
+    from_columns: tuple[str, ...]
+    to_table: str
+    to_columns: tuple[str, ...]
+
+
+def _hop(relation: Relation, from_table: str) -> Hop:
+    if from_table == relation.table:
+        return Hop(
+            relation, relation.table, relation.columns, relation.ref_table, relation.ref_columns
+        )
+    return Hop(relation, relation.ref_table, relation.ref_columns, relation.table, relation.columns)
+
+
+def paths(relations: list[Relation], start: str, max_hops: int = MAX_HOPS) -> dict[str, list[Hop]]:
+    """Кратчайшие пути от start до связанных таблиц (не длиннее max_hops переходов).
+
+    Связь проходится в обе стороны: от фактов к справочнику и обратно.
+    Пути образуют дерево: у каждой таблицы один предшественник, поэтому
+    пути к нескольким таблицам складываются в одну цепочку соединений.
+    """
+    found: dict[str, list[Hop]] = {start: []}
+    frontier = [start]
+    for _ in range(max_hops):
+        reached = []
+        for table in frontier:
+            for relation in relations:
+                if table not in (relation.table, relation.ref_table):
+                    continue
+                other = relation.other(table)
+                if other not in found:
+                    found[other] = [*found[table], _hop(relation, table)]
+                    reached.append(other)
+        frontier = reached
+    del found[start]
+    return found
+
+
+def component(relations: list[Relation], table: str) -> set[str]:
+    """Таблица и все таблицы, связанные с ней ключами через любое число переходов."""
+    return {table, *paths(relations, table, max_hops=len(relations))}
+
+
+def join_hops(relations: list[Relation], start: str, tables: list[str]) -> list[Hop]:
+    """Соединения, которые доводят start до всех tables, в порядке выполнения.
+
+    ValueError — таблица не связана со start ключами.
+    """
+    routes = paths(relations, start)
+    hops: list[Hop] = []
+    joined = {start}
+    for table in tables:
+        if table in joined:
+            continue
+        if table not in routes:
+            linked = ", ".join(routes) or "нет"
+            raise ValueError(
+                f"таблица «{table}» не связана с «{start}» ключами (связанные таблицы: {linked})"
+            )
+        for hop in routes[table]:
+            if hop.to_table not in joined:
+                hops.append(hop)
+                joined.add(hop.to_table)
+    return hops
+
+
+def output_names(db, relations: list[Relation], start: str) -> dict[str, dict[str, str]]:
+    """Имена колонок связанных таблиц после join_related: {таблица: {колонка: имя}}.
+
+    Имя, которое есть в нескольких таблицах группы (name у городов и регионов),
+    получает приставку с именем таблицы: cities_name, regions_name. Правило не
+    зависит от того, какие таблицы соединены в шаге, поэтому подсказка
+    планировщику показывает те же имена, что получатся в данных.
+    """
+    group = sorted(component(relations, start))
+    columns = {table: db.columns(table) for table in group}
+    counts = Counter(name.lower() for names in columns.values() for name in names)
+    return {
+        table: {name: f"{table}_{name}" if counts[name.lower()] > 1 else name for name in names}
+        for table, names in columns.items()
+        if table != start
+    }
+
+
+def row_count(db, table: str) -> int:
+    from app.core.memory.profile_memory import ProfileMemory
+
+    profile = ProfileMemory(db).load_profile(table)
+    return profile.row_count if profile is not None else 0
+
+
+def references(relations: list[Relation], table: str) -> list[str]:
+    """Таблицы, на которые table ссылается своими ключами (справочники таблицы)."""
+    return list(
+        dict.fromkeys(r.ref_table for r in relations if r.table == table and r.ref_table != table)
+    )
+
+
+def priority_order(db, tables, relations: list[Relation] | None = None) -> list[str]:
+    """Таблицы по важности данных: сначала факты, затем справочники.
+
+    Факты — таблицы, которые ссылаются на другие (заказы -> клиенты); внутри
+    группы выше таблица с большим числом строк.
+    """
+    relations = load(db) if relations is None else relations
+    rows = {table: row_count(db, table) for table in tables}
+    return sorted(
+        tables,
+        key=lambda table: (not references(relations, table), -rows[table], table),
+    )
+
+
+def role(relations: list[Relation], table: str) -> str:
+    return "факты" if references(relations, table) else "справочник"
+
+
+def table_title(db, table: str) -> str | None:
+    """Название таблицы для пользователя (display_name паспорта, #211) или None.
+
+    Колонки display_name нет, пока паспорт не умеет хранить названия: тогда
+    названий нет ни у одной таблицы.
+    """
+    exists = db.query(
+        "SELECT 1 FROM duckdb_columns() WHERE schema_name = '_meta' "
+        "AND table_name = 'table_passport' AND column_name = 'display_name' "
+        "AND database_name = current_database()"
+    )
+    if not exists:
+        return None
+    rows = db.query(
+        "SELECT display_name FROM _meta.table_passport WHERE table_name = $table",
+        {"table": table},
+    )
+    title = rows[0]["display_name"] if rows else None
+    return title.strip() or None if title else None
+
+
 @dataclass
 class Related:
-    """Таблица, связанная с текущей, для промпта планировщика."""
+    """Таблица, связанная с текущей (напрямую или через другие), для промпта планировщика.
+
+    columns — колонки так, как они будут названы после join_related.
+    """
 
     table: str
-    relation: Relation
+    path: list[Hop]
     columns: list[str]
     score: int
 
 
 def related_tables(db, table: str, question: str, limit: int = PROMPT_TABLES) -> list[Related]:
-    """Таблицы, связанные с table внешним ключом, по совпадению со словами вопроса.
+    """Таблицы, связанные с table ключами (до MAX_HOPS переходов), по словам вопроса.
 
-    Без вызова LLM: связей у таблицы обычно немного, поэтому планировщик
-    видит их все (до limit), а вопрос только упорядочивает таблицы и колонки.
+    Без вызова LLM: вопрос только упорядочивает таблицы и колонки; при равенстве
+    выше таблицы ближе по цепочке.
     """
     from app.core.memory.profile_memory import ProfileMemory
 
     memory = ProfileMemory(db)
     words = tokenize(question)
-    related: dict[str, Related] = {}
-    for relation in load(db, table):
-        other = relation.other(table)
-        if other == table or other in related:
-            continue
+    links = load(db)
+    renamed = output_names(db, links, table)
+    related = []
+    for other, path in paths(links, table).items():
         profile = memory.load_profile(other)
         names = (
             [column.name for column in profile.columns]
@@ -363,45 +491,63 @@ def related_tables(db, table: str, question: str, limit: int = PROMPT_TABLES) ->
         )
         titles = {row.column: row.title for row in memory.load_enrichment(other) if row.title}
         ranked = rank_columns(question, names, profile, titles)
-        text = " ".join([other, *names, *titles.values()]).replace("_", " ")
-        score = matches(words, tokenize(text))
-        related[other] = Related(other, relation, ranked, score)
-    return sorted(related.values(), key=lambda item: (-item.score, item.table))[:limit]
+        text = " ".join([other, table_title(db, other) or "", *names, *titles.values()])
+        score = matches(words, tokenize(text.replace("_", " ")))
+        # Ключи, по которым таблица присоединяется, в данные не попадают.
+        shown = [renamed[other][name] for name in ranked if name not in path[-1].to_columns]
+        related.append(Related(other, path, shown, score))
+    related.sort(key=lambda item: (-item.score, len(item.path), item.table))
+    return related[:limit]
+
+
+def _columns_line(columns: list[str]) -> str:
+    shown = columns[:PROMPT_COLUMNS]
+    rest = len(columns) - len(shown)
+    return ", ".join(shown) + (f" и ещё {rest}" if rest > 0 else "")
 
 
 def describe_related(table: str, related: list[Related]) -> str:
-    """Блок промпта: связанные таблицы, их колонки и готовое условие join_tables."""
+    """Блок промпта: связанные таблицы, их колонки, пути по ключам и пример join_related."""
     if not related:
         return ""
     lines = [
         (
-            f"Связанные таблицы (текущая таблица $source — {table}). Если для ответа нужна "
-            "колонка из связанной таблицы, сначала соедини таблицы шагом join_tables "
-            "(или left_join_tables, чтобы не терять строки без пары) с условием ниже — "
-            "после соединения колонки обеих таблиц доступны по своим именам:"
+            f"Связанные таблицы (текущая таблица $source — {table}). Колонки связанной "
+            "таблицы появляются после шага join_related: перечисли в tables нужные "
+            "таблицы, путь и условия соединения — в том числе через промежуточные "
+            "таблицы — инструмент найдёт сам по ключам ниже. Колонки названы так, как "
+            "они будут названы после соединения (имя, которое есть в нескольких "
+            "таблицах, — с приставкой таблицы: regions_name). Соединяй до group_by и "
+            "select_columns, пока в данных есть ключи:"
         )
     ]
     for item in related:
-        shown = item.columns[:PROMPT_COLUMNS]
-        rest = len(item.columns) - len(shown)
-        tail = f" и ещё {rest}" if rest > 0 else ""
-        lines.append(
-            f"- {item.table}: колонки {', '.join(shown)}{tail}\n"
-            f"  связь: {item.relation.describe()}\n"
-            f'  соединение: {{"tool": "join_tables", "arguments": {{"right_table": '
-            f'"{item.table}", "condition": "{item.relation.condition(table)}"}}}}'
-        )
+        via = [hop.to_table for hop in item.path[:-1]]
+        through = f" (через {', '.join(via)})" if via else ""
+        lines.append(f"- {item.table}{through}: колонки {_columns_line(item.columns)}")
+        lines.extend(f"  связь: {hop.relation.describe()}" for hop in item.path)
+    lines.append(
+        f'Пример: {{"tool": "join_related", "arguments": {{"tables": ["{related[0].table}"]}}}}'
+    )
     return "\n".join(lines)
 
 
 def table_score(db, table: str, question: str) -> int:
-    """Сколько слов вопроса совпало с колонками, их названиями, именем и описанием таблицы."""
+    """Сколько слов вопроса совпало с колонками, их названиями, названием и описанием таблицы."""
     from app.core.memory.profile_memory import ProfileMemory
 
     memory = ProfileMemory(db)
     titles = [row.title for row in memory.load_enrichment(table) if row.title]
     summary = memory.load_summary(table)
-    text = " ".join([table, *db.columns(table), *titles, summary[0] if summary else ""])
+    text = " ".join(
+        [
+            table,
+            table_title(db, table) or "",
+            *db.columns(table),
+            *titles,
+            summary[0] if summary else "",
+        ]
+    )
     return matches(tokenize(question), tokenize(text.replace("_", " ")))
 
 
@@ -410,16 +556,55 @@ def candidate_tables(db, question: str, limit: int = CATALOG_TABLES) -> list[str
 
     Совпадение слов вопроса с колонками, названиями и описанием таблицы, без
     LLM. Явный победитель — одна таблица. Ничья (например, вопрос по-русски,
-    колонки по-английски, описаний нет) — до limit лучших: таблицу выберет
-    планировщик по каталогу. Внутри ничьей выше таблицы с большим числом связей.
+    колонки по-английски, описаний нет) — до limit лучших; внутри ничьей —
+    в порядке важности данных (priority_order).
     """
-    tables = db.user_tables()
+    tables = priority_order(db, db.user_tables())
     scores = {table: table_score(db, table, question) for table in tables}
-    links = {table: len(load(db, table)) for table in tables}
-    ranked = sorted(tables, key=lambda table: (-scores[table], -links[table], table))
+    ranked = sorted(tables, key=lambda table: -scores[table])
     if len(ranked) < 2 or scores[ranked[0]] > scores[ranked[1]]:
         return ranked[:1]
     return [table for table in ranked if scores[table] == scores[ranked[0]]][:limit]
+
+
+@dataclass
+class TableChoice:
+    """Как ответить на вопрос без выбранной таблицы.
+
+    table — таблица хода (None — спросить пользователя или таблиц нет);
+    catalog — таблицы, из которых выберет планировщик; options — варианты
+    уточнения у пользователя: название таблицы -> таблица.
+    """
+
+    table: str | None = None
+    catalog: list[str] = field(default_factory=list)
+    options: dict[str, str] = field(default_factory=dict)
+
+
+def choose_table(db, question: str) -> TableChoice:
+    """Таблица под вопрос, когда в сессии таблица не выбрана.
+
+    Равные по словам вопроса таблицы, связанные ключами, — одни данные: берётся
+    главная из них (факты), остальные дотянет join_related. Неоднозначность —
+    когда равные таблицы из разных несвязанных групп. Тогда, если у каждой
+    группы есть название таблицы (display_name), спрашиваем пользователя, какие
+    данные взять; технические имена таблиц пользователю не показываем — без
+    названий таблицу выберет планировщик по каталогу.
+    """
+    candidates = candidate_tables(db, question)
+    if len(candidates) < 2:
+        return TableChoice(table=candidates[0] if candidates else None)
+    relations = load(db)
+    groups: dict[frozenset[str], list[str]] = {}
+    for table in priority_order(db, candidates, relations):
+        groups.setdefault(frozenset(component(relations, table)), []).append(table)
+    leaders = [members[0] for members in groups.values()]
+    if len(leaders) == 1:
+        return TableChoice(table=leaders[0])
+    titles = {table: table_title(db, table) for table in leaders}
+    if all(titles.values()) and len(set(titles.values())) == len(leaders):
+        return TableChoice(options={titles[table]: table for table in leaders})
+    return TableChoice(table=candidates[0], catalog=candidates)
 
 
 def describe_catalog(db, tables: list[str], question: str) -> str:
@@ -428,16 +613,13 @@ def describe_catalog(db, tables: list[str], question: str) -> str:
         (
             "Таблица для вопроса не выбрана, по словам вопроса подходят несколько. "
             "Выбери таблицу с нужными колонками и укажи её имя в input первого шага "
-            "(вместо $source); если нужны колонки двух связанных таблиц — соедини их "
-            "join_tables по связи. Таблицы:"
+            "(вместо $source); если нужны колонки связанных таблиц — добавь их шагом "
+            "join_related по связям. Таблицы:"
         )
     ]
     for table in tables:
         names = db.columns(table)
-        ranked = rank_columns(question, names)[:PROMPT_COLUMNS]
-        rest = len(names) - len(ranked)
-        tail = f" и ещё {rest}" if rest > 0 else ""
-        lines.append(f"- {table}: колонки {', '.join(ranked)}{tail}")
+        lines.append(f"- {table}: колонки {_columns_line(rank_columns(question, names))}")
         lines.extend(
             f"  связь: {relation.describe()}"
             for relation in load(db, table)

@@ -36,6 +36,7 @@ from app.core.tools.sql.atomic import (
     WindowMetricTool,
     WindowTool,
 )
+from app.core.tools.sql.join_related import JoinRelatedTool
 from app.core.tools.sql.time_series import TimeSeriesTool
 from app.core.tools.stats.anova_one_way import AnovaOneWayTool
 from app.core.tools.stats.bootstrap_ci import BootstrapCITool
@@ -115,6 +116,7 @@ for _tool in (
     RenameColumnTool(),
     JoinTablesTool(),
     LeftJoinTablesTool(),
+    JoinRelatedTool(),
     GroupByTool(),
     PivotTool(),
     TimeBucketTool(),

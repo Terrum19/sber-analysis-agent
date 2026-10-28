@@ -328,17 +328,21 @@ class SessionMemory:
     def record_step(self, step, result_table: str | None = None) -> None:
         """Записать выполненный шаг в текущий ход (сохраняется в finish_turn).
 
-        Таблица, присоединённая шагом (right_table), добавляется к таблицам хода.
+        Таблицы, присоединённые шагом (right_table, tables у join_related),
+        добавляются к таблицам хода.
         """
         if result_table:
             self._turn.setdefault("results", []).append(result_table)
-        joined = (step.arguments or {}).get("right_table")
-        if (
-            isinstance(joined, str)
-            and not joined.startswith("$")
-            and joined not in self._turn["tables"]
-        ):
-            self._turn["tables"].append(joined)
+        arguments = step.arguments or {}
+        joined = arguments.get("tables")
+        joined = [*(joined if isinstance(joined, list) else []), arguments.get("right_table")]
+        for table in joined:
+            if (
+                isinstance(table, str)
+                and not table.startswith("$")
+                and table not in self._turn["tables"]
+            ):
+                self._turn["tables"].append(table)
         self._turn["steps"].append(
             {
                 "step_id": step.step_id,
