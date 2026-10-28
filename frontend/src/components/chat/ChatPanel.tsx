@@ -101,20 +101,29 @@ export default function ChatPanel({ sessionId }: Props) {
 
   useEffect(() => {
     if (!activeTable && sessionId) {
-      getSession(sessionId)
-        .then((sess) => {
-          if (sess.table) {
-            const dbId = useSessionStore.getState().sessionDatabase[sessionId] || sess.datasource_id || "";
-            bindSession(sessionId, dbId, sess.table);
-          }
-        })
-        .catch((err) => {
-          if (err?.status === 404) {
-            setTableError(t("chat.tableNotFound"));
-          }
-        });
+      if (availableTables.length > 0) {
+        const defaultTable = availableTables[0];
+        switchSessionTable(sessionId, defaultTable);
+        if (database) {
+          bindSession(sessionId, database.id, defaultTable);
+        }
+      } else {
+        getSession(sessionId)
+          .then((sess) => {
+            if (sess.table) {
+              const dbId = useSessionStore.getState().sessionDatabase[sessionId] || sess.datasource_id || "";
+              bindSession(sessionId, dbId, sess.table);
+              switchSessionTable(sessionId, sess.table);
+            }
+          })
+          .catch((err) => {
+            if (err?.status === 404) {
+              setTableError(t("chat.tableNotFound"));
+            }
+          });
+      }
     }
-  }, [sessionId, activeTable, bindSession, t]);
+  }, [sessionId, activeTable, availableTables, database, bindSession, switchSessionTable, t]);
 
   async function handleTableChange(nextTable: string) {
     if (!nextTable || nextTable === activeTable || isTableSwitching || streaming) return;
@@ -416,18 +425,29 @@ export default function ChatPanel({ sessionId }: Props) {
                 <TableBriefCard brief={activeBrief} />
               </div>
             )}
-            <div className="mt-6 flex flex-col items-start gap-1">
-              {[t("chat.suggest1"), t("chat.suggest2")].map((q) => (
-                <button
-                  key={q}
-                  onClick={() => sendQuestion(q)}
-                  disabled={!activeTable}
-                  className="rounded-lg px-2 py-1 -mx-2 text-[13px] text-graphite-300 hover:bg-graphite-800 hover:text-graphite-50 transition disabled:opacity-50 disabled:cursor-not-allowed"
-                >
-                  {t("chat.quoted", { q })}
-                </button>
-              ))}
-            </div>
+            {(() => {
+              const isElectricity = Boolean(
+                (activeTable && /electric|price|volume|energy|pz|ues/i.test(activeTable)) ||
+                (database?.title && /electric|price|volume|energy|pz|ues/i.test(database.title))
+              );
+              const chips = isElectricity
+                ? ["Покажи динамику средней цены и объемов", "Сравни цены РСВ по регионам и часам"]
+                : [t("chat.suggest1"), t("chat.suggest2")];
+              return (
+                <div className="mt-6 flex flex-col items-start gap-1">
+                  {chips.map((q) => (
+                    <button
+                      key={q}
+                      onClick={() => sendQuestion(q)}
+                      disabled={!activeTable}
+                      className="rounded-lg px-2 py-1 -mx-2 text-[13px] text-graphite-300 hover:bg-graphite-800 hover:text-graphite-50 transition disabled:opacity-50 disabled:cursor-not-allowed"
+                    >
+                      {t("chat.quoted", { q })}
+                    </button>
+                  ))}
+                </div>
+              );
+            })()}
           </div>
         ) : (
           messages.map((m, i) => (

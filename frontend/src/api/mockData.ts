@@ -49,7 +49,7 @@ const DEFAULT_TILES: DashboardTile[] = [
       },
       mark: { type: "bar", cornerRadiusEnd: 4, color: "#3b82f6" },
       encoding: {
-        x: { field: "region", type: "nominal", title: "Регион", axis: { labelAngle: 0 } },
+        x: { field: "region", type: "nominal", title: "Регион", axis: { labelAngle: -35 } },
         y: { field: "revenue", type: "quantitative", title: "Выручка (млн ₽)" },
       },
     },
@@ -82,6 +82,77 @@ const DEFAULT_TILES: DashboardTile[] = [
     is_kpi: false,
     insight: "Устойчивый восходящий тренд с ускорением темпов прироста в мае–июне.",
     result_table: "temp_result_v3",
+    layout: { x: 6, y: 2, w: 6, h: 4 },
+  },
+];
+
+const ELECTRICITY_TILES: DashboardTile[] = [
+  {
+    id: "tile-kpi-elec-1",
+    title: "Средневзвешенная цена РСВ",
+    spec: { mark: "text" },
+    is_kpi: true,
+    snapshot_data: { value: "2 480 ₽/МВт·ч", label: "Динамика +3.1% к пред. суткам" },
+    insight: "Индекс цен находится в пределах нормативного диапазона энергозоны.",
+    result_table: "temp_elec_summary",
+    layout: { x: 0, y: 0, w: 6, h: 2 },
+  },
+  {
+    id: "tile-kpi-elec-2",
+    title: "Суммарный объём торговли",
+    spec: { mark: "text" },
+    is_kpi: true,
+    snapshot_data: { value: "142.5 ГВт·ч", label: "Покрытие планового спроса: 99.8%" },
+    insight: "Пик потребления зафиксирован в интервале 10:00–18:00 МСК.",
+    result_table: "temp_elec_volume",
+    layout: { x: 6, y: 0, w: 6, h: 2 },
+  },
+  {
+    id: "tile-chart-elec-1",
+    title: "Динамика индексов цен РСВ по часам",
+    spec: {
+      $schema: "https://vega.github.io/schema/vega-lite/v5.json",
+      data: {
+        values: [
+          { hour: "00:00", price: 1850 },
+          { hour: "04:00", price: 1720 },
+          { hour: "08:00", price: 2340 },
+          { hour: "12:00", price: 2750 },
+          { hour: "16:00", price: 2680 },
+          { hour: "20:00", price: 2420 },
+        ],
+      },
+      mark: { type: "line", point: true, color: "#f59e0b" },
+      encoding: {
+        x: { field: "hour", type: "nominal", title: "Час суток", axis: { labelAngle: -35 } },
+        y: { field: "price", type: "quantitative", title: "Цена (₽/МВт·ч)" },
+      },
+    },
+    is_kpi: false,
+    insight: "Суточный максимум цен зафиксирован в полдень на уровне 2 750 ₽/МВт·ч.",
+    result_table: "temp_hourly_price",
+    layout: { x: 0, y: 2, w: 6, h: 4 },
+  },
+  {
+    id: "tile-chart-elec-2",
+    title: "Объёмы поставки по энергозонам",
+    spec: {
+      $schema: "https://vega.github.io/schema/vega-lite/v5.json",
+      data: {
+        values: [
+          { zone: "1-я Ценовая зона", volume: 98.4 },
+          { zone: "2-я Ценовая зона", volume: 44.1 },
+        ],
+      },
+      mark: { type: "bar", cornerRadiusEnd: 4, color: "#10b981" },
+      encoding: {
+        x: { field: "zone", type: "nominal", title: "Энергозона", axis: { labelAngle: -35 } },
+        y: { field: "volume", type: "quantitative", title: "Объём (ГВт·ч)" },
+      },
+    },
+    is_kpi: false,
+    insight: "Первая ценовая зона сформировала 69% суммарного объема торгов.",
+    result_table: "temp_zone_volume",
     layout: { x: 6, y: 2, w: 6, h: 4 },
   },
 ];
@@ -327,22 +398,41 @@ export function mockStreamChat(
 ): () => void {
   let isCancelled = false;
   const isDashboardRequest = /дашборд|панел|график|kpi|отчет|показател/i.test(question);
+  const isElectricity = /цен|электр|энерг|объем|мвт|гвт|рсв|market|price|volume/i.test(question);
 
-  const steps = [
-    { delay: 300, chunk: "Изучаю схему данных в DuckDB...\n" },
-    { delay: 700, chunk: "Выполняю расчет шага 1: агрегация продаж по регионам (temp_result_v1).\n" },
-    {
-      delay: 1200,
-      headline: isDashboardRequest
-        ? "Дашборд успешно сформирован на основе промежуточных результатов DuckDB"
-        : "Анализ данных завершён: выявлен рост выручки на 18.4%",
-      details: [
-        "Москва лидирует с результатом 12.5 млн ₽",
-        "Темп роста относительно Q2 составил +18.4%",
-        "SQL не генерировался заново: использован кэш шага",
-      ],
-    },
-  ];
+  const tiles = isElectricity ? ELECTRICITY_TILES : DEFAULT_TILES;
+
+  const steps = isElectricity
+    ? [
+        { delay: 300, chunk: "Изучаю схему данных в DuckDB (почасовые индексы цен и объёмы)...\n" },
+        { delay: 700, chunk: "Выполняю расчет средневзвешенных цен и торговых объемов РСВ (temp_elec_summary).\n" },
+        {
+          delay: 1200,
+          headline: isDashboardRequest
+            ? "Дашборд успешно сформирован по рынку электроэнергии РСВ"
+            : "Анализ данных завершён: динамика индексов цен и объемов РСВ",
+          details: [
+            "Средневзвешенная цена РСВ: 2 480 ₽/МВт·ч (+3.1% к пред. суткам)",
+            "Суммарный объем торгов: 142.5 ГВт·ч",
+            "Пик нагрузки зафиксирован в интервале 10:00–18:00 (до 2 750 ₽/МВт·ч)",
+          ],
+        },
+      ]
+    : [
+        { delay: 300, chunk: "Изучаю схему данных в DuckDB...\n" },
+        { delay: 700, chunk: "Выполняю расчет шага 1: агрегация продаж по регионам (temp_result_v1).\n" },
+        {
+          delay: 1200,
+          headline: isDashboardRequest
+            ? "Дашборд успешно сформирован на основе промежуточных результатов DuckDB"
+            : "Анализ данных завершён: выявлен рост выручки на 18.4%",
+          details: [
+            "Москва лидирует с результатом 12.5 млн ₽",
+            "Темп роста относительно Q2 составил +18.4%",
+            "SQL не генерировался заново: использован кэш шага",
+          ],
+        },
+      ];
 
   const timeouts: NodeJS.Timeout[] = [];
 
@@ -365,17 +455,17 @@ export function mockStreamChat(
             type: "dashboard",
             data: {
               dashboard_id: dashId,
-              title: "Аналитический срез: продажи и KPI",
-              tiles: DEFAULT_TILES,
+              title: isElectricity ? "Анализ рынка электроэнергии РСВ" : "Аналитический срез: продажи и KPI",
+              tiles,
             },
           });
         } else {
           onEvent({
             type: "chart",
             data: {
-              caption: "Выручка по ключевым регионам",
-              spec: DEFAULT_TILES[2].spec,
-              result_table: "temp_result_v1",
+              caption: isElectricity ? "Динамика индексов цен РСВ по часам" : "Выручка по ключевым регионам",
+              spec: tiles[2].spec,
+              result_table: isElectricity ? "temp_hourly_price" : "temp_result_v1",
             },
           });
         }

@@ -113,9 +113,16 @@ export default function ChartRenderer({ spec, height = 300 }: { spec: Spec; heig
     return <ReactECharts option={option} notMerge style={{ height, width: "100%" }} />;
   }
   return (
-    <div style={{ height, width: "100%" }}>
+    <div style={{ height, width: "100%" }} className="w-full overflow-hidden">
       <VegaLite
-        spec={{ height: Math.max(height - 60, 120), ...spec } as VisualizationSpec}
+        spec={
+          {
+            height: Math.max(height - 60, 120),
+            autosize: { type: "fit", contains: "padding" },
+            ...spec,
+            width: "container",
+          } as VisualizationSpec
+        }
         actions={false}
         style={{ width: "100%" }}
       />

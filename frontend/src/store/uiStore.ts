@@ -50,6 +50,7 @@ interface UiState {
   theme: Theme;
   locale: Locale;
   dbModalOpen: boolean;
+  mobileSidebarOpen: boolean;
   tableModalTarget: DatabaseFolder | null;
   canvasOpen: boolean;
   tabs: WorkspaceTab[];
@@ -62,6 +63,7 @@ interface UiState {
   setTheme: (theme: Theme) => void;
   setLocale: (locale: Locale) => void;
   setDbModalOpen: (open: boolean) => void;
+  setMobileSidebarOpen: (open: boolean) => void;
   setTableModalTarget: (target: DatabaseFolder | null) => void;
   setCanvasOpen: (open: boolean) => void;
   setSidebarWidth: (px: number) => void;
@@ -83,6 +85,7 @@ export const useUiStore = create<UiState>()(
       theme: "dark",
       locale: "ru",
       dbModalOpen: false,
+      mobileSidebarOpen: false,
       tableModalTarget: null,
       canvasOpen: true,
       tabs: [{ kind: "welcome" }],
@@ -97,6 +100,7 @@ export const useUiStore = create<UiState>()(
       },
       setLocale: (locale) => set({ locale }),
       setDbModalOpen: (dbModalOpen) => set({ dbModalOpen }),
+      setMobileSidebarOpen: (mobileSidebarOpen) => set({ mobileSidebarOpen }),
       setTableModalTarget: (tableModalTarget) => set({ tableModalTarget }),
       setCanvasOpen: (canvasOpen) => set({ canvasOpen }),
       setSidebarWidth: (px) => set({ sidebarWidth: clamp(Math.round(px), SIDEBAR_WIDTH.min, SIDEBAR_WIDTH.max) }),
