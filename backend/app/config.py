@@ -75,6 +75,10 @@ class Settings(BaseSettings):
     codegen_attempts: int = 2
     codegen_max_rows: int = 200_000
     agent_max_steps: int = 12
+    # Сколько последних ходов сессии (любого статуса) видит планировщик (#197).
+    context_turns: int = 5
+    # Сколько последних включённых воспоминаний сессии идёт в промпты (#197).
+    context_memories: int = 20
     semantic_top_k: int = 5
     # Сколько колонок вне топ-K перечислить планировщику по именам (0 — не показывать).
     semantic_other_columns: int = 80

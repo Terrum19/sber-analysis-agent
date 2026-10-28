@@ -19,6 +19,7 @@ import {
   updateDashboard,
 } from "@/api/client";
 import DashboardTile, { isKpiTile } from "@/components/canvas/DashboardTile";
+import AnswerExport from "@/components/chat/AnswerExport";
 import Icon from "@/components/ui/Icon";
 import ZoomControl from "@/components/ui/ZoomControl";
 import { MIN_SIZE, STACK_BELOW, applyGridLayout, tileGridLayout } from "@/lib/tileLayout";
@@ -27,6 +28,9 @@ import { useElementSize } from "@/hooks/useElementSize";
 import FitGrid from "@/components/canvas/FitGrid";
 import ItemActionMenu from "@/components/layout/ItemActionMenu";
 import { useOpenArtifact } from "@/hooks/useOpenArtifact";
+import { useAskAgent } from "@/hooks/useAskAgent";
+import { drillQuestion, type ChartSelection } from "@/lib/chartSelection";
+import { downloadBlob } from "@/lib/download";
 import { useT } from "@/i18n/useT";
 import { useUiStore } from "@/store/uiStore";
 import type { DashboardTile as DashboardTileType } from "@/types/dashboard";
@@ -46,6 +50,7 @@ export default function Canvas({ sessionId }: Props) {
   const tr = useT();
   const zoom = useUiStore((s) => s.zoom);
   const openArtifact = useOpenArtifact();
+  const askAgent = useAskAgent();
 
   // Canvas store
   const dashboardId = useCanvasStore((s) => s.dashboardId);
@@ -89,6 +94,7 @@ export default function Canvas({ sessionId }: Props) {
   const sessionTiles = useSessionStore((s) => s.tiles);
 
   const displayTiles = dashboardId ? tiles : (sessionTiles.length > 0 ? sessionTiles : tiles);
+  const hasResultTable = displayTiles.some((tile) => Boolean(tile.result_table));
 
   // Координаты сетки react-grid-layout
   // В узкой панели график по умолчанию во всю ширину, KPI — в половину
@@ -293,62 +299,83 @@ export default function Canvas({ sessionId }: Props) {
   }
 
   async function handleExport(format: "xlsx" | "pdf") {
+    // Если нет ни плиток с DuckDB-таблицей, ни сохранённого дашборда, ни плиток вообще
+    if (format === "xlsx" && displayTiles.length === 0) {
+      setSaveStatus(tr("canvas.exportNoTable"));
+      setTimeout(() => setSaveStatus(null), 3500);
+      return;
+    }
     setIsExporting(format);
     setExportMenuOpen(false);
     try {
-      // Ищем плитку с таблицей результата или спецификацией
-      const targetTile = [...displayTiles].reverse().find((tile) => tile.result_table) || displayTiles[0];
-      const resultRef = targetTile?.result_table;
-      let spec = targetTile?.spec;
+      const source = [...displayTiles].reverse().find((tile) => tile.result_table);
+      const target = source ?? displayTiles[0];
+
+      // Готовим спецификацию с данными (из spec или snapshot_data)
+      let spec = target?.spec as Record<string, any> | undefined;
+      const specData = spec?.data as Record<string, any> | undefined;
       if (
         spec &&
-        Array.isArray(targetTile?.snapshot_data) &&
-        (!spec.data || !Array.isArray(spec.data.values))
+        Array.isArray(target?.snapshot_data) &&
+        (!specData || !Array.isArray(specData.values))
       ) {
-        spec = { ...spec, data: { values: targetTile.snapshot_data } };
-      } else if (!spec && Array.isArray(targetTile?.snapshot_data)) {
-        spec = { data: { values: targetTile.snapshot_data } };
+        spec = { ...spec, data: { values: target.snapshot_data } };
+      } else if (!spec && Array.isArray(target?.snapshot_data)) {
+        spec = { data: { values: target.snapshot_data } };
       }
 
-      const options = targetTile
-        ? {
-            headline: targetTile.title || targetTile.insight,
-            details: targetTile.insight ? [targetTile.insight] : undefined,
-            spec,
-            dashboardId: dashboardId ?? undefined,
-          }
-        : { dashboardId: dashboardId ?? undefined };
-      const blob = await exportArtifact(sessionId, format, resultRef, options);
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement("a");
-      a.href = url;
-      const filename = format === "pdf" ? "отчет" : (dashboardTitle || "dashboard");
-      a.download = `${filename}.${format}`;
-      a.click();
-      URL.revokeObjectURL(url);
+      const { blob, filename } = await exportArtifact(
+        {
+          session_id: sessionId,
+          format,
+          result_ref: source?.result_table,
+          dashboard_id: dashboardId ?? undefined,
+          ...(target
+            ? {
+                headline: target.title || target.insight,
+                details: target.insight ? [target.insight] : undefined,
+                spec,
+              }
+            : {}),
+        },
+        `${dashboardTitle || "dashboard"}.${format}`,
+      );
+      downloadBlob(blob, filename);
       setSaveStatus(format === "pdf" ? tr("canvas.pdfDone") : tr("canvas.xlsxDone"));
     } catch (err: any) {
-      setSaveStatus(tr("canvas.exportError", { msg: err?.detail || err?.message || String(err) }));
+      if (err?.status === 501) {
+        setSaveStatus(tr("chat.exportPdfInProgress"));
+      } else {
+        setSaveStatus(tr("canvas.exportError", { msg: err?.detail || err?.message || String(err) }));
+      }
     } finally {
       setIsExporting(null);
       setTimeout(() => setSaveStatus(null), 3500);
     }
   }
 
+  /** Клик по точке/плитке: вопрос агенту в чат этой сессии (F-09). */
+  function handleElaborate(tile: DashboardTileType, selection?: ChartSelection) {
+    askAgent(sessionId, drillQuestion(tr, tile.title, selection));
+  }
+
   function handleAddCustomKpi() {
-    if (tiles.length === 0 && sessionTiles.length > 0) {
-      setTiles(sessionTiles);
-    }
+    // Черновик сессии (dashboardId === null) живёт в sessionStore; сохранённый
+    // дашборд — в canvasStore. Раньше KPI добавлялся только в canvasStore и
+    // терялся, если в сессии уже были плитки.
+    const base = dashboardId ? tiles : sessionTiles.length > 0 ? sessionTiles : tiles;
+    const index = base.length;
     const newKpi: DashboardTileType = {
       id: `kpi-${Date.now()}`,
       title: tr("canvas.newKpi"),
       spec: {},
       is_kpi: true,
       snapshot_data: { value: "—", label: tr("canvas.newKpiLabel") },
-      layout: { x: (displayTiles.length % 2) * 6, y: Math.floor(displayTiles.length / 2) * 4, w: 6, h: 3 },
+      layout: { x: (index % 2) * 6, y: Math.floor(index / 2) * 4, w: 6, h: 3 },
       insight: tr("canvas.newKpiInsight"),
     };
-    addTile(newKpi);
+    if (dashboardId) addTile(newKpi);
+    else useSessionStore.getState().addTile(newKpi);
   }
 
   return (
@@ -434,13 +461,16 @@ export default function Canvas({ sessionId }: Props) {
               <div className="absolute right-0 top-full z-50 mt-1 w-40 rounded-lg border border-graphite-700 bg-graphite-850 p-1 shadow-2xl">
                 <button
                   onClick={() => handleExport("xlsx")}
-                  className="flex w-full items-center rounded-md px-2.5 py-1.5 text-left text-[12px] text-graphite-200 hover:bg-graphite-700 transition"
+                  disabled={!hasResultTable}
+                  title={!hasResultTable ? tr("canvas.exportNoTable") : undefined}
+                  className="flex w-full items-center rounded-md px-2.5 py-1.5 text-left text-[12px] text-graphite-200 hover:bg-graphite-700 transition disabled:cursor-not-allowed disabled:opacity-50"
                 >
                   {tr("canvas.exportXlsx")}
                 </button>
                 <button
-                  onClick={() => handleExport("pdf")}
-                  className="flex w-full items-center rounded-md px-2.5 py-1.5 text-left text-[12px] text-graphite-200 hover:bg-graphite-700 transition"
+                  disabled
+                  title={tr("chat.exportPdfSoon")}
+                  className="flex w-full items-center rounded-md px-2.5 py-1.5 text-left text-[12px] text-graphite-400 opacity-50 cursor-not-allowed"
                 >
                   {tr("canvas.exportPdf")}
                 </button>
@@ -582,6 +612,7 @@ export default function Canvas({ sessionId }: Props) {
                           onRename={(newTitle) => updateTile(i, { title: newTitle })}
                           onDelete={() => removeTile(i)}
                           onOpen={() => openArtifact(tile, sessionId)}
+                          onElaborate={(selection) => handleElaborate(tile, selection)}
                           onMenu={(rect) => setMenu({ index: i, rect })}
                         />
                       </div>
@@ -601,7 +632,21 @@ export default function Canvas({ sessionId }: Props) {
                 .filter((t) => !isKpiTile(t))
                 .map((tile, i) => (
                   <div key={tile.id || i} style={{ height: Math.round(340 * zoom) }}>
-                    <DashboardTile tile={tile} onOpen={() => openArtifact(tile, sessionId)} />
+                    <DashboardTile
+                      tile={tile}
+                      actions={
+                        <AnswerExport
+                          sessionId={sessionId}
+                          headline={tile.title}
+                          spec={tile.spec}
+                          resultTable={tile.result_table}
+                          compact
+                          inline
+                        />
+                      }
+                      onOpen={() => openArtifact(tile, sessionId)}
+                      onElaborate={(selection) => handleElaborate(tile, selection)}
+                    />
                   </div>
                 ))}
             </div>
@@ -653,6 +698,7 @@ export default function Canvas({ sessionId }: Props) {
           onDelete={() => removeTile(menu.index)}
           onChartTypeChange={(type) => handleChartTypeChange(menu.index, type as ChartType)}
           onOpen={() => openArtifact(displayTiles[menu.index], sessionId)}
+          onElaborate={() => handleElaborate(displayTiles[menu.index])}
         />
       )}
     </div>

@@ -21,6 +21,8 @@ interface ItemActionMenuProps {
   onChartTypeChange?: (type: string) => void;
   /** Плитка: открыть на весь экран во вкладке. */
   onOpen?: () => void;
+  /** Плитка: отправить вопрос агенту по всей плитке (F-09). */
+  onElaborate?: () => void;
 }
 
 export default function ItemActionMenu({
@@ -36,6 +38,7 @@ export default function ItemActionMenu({
   chartTypes,
   onChartTypeChange,
   onOpen,
+  onElaborate,
 }: ItemActionMenuProps) {
   const t = useT();
   const menuRef = useRef<HTMLDivElement>(null);
@@ -218,6 +221,20 @@ export default function ItemActionMenu({
             >
               <Icon name="maximize" size={14} className="shrink-0 text-graphite-400" />
               <span className="truncate">{t("artifact.open")}</span>
+            </button>
+          )}
+
+          {onElaborate && (
+            <button
+              type="button"
+              onClick={() => {
+                onElaborate();
+                onClose();
+              }}
+              className="flex w-full items-center gap-2 rounded-lg px-2.5 py-1.5 text-left text-xs text-graphite-300 hover:bg-graphite-800 hover:text-graphite-100 transition"
+            >
+              <Icon name="sparkle" size={14} className="shrink-0 text-graphite-400" />
+              <span className="truncate">{t("drill.menu")}</span>
             </button>
           )}
 
