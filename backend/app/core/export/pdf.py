@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Any
 
 from PIL import Image as PILImage
+from reportlab.graphics.shapes import Circle, Drawing, PolyLine
 from reportlab.lib import colors
 from reportlab.lib.fonts import addMapping
 from reportlab.lib.pagesizes import A4
@@ -269,36 +270,7 @@ class PdfExporter:
         has_page1_content = bool(question or headline or details or chart_png)
 
         if has_page1_content:
-            now_str = datetime.datetime.now().strftime("%d.%m.%Y, %H:%M")
-            header_table = Table(
-                [
-                    [
-                        Paragraph(f"<b>Sber AI BI</b> • {title}", styles["HeaderTitle"]),
-                        Paragraph(now_str, styles["HeaderDate"]),
-                    ]
-                ],
-                colWidths=[printable_width * 0.7, printable_width * 0.3],
-            )
-            header_table.setStyle(
-                TableStyle(
-                    [
-                        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
-                        ("BOTTOMPADDING", (0, 0), (-1, -1), 0),
-                        ("TOPPADDING", (0, 0), (-1, -1), 0),
-                    ]
-                )
-            )
-            elements.append(header_table)
-            elements.append(Spacer(1, 4))
-            elements.append(
-                HRFlowable(
-                    width="100%",
-                    thickness=1.5,
-                    color=colors.HexColor("#0F172A"),
-                    spaceBefore=2,
-                    spaceAfter=10,
-                )
-            )
+            elements.extend(self._build_header(title, printable_width, styles))
 
             if question:
                 q_paragraphs = [p.strip() for p in question.split("\n") if p.strip()]
@@ -374,17 +346,7 @@ class PdfExporter:
         # page 2
         if records:
             if not has_page1_content:
-                elements.append(Paragraph(f"<b>Sber AI BI</b> • {title}", styles["HeaderTitle"]))
-                elements.append(Spacer(1, 4))
-                elements.append(
-                    HRFlowable(
-                        width="100%",
-                        thickness=1.5,
-                        color=colors.HexColor("#0F172A"),
-                        spaceBefore=2,
-                        spaceAfter=10,
-                    )
-                )
+                elements.extend(self._build_header(title, printable_width, styles))
 
             elements.append(
                 Paragraph("Таблица результатов (первые 50 строк выборки)", styles["SectionHeading"])
@@ -400,6 +362,69 @@ class PdfExporter:
 
         doc.build(elements, canvasmaker=NumberedCanvas)
         return path
+
+    def _build_logo(self, size: float = 18.0) -> Drawing:
+        """Сформировать фирменный векторный логотип Сбера (зелёный круг с белой галочкой)."""
+        d = Drawing(size, size)
+        cx = size / 2.0
+        cy = size / 2.0
+        r = size / 2.0
+        # Фирменный зелёный круг Сбера
+        d.add(Circle(cx, cy, r, fillColor=colors.HexColor("#21A038"), strokeColor=None))
+        # Белая галочка
+        scale = size / 20.0
+        d.add(
+            PolyLine(
+                [
+                    (5.5 * scale, 9.5 * scale),
+                    (9.0 * scale, 6.0 * scale),
+                    (14.5 * scale, 14.0 * scale),
+                ],
+                strokeColor=colors.white,
+                strokeWidth=2.0 * scale,
+                strokeLineCap=1,
+                strokeLineJoin=1,
+            )
+        )
+        return d
+
+    def _build_header(
+        self, title: str, printable_width: float, styles: dict[str, ParagraphStyle]
+    ) -> list[Any]:
+        """Сформировать фирменную шапку отчёта с логотипом Сбера и датой."""
+        now_str = datetime.datetime.now().strftime("%d.%m.%Y, %H:%M")
+        header_table = Table(
+            [
+                [
+                    self._build_logo(size=18),
+                    Paragraph(f"<b>Sber AI BI</b> • {title}", styles["HeaderTitle"]),
+                    Paragraph(now_str, styles["HeaderDate"]),
+                ]
+            ],
+            colWidths=[24, printable_width - 24 - 110, 110],
+        )
+        header_table.setStyle(
+            TableStyle(
+                [
+                    ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+                    ("LEFTPADDING", (0, 0), (-1, -1), 0),
+                    ("RIGHTPADDING", (0, 0), (-1, -1), 0),
+                    ("TOPPADDING", (0, 0), (-1, -1), 0),
+                    ("BOTTOMPADDING", (0, 0), (-1, -1), 0),
+                ]
+            )
+        )
+        return [
+            header_table,
+            Spacer(1, 4),
+            HRFlowable(
+                width="100%",
+                thickness=1.5,
+                color=colors.HexColor("#0F172A"),
+                spaceBefore=2,
+                spaceAfter=10,
+            ),
+        ]
 
     def _build_image(self, chart_png: bytes, max_width: float, max_height: float) -> Image | None:
         """Сформировать пропорционально масштабированный Platypus Image."""
