@@ -147,6 +147,17 @@ def test_key_columns(db) -> None:
     assert metrics == ["Сумма заказа"]
 
 
+def test_key_columns_text_codes(db) -> None:
+    """Текстовый код вроде user_id — сущность, даже когда значений больше 50."""
+    db.execute(
+        "CREATE TABLE events AS SELECT 'u' || lpad((i % 100)::VARCHAR, 3, '0') AS user_id, "
+        "'note ' || i AS comment, i * 1.5 AS amount FROM range(500) t(i)"
+    )
+    entities, metrics = overview.key_columns(profile_table(db, "events"), [])
+    assert entities == ["user_id"]
+    assert metrics == ["amount"]
+
+
 def test_starter_questions_use_columns(db) -> None:
     enrichment = shop(db)
     questions = overview.starter_questions(ProfileMemory(db).load_profile("shop"), enrichment)

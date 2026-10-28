@@ -27,7 +27,13 @@ import re
 from datetime import datetime
 
 from app.config import settings
-from app.core.data.profiling import ColumnStats, TableProfile, profile_table, quality_notes
+from app.core.data.profiling import (
+    ColumnStats,
+    TableProfile,
+    is_identifier_name,
+    profile_table,
+    quality_notes,
+)
 from app.core.data.semantic_select import column_facts, describe_columns
 from app.core.llm.client import LLMClient
 from app.core.llm.prompts.schema_describe import (
@@ -360,17 +366,20 @@ def is_category(column: ColumnStats) -> bool:
     )
 
 
+def is_entity(column: ColumnStats) -> bool:
+    """Код (число-идентификатор или текст с именем вроде user_id) или категория."""
+    if column.kind == "identifier" or is_category(column):
+        return True
+    return column.kind == "text" and is_identifier_name(column.name)
+
+
 def key_columns(
     profile: TableProfile, enrichment: list[ColumnEnrichment]
 ) -> tuple[list[str], list[str]]:
     """Сущности (коды и категории) и метрики (числа) — до KEY_COLUMNS каждых, без констант."""
     titles = {row.column: row.title for row in enrichment if row.title}
     columns = [column for column in profile.columns if not column.is_constant]
-    entities = [
-        column_label(column, titles)
-        for column in columns
-        if column.kind == "identifier" or is_category(column)
-    ]
+    entities = [column_label(column, titles) for column in columns if is_entity(column)]
     metrics = [column_label(column, titles) for column in columns if column.kind == "numeric"]
     return entities[:KEY_COLUMNS], metrics[:KEY_COLUMNS]
 
