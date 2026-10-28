@@ -36,6 +36,8 @@ const PATHS = {
   trash: "M3 6h18m-2 0v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2m-6 5v6m4-6v6",
   pin: "M12 17v5M9 2h6M10 2v7l-2 3v2h8v-2l-2-3V2",
   alertTriangle: "m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3ZM12 9v4m0 4h.01",
+  copy: "M8 8h12v12H8zM4 16V4h12",
+  reply: "M9 7 4 12l5 5M4 12h9a7 7 0 0 1 7 7",
 } as const;
 
 export type IconName = keyof typeof PATHS;

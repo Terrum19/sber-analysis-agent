@@ -26,9 +26,11 @@ from app.core.llm.prompts.step_planner import (
     DASHBOARD_CUSTOM,
     DASHBOARD_PLAN,
     DASHBOARD_TEMPLATE,
+    MEMORIES,
     EMPTY_PLAN,
     NO_TEMPLATE_TILES,
     NO_TILES,
+    OLDER_TURNS,
     PAST_TURNS,
     PLAN_ERRORS,
     REPLY_DRAFT,
@@ -46,6 +48,9 @@ from app.models.research_step import (
 
 # Сколько раз переспросить LLM, если план не прошёл валидацию.
 PLAN_FIX_ATTEMPTS = 1
+
+# Ответ хода без headline: ход упал или ждал уточнения.
+NO_ANSWER = {"failed": "не получен (ход упал)", "clarification": "не получен (ход ждал уточнения)"}
 
 DASHBOARD_WORDS = re.compile(r"дашборд|панел|сводк|dashboard", re.IGNORECASE)
 
@@ -89,6 +94,7 @@ class StepPlanner:
         prompt = STEP_PLANNER.format(
             tools=tools,
             columns=f"{described}\n{others}" if others else described,
+            memories=describe_memories(context.get("memories", [])),
             history=describe_history(context),
             executed=context.get("executed", "нет"),
             next_step_id=start,
@@ -172,12 +178,23 @@ class StepPlanner:
         return plan
 
 
+def describe_memories(memories: list[str]) -> str:
+    """Блок воспоминаний промпта; без воспоминаний блока нет."""
+    if not memories:
+        return ""
+    return MEMORIES.format(memories="\n".join(f"- {text}" for text in memories))
+
+
 def describe_history(context: dict) -> str:
     """Блок истории промпта: черновик из цепочки ответа или прошлые ходы."""
     chain = context.get("reply") or []
     if not chain:
-        turns = describe_turns(context.get("turns", []), context.get("datasource"))
-        return PAST_TURNS.format(turns=turns)
+        turns = context.get("turns", [])
+        first = turns[0].get("number", 1) if turns else 1
+        older = OLDER_TURNS.format(last=first - 1) if first > 1 else ""
+        return PAST_TURNS.format(
+            turns=describe_turns(turns, context.get("datasource")), older=older
+        )
     draft = chain[-1]
     outcome = []
     if draft.get("headline"):
@@ -209,24 +226,28 @@ def _turn_steps(turn: dict) -> list[dict]:
 
 
 def describe_turns(turns: list[dict], table: str | None = None) -> str:
-    """Прошлые ходы для промпта: таблица, вопрос, план с аргументами, ответ, колонки результата.
+    """Прошлые ходы для промпта: номер, таблица, вопрос, план, ответ, колонки результата.
 
+    Номер — номер хода в сессии (по нему read_history выдаёт ход). План —
+    только у хода с шагами: у упавшего и прерванного уточнением его нет.
     Ход по другой таблице помечен: колонки его плана в текущей таблице
     могут отсутствовать.
     """
     blocks = []
-    for number, turn in enumerate(turns, 1):
-        lines = [
-            f"{number}. Вопрос: {turn['question']}",
-            f"   План: {json.dumps(_turn_steps(turn), ensure_ascii=False, default=str)}",
-        ]
+    for index, turn in enumerate(turns, 1):
+        lines = [f"Ход {turn.get('number', index)}. Вопрос: {turn['question']}"]
         tables = turn.get("tables") or []
         if tables:
             other = table is not None and table not in tables
             mark = " (другая таблица: её колонки не переноси)" if other else ""
-            lines.insert(1, f"   Таблица: {', '.join(tables)}{mark}")
+            lines.append(f"   Таблица: {', '.join(tables)}{mark}")
+        if turn.get("steps"):
+            plan = json.dumps(_turn_steps(turn), ensure_ascii=False, default=str)
+            lines.append(f"   План: {plan}")
         if turn.get("headline"):
             lines.append(f"   Ответ: {turn['headline']}")
+        elif turn.get("status") in NO_ANSWER:
+            lines.append(f"   Ответ: {NO_ANSWER[turn['status']]}")
         if turn.get("result_columns"):
             lines.append(f"   Колонки результата: {', '.join(turn['result_columns'])}")
         blocks.append("\n".join(lines))
@@ -264,6 +285,8 @@ def _plan_json(plan: ResearchPlan) -> str:
     """План в том виде, в каком его просили у модели (для переспроса)."""
     steps = [_step_dict(s) for s in plan.steps]
     payload = {"steps": steps, "final_viz": plan.final_viz, "result_step": plan.result_step}
+    if plan.remember:
+        payload["remember"] = plan.remember
     if plan.dashboard_requested:
         payload["dashboard_requested"] = True
         payload["dashboard_title"] = plan.dashboard_title

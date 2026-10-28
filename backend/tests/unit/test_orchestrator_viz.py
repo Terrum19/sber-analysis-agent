@@ -307,11 +307,19 @@ async def test_steps_of_failed_turn_stay_out_of_next_plan(db) -> None:
 
     executor.fail = False
     await collect(agent, "Покажи выручку по регионам")
-    # Шаг 0 упавшего хода выполнился, но в контекст нового плана не попал.
-    assert planner.contexts[-1]["turns"] == []
+    # Ход с уточнением в контексте есть, но шаг 0 (он выполнился) — нет.
+    turns = planner.contexts[-1]["turns"]
+    assert [(t["question"], t["status"], t["steps"]) for t in turns] == [
+        ("Сравни выручку по регионам", "clarification", [])
+    ]
 
     await collect(agent, "А по месяцам?")
-    assert [t["question"] for t in planner.contexts[-1]["turns"]] == ["Покажи выручку по регионам"]
+    turns = planner.contexts[-1]["turns"]
+    assert [t["question"] for t in turns] == [
+        "Сравни выручку по регионам",
+        "Покажи выручку по регионам",
+    ]
+    assert [len(t["steps"]) for t in turns] == [0, 2]
 
 
 def test_chart_without_step_result_has_no_result_table() -> None:

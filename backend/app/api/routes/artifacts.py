@@ -54,13 +54,39 @@ def result_owner(payload: ExportRequest, db: DuckDBManager) -> Callable[[str], b
 def export_artifact(
     payload: ExportRequest, db: Annotated[DuckDBManager, Depends(get_db)]
 ) -> FileResponse:
-    """Сгенерировать .xlsx / .pdf по итогам исследования и отдать файл."""
+    """Сгенерировать .xlsx / .pdf по итогам исследования или дашборда и отдать файл."""
     if not payload.session_id or not payload.session_id.strip():
         raise HTTPException(
             status_code=400,
             detail="Поле session_id обязательно для экспорта.",
         )
 
+    export_dir = Path(settings.storage_dir) / "exports"
+    export_dir.mkdir(parents=True, exist_ok=True)
+
+    # 1. Экспорт дашборда целиком
+    if payload.dashboard_id and not payload.result_ref:
+        dashboard = DashboardStore().get(payload.dashboard_id)
+        if dashboard is None:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Дашборд «{payload.dashboard_id}» не найден.",
+            )
+        if payload.format == "pdf":
+            raise HTTPException(
+                status_code=501,
+                detail="Экспорт дашборда в PDF пока не реализован. Попробуйте .xlsx.",
+            )
+        filename = f"dashboard_{payload.dashboard_id}_{uuid.uuid4().hex[:8]}.xlsx"
+        path = export_dir / filename
+        ExcelExporter().export_dashboard(dashboard, str(path), db=db)
+        return FileResponse(
+            path,
+            media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            filename=filename,
+        )
+
+    # 2. Экспорт отдельного исследования / плитки
     if payload.result_ref and not RESULT_REF.fullmatch(payload.result_ref):
         raise HTTPException(
             status_code=400,
@@ -69,16 +95,11 @@ def export_artifact(
 
     has_insight = bool(payload.question or payload.headline or payload.details or payload.spec)
 
-    if payload.format == "xlsx" and not payload.result_ref:
+    if not payload.result_ref and not has_insight:
+        format_name = "Excel" if payload.format == "xlsx" else "PDF"
         raise HTTPException(
             status_code=400,
-            detail="Для экспорта в Excel необходимо указать result_ref.",
-        )
-
-    if payload.format == "pdf" and not payload.result_ref and not has_insight:
-        raise HTTPException(
-            status_code=400,
-            detail="Для экспорта в PDF необходимо указать result_ref или передать данные инсайта.",
+            detail=f"Для экспорта в {format_name} необходимо указать result_ref или передать данные инсайта.",
         )
 
     owns_result = result_owner(payload, db)
@@ -86,11 +107,16 @@ def export_artifact(
     records: list[dict] = []
     if payload.result_ref:
         if not owns_result(payload.result_ref):
+            owner_target = (
+                f"дашборде «{payload.dashboard_id}»"
+                if payload.dashboard_id
+                else f"сессии «{payload.session_id}»"
+            )
             raise HTTPException(
                 status_code=404,
-                detail=f"Результат «{payload.result_ref}» не найден в сессии «{payload.session_id}».",
+                detail=f"Результат «{payload.result_ref}» не найден в {owner_target}.",
             )
-        limit = 50 if payload.format == "pdf" else 500
+        limit = 50 if payload.format == "pdf" else 5000
         try:
             records = db.to_records(payload.result_ref, limit=limit)
         except duckdb.Error as exc:
@@ -103,14 +129,23 @@ def export_artifact(
                 status_code=404,
                 detail=f"Результат «{payload.result_ref}» пуст.",
             )
-
-    export_dir = Path(settings.storage_dir) / "exports"
-    export_dir.mkdir(parents=True, exist_ok=True)
+    elif payload.spec:
+        spec_data = payload.spec.get("data")
+        if isinstance(spec_data, dict) and isinstance(spec_data.get("values"), list):
+            records = [r for r in spec_data["values"] if isinstance(r, dict)]
 
     if payload.format == "xlsx":
         filename = f"agent_export_{uuid.uuid4().hex[:8]}.xlsx"
         path = export_dir / filename
-        ExcelExporter().export(records, str(path))
+        ExcelExporter().export(
+            records,
+            str(path),
+            title="Результат исследования",
+            question=payload.question,
+            headline=payload.headline,
+            details=payload.details,
+            spec=payload.spec,
+        )
         return FileResponse(
             path,
             media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
