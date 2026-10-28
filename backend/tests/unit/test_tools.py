@@ -1,9 +1,12 @@
 """Unit tests for research tools and their DuckDB contracts."""
 
+import asyncio
+import time
+
 import pytest
 
 from app.core.data.duckdb_manager import DuckDBManager
-from app.core.tools.base import BaseTool
+from app.core.tools.base import BaseTool, ToolContext
 from app.core.tools.registry import tool_registry
 
 
@@ -209,6 +212,32 @@ def test_registry_is_extensible_without_orchestrator_changes(db: DuckDBManager) 
         assert "marker: marker" in tool_registry.describe()
     finally:
         tool_registry._tools.pop("marker", None)
+
+
+async def test_arun_keeps_loop_free_while_sql_runs(db: DuckDBManager) -> None:
+    # #189: SQL тула в loop хода задерживал события шагов и пинги SSE.
+    class SlowTool(BaseTool):
+        name = "slow"
+        description = "slow"
+
+        def execute(self, db, input_table, args):
+            time.sleep(0.3)
+            return db.save_step_result(input_table, "SELECT 1 AS slow")
+
+    ticks = 0
+
+    async def tick() -> None:
+        nonlocal ticks
+        while True:
+            await asyncio.sleep(0.01)
+            ticks += 1
+
+    ticker = asyncio.create_task(tick())
+    try:
+        assert await SlowTool().arun(ToolContext(), db, "raw") == "temp_result_v1"
+    finally:
+        ticker.cancel()
+    assert ticks >= 10
 
 
 @pytest.mark.parametrize(
