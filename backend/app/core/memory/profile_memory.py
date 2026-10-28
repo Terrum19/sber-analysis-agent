@@ -79,6 +79,8 @@ SCHEMA = (
     ),
     "ALTER TABLE _meta.table_passport ADD COLUMN IF NOT EXISTS description_run VARCHAR",
     "ALTER TABLE _meta.table_passport ADD COLUMN IF NOT EXISTS summary_fingerprint VARCHAR",
+    "ALTER TABLE _meta.table_passport ADD COLUMN IF NOT EXISTS display_name VARCHAR",
+    "ALTER TABLE _meta.table_passport ADD COLUMN IF NOT EXISTS name_source VARCHAR",
 )
 
 DESCRIPTION_STATUSES = ("none", "pending", "ready", "failed")
@@ -112,6 +114,15 @@ SAVE_ENRICHMENT = """UPDATE _meta.column_passport SET
         fingerprint = $fingerprint,
         enriched_at = now()
     WHERE table_name = $table AND column_name = $column"""
+
+SAVE_SUMMARY = """UPDATE _meta.table_passport SET
+        summary = $text,
+        summary_fingerprint = $fingerprint,
+        display_name = CASE
+            WHEN name_source = 'user' OR $name IS NULL THEN display_name ELSE $name END,
+        name_source = CASE
+            WHEN name_source = 'user' OR $name IS NULL THEN name_source ELSE 'llm' END
+    WHERE table_name = $table"""
 
 LOAD_TABLE = """SELECT table_name, row_count, column_count, empty_rows,
         strftime(profiled_at AT TIME ZONE 'UTC', '%Y-%m-%dT%H:%M:%S+00:00') AS profiled_at
@@ -214,13 +225,35 @@ class ProfileMemory:
             for row in rows
         ]
 
-    def save_summary(self, table: str, text: str, fingerprint: str) -> None:
-        """Сохранить описание таблицы «что передо мной» и отпечаток его промпта."""
+    def save_summary(
+        self, table: str, text: str, fingerprint: str, display_name: str | None = None
+    ) -> None:
+        """Сохранить описание таблицы «что передо мной» и отпечаток его промпта.
+
+        display_name — название от LLM; None оставляет прежнее. Название,
+        которое задал пользователь (save_display_name), не перезаписывается.
+        """
         self.db.execute(
-            "UPDATE _meta.table_passport SET summary = $text, summary_fingerprint = $fingerprint "
-            "WHERE table_name = $table",
-            {"table": table, "text": text, "fingerprint": fingerprint},
+            SAVE_SUMMARY,
+            {"table": table, "text": text, "fingerprint": fingerprint, "name": display_name},
         )
+
+    def save_display_name(self, table: str, name: str) -> bool:
+        """Название таблицы от пользователя; False — паспорта нет."""
+        rows = self.db.query(
+            "UPDATE _meta.table_passport SET display_name = $name, name_source = 'user' "
+            "WHERE table_name = $table RETURNING table_name",
+            {"table": table, "name": name},
+        )
+        return bool(rows)
+
+    def load_display_name(self, table: str) -> str | None:
+        """Название таблицы для пользователя (от пользователя или LLM) или None."""
+        rows = self.db.query(
+            "SELECT display_name FROM _meta.table_passport WHERE table_name = $table",
+            {"table": table},
+        )
+        return rows[0]["display_name"] if rows else None
 
     def load_summary(self, table: str) -> tuple[str, str] | None:
         """Описание таблицы и отпечаток его промпта (None, если описания нет)."""

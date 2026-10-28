@@ -1,8 +1,8 @@
 "use client";
 
 /**
- * Карточка паспорта таблицы (TableBrief): размер, период, summary, статус
- * описания колонок и что загрузчик исправил в данных.
+ * Карточка паспорта таблицы (TableBrief): summary, сущности и метрики, размер,
+ * период, статус описания колонок и замечания о данных.
  * compact — строка под названием таблицы в модалке выбора.
  */
 import Icon from "@/components/ui/Icon";
@@ -23,9 +23,21 @@ export default function TableBriefCard({ brief, compact = false }: { brief: Tabl
     brief.period_from && brief.period_to ? t("brief.period", { from: brief.period_from, to: brief.period_to }) : null,
   ].filter(Boolean);
 
+  const keyColumns = [
+    { label: t("brief.entities"), names: brief.entities ?? [] },
+    { label: t("brief.metrics"), names: brief.metrics ?? [] },
+  ].filter((row) => row.names.length > 0);
+
   return (
     <div className={compact ? "space-y-1" : "space-y-2 rounded-xl border border-graphite-800 bg-graphite-950/50 px-3.5 py-3"}>
       {!compact && <div className="font-mono text-[12px] text-graphite-200">{brief.table}</div>}
+      {!compact && brief.summary && <p className="text-[13px] text-graphite-300">{brief.summary}</p>}
+      {!compact &&
+        keyColumns.map((row) => (
+          <div key={row.label} className="text-[12px] text-graphite-300">
+            <span className="text-graphite-500">{row.label}:</span> {row.names.join(", ")}
+          </div>
+        ))}
       <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-[11px] text-graphite-400">
         <span>{meta.join(" · ")}</span>
         {status && (
@@ -38,7 +50,6 @@ export default function TableBriefCard({ brief, compact = false }: { brief: Tabl
           </span>
         )}
       </div>
-      {!compact && brief.summary && <p className="text-[13px] text-graphite-300">{brief.summary}</p>}
       {brief.warnings.length > 0 && (
         <div className="flex gap-1.5 text-[11px] text-warn">
           <Icon name="alertTriangle" size={12} className="mt-px shrink-0" />
