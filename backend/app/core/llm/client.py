@@ -28,6 +28,7 @@ except ImportError:  # instructor 1.3.x
 
 from app.config import settings
 from app.core.llm import budget, ollama_setup
+from app.core.logging_setup import public_url
 
 logger = logging.getLogger(__name__)
 
@@ -61,6 +62,21 @@ def _is_fatal(exc: Exception) -> bool:
     if isinstance(exc, openai.APIConnectionError):  # включая таймаут
         return True
     return isinstance(exc, openai.APIStatusError) and exc.status_code not in (400, 422)
+
+
+def _failure_kind(error: Exception) -> str:
+    if isinstance(error, openai.APITimeoutError):
+        return "таймаут"
+    if isinstance(error, openai.APIConnectionError):
+        return "соединение"
+    if isinstance(error, openai.APIStatusError):
+        return f"HTTP {error.status_code}"
+    return type(error).__name__
+
+
+def _schema_name(kwargs: dict[str, Any]) -> str:
+    response_format = kwargs.get("response_format") or {}
+    return (response_format.get("json_schema") or {}).get("name") or "-"
 
 
 def _strip_code_fences(text: str) -> str:
@@ -103,13 +119,24 @@ class LLMClient:
         self.model = ollama_setup.active_model()
         self.last_prompt_tokens: int | None = None
         self._instructor = instructor.from_openai(self._client)
-        logger.info(
+        logger.debug(
             "LLMClient инициализирован: base_url=%s, model=%s, timeout=%ss, temp=%s",
-            settings.llm_base_url,
+            public_url(settings.llm_base_url),
             self.model,
             settings.llm_timeout_s,
             settings.llm_temperature,
         )
+
+    def _log_failure(self, error: Exception, elapsed: float) -> None:
+        logger.error(
+            "LLM %s: сбой (%s) %s, ждали %.1f с: %s",
+            self.model,
+            _failure_kind(error),
+            public_url(str(self._client.base_url)),
+            elapsed,
+            error,
+        )
+        logger.debug("LLM %s: трассировка сбоя", self.model, exc_info=error)
 
     async def _check_context(self, response: httpx.Response) -> None:
         """Сверить prompt_tokens ответа с длиной промпта: не обрезал ли его сервер.
@@ -194,7 +221,7 @@ class LLMClient:
             user,
             kwargs,
         )
-        t0 = time.time()
+        started_at = time.perf_counter()
         try:
             resp = await self._client.chat.completions.create(
                 model=self.model,
@@ -205,18 +232,19 @@ class LLMClient:
                 temperature=settings.llm_temperature,
                 **kwargs,
             )
-        except Exception:
-            logger.exception("LLM complete() ОШИБКА сетевого вызова")
+        except Exception as error:
+            self._log_failure(error, time.perf_counter() - started_at)
             raise
         content = resp.choices[0].message.content or ""
-        elapsed = time.time() - t0
+        elapsed = time.perf_counter() - started_at
         logger.debug("<<< complete() ответ за %.2fs: %r", elapsed, content)
         logger.info(
-            "LLM complete(): модель=%s длина=%d время=%.2fs ответ=%r",
+            "LLM %s: схема=%s за %.2f с, prompt_tokens=%s, ответ %d символов",
             self.model,
-            len(content),
+            _schema_name(kwargs),
             elapsed,
-            content,
+            resp.usage.prompt_tokens if resp.usage else None,
+            len(content),
         )
         return content
 
@@ -243,14 +271,17 @@ class LLMClient:
             )
             elapsed = time.time() - t0
             logger.info(
-                "<<< complete_structured() tools OK за %.2fs схему=%s результат=%r",
-                elapsed,
+                "LLM %s: схема=%s (tools) за %.2f с, prompt_tokens=%s",
+                self.model,
                 schema_name,
-                result,
+                elapsed,
+                self.last_prompt_tokens,
             )
+            logger.debug("<<< complete_structured() tools результат=%r", result)
             return result
         except Exception as e:
             if _is_fatal(e):
+                self._log_failure(e, time.time() - t0)
                 raise
             logger.warning(
                 "complete_structured() первичная попытка tools ОШИБКА: %s, идём в fallback",
@@ -272,7 +303,7 @@ class LLMClient:
             )
             if results:
                 elapsed = time.time() - t0
-                logger.info(
+                logger.debug(
                     "<<< complete_structured() fallback1 list OK за %.2fs первый=%r",
                     elapsed,
                     results[0],
@@ -280,6 +311,7 @@ class LLMClient:
                 return results[0]
         except Exception as e:
             if _is_fatal(e):
+                self._log_failure(e, time.time() - t0)
                 raise
             logger.warning("complete_structured() fallback1 list() ОШИБКА", exc_info=True)
 
@@ -307,7 +339,7 @@ class LLMClient:
             try:
                 result = schema.model_validate_json(cand)
                 elapsed = time.time() - t0
-                logger.info(
+                logger.debug(
                     "<<< complete_structured() fallback2 JSON OK через %s за %.2fs результат=%r",
                     name,
                     elapsed,
@@ -322,8 +354,8 @@ class LLMClient:
             logger.error(
                 "complete_structured() fallback2: не удалось извлечь валидный JSON из ответа модели"
             )
-            logger.error("Сырой ответ модели: %r", raw)
-            logger.error("Очищенный ответ: %r", cleaned)
+            logger.debug("Сырой ответ модели: %r", raw)
+            logger.debug("Очищенный ответ: %r", cleaned)
             raise ValueError(
                 f"LLM не вернул валидный JSON для схемы {schema_name}. Сырой ответ: {raw[:500]}..."
             )
@@ -360,7 +392,7 @@ class LLMClient:
                 logger.warning("complete_structured() json_schema попытка %d: %s", attempt + 1, exc)
                 prompt = user + repair_prompt(raw, exc)
                 continue
-            logger.info(
+            logger.debug(
                 "<<< complete_structured() json_schema OK за %.2fs схему=%s",
                 time.time() - t0,
                 schema.__name__,

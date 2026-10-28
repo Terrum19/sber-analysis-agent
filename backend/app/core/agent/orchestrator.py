@@ -60,11 +60,13 @@ from app.core.agent.planner import PlanInvalid, StepPlanner
 from app.core.agent.recovery import STEP_FIX_ATTEMPTS, fixable
 from app.core.agent.step_executor import StepExecutor, resolve_input, tool_kind
 from app.core.agent.triage import small_talk_reply
+from app.core.agent.turn_log import TurnLog, describe_plan
 from app.core.dashboards.generator import DashboardGenerator
 from app.core.dashboards.models import DashboardTile
 from app.core.data import overview
 from app.core.data.duckdb_manager import DuckDBManager
 from app.core.llm.budget import track_truncations
+from app.core.logging_setup import set_turn_id
 from app.core.memory.profile_memory import ProfileMemory
 from app.core.memory.session_memory import SessionMemory
 from app.core.memory.state_cache import StateCache
@@ -243,16 +245,23 @@ class AgentOrchestrator:
         уточнением: модель без списка тулов строит план, шаг падает.
         """
         truncations = track_truncations()
-        # aclosing: клиент отключился — ход закрывается сразу, с отменой задачи плана.
-        async with aclosing(self._turn(request)) as events:
-            async for event in events:
-                if event["type"] in TURN_END_EVENTS and truncations:
-                    event["data"]["prompt_truncated"] = len(truncations)
-                yield event
+        turn_log = TurnLog(request.session_id)
+        try:
+            # aclosing: клиент отключился — ход закрывается сразу, с отменой задачи плана.
+            async with aclosing(self._turn(request)) as events:
+                while (event := await turn_log.next_event(events)) is not None:
+                    if event["type"] in TURN_END_EVENTS and truncations:
+                        event["data"]["prompt_truncated"] = len(truncations)
+                    turn_log.observe(event)
+                    yield event
+        except Exception as error:
+            turn_log.crashed(error)
+            raise
+        finally:
+            turn_log.close()
 
     async def _turn(self, request: ChatRequest) -> AsyncIterator[dict]:
         """Один ход: события для фронта до done или clarification_needed."""
-        logger.info(">>> run() session_id=%s question=%r", request.session_id, request.question)
         memory = SessionMemory(request.session_id, db=self.db)
         pending = memory.get_pending_recovery()
         if pending is not None and not request.recovery_response:
@@ -264,9 +273,12 @@ class AgentOrchestrator:
         if pending is None or not memory.resume_turn(pending.get("turn_id")):
             memory.start_turn(request.question, reply_to=request.reply_to)
         turn_id = memory.turn_id
+        set_turn_id(turn_id)
+        logger.info("ход начат: вопрос=%r", request.question)
 
         if pending is None and (reply := small_talk_reply(request.question)) is not None:
             # «Привет», «спасибо», «что ты умеешь» — без плана, LLM и графика.
+            logger.info("маршрут: small talk")
             memory.finish_turn("ok", headline=reply)
             yield {"type": "text", "data": {"headline": reply, "details": []}}
             yield _done(turn_id)
@@ -287,6 +299,7 @@ class AgentOrchestrator:
         )
 
         if pending is None and overview.is_overview_question(request.question):
+            logger.info("маршрут: обзор таблицы")
             async for event in self._overview(memory, table):
                 yield event
             return
@@ -295,10 +308,12 @@ class AgentOrchestrator:
             # Смена вида прошлого графика — из кеша, без планировщика и SQL.
             morphed = self._morph(memory, request.question, titles)
             if morphed is not None:
+                logger.info("маршрут: смена вида графика")
                 yield morphed
                 yield _done(turn_id)
                 return
 
+        logger.info("маршрут: %s", "план" if pending is None else "ответ на уточнение")
         # План и шаги идут задачей: события прогресса, которые она шлёт
         # через emit, отдаются фронту сразу, не дожидаясь конца плана.
         events: asyncio.Queue[dict | None] = asyncio.Queue()
@@ -368,7 +383,7 @@ class AgentOrchestrator:
                 result_table, records = self._histogram_values(
                     question, result_table, records, titles
                 )
-            logger.info(">>> run() построение графика chart_type=%s", chart_type)
+            logger.debug(">>> run() построение графика chart_type=%s", chart_type)
             spec = build_vega_spec(
                 chart_type,
                 result_table,
@@ -376,7 +391,7 @@ class AgentOrchestrator:
                 titles=titles,
                 title=execution.result_purpose or chart_title(records, titles),
             )
-            logger.info(
+            logger.debug(
                 "<<< run() график построен: mark=%s строк=%d",
                 spec.get("mark", "?"),
                 len(spec.get("data", {}).get("values", [])),
@@ -437,7 +452,7 @@ class AgentOrchestrator:
 
         # Обычный путь: новый вопрос -> план -> выполнение шагов.
         context = memory.build_context(request.question)
-        logger.info(">>> run() планируем шаги (planner.plan)")
+        logger.debug(">>> run() планируем шаги (planner.plan)")
         emit(_progress_event("planning", "started"))
         try:
             plan = await self._plan(request.question, context)
@@ -445,7 +460,7 @@ class AgentOrchestrator:
             emit(_progress_event("planning", "failed", error=str(exc)))
             raise
         emit(_progress_event("planning", "finished", total_steps=len(plan.steps)))
-        logger.info(
+        logger.debug(
             "<<< run() план получен: шагов=%d final_viz=%s dashboard=%s",
             len(plan.steps),
             plan.final_viz,
@@ -469,14 +484,17 @@ class AgentOrchestrator:
 
     async def _plan(self, question: str, context: dict) -> ResearchPlan:
         """План от планировщика; невалидный и после переспроса — уточнение у пользователя."""
+        started_at = time.perf_counter()
         try:
-            return await self.planner.plan(question, context)
+            plan = await self.planner.plan(question, context)
         except PlanInvalid as exc:
             raise ClarificationNeeded(
                 step_id=-1,
                 error="Не удалось составить корректный план: " + "; ".join(exc.errors),
                 suggestions=["Переформулировать вопрос"],
             ) from exc
+        logger.info("план за %.1f с: %s", time.perf_counter() - started_at, describe_plan(plan))
+        return plan
 
     async def _execute_plan(
         self,
@@ -561,14 +579,17 @@ class AgentOrchestrator:
                         "dashboard_tiles": [tile.model_dump() for tile in plan.dashboard_tiles],
                     }
                 )
-                logger.error("<<< _execute_plan шаг %d ПАЛ: %r", failed.step.step_id, exc)
+                logger.error(
+                    "шаг %d упал (выполнений %d): %r", failed.step.step_id, failed.executions, exc
+                )
                 raise ClarificationNeeded(
                     step_id=failed.step.step_id, error=str(exc), suggestions=suggestions
                 ) from exc
-            emit(_step_event(step, "finished", elapsed_ms=_elapsed_ms(started_at)))
+            elapsed_ms = _elapsed_ms(started_at)
+            emit(_step_event(step, "finished", elapsed_ms=elapsed_ms))
             steps[index] = step
             kind = tool_kind(step)
-            logger.info("<<< _execute_plan шаг %d УСПЕШЕН result_table=%s", step.step_id, table)
+            logger.info("шаг %d готов за %d мс: %s", step.step_id, elapsed_ms, table)
             inputs[step.step_id] = resolve_input(step, current, tables, source)
             tables[step.step_id] = table
             memory.record_step(step, table)
@@ -593,7 +614,7 @@ class AgentOrchestrator:
                     dashboard_tiles=replanned.dashboard_tiles or plan.dashboard_tiles,
                 )
 
-        logger.info("<<< _execute_plan все шаги завершены $prev=%s", current)
+        logger.debug("<<< _execute_plan все шаги завершены $prev=%s", current)
         return self._finish(plan, steps, tables, fallback=current, question=question, inputs=inputs)
 
     async def _run_step(

@@ -237,3 +237,76 @@ async def test_warm_up_survives_unavailable_llm(server, caplog) -> None:
     await llm.warm_up()
     assert "LLM недоступна при старте" in caplog.text
     assert budget.server_context("http://llm.test/v1", "m") is None
+
+
+async def test_call_line_has_model_schema_time_and_tokens(server, caplog) -> None:
+    import logging
+
+    llm, state = server
+    state["prompt_tokens"] = 321
+    caplog.set_level(logging.INFO, logger="app.core.llm.client")
+    response_format = {"type": "json_schema", "json_schema": {"name": "Answer", "schema": {}}}
+    await llm.complete("системный промпт", "вопрос", response_format=response_format)
+    lines = [entry.getMessage() for entry in caplog.records if entry.name == "app.core.llm.client"]
+    assert len(lines) == 1
+    assert lines[0].startswith("LLM m: схема=Answer за ")
+    assert lines[0].endswith(", prompt_tokens=321, ответ 2 символов")
+    assert "системный промпт" not in caplog.text
+
+
+async def test_prompt_and_answer_only_at_debug(server, caplog) -> None:
+    import logging
+
+    llm, _ = server
+    caplog.set_level(logging.DEBUG, logger="app.core.llm.client")
+    await llm.complete("системный промпт", "вопрос")
+    assert "системный промпт" in caplog.text
+    assert "'ок'" in caplog.text
+    assert "схема=-" in caplog.text
+
+
+@pytest.mark.parametrize(
+    ("failure", "kind"),
+    [
+        (
+            httpx.ConnectError("отказ", request=httpx.Request("POST", "http://llm.test")),
+            "соединение",
+        ),
+        (httpx.ReadTimeout("долго", request=httpx.Request("POST", "http://llm.test")), "таймаут"),
+        (httpx.Response(503, json={"error": {"message": "перегружен"}}), "HTTP 503"),
+    ],
+)
+async def test_failed_call_names_kind_address_and_wait(failure, kind, caplog) -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        if isinstance(failure, Exception):
+            raise failure
+        return failure
+
+    llm = object.__new__(LLMClient)
+    raw = AsyncOpenAI(
+        base_url="http://user:secret@llm.test/v1",
+        api_key="k",
+        max_retries=0,
+        http_client=httpx.AsyncClient(transport=httpx.MockTransport(handler)),
+    )
+    llm._client, llm.model = raw, "m"
+    with pytest.raises(openai.APIError):
+        await llm.complete("s", "u")
+    errors = [entry.getMessage() for entry in caplog.records if entry.levelname == "ERROR"]
+    assert len(errors) == 1
+    assert errors[0].startswith(f"LLM m: сбой ({kind}) http://llm.test/v1/, ждали ")
+    assert "secret" not in caplog.text
+
+
+async def test_failed_tools_call_is_logged(monkeypatch, caplog) -> None:
+    monkeypatch.setattr(settings, "llm_structured_mode", "tools")
+    llm, _ = client_with([httpx.Response(401, json={"error": {"message": "no key"}})])
+    with pytest.raises(openai.AuthenticationError):
+        await llm.complete_structured("s", "u", Answer)
+    assert "LLM m: сбой (HTTP 401)" in caplog.text
+
+
+def test_unknown_failure_is_named_by_type() -> None:
+    from app.core.llm.client import _failure_kind
+
+    assert _failure_kind(ValueError("x")) == "ValueError"
