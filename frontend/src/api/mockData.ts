@@ -231,7 +231,7 @@ export function mockRecalculateDashboard(id: string): DashboardConfig {
   return updated;
 }
 
-function mockBrief(table: string): TableBrief {
+export function mockBrief(table: string): TableBrief {
   return { table, rows: 1200, columns: 8, period_from: "2025-01-01", period_to: "2025-12-31", description_status: "none", warnings: [] };
 }
 
