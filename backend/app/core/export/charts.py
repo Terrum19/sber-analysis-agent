@@ -6,7 +6,10 @@
 from __future__ import annotations
 
 import copy
+import json
 import logging
+import subprocess
+import sys
 from typing import Any
 
 logger = logging.getLogger(__name__)
@@ -14,6 +17,81 @@ logger = logging.getLogger(__name__)
 DEFAULT_WIDTH = 640
 DEFAULT_HEIGHT = 360
 DEFAULT_SCALE = 2.0
+MAX_SPEC_JSON_BYTES = 256 * 1024  # 256 KB
+MAX_DATA_ROWS = 1000
+RENDER_TIMEOUT_S = 7.0
+
+_RENDER_SUBPROCESS_SCRIPT = """
+import sys, json
+try:
+    import vl_convert as vlc
+except ImportError:
+    sys.exit(2)
+
+try:
+    payload = json.loads(sys.stdin.read())
+    spec = payload["spec"]
+    scale = payload.get("scale", 2.0)
+    png_bytes = vlc.vegalite_to_png(vl_spec=spec, scale=scale, allowed_base_urls=[])
+    sys.stdout.buffer.write(png_bytes)
+except Exception as exc:
+    sys.stderr.write(str(exc))
+    sys.exit(1)
+"""
+
+
+def validate_chart_spec(spec: dict[str, Any]) -> dict[str, Any]:
+    """Проверить спецификацию графика на безопасность и ограничения ресурсов.
+
+    Защищает сервер от OOM и DoS-атак:
+    - Запрещены генераторы данных (data.sequence, data.graticule, data.sphere),
+      способные сгенерировать миллионы точек и уронить V8 по OOM.
+    - Запрещены внешние URL (data.url) для предотвращения SSRF.
+    - Ограничен суммарный размер JSON (до 256 КБ).
+    - Ограничено количество инлайн-строк в data.values (до 1000).
+    """
+    if not isinstance(spec, dict):
+        raise TypeError("Спецификация графика должна быть объектом dict")
+
+    try:
+        raw_json = json.dumps(spec)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"Спецификация графика не сериализуется в JSON: {exc}") from exc
+
+    if len(raw_json.encode("utf-8")) > MAX_SPEC_JSON_BYTES:
+        raise ValueError(f"Размер спецификации графика превышает лимит {MAX_SPEC_JSON_BYTES} байт")
+
+    clean_spec = copy.deepcopy(spec)
+
+    def _check_node(node: Any) -> None:
+        if not isinstance(node, dict):
+            return
+
+        if "data" in node and isinstance(node["data"], dict):
+            data = node["data"]
+            if "sequence" in data:
+                raise ValueError("Генератор данных data.sequence запрещён в целях безопасности")
+            if "url" in data:
+                raise ValueError("Внешние источники данных data.url запрещены в целях безопасности")
+            if "graticule" in data or "sphere" in data:
+                raise ValueError("Генераторы данных запрещены в целях безопасности")
+            if (
+                "values" in data
+                and isinstance(data["values"], list)
+                and len(data["values"]) > MAX_DATA_ROWS
+            ):
+                data["values"] = data["values"][:MAX_DATA_ROWS]
+
+        for container in ("layer", "concat", "hconcat", "vconcat"):
+            if container in node and isinstance(node[container], list):
+                for child in node[container]:
+                    _check_node(child)
+
+        if "spec" in node and isinstance(node["spec"], dict):
+            _check_node(node["spec"])
+
+    _check_node(clean_spec)
+    return clean_spec
 
 
 def normalize_spec(spec: dict[str, Any], width: int = DEFAULT_WIDTH) -> dict[str, Any]:
@@ -44,13 +122,19 @@ def render_chart_png(
     spec: dict[str, Any] | None,
     width: int = DEFAULT_WIDTH,
     scale: float = DEFAULT_SCALE,
+    timeout_s: float = RENDER_TIMEOUT_S,
 ) -> bytes | None:
     """Сконвертировать Vega-Lite спецификацию в изображение PNG.
+
+    Выполняет рендеринг в изолированном подпроцессе с лимитом времени и
+    передачей allowed_base_urls=[], гарантируя, что фатальный OOM в V8
+    или сетевые запросы не уронят основной процесс бэкенда.
 
     Args:
         spec: Vega-Lite словарь спецификации.
         width: Фиксированная ширина графика (по умолчанию 640).
         scale: Масштаб растеризации для высокого разрешения (Retina/HiDPI, по умолчанию 2.0).
+        timeout_s: Таймаут рендеринга в секундах (по умолчанию 7.0).
 
     Returns:
         Байты PNG изображения или None в случае ошибки/отсутствия спецификации.
@@ -59,17 +143,42 @@ def render_chart_png(
         return None
 
     try:
-        import vl_convert as vlc
+        validated = validate_chart_spec(spec)
+        normalized = normalize_spec(validated, width=width)
+    except (ValueError, TypeError) as exc:
+        logger.warning("Спецификация графика отклонена валидатором: %s", exc)
+        return None
+
+    try:
+        import vl_convert  # noqa: F401
     except ImportError:
         logger.warning("Пакет vl-convert-python не установлен, рендеринг графика пропущен.")
         return None
 
+    input_payload = json.dumps({"spec": normalized, "scale": scale}).encode("utf-8")
+
     try:
-        normalized = normalize_spec(spec, width=width)
-        png_bytes = vlc.vegalite_to_png(vl_spec=normalized, scale=scale)
-        if isinstance(png_bytes, (bytes, bytearray)):
-            return bytes(png_bytes)
+        proc = subprocess.run(
+            [sys.executable, "-c", _RENDER_SUBPROCESS_SCRIPT],
+            input=input_payload,
+            capture_output=True,
+            check=False,
+            timeout=timeout_s,
+        )
+    except subprocess.TimeoutExpired:
+        logger.warning("Рендеринг графика прерван по таймауту (%s с)", timeout_s)
         return None
-    except Exception as error:  # noqa: BLE001
-        logger.warning("Не удалось отрендерить график Vega-Lite в PNG: %s", error)
+    except OSError as exc:
+        logger.warning("Ошибка запуска подпроцесса рендеринга графика: %s", exc)
         return None
+
+    if proc.returncode != 0:
+        err = proc.stderr.decode("utf-8", errors="replace").strip()
+        logger.warning(
+            "Подпроцесс рендеринга графика завершился с кодом %d: %s", proc.returncode, err
+        )
+        return None
+
+    if proc.stdout:
+        return bytes(proc.stdout)
+    return None

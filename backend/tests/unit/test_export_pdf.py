@@ -526,3 +526,196 @@ def test_api_export_with_turn_lifecycle(client: TestClient) -> None:
     full_text = "".join(p.extract_text() for p in reader.pages)
     assert "Выручка составила 500 тыс. руб." in full_text
     assert "Ноутбуки" in full_text
+
+
+def test_validate_chart_spec_security_and_dos_protection() -> None:
+    """Тест валидации спецификации графика против DoS, OOM и SSRF."""
+    from app.core.export.charts import validate_chart_spec
+
+    # 1. Запрет data.sequence (генератор огромных массивов, ведущий к fatal OOM в V8)
+    seq_spec = {
+        "data": {"sequence": {"start": 0, "stop": 3000000, "as": "x"}},
+        "mark": "point",
+        "encoding": {"x": {"field": "x"}},
+    }
+    with pytest.raises(ValueError, match="data.sequence запрещён"):
+        validate_chart_spec(seq_spec)
+
+    # 2. Запрет data.url (SSRF)
+    url_spec = {
+        "data": {"url": "http://169.254.169.254/latest/meta-data"},
+        "mark": "bar",
+    }
+    with pytest.raises(ValueError, match="data.url запрещены"):
+        validate_chart_spec(url_spec)
+
+    # 3. Запрет генераторов в слоях layer
+    layer_spec = {
+        "layer": [{"data": {"sequence": {"start": 0, "stop": 100, "as": "x"}}, "mark": "line"}]
+    }
+    with pytest.raises(ValueError, match="data.sequence запрещён"):
+        validate_chart_spec(layer_spec)
+
+    # 4. Ограничение количества строк в data.values
+    huge_values = [{"x": i, "y": i * 2} for i in range(1500)]
+    valid_spec = {"data": {"values": huge_values}, "mark": "bar"}
+    cleaned = validate_chart_spec(valid_spec)
+    assert len(cleaned["data"]["values"]) == 1000
+
+
+def test_render_chart_png_dos_crash_safety() -> None:
+    """Тест изоляции рендеринга: опасный spec не роняет процесс сервера."""
+    from app.core.export.charts import render_chart_png
+
+    crash_spec = {
+        "data": {"sequence": {"start": 0, "stop": 3000000, "as": "x"}},
+        "mark": "point",
+        "encoding": {"x": {"field": "x", "type": "quantitative"}},
+    }
+    # Функция должна вернуть None и не завершить процесс с кодом 133
+    result = render_chart_png(crash_spec)
+    assert result is None
+
+
+def test_missing_dejavu_font_raises_runtime_error(monkeypatch) -> None:
+    """Проверка явной ошибки RuntimeError, если системный шрифт DejaVu Sans не найден."""
+    monkeypatch.setattr("app.core.export.pdf.FONT_SEARCH_PATHS", [])
+    monkeypatch.setattr("app.core.export.pdf._FONTS_REGISTERED", False)
+    with pytest.raises(RuntimeError, match="DejaVu"):
+        from app.core.export.pdf import ensure_fonts_registered
+
+        ensure_fonts_registered()
+
+
+def test_api_export_pdf_runtime_error_returns_500(client: TestClient, monkeypatch) -> None:
+    """Эндпоинт экспорта возвращает 500 при RuntimeError (например, сбое шрифтов)."""
+    sid = "session_runtime_err"
+    memory = SessionMemory(sid)
+    memory.set_table("test_table")
+    memory.start_turn("Вопрос")
+    memory.finish_turn(status="ok")
+
+    def _broken_export(*args, **kwargs):
+        raise RuntimeError("Тестовый сбой шрифтов DejaVu")
+
+    monkeypatch.setattr("app.core.export.pdf.PdfExporter.export_answer", _broken_export)
+
+    resp = client.post(
+        "/api/artifacts/export",
+        json={
+            "session_id": sid,
+            "format": "pdf",
+            "question": "Тест",
+        },
+    )
+    assert resp.status_code == 500
+    assert "Тестовый сбой шрифтов DejaVu" in resp.json()["detail"]
+
+
+def test_validate_chart_spec_all_guardrails() -> None:
+    """Дополнительные проверки валидации spec: типы, лимит размера, graticule, sphere, вложенные spec."""
+    from app.core.export.charts import validate_chart_spec
+
+    with pytest.raises(TypeError, match="dict"):
+        validate_chart_spec("invalid_type")  # type: ignore
+
+    with pytest.raises(ValueError, match="превышает лимит"):
+        validate_chart_spec({"data": {"values": [{"k": "v" * 1000} for _ in range(300)]}})
+
+    with pytest.raises(ValueError, match="Генераторы данных запрещены"):
+        validate_chart_spec({"data": {"graticule": True}})
+
+    with pytest.raises(ValueError, match="Генераторы данных запрещены"):
+        validate_chart_spec({"data": {"sphere": True}})
+
+    with pytest.raises(ValueError, match="data.sequence запрещён"):
+        validate_chart_spec({"spec": {"data": {"sequence": {"start": 0, "stop": 5}}}})
+
+
+def test_render_chart_png_timeout_and_oserror(monkeypatch) -> None:
+    """Обработка таймаута и системных ошибок запуска подпроцесса рендера."""
+    import subprocess
+
+    from app.core.export.charts import render_chart_png
+
+    def _timeout_run(*args, **kwargs):
+        raise subprocess.TimeoutExpired(cmd="python", timeout=1.0)
+
+    monkeypatch.setattr(subprocess, "run", _timeout_run)
+    assert render_chart_png({"mark": "bar"}) is None
+
+    def _oserror_run(*args, **kwargs):
+        raise OSError("Subprocess execution failed")
+
+    monkeypatch.setattr(subprocess, "run", _oserror_run)
+    assert render_chart_png({"mark": "bar"}) is None
+
+
+def test_validate_chart_spec_non_serializable_and_non_dict_children() -> None:
+    """Проверка несериализуемого JSON и не-словарей в layer."""
+    from app.core.export.charts import validate_chart_spec
+
+    with pytest.raises(ValueError, match="не сериализуется в JSON"):
+        validate_chart_spec({"invalid": object()})
+
+    # Узел layer со строковым элементом вместо словаря
+    spec = {"layer": ["not-a-dict-item"]}
+    cleaned = validate_chart_spec(spec)
+    assert cleaned["layer"] == ["not-a-dict-item"]
+
+
+def test_render_chart_png_empty_stdout(monkeypatch) -> None:
+    """Подпроцесс завершился с кодом 0, но с пустым stdout."""
+    import subprocess
+
+    from app.core.export.charts import render_chart_png
+
+    class DummyProc:
+        returncode = 0
+        stdout = b""
+        stderr = b""
+
+    monkeypatch.setattr(subprocess, "run", lambda *args, **kwargs: DummyProc())
+    assert render_chart_png({"mark": "bar"}) is None
+
+
+def test_ensure_fonts_registration_corrupted_font(monkeypatch, tmp_path: Path) -> None:
+    """Сбой регистрации повреждённого шрифта вызывает RuntimeError."""
+    fake_font = tmp_path / "CorruptFont.ttf"
+    fake_font.write_text("corrupted font content")
+
+    monkeypatch.setattr("app.core.export.pdf.FONT_SEARCH_PATHS", [(str(fake_font), str(fake_font))])
+    monkeypatch.setattr("app.core.export.pdf._FONTS_REGISTERED", False)
+
+    from app.core.export.pdf import ensure_fonts_registered
+
+    with pytest.raises(RuntimeError, match="Ошибка регистрации шрифта DejaVu"):
+        ensure_fonts_registered()
+
+
+def test_pdf_exporter_whitespace_question_fallback(tmp_path: Path) -> None:
+    """Вопрос, состоящий только из пробелов и переводов строк."""
+    pdf_path = tmp_path / "whitespace_q.pdf"
+    PdfExporter().export_answer(
+        path=str(pdf_path),
+        question="   \n   \n   ",
+    )
+    assert pdf_path.is_file()
+    assert pdf_path.stat().st_size > 0
+
+
+def test_pdf_exporter_zero_dimension_image(monkeypatch) -> None:
+    """Обработка изображения с нулевыми размерами (orig_w <= 0 или orig_h <= 0)."""
+
+    class DummyImg:
+        size = (0, 100)
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            pass
+
+    monkeypatch.setattr("PIL.Image.open", lambda *args, **kwargs: DummyImg())
+    img = PdfExporter()._build_image(b"fake_bytes", 500, 300)
+    assert img is None

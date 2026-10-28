@@ -4,6 +4,7 @@
 поделиться» — Excel (openpyxl) и PDF (ReportLab).
 """
 
+import logging
 import re
 import uuid
 from pathlib import Path
@@ -23,12 +24,13 @@ from app.core.export.pdf import PdfExporter
 from app.core.memory.session_memory import SessionMemory
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
 # result_ref попадает в SQL как имя таблицы — пускаем только temp_result_vN.
 RESULT_REF = re.compile(r"temp_result_v\d+")
 
 
 @router.post("/export")
-async def export_artifact(
+def export_artifact(
     payload: ExportRequest, db: Annotated[DuckDBManager, Depends(get_db)]
 ) -> FileResponse:
     """Сгенерировать .xlsx / .pdf по итогам исследования и отдать файл."""
@@ -72,8 +74,9 @@ async def export_artifact(
                 status_code=404,
                 detail=f"Результат «{payload.result_ref}» не найден в сессии «{payload.session_id}».",
             )
+        limit = 50 if payload.format == "pdf" else 500
         try:
-            records = db.to_records(payload.result_ref, limit=500)
+            records = db.to_records(payload.result_ref, limit=limit)
         except duckdb.Error as exc:
             raise HTTPException(
                 status_code=404,
@@ -102,14 +105,21 @@ async def export_artifact(
     chart_png = render_chart_png(payload.spec) if payload.spec else None
     filename = f"agent_export_{uuid.uuid4().hex[:8]}.pdf"
     path = export_dir / filename
-    PdfExporter().export_answer(
-        path=str(path),
-        records=records,
-        question=payload.question,
-        headline=payload.headline,
-        details=payload.details,
-        chart_png=chart_png,
-    )
+    try:
+        PdfExporter().export_answer(
+            path=str(path),
+            records=records,
+            question=payload.question,
+            headline=payload.headline,
+            details=payload.details,
+            chart_png=chart_png,
+        )
+    except RuntimeError as exc:
+        logger.error("Ошибка при генерации PDF отчёта: %s", exc)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Не удалось сгенерировать PDF: {exc}",
+        ) from exc
     return FileResponse(
         path,
         media_type="application/pdf",

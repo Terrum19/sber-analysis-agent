@@ -104,16 +104,21 @@ def ensure_fonts_registered() -> tuple[str, str]:
             ACTIVE_FONT_NAME = "DejaVu"
             ACTIVE_BOLD_FONT_NAME = "DejaVu-Bold"
             logger.info("Шрифт DejaVu успешно зарегистрирован из %s", regular_path)
-        except Exception as error:  # noqa: BLE001
-            logger.warning("Не удалось зарегистрировать шрифт %s: %s", regular_path, error)
-            ACTIVE_FONT_NAME = "Helvetica"
-            ACTIVE_BOLD_FONT_NAME = "Helvetica-Bold"
+        except Exception as error:
+            logger.error("Не удалось зарегистрировать шрифт %s: %s", regular_path, error)
+            raise RuntimeError(
+                f"Ошибка регистрации шрифта DejaVu из {regular_path}: {error}"
+            ) from error
     else:
-        logger.warning(
-            "Шрифт DejaVu Sans не найден на системе. Кириллица может отображаться некорректно."
+        logger.error(
+            "Шрифт DejaVu Sans не найден в системе. Кириллический текст в отчётах PDF будет испорчен. "
+            "Установите пакет fonts-dejavu-core (Linux) или задайте переменную окружения DEJAVU_FONT_PATH."
         )
-        ACTIVE_FONT_NAME = "Helvetica"
-        ACTIVE_BOLD_FONT_NAME = "Helvetica-Bold"
+        raise RuntimeError(
+            "Шрифт с поддержкой кириллицы (DejaVu Sans) не найден в системе. "
+            "Для экспорта отчётов в PDF установите пакет fonts-dejavu-core (Linux: apt-get install -y fonts-dejavu-core) "
+            "или укажите путь через переменную окружения DEJAVU_FONT_PATH."
+        )
 
     _FONTS_REGISTERED = True
     return ACTIVE_FONT_NAME, ACTIVE_BOLD_FONT_NAME
@@ -297,9 +302,6 @@ class PdfExporter:
 
             if question:
                 q_paragraphs = [p.strip() for p in question.split("\n") if p.strip()]
-                if not q_paragraphs:
-                    q_paragraphs = [question]
-
                 q_rows = [[Paragraph("ВОПРОС ИССЛЕДОВАНИЯ", styles["MetaLabel"])]]
                 for p_text in q_paragraphs:
                     q_rows.append([Paragraph(p_text, styles["QuestionText"])])

@@ -265,44 +265,19 @@ class SessionMemory:
 
     def record_step(self, step: Any, result_table: str | None = None) -> None:
         """Записать выполненный шаг в текущий ход (сохраняется в finish_turn)."""
-        step_id = (
-            getattr(step, "step_id", None)
-            if hasattr(step, "step_id")
-            else (step.get("step_id") if isinstance(step, dict) else None)
-        )
-        tool = (
-            getattr(step, "tool", None)
-            if hasattr(step, "tool")
-            else (step.get("tool") if isinstance(step, dict) else None)
-        )
-        inp = (
-            getattr(step, "input", None)
-            if hasattr(step, "input")
-            else (step.get("input") if isinstance(step, dict) else None)
-        )
-        args = (
-            getattr(step, "arguments", None)
-            if hasattr(step, "arguments")
-            else (step.get("arguments") if isinstance(step, dict) else None)
-        )
-        cols = (
-            getattr(step, "columns", None)
-            if hasattr(step, "columns")
-            else (step.get("columns") if isinstance(step, dict) else None)
-        )
-        purpose = (
-            getattr(step, "purpose", "")
-            if hasattr(step, "purpose")
-            else (step.get("purpose", "") if isinstance(step, dict) else "")
-        )
+
+        def _get(obj: Any, key: str, default: Any = None) -> Any:
+            if isinstance(obj, dict):
+                return obj.get(key, default)
+            return getattr(obj, key, default)
 
         step_data: dict[str, Any] = {
-            "step_id": step_id,
-            "tool": tool,
-            "input": inp,
-            "arguments": args,
-            "columns": cols,
-            "purpose": purpose,
+            "step_id": _get(step, "step_id"),
+            "tool": _get(step, "tool"),
+            "input": _get(step, "input"),
+            "arguments": _get(step, "arguments"),
+            "columns": _get(step, "columns"),
+            "purpose": _get(step, "purpose", ""),
         }
         if result_table:
             step_data["result"] = result_table

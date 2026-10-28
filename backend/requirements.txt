@@ -21,4 +21,3 @@ httpx2>=2.0
 coverage>=7.5
 ruff==0.17.1
 pypdf>=4.3.0
-
