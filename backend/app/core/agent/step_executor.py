@@ -3,6 +3,9 @@
 По умолчанию шаг берёт результат последнего transform-шага ($prev);
 шаг может сослаться на исходную таблицу ($source) или на результат
 любого выполненного шага ($step_N) — и во входе, и в аргументах.
+Если $prev уже не содержит ни одной из колонок шага (например, после
+агрегата), а $source содержит их все, шаг читает $source: это новая
+ветка плана (плитка дашборда), а не продолжение конвейера.
 Финальная таблица — основание для инсайта/графика/дашборда.
 """
 
@@ -29,6 +32,22 @@ def tool_kind(step: ResearchStep) -> ToolKind:
         return tool_registry.get(step.tool).kind
     except KeyError:
         return "transform"
+
+
+def _read_columns(step: ResearchStep, tool: Any, resolve: "_Resolver") -> list[str]:
+    """Колонки входной таблицы, которые читает шаг (по аргументам тула)."""
+    try:
+        args = tool.parse_args(resolve.value(step.columns), resolve.value(step.arguments))
+    except (KeyError, ValueError):
+        # Синтаксис аргументов проверит сам тул; для выбора входа он не нужен.
+        return []
+    names: list[str] = []
+    for field_name in tool.column_fields():
+        value = getattr(args, field_name, None)
+        for item in value if isinstance(value, list) else [value]:
+            if isinstance(item, str) and not item.startswith("$"):
+                names.append(item)
+    return names
 
 
 class StepExecutor:
@@ -90,11 +109,17 @@ class StepExecutor:
             logger.error(msg)
             raise ValueError(msg) from None
 
+        # $prev после агрегата может уже не содержать колонок шага: если все
+        # его колонки есть только в источнике, это новая ветка (плитка
+        # дашборда), а не продолжение конвейера — читаем $source.
+        table = self._source_for_isolated_step(
+            step, tool, resolve, table, source_table or input_table
+        )
+
         # Preflight колонок: ошибка ловится до выполнения, fix_step не тратится.
-        # Проверяем только шаги над исходной таблицей: у $prev/$step_N колонки
+        # Для $prev/$step_N проверяем фактическую схему их результата: колонки
         # могли быть переименованы или вычислены предыдущими шагами.
-        if table == (source_table or input_table):
-            self._validate_columns(step, tool, resolve, table)
+        self._validate_columns(step, tool, resolve, table)
 
         result = await tool.arun(
             self.context,
@@ -105,6 +130,46 @@ class StepExecutor:
         )
         logger.debug("<<< StepExecutor.execute() УСПЕШНО result_table=%s", result)
         return result
+
+    def _source_for_isolated_step(
+        self,
+        step: ResearchStep,
+        tool: Any,
+        resolve: "_Resolver",
+        table: str,
+        source: str,
+    ) -> str:
+        """Таблица шага: $prev теряет колонки после агрегата — читаем $source.
+
+        Если шаг с input=$prev ссылается только на колонки, которых в $prev
+        нет, но все они есть в источнике, шаг начинает новую ветку плана
+        (например, независимую плитку дашборда), а не продолжает предыдущий
+        агрегат. Вернуть $prev здесь — Binder Error уже в DuckDB; отдаём
+        источник, чтобы шаг выполнился по назначению.
+        """
+        if step.input != PREVIOUS or table == source:
+            return table
+        try:
+            requested = _read_columns(step, tool, resolve)
+            available = set(self.db.columns(table))
+            source_columns = set(self.db.columns(source))
+        except Exception:  # noqa: BLE001 — каталог недоступен, решает SQL-ошибка
+            return table
+        # Часть колонок уже есть в $prev — это продолжение ветки с новыми
+        # колонками: не подменяем вход, ошибку (если есть) исправит fix_step.
+        if not requested or any(name in available for name in requested):
+            return table
+        if not source_columns or any(name not in source_columns for name in requested):
+            return table
+        logger.warning(
+            "    шаг %d: колонок %s нет в %s (есть: %s), читаю $source %s",
+            step.step_id,
+            ", ".join(requested),
+            table,
+            ", ".join(sorted(available)) or "пусто",
+            source,
+        )
+        return source
 
     def _validate_columns(
         self, step: ResearchStep, tool: Any, resolve: "_Resolver", table: str
