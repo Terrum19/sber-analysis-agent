@@ -1,6 +1,7 @@
 """Unit-тесты StepPlanner: генерация плана исследования."""
 
 import json
+from typing import Any
 
 import pytest
 
@@ -95,11 +96,11 @@ class ScriptedLLM(FakeLLM):
         self.plans = list(plans)
         self.prompts: list[str] = []
 
-    async def complete_structured(self, system, user, schema):
+    async def complete_structured(self, system, user, schema, **kwargs: Any):
         if schema is ResearchPlan:
             self.prompts.append(user)
             return self.plans.pop(0).model_copy(deep=True)
-        return await super().complete_structured(system, user, schema)
+        return await super().complete_structured(system, user, schema, **kwargs)
 
 
 def total(step_id: int, column: str, by: list[str] | None = None) -> ResearchStep:
@@ -352,9 +353,9 @@ def test_prompt_shows_previous_turns_with_plan_arguments():
     import asyncio
 
     class PromptSpy(FakeLLM):
-        async def complete_structured(self, system, user, schema):
+        async def complete_structured(self, system, user, schema, **kwargs: Any):
             self.prompt = user
-            return await super().complete_structured(system, user, schema)
+            return await super().complete_structured(system, user, schema, **kwargs)
 
     llm = PromptSpy()
     turn = {
