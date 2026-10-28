@@ -35,8 +35,10 @@ PROMPT_COLUMNS = 12
 PROMPT_TABLES = 5
 # Самая длинная цепочка соединений: orders -> clients -> cities -> regions.
 MAX_HOPS = 3
-# Сколько таблиц показать планировщику, если по словам вопроса таблицу не выбрать.
+# Сколько таблиц показать планировщику, если по словам вопроса группу данных не выбрать.
 CATALOG_TABLES = 6
+# Слова вопроса короче этого не участвуют в выборе таблицы («в», «по»).
+MIN_WORD = 3
 # Колонка «id» есть почти в каждой таблице: id = id связью не считаем.
 SURROGATE_KEY = "id"
 KEY_KINDS = {"identifier", "text"}
@@ -471,7 +473,7 @@ def related_tables(db, table: str, question: str, limit: int = PROMPT_TABLES) ->
     from app.core.memory.profile_memory import ProfileMemory
 
     memory = ProfileMemory(db)
-    words = tokenize(question)
+    words = question_words(question)
     links = load(db)
     renamed = output_names(db, links, table)
     related = []
@@ -525,39 +527,23 @@ def describe_related(table: str, related: list[Related]) -> str:
     return "\n".join(lines)
 
 
-def table_score(db, table: str, question: str) -> int:
-    """Сколько слов вопроса совпало с колонками, их названиями, названием и описанием таблицы."""
+def question_words(question: str) -> set[str]:
+    """Слова вопроса для выбора таблицы: без коротких («в», «по»), они есть везде."""
+    return {word for word in tokenize(question) if len(word) >= MIN_WORD}
+
+
+def table_words(db, table: str) -> set[str]:
+    """Чем таблица названа: имя, название (#211), колонки и их названия.
+
+    Описание таблицы не берётся: в нём много общих слов, и оно перевешивало
+    колонки (вопрос про заказы уходил в таблицу, чьё описание упоминает регионы).
+    """
     from app.core.memory.profile_memory import ProfileMemory
 
     memory = ProfileMemory(db)
     titles = [row.title for row in memory.load_enrichment(table) if row.title]
-    summary = memory.load_summary(table)
-    text = " ".join(
-        [
-            table,
-            table_title(db, table) or "",
-            *db.columns(table),
-            *titles,
-            summary[0] if summary else "",
-        ]
-    )
-    return matches(tokenize(question), tokenize(text.replace("_", " ")))
-
-
-def candidate_tables(db, question: str, limit: int = CATALOG_TABLES) -> list[str]:
-    """Таблицы под вопрос, когда в сессии таблица не выбрана ([] — таблиц нет).
-
-    Совпадение слов вопроса с колонками, названиями и описанием таблицы, без
-    LLM. Явный победитель — одна таблица. Ничья (например, вопрос по-русски,
-    колонки по-английски, описаний нет) — до limit лучших; внутри ничьей —
-    в порядке важности данных (priority_order).
-    """
-    tables = priority_order(db, db.user_tables())
-    scores = {table: table_score(db, table, question) for table in tables}
-    ranked = sorted(tables, key=lambda table: -scores[table])
-    if len(ranked) < 2 or scores[ranked[0]] > scores[ranked[1]]:
-        return ranked[:1]
-    return [table for table in ranked if scores[table] == scores[ranked[0]]][:limit]
+    text = " ".join([table, table_title(db, table) or "", *db.columns(table), *titles])
+    return tokenize(text.replace("_", " "))
 
 
 @dataclass
@@ -577,27 +563,47 @@ class TableChoice:
 def choose_table(db, question: str) -> TableChoice:
     """Таблица под вопрос, когда в сессии таблица не выбрана.
 
-    Равные по словам вопроса таблицы, связанные ключами, — одни данные: берётся
-    главная из них (факты), остальные дотянет join_related. Неоднозначность —
-    когда равные таблицы из разных несвязанных групп. Тогда, если у каждой
-    группы есть название таблицы (display_name), спрашиваем пользователя, какие
-    данные взять; технические имена таблиц пользователю не показываем — без
-    названий таблицу выберет планировщик по каталогу.
+    Без LLM. Вопрос сравнивается с группами таблиц, связанных ключами: «заказы
+    по регионам» — одна группа (заказы -> клиенты -> города -> регионы), хотя
+    слова разошлись по разным таблицам. В лучшей группе берётся таблица с
+    наибольшим совпадением (при равенстве — факты, priority_order), остальные
+    дотянет join_related.
+
+    Неоднозначность — когда равны несвязанные группы. Тогда, если у главной
+    таблицы каждой группы есть название (display_name), спрашиваем
+    пользователя, какие данные взять; технические имена таблиц не показываем —
+    без названий таблицу выберет планировщик по каталогу.
     """
-    candidates = candidate_tables(db, question)
-    if len(candidates) < 2:
-        return TableChoice(table=candidates[0] if candidates else None)
-    relations = load(db)
-    groups: dict[frozenset[str], list[str]] = {}
-    for table in priority_order(db, candidates, relations):
-        groups.setdefault(frozenset(component(relations, table)), []).append(table)
-    leaders = [members[0] for members in groups.values()]
+    tables = db.user_tables()
+    if not tables:
+        return TableChoice()
+    links = load(db)
+    words = question_words(question)
+    named = {table: table_words(db, table) for table in tables}
+    order = priority_order(db, tables, links)
+    groups: list[list[str]] = []
+    for table in order:
+        if not any(table in group for group in groups):
+            linked = component(links, table)
+            groups.append([name for name in order if name in linked])
+    scores = {
+        tuple(group): matches(words, set().union(*(named[name] for name in group)))
+        for group in groups
+    }
+    best = max(scores.values())
+    tied = [group for group in groups if scores[tuple(group)] == best]
+    leaders = [
+        max(group, key=lambda name: (matches(words, named[name]), -group.index(name)))
+        for group in tied
+    ]
     if len(leaders) == 1:
         return TableChoice(table=leaders[0])
+    leaders = leaders[:CATALOG_TABLES]
     titles = {table: table_title(db, table) for table in leaders}
     if all(titles.values()) and len(set(titles.values())) == len(leaders):
         return TableChoice(options={titles[table]: table for table in leaders})
-    return TableChoice(table=candidates[0], catalog=candidates)
+    rest = [name for group in tied for name in group if name not in leaders]
+    return TableChoice(table=leaders[0], catalog=[*leaders, *rest][:CATALOG_TABLES])
 
 
 def describe_catalog(db, tables: list[str], question: str) -> str:

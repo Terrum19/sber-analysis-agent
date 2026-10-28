@@ -341,18 +341,43 @@ def test_table_titles_come_from_the_passport(demo) -> None:
     assert relations.table_title(demo, "demo_users") is None
     assert relations.table_title(demo, "missing") is None
     # Название участвует в выборе таблицы по вопросу.
-    assert relations.candidate_tables(demo, "покупки по регионам") == ["demo_events"]
+    assert relations.choose_table(demo, "покупки по регионам").table == "demo_events"
 
 
-def test_candidate_tables_follow_the_question(demo) -> None:
-    assert relations.candidate_tables(demo, "сколько event по датам") == ["demo_events"]
-    assert relations.candidate_tables(demo, "пользователи по region") == ["demo_users"]
-    # Ни одно слово не совпало: обе таблицы равны, факты впереди.
-    assert relations.candidate_tables(demo, "выручка по регионам") == [
-        "demo_events",
-        "demo_users",
-    ]
-    assert relations.candidate_tables(DuckDBManager(":memory:"), "что угодно") == []
+def test_choice_takes_the_best_matching_table_of_the_group(demo) -> None:
+    assert relations.choose_table(demo, "сколько event по датам").table == "demo_events"
+    assert relations.choose_table(demo, "пользователи по region").table == "demo_users"
+    # Ни одно слово не совпало — главная таблица группы: факты.
+    assert relations.choose_table(demo, "выручка по регионам").table == "demo_events"
+
+
+def test_words_spread_over_a_chain_choose_that_chain(shop) -> None:
+    """«Сколько заказов в каждом регионе?»: заказы и регионы — одна группа данных.
+
+    Живой прогон: таблицы оценивались по одной, с описанием и словами «в»,
+    «каждом» — и вопрос ушёл в уточнение между справочником городов и чужой
+    таблицей с «регионами» в названии.
+    """
+    attach(shop, {"people": "CREATE TABLE people AS SELECT 1 AS person, 'msk' AS region"})
+    set_titles(
+        shop,
+        {
+            "orders": "Заказы покупателей",
+            "regions": "Справочник регионов",
+            "cities": "Справочник городов",
+            "people": "Пользователи по регионам",
+        },
+    )
+    ProfileMemory(shop).save_summary("cities", "В каждом городе — регион и заказы.", "x")
+    assert relations.choose_table(shop, "Сколько заказов в каждом регионе?") == TableChoice(
+        table="orders"
+    )
+    # Обе группы про регионы — спрашиваем; от группы магазина — её справочник регионов.
+    assert relations.choose_table(shop, "Какие есть регионы?").options == {
+        "Справочник регионов": "regions",
+        "Пользователи по регионам": "people",
+    }
+    assert relations.question_words("Сколько в каждом по") == {"сколько", "каждом"}
 
 
 @pytest.fixture
