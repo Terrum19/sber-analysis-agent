@@ -56,6 +56,8 @@ class Settings(BaseSettings):
     # Символов на токен для оценки длины промпта: с запасом под кириллицу (~2,6).
     llm_chars_per_token: float = 2.5
 
+    log_level: Literal["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"] = "INFO"
+
     # Хранилище
     storage_dir: str = "backend/storage"
     duckdb_path: str = "backend/storage/duckdb/main.duckdb"
@@ -96,6 +98,11 @@ class Settings(BaseSettings):
     enrich_batch_size: int = 25
     # Документ-описание таблицы длиннее порога обрезается перед отправкой в LLM.
     enrich_document_max_chars: int = 20_000
+
+    @field_validator("log_level", mode="before")
+    @classmethod
+    def _upper_level(cls, value: object) -> object:
+        return value.upper() if isinstance(value, str) else value
 
     @field_validator("storage_dir", "duckdb_path", "sqlite_path", "wasm_runtime_dir")
     @classmethod

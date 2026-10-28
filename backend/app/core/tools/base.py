@@ -9,6 +9,7 @@
 полям ``Args`` в порядке объявления; именованные аргументы его дополняют.
 """
 
+import asyncio
 import json
 import threading
 import types
@@ -254,8 +255,12 @@ class BaseTool(ABC):
         /,
         **arguments: Any,
     ) -> str:
-        """Точка входа исполнителя; тулы, которым нужны LLM или песочница, её переопределяют."""
-        return self.run(db, input_table, columns, **arguments)
+        """Точка входа исполнителя; тулы, которым нужны LLM или песочница, её переопределяют.
+
+        SQL тула идёт в потоке (#189): loop хода свободен и отдаёт события
+        шагов, пока запрос работает.
+        """
+        return await asyncio.to_thread(self.run, db, input_table, columns, **arguments)
 
     @abstractmethod
     def execute(self, db, input_table: str, args: Any) -> str:

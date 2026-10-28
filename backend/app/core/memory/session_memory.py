@@ -273,8 +273,10 @@ class SessionMemory:
             chain.append(parent)
         return chain[::-1]
 
-    def record_step(self, step) -> None:
+    def record_step(self, step, result_table: str | None = None) -> None:
         """Записать выполненный шаг в текущий ход (сохраняется в finish_turn)."""
+        if result_table:
+            self._turn.setdefault("results", []).append(result_table)
         self._turn["steps"].append(
             {
                 "step_id": step.step_id,
@@ -289,6 +291,17 @@ class SessionMemory:
     def record_chart(self, chart_type: str, result_table: str, title: str = "") -> None:
         """Запомнить график текущего хода (для смены вида без LLM)."""
         self._turn["chart"] = {"type": chart_type, "title": title, "result_table": result_table}
+
+    def owns_result(self, result_table: str) -> bool:
+        for turn in self._state["turns"]:
+            chart = turn.get("chart") or {}
+            if result_table in (turn.get("result_table"), chart.get("result_table")):
+                return True
+            if result_table in turn.get("results", []):
+                return True
+        pending = self._state.get("pending_recovery") or {}
+        tables = pending.get("step_tables") or {}
+        return result_table in tables.values() or result_table == pending.get("input_table")
 
     def finish_turn(
         self,
