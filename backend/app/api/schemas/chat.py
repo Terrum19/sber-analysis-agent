@@ -7,6 +7,7 @@ from pydantic import BaseModel, Field, StringConstraints, model_validator
 
 from app.api.schemas.dashboard import DashboardTileOut
 from app.core.dashboards.models import Dashboard
+from app.models.research_step import NOTE_LIMIT
 
 
 class SessionCreate(BaseModel):
@@ -43,6 +44,35 @@ class SessionOut(BaseModel):
     datasource_id: str | None = None
     title: str | None = None
     created_at: datetime | None = None
+
+
+MemoryText = Annotated[
+    str, StringConstraints(strip_whitespace=True, min_length=1, max_length=NOTE_LIMIT)
+]
+
+
+class MemoryCreate(BaseModel):
+    """Тело POST /sessions/{id}/memories: текст воспоминания."""
+
+    text: MemoryText
+
+
+class MemoryUpdate(BaseModel):
+    """Тело PATCH /sessions/{id}/memories/{memory_id}: включить или выключить запись."""
+
+    enabled: bool
+
+
+class MemoryOut(BaseModel):
+    """Воспоминание сессии (#197): выключенное не идёт в контекст планировщика и инсайта."""
+
+    memory_id: str
+    text: str
+    source: str
+    created_at: datetime
+    enabled: bool
+    # Ход, в котором запись сделана из чата; у добавленной через API — None.
+    turn_id: str | None = None
 
 
 class ChatRequest(BaseModel):

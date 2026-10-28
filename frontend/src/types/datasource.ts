@@ -47,6 +47,29 @@ export interface SessionPatchPayload {
   title?: string;
 }
 
+/** Воспоминание сессии (#197): выключенное не идёт в контекст хода. */
+export interface MemoryItem {
+  memory_id: string;
+  text: string;
+  /** "user" — просьба в чате или кнопка; позже — результаты исследования. */
+  source: string;
+  /** ISO 8601 в UTC. */
+  created_at: string;
+  enabled: boolean;
+  /** Ход, в котором запись сделана из чата; у добавленной кнопкой — null. */
+  turn_id: string | null;
+}
+
+/** Тело POST /api/sessions/{id}/memories (пустой текст — 422). */
+export interface MemoryCreatePayload {
+  text: string;
+}
+
+/** Тело PATCH /api/sessions/{id}/memories/{memory_id}. */
+export interface MemoryPatchPayload {
+  enabled: boolean;
+}
+
 export interface SessionResponse {
   session_id: string;
   table: string | null;
