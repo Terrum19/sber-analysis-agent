@@ -445,6 +445,23 @@ def test_step_missing_a_column_everywhere_still_asks_the_user(db: DuckDBManager)
     assert memory.pending["attempts_made"] == 1
 
 
+def test_step_failing_on_the_source_too_asks_the_user(db: DuckDBManager) -> None:
+    class SourceFails(StepExecutor):
+        async def execute(self, step, input_table, **kwargs):
+            if step.input == "$source":
+                raise ValueError("источник тоже не подошёл")
+            return await super().execute(step, input_table, **kwargs)
+
+    agent = orchestrator(db)
+    agent.executor = SourceFails(db=db)
+    memory = FakeMemory()
+    with pytest.raises(ClarificationNeeded) as exc:
+        run_plan(agent, memory, second_metric_plan("region"))
+    assert exc.value.error == "источник тоже не подошёл"
+    assert memory.pending["plan_steps"][1]["input"] == "$source"
+    assert memory.pending["attempts_made"] == 2
+
+
 def test_result_step_selects_the_answer_table(db: DuckDBManager) -> None:
     plan = ResearchPlan(
         steps=[
