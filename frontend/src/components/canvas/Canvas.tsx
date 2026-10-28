@@ -299,15 +299,25 @@ export default function Canvas({ sessionId }: Props) {
       // Ищем плитку с таблицей результата или спецификацией
       const targetTile = [...displayTiles].reverse().find((tile) => tile.result_table) || displayTiles[0];
       const resultRef = targetTile?.result_table;
-      const options =
-        format === "pdf" && targetTile
-          ? {
-              headline: targetTile.title || targetTile.insight,
-              details: targetTile.insight ? [targetTile.insight] : undefined,
-              spec: targetTile.spec,
-              dashboardId: dashboardId ?? undefined,
-            }
-          : { dashboardId: dashboardId ?? undefined };
+      let spec = targetTile?.spec;
+      if (
+        spec &&
+        Array.isArray(targetTile?.snapshot_data) &&
+        (!spec.data || !Array.isArray(spec.data.values))
+      ) {
+        spec = { ...spec, data: { values: targetTile.snapshot_data } };
+      } else if (!spec && Array.isArray(targetTile?.snapshot_data)) {
+        spec = { data: { values: targetTile.snapshot_data } };
+      }
+
+      const options = targetTile
+        ? {
+            headline: targetTile.title || targetTile.insight,
+            details: targetTile.insight ? [targetTile.insight] : undefined,
+            spec,
+            dashboardId: dashboardId ?? undefined,
+          }
+        : { dashboardId: dashboardId ?? undefined };
       const blob = await exportArtifact(sessionId, format, resultRef, options);
       const url = URL.createObjectURL(blob);
       const a = document.createElement("a");

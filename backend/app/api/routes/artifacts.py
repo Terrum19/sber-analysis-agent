@@ -95,16 +95,11 @@ def export_artifact(
 
     has_insight = bool(payload.question or payload.headline or payload.details or payload.spec)
 
-    if payload.format == "xlsx" and not payload.result_ref:
+    if not payload.result_ref and not has_insight:
+        format_name = "Excel" if payload.format == "xlsx" else "PDF"
         raise HTTPException(
             status_code=400,
-            detail="Для экспорта в Excel необходимо указать result_ref или dashboard_id.",
-        )
-
-    if payload.format == "pdf" and not payload.result_ref and not has_insight:
-        raise HTTPException(
-            status_code=400,
-            detail="Для экспорта в PDF необходимо указать result_ref или передать данные инсайта.",
+            detail=f"Для экспорта в {format_name} необходимо указать result_ref или передать данные инсайта.",
         )
 
     owns_result = result_owner(payload, db)
@@ -134,6 +129,10 @@ def export_artifact(
                 status_code=404,
                 detail=f"Результат «{payload.result_ref}» пуст.",
             )
+    elif payload.spec:
+        spec_data = payload.spec.get("data")
+        if isinstance(spec_data, dict) and isinstance(spec_data.get("values"), list):
+            records = [r for r in spec_data["values"] if isinstance(r, dict)]
 
     if payload.format == "xlsx":
         filename = f"agent_export_{uuid.uuid4().hex[:8]}.xlsx"

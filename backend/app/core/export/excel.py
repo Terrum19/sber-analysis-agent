@@ -539,6 +539,10 @@ class ExcelExporter:
                     records = db.to_records(tile.result_table, limit=5000)
                 except (duckdb.Error, OSError, ValueError):
                     records = None
+            if not isinstance(records, list) and isinstance(tile.spec, dict):
+                spec_data = tile.spec.get("data")
+                if isinstance(spec_data, dict) and isinstance(spec_data.get("values"), list):
+                    records = spec_data["values"]
 
             if isinstance(records, list) and records:
                 s_name = _safe_sheet_title(tile.title, used_sheet_names)

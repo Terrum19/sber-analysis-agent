@@ -698,3 +698,90 @@ def test_branch_coverage_cases(tmp_path: Path, exporter: ExcelExporter) -> None:
     # 5. export with details only (headline=None, question=None)
     p_d = exporter.export([{"a": 1}], str(tmp_path / "d_only.xlsx"), details=["Только деталь"])
     assert Path(p_d).exists()
+
+
+def test_api_export_xlsx_with_spec_data_values_and_branches(
+    client: TestClient, test_db: DuckDBManager, tmp_path: Path, exporter: ExcelExporter
+) -> None:
+    """Проверка экспорта в Excel с данными из spec (без result_ref) и всех веток извлечения."""
+    import io
+
+    from app.core.memory.session_memory import SessionMemory
+
+    memory = SessionMemory("s_spec_test", test_db)
+    memory.set_table("raw")
+
+    # 1. Успешный экспорт без result_ref, со spec и headline
+    res = client.post(
+        "/api/artifacts/export",
+        json={
+            "session_id": "s_spec_test",
+            "format": "xlsx",
+            "headline": "Структура таблицы",
+            "details": ["10 строк", "3 колонки"],
+            "spec": {
+                "mark": "bar",
+                "data": {
+                    "values": [
+                        {"Колонка": "id", "Тип": "INTEGER", "Пропуски": 0},
+                        {"Колонка": "name", "Тип": "VARCHAR", "Пропуски": 5},
+                    ]
+                },
+            },
+        },
+    )
+    assert res.status_code == 200
+    assert (
+        res.headers["content-type"]
+        == "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    )
+    wb = openpyxl.load_workbook(io.BytesIO(res.content))
+    ws = wb.active
+    # Проверяем наличие заголовка инсайта и строк таблицы
+    text_values = [ws.cell(row=r, column=1).value for r in range(1, 10)]
+    assert any("Структура таблицы" in str(v) for v in text_values if v)
+    assert any("id" in str(v) for v in text_values if v)
+
+    # 2. spec без data
+    res_no_data = client.post(
+        "/api/artifacts/export",
+        json={
+            "session_id": "s_spec_test",
+            "format": "xlsx",
+            "headline": "График без данных",
+            "spec": {"mark": "bar"},
+        },
+    )
+    assert res_no_data.status_code == 200
+
+    # 3. spec с data не dict или values не list
+    res_bad_data = client.post(
+        "/api/artifacts/export",
+        json={
+            "session_id": "s_spec_test",
+            "format": "xlsx",
+            "headline": "Внешний URL",
+            "spec": {"data": {"url": "foo.csv"}},
+        },
+    )
+    assert res_bad_data.status_code == 200
+
+    # 4. export_dashboard с плиткой, данные которой находятся в spec.data.values
+    dash = Dashboard(
+        session_id="s_dash_spec",
+        title="Дашборд со спекой",
+        tiles=[
+            DashboardTile(
+                title="Плитка со спекой",
+                is_kpi=False,
+                spec={
+                    "mark": "bar",
+                    "data": {"values": [{"Метрика": "A", "Значение": 100}]},
+                },
+            )
+        ],
+    )
+    out_path = str(tmp_path / "dash_spec.xlsx")
+    exporter.export_dashboard(dash, out_path, db=test_db)
+    wb_dash = openpyxl.load_workbook(out_path)
+    assert "Плитка со спекой" in wb_dash.sheetnames
