@@ -95,6 +95,20 @@ bash infra/local-dev.sh
 
 Переменные окружения перекрывают `.env`: `LLM_MODEL_GPU=qwen2.5-coder:32b make up-gpu`.
 
+### Eval агента
+
+`scripts/eval.py` прогоняет набор `data/eval/questions.yaml` через оркестратор и
+пишет отчёт `docs/reports/eval_<дата>_<модель>.md` с JSON рядом: pass % всего и по
+сценариям, p50/p95 времени ответа, recall отбора колонок, провалы с причинами.
+Датасеты — `make hk-data`, backend на время прогона остановите.
+
+```bash
+make eval MODEL=qwen2.5-coder:7b   # настоящая модель (LLM_BASE_URL)
+make eval EVAL_ARGS=--fake         # FakeLLM, без модели
+```
+
+Параметры, проверки и формат отчёта — `docs/eval.md`.
+
 ### Длина контекста LLM
 
 Промпт планировщика — около 12 тыс. символов, это 4–5 тыс. токенов. У Ollama

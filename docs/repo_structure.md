@@ -11,7 +11,7 @@
 sberAnalyticalAgent/
 ├── README.md              — что это, как поднять локально (одна команда)
 ├── CONTRIBUTING.md        — конвенции: как добавить тул, коннектор, промпт
-├── Makefile               — make install / seed / hk-data / dev / up / up-gpu / test / lint
+├── Makefile               — make install / seed / hk-data / dev / up / up-gpu / test / lint / eval
 ├── .env.example           — пример конфигурации (LLM endpoint, пути, лимиты)
 ├── .gitignore             — рантайм (storage/), веса (models/), data/hk_datasets/, node_modules
 ├── docker-compose.yml     — backend + frontend + Ollama (профиль cpu или gpu)
@@ -215,6 +215,8 @@ docs/
 ├── memory.md           — 4 уровня памяти: реализация и жизненный цикл
 ├── data_connectors.md  — как добавить новый источник (CSV/PG/CH)
 ├── visualization.md    — Vega-Lite спеки, смена вида без LLM, рендер на фронте
+├── eval.md             — eval агента: запуск, проверки, формат отчёта
+├── reports/            — отчёты замеров (eval_<дата>_<модель>.md, llm_perf/)
 └── roadmap.md          — MVP -> финал (чекпоинт 2 -> итог)
 
 data/
@@ -226,6 +228,7 @@ scripts/
 ├── download_model.sh  — подсказки по скачиванию весов Qwen (в models/, вне git)
 ├── seed_demo_data.py  — генерация демо-CSV (100 пользователей + 500 событий)
 ├── load_hk_datasets.py — загрузка и профиль датасетов хакатона (make hk-data)
+├── eval.py            — eval агента на data/eval/questions.yaml (make eval, docs/eval.md)
 ├── run_profile_benchmark.py — бенчмарк profile_table
 └── migrate.py         — опц.: миграции storage (SQLite/реестр)
 ```

@@ -46,6 +46,36 @@
 	и ветвей для owns_result, record_step, record_chart и set_table.
 	* docs/repo_structure.md, docs/roadmap.md, docs/architecture.md:
 	Актуализация документации по экспорту и конвейеру генерации PDF.
+  
+2026-10-28  mb6ockatf  <smokenmirror@tutamail.com>
+
+	Остальные колонки широкой таблицы — по близости к вопросу (#162).
+	* backend/app/core/data/semantic_select.py (rank_columns): Новая.
+	Оценка колонок из select_columns: слова вопроса в имени, названии и
+	частых значениях плюс бонус за вид.
+	(select_columns): Через rank_columns.
+	(describe_other_columns): Новый аргумент question.  Колонок больше
+	потолка SEMANTIC_OTHER_COLUMNS — в строку идут самые близкие к
+	вопросу, в порядке таблицы; до потолка строка не меняется.
+	* backend/app/core/agent/planner.py (StepPlanner.plan): Передаёт вопрос
+	в describe_other_columns.
+	* scripts/column_recall.py (build_wide_table): Новая.  Таблица wide:
+	80 посторонних колонок перед колонками продаж.
+	(evaluate): Режимы prompt+rank и prompt+titles+rank.
+	* backend/tests/unit/test_semantic_select.py: Тесты отбора за потолком,
+	неизменной строки до потолка и вопроса из планировщика.
+	* docs/data_connectors.md, .env.example: Описан отбор.
+
+	Время шага без «0.0 с» (#185).
+	* backend/app/core/agent/orchestrator.py (_elapsed_ms): Не меньше
+	1 мс: шаг DuckDB быстрее 0,5 мс давал elapsed_ms = 0.
+	* frontend/src/components/chat/StepProgress.tsx (duration): Новая.
+	Шаг короче секунды — в миллисекундах («18 мс»), дольше — в секундах,
+	как раньше.  Итог хода в свёрнутой строке — в секундах.
+	* frontend/src/i18n/dictionary.ts (progress.milliseconds): Новый ключ.
+	* backend/tests/unit/test_orchestrator_unit.py
+	(test_elapsed_ms_is_never_zero): Новый.
+	* backend/tests/unit/test_recovery_and_cache.py: elapsed_ms >= 1.
 
 2026-10-27  Alexander Yurits  <143354682+Terrum19@users.noreply.github.com>
 
@@ -56,6 +86,133 @@
 	* frontend/src/components/charts/ChartRenderer.tsx (DataTable):
 	Экспортирована.  Цвет текста ячеек задан явно: наследованный
 	светлый текст был не виден на светлом фоне таблицы.
+
+2026-10-26  mb6ockatf  <smokenmirror@tutamail.com>
+
+	Eval: сессия по API памяти по ходам (#171).
+	* scripts/eval.py (open_session): SessionMemory.set_table(dataset):
+	после #171 колонки в set_table не передаются.
+	(bind_table): Удалена вместе с поддержкой старой сигнатуры.
+	* backend/tests/unit/test_eval_runner.py: То же.
+
+2026-10-26  mb6ockatf  <smokenmirror@tutamail.com>
+
+	Eval: судья в раннере (#57).
+	* scripts/eval.py (judge_turn): Новая.  --judge и --judge-votes:
+	пункты рубрики — проверки judge.<пункт>, неоценённые — в
+	judge_unrated; ходы с api_error судья не оценивает.
+	(summarize, render): checks_passed — итог без судьи.
+	(check_turn): Уточнение в сценарии 0 провалом хода не считается.
+	* Makefile (lint), .github/workflows/backend-ci.yml: ruff и для
+	scripts/eval_gold.py, scripts/eval_judge.py.
+	* backend/tests/unit/test_eval_hk.py: Тесты того же.
+	* docs/eval.md: То же.
+
+	Eval: проверки, повторы и набор вопросов из #181 (#57, #56).
+	* data/eval/hk/questions.yaml, data/eval/hk/gold.json:
+	* data/eval/hk/README.md: Новые.  Второй набор: 35 вопросов по
+	датасетам организаторов и эталоны по сырым CSV.
+	* scripts/eval_gold.py: Новый.  Эталоны для gold.json.
+	* scripts/eval.py (check_numbers, check_range, check_contains_any)
+	(check_contains_all, check_contains_any_groups)
+	(check_contains_any_sql, check_chart_any, check_chart_changed)
+	(check_table_intact): Новые.  Ключи expect из #181.
+	(scaled_numbers, number_found, visible_text): Новые.  Числа с
+	множителями, доля и процент как одно число, видимый текст ответа.
+	(load_gold, parse_question, check_expect_types): gold.json, ключи
+	judge и notes, типы новых ключей.
+	(run_questions, run_pass, RunOptions, run_turn, turn_id_of): --repeat,
+	--reply-to, --gold, --columns-recall-only.
+	(api_failed, summarize, pass_k, render): Ходы, сорванные лимитом
+	провайдера, не входят в проценты; pass^k по повторам.
+	* backend/tests/unit/test_eval_hk.py: Новый.  Тесты того же.
+	* docs/eval.md: То же.
+
+	Eval: проверка дашборда, шаблонная отписка — не отказ (#57).
+	* scripts/eval.py (check_dashboard): Новая.  expect.dashboard —
+	пришло ли событие dashboard.
+	(refused, check_refusal): Отказ — событие refusal или ответ одним
+	текстом без шагов; clarification_needed, в том числе «Не удалось
+	подобрать инструменты» на пустой план, отказом не считается.
+	(check_expect_types): dashboard — true или false.
+	* backend/tests/unit/test_eval_runner.py: Тесты того же.
+	* docs/eval.md: То же.
+
+	Судья eval: сбой голоса не считается оценкой (#57).
+	* scripts/eval_judge.py (read_vote, cast_vote, majority): Голос,
+	который не разобран или упал, и пропущенный пункт в подсчёт не идут;
+	без годных голосов пункт не оценён (None).
+	* backend/tests/unit/test_eval_judge.py: Тесты того же.
+	* docs/eval.md: То же.
+
+	Eval: LLM-судья отдельным модулем (#57).  Перенесён из #181.
+	* scripts/eval_judge.py: Новый.
+	(RUBRIC, JUDGE_SYSTEM): Тексты пунктов и системный промпт судьи.
+	(rubric_points): Общие пункты ходу с done, в сценарии 0 — только
+	business_readable, плюс пункты задачи.
+	(build_prompt, rows_block): Вопрос, ответ, первые 30 строк таблицы
+	результата, эталонные факты, справка и предыдущий ход; неизвестный
+	пункт — ValueError.
+	(parse_reply, read_vote, cast_vote): Ответ в блоке кода или с текстом
+	вокруг разбирается; неразобранный ответ или упавший вызов — провальный
+	голос с причиной, пункт без оценки — провальный голос по пункту.
+	(majority, judge): Несколько голосов (по умолчанию 3), по каждому
+	пункту большинство, ничья — провал.
+	(JudgeClient, judge_client_from_env): Эндпоинт судьи отдельно от
+	агента: JUDGE_BASE_URL, JUDGE_API_KEY, JUDGE_MODEL.
+	* backend/tests/unit/test_eval_judge.py: Тесты того же.
+	* docs/eval.md (Судья): Новый раздел.
+
+2026-10-25  mb6ockatf  <smokenmirror@tutamail.com>
+
+	Eval: проверки без ложных проходов и падений (#57).
+	* scripts/eval.py (check_value, reference_value, value_in_text)
+	(matches): Эталон — одно значение; число с допуском (при 0 —
+	абсолютным), строка или дата — без учёта регистра; числовое
+	совпадение в result_table больше VALUE_MAX_ROWS строк не
+	засчитывается; без result_table эталон ищется в тексте ответа.
+	(check_expect_types): Новая.  Типы expect проверяются при загрузке.
+	(check_turn, checked): Упавшая проверка — провал с причиной, прогон
+	идёт дальше; пустые tools_any и chart_type_any и columns_all хода без
+	плана не проверяются; событие error — «ход упал», уточнение без
+	refusal: true — провал turn.
+	(refused, errored): error больше не считается отказом, уточнение после
+	упавшего шага — тоже.
+	(mentioned, strings_in): Колонки ищутся в значениях аргументов, без
+	имён аргументов и строковых литералов SQL.
+	(check_answer, normalized): Пробелы, в том числе неразрывные, и «ё».
+	(bind_table): Новая.  set_table с одним или двумя аргументами (#171).
+	(report_paths, evaluate, parse_args): --tag, --force; отчёт не
+	перезаписывается; при --fake — временный каталог; код выхода 3, если
+	у вопросов не открылась сессия.
+	(summarize, render): Число упавших ходов, вопросов без сессии и без
+	паспорта таблицы; такие вопросы не входят в recall.
+	* Makefile (lint): Проверяет и scripts/eval.py.
+	* backend/tests/unit/test_eval_runner.py: Тесты того же.
+	* docs/eval.md: То же.
+
+2026-10-25  mb6ockatf  <smokenmirror@tutamail.com>
+
+	Eval агента на наборе вопросов (Q-02, #57).
+	* scripts/eval.py: Новый.  Каждый вопрос data/eval/questions.yaml
+	(формат #56) — новая сессия над таблицей dataset, follow_up_of — в
+	сессии прошлого вопроса; прогон через AgentOrchestrator, все события,
+	время до первого события и до конца хода.  Проверки expect: tools_any,
+	columns_all (по выполненным шагам), value (эталонный SQL против
+	result_table с допуском), answer_contains, chart_type_any, refusal;
+	у каждого провала — причина.  Recall отбора колонок и средний размер
+	блока колонок в промпте — по select_columns первого вызова
+	StepPlanner.plan, без изменения планировщика.  Отчёт
+	docs/reports/eval_<дата>_<модель>.md и JSON рядом.  --fake — на
+	FakeLLM; --csv, --dataset, --per-scenario, --ids.
+	* Makefile (eval): Новая цель, make eval MODEL=...
+	* .github/workflows/backend-ci.yml: Прогон на FakeLLM по вопросу на
+	сценарий над demo_events, если набор есть; ruff и для scripts/eval.py.
+	* backend/requirements.txt, backend/pyproject.toml: pyyaml.
+	* backend/tests/unit/test_eval_runner.py,
+	backend/tests/fixtures/eval_questions.yaml: Новые.
+	* docs/eval.md: Новый.  Запуск, проверки, recall отбора, формат отчёта.
+	* README.md (Eval агента), docs/repo_structure.md: То же кратко.
 
 2026-10-26  Alexander Yurits  <143354682+Terrum19@users.noreply.github.com>
 
@@ -261,6 +418,36 @@
 	с замером базового времени read_csv и времени одиночного scan().
 	* docs/data_connectors.md: Документация очистки заголовков, сканирования,
 	автоприведения типов, токенов пропусков и store_rejects.
+
+2026-10-26  mb6ockatf  <smokenmirror@tutamail.com>
+
+	Eval-набор: дашборд в сценарии 5, отказ без уточнения (#56).
+	* data/eval/questions.yaml: У шести вопросов сценария 5
+	dashboard: true.
+	* scripts/check_eval_questions.py (expect_problems): Необязательный
+	ключ dashboard — true или false.
+	* data/eval/README.md: dashboard; уточнение, в том числе шаблонное
+	«Не удалось подобрать инструменты», отказом не считается.
+	* backend/tests/unit/test_eval_questions.py: Тест того же.
+
+2026-10-25  mb6ockatf  <smokenmirror@tutamail.com>
+
+	Eval-набор вопросов по датасетам хакатона (Q-01, #56).
+	* data/eval/questions.yaml: Новый.  51 вопрос: сценарии 1–6 по 6–10
+	вопросов, каждый на 6 таблицах, и 7 «неудобных» с refusal: true.
+	Кодовые колонки без описания (Q3 → Q3A, VCL5, TIPI2), шаблон «все
+	Q*A», вопросы по 6–21 колонке, склеенный openPsych data.csv с
+	повторным заголовком и NULL, NA как код страны.  columns_all
+	заполнен у всех вопросов, эталоны value.sql сверены в DuckDB.
+	* data/eval/README.md: Новый.  Формат записи, соглашения о допуске и
+	сравнении эталона с result_table, сборка openPsych data.csv, проверка
+	эталонов, как добавить вопрос.
+	* scripts/check_eval_questions.py: Новый.  Проверка схемы набора
+	(ключи, тулы из tool_registry, CHART_TYPES, follow_up_of, охват
+	сценариев); с --db — колонки columns_all и выполнение каждого
+	value.sql.  (matches): Сравнение эталона со значением с допуском.
+	* backend/tests/unit/test_eval_questions.py: Новый.  Тесты схемы,
+	matches и проверки по базе на синтетической таблице.
 
 2026-10-25  Alexander Yurits  <143354682+Terrum19@users.noreply.github.com>
 

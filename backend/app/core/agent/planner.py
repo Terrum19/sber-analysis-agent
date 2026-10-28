@@ -80,7 +80,10 @@ class StepPlanner:
             columns, profile, context.get("descriptions"), context.get("titles")
         )
         others = describe_other_columns(
-            [name for name in all_columns if name not in columns], profile, context.get("titles")
+            [name for name in all_columns if name not in columns],
+            profile,
+            context.get("titles"),
+            question=question,
         )
         prompt = STEP_PLANNER.format(
             tools=tools,

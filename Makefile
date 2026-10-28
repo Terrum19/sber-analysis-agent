@@ -1,4 +1,4 @@
-.PHONY: help hooks install dev up up-ollama up-gpu down test lint model seed hk-data smoke
+.PHONY: help hooks install dev up up-ollama up-gpu down test lint model seed hk-data smoke eval
 
 # Значение переменной: из окружения или командной строки make, иначе из .env.
 # .env не подключается через include: так его значения перекрыли бы окружение
@@ -21,6 +21,7 @@ help:
 	@echo "make test     — pytest"
 	@echo "make lint     — ruff + next lint"
 	@echo "make smoke    — smoke-тест поднятого стека (scripts/smoke.sh, как CI)"
+	@echo "make eval MODEL=... — eval агента на data/eval/questions.yaml (EVAL_ARGS=--fake — на FakeLLM)"
 
 hooks:
 	git config core.hooksPath .githooks
@@ -61,8 +62,12 @@ test:
 	cd backend && pytest -q
 
 lint:
-	cd backend && ruff check app tests
+	cd backend && ruff check app tests ../scripts/eval.py ../scripts/eval_gold.py ../scripts/eval_judge.py
 	cd frontend && npm run lint
 
 smoke:
 	bash scripts/smoke.sh
+
+# Отчёт — docs/reports/eval_<дата>_<модель>.md и .json; без MODEL — LLM_MODEL из окружения или .env.
+eval:
+	python scripts/eval.py $(if $(MODEL),--model "$(MODEL)") $(EVAL_ARGS)
