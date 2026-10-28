@@ -33,6 +33,8 @@ MIN_DISTINCT = 2
 # Колонки связанной таблицы в промпте планировщика и число связанных таблиц.
 PROMPT_COLUMNS = 12
 PROMPT_TABLES = 3
+# Сколько таблиц показать планировщику, если по словам вопроса таблицу не выбрать.
+CATALOG_TABLES = 6
 # Колонка «id» есть почти в каждой таблице: id = id связью не считаем.
 SURROGATE_KEY = "id"
 KEY_KINDS = {"identifier", "text"}
@@ -403,14 +405,42 @@ def table_score(db, table: str, question: str) -> int:
     return matches(tokenize(question), tokenize(text.replace("_", " ")))
 
 
-def pick_table(db, question: str) -> str | None:
-    """Таблица под вопрос, когда в сессии таблица не выбрана (None — таблиц нет).
+def candidate_tables(db, question: str, limit: int = CATALOG_TABLES) -> list[str]:
+    """Таблицы под вопрос, когда в сессии таблица не выбрана ([] — таблиц нет).
 
-    Совпадение слов вопроса с колонками, названиями и описанием таблицы; при
-    равенстве — таблица с большим числом связей (из неё дотянутся остальные).
+    Совпадение слов вопроса с колонками, названиями и описанием таблицы, без
+    LLM. Явный победитель — одна таблица. Ничья (например, вопрос по-русски,
+    колонки по-английски, описаний нет) — до limit лучших: таблицу выберет
+    планировщик по каталогу. Внутри ничьей выше таблицы с большим числом связей.
     """
     tables = db.user_tables()
-    if not tables:
-        return None
+    scores = {table: table_score(db, table, question) for table in tables}
     links = {table: len(load(db, table)) for table in tables}
-    return max(tables, key=lambda table: (table_score(db, table, question), links[table]))
+    ranked = sorted(tables, key=lambda table: (-scores[table], -links[table], table))
+    if len(ranked) < 2 or scores[ranked[0]] > scores[ranked[1]]:
+        return ranked[:1]
+    return [table for table in ranked if scores[table] == scores[ranked[0]]][:limit]
+
+
+def describe_catalog(db, tables: list[str], question: str) -> str:
+    """Блок промпта: таблица не выбрана — каталог таблиц, их колонки и связи."""
+    lines = [
+        (
+            "Таблица для вопроса не выбрана, по словам вопроса подходят несколько. "
+            "Выбери таблицу с нужными колонками и укажи её имя в input первого шага "
+            "(вместо $source); если нужны колонки двух связанных таблиц — соедини их "
+            "join_tables по связи. Таблицы:"
+        )
+    ]
+    for table in tables:
+        names = db.columns(table)
+        ranked = rank_columns(question, names)[:PROMPT_COLUMNS]
+        rest = len(names) - len(ranked)
+        tail = f" и ещё {rest}" if rest > 0 else ""
+        lines.append(f"- {table}: колонки {', '.join(ranked)}{tail}")
+        lines.extend(
+            f"  связь: {relation.describe()}"
+            for relation in load(db, table)
+            if relation.table == table
+        )
+    return "\n".join(lines)

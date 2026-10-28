@@ -93,9 +93,10 @@ class StepPlanner:
         )
         described = f"{described}\n{others}" if others else described
         related = describe_related(context.get("datasource"), context.get("related", []))
+        tables = [block for block in (related, context.get("catalog")) if block]
         prompt = STEP_PLANNER.format(
             tools=tools,
-            columns=f"{described}\n\n{related}" if related else described,
+            columns="\n\n".join([described, *tables]),
             memories=describe_memories(context.get("memories", [])),
             history=describe_history(context),
             executed=context.get("executed", "нет"),

@@ -297,11 +297,15 @@ class AgentOrchestrator:
 
         # Small talk выше: «привет» отвечается и без подключённой таблицы.
         table = memory.table
+        catalog: list[str] = []
         if table is None and pending is None:
-            # Таблица не выбрана — берём подходящую под вопрос без вызова LLM (#165).
-            table = relations.pick_table(self.db, request.question)
-            if table is not None:
-                logger.info("таблица выбрана по вопросу: %s", table)
+            # Таблица не выбрана — подбираем по словам вопроса без вызова LLM (#165);
+            # из нескольких равных таблицу выберет планировщик по каталогу.
+            candidates = relations.candidate_tables(self.db, request.question)
+            if candidates:
+                logger.info("таблицы по вопросу: %s", candidates)
+                table = candidates[0]
+                catalog = candidates if len(candidates) > 1 else []
                 memory.use_table(table)
         if table is None:
             memory.finish_turn("failed")
@@ -334,7 +338,9 @@ class AgentOrchestrator:
         # План и шаги идут задачей: события прогресса, которые она шлёт
         # через emit, отдаются фронту сразу, не дожидаясь конца плана.
         events: asyncio.Queue[dict | None] = asyncio.Queue()
-        task = asyncio.create_task(self._research(memory, pending, request, events.put_nowait))
+        task = asyncio.create_task(
+            self._research(memory, pending, request, events.put_nowait, catalog)
+        )
         task.add_done_callback(lambda _: events.put_nowait(None))
         try:
             while (event := await events.get()) is not None:
@@ -472,8 +478,14 @@ class AgentOrchestrator:
         pending: dict | None,
         request: ChatRequest,
         emit: Emit,
+        catalog: list[str] | None = None,
     ) -> tuple[str, Execution]:
-        """План и шаги хода: вопрос, на который отвечаем, и итог выполнения."""
+        """План и шаги хода: вопрос, на который отвечаем, и итог выполнения.
+
+        catalog — таблицы-кандидаты, когда таблица сессии не выбрана и по словам
+        вопроса не определилась: планировщик выбирает одну из них в input
+        первого шага, и она становится таблицей сессии.
+        """
         if pending is not None:
             # Возобновление после уточнения (pending_recovery).
             question = pending.get("question") or request.question
@@ -483,20 +495,24 @@ class AgentOrchestrator:
 
         # Обычный путь: новый вопрос -> план -> выполнение шагов.
         context = memory.build_context(request.question)
-        related = self._related(memory.table, request.question)
-        context["related"] = related
+        if catalog:
+            context["catalog"] = relations.describe_catalog(self.db, catalog, request.question)
+            tables = catalog
+        else:
+            context["related"] = self._related(memory.table, request.question)
+            tables = [memory.table, *(item.table for item in context["related"])]
         logger.debug(">>> run() планируем шаги (planner.plan)")
-        emit(
-            _progress_event(
-                "planning", "started", tables=[memory.table, *(item.table for item in related)]
-            )
-        )
+        emit(_progress_event("planning", "started", tables=tables))
         try:
             plan = await self._plan(request.question, context)
         except Exception as exc:
             emit(_progress_event("planning", "failed", error=str(exc)))
             raise
         emit(_progress_event("planning", "finished", total_steps=len(plan.steps)))
+        chosen = plan.steps[0].input if plan.steps else None
+        if catalog and chosen in catalog and chosen != memory.table:
+            logger.info("планировщик выбрал таблицу %s", chosen)
+            memory.use_table(chosen)
         logger.debug(
             "<<< run() план получен: шагов=%d final_viz=%s dashboard=%s",
             len(plan.steps),

@@ -5,6 +5,8 @@ import asyncio
 import duckdb
 import pytest
 
+from app.api.schemas.chat import ChatRequest
+from app.core.agent.orchestrator import AgentOrchestrator
 from app.core.agent.planner import StepPlanner
 from app.core.data import ingest, relations
 from app.core.data.connectors.base import BaseConnector
@@ -13,7 +15,8 @@ from app.core.data.duckdb_manager import DuckDBManager
 from app.core.data.relations import Relation
 from app.core.memory.session_memory import SessionMemory
 from app.core.tools.registry import tool_registry
-from app.models.research_step import ResearchStep
+from app.models.insight import Insight
+from app.models.research_step import ResearchPlan, ResearchStep
 
 
 class TablesConnector(BaseConnector):
@@ -199,10 +202,29 @@ def test_condition_quotes_names_and_follows_the_current_table() -> None:
     assert relation.describe() == "заказы.код клиента -> clients.id (ключ из схемы источника)"
 
 
-def test_pick_table_matches_the_question(demo) -> None:
-    assert relations.pick_table(demo, "сколько event по датам") == "demo_events"
-    assert relations.pick_table(demo, "пользователи по region") == "demo_users"
-    assert relations.pick_table(DuckDBManager(":memory:"), "что угодно") is None
+def test_candidate_tables_follow_the_question(demo) -> None:
+    assert relations.candidate_tables(demo, "сколько event по датам") == ["demo_events"]
+    assert relations.candidate_tables(demo, "пользователи по region") == ["demo_users"]
+    # Ни одно слово не совпало: обе таблицы уходят планировщику каталогом.
+    assert relations.candidate_tables(demo, "выручка по регионам") == [
+        "demo_events",
+        "demo_users",
+    ]
+    assert relations.candidate_tables(DuckDBManager(":memory:"), "что угодно") == []
+
+
+def test_catalog_lists_tables_with_their_relations(demo) -> None:
+    text = relations.describe_catalog(demo, ["demo_events", "demo_users"], "сумма по region")
+    assert "укажи её имя в input первого шага" in text
+    assert "- demo_events: колонки event_id, user_id, amount, event_date\n  связь: " in text
+    assert "- demo_users: колонки region, user_id, signup_date" in text
+    assert text.count("связь:") == 1
+
+
+def test_catalog_cuts_long_column_lists(db) -> None:
+    columns = ", ".join(f"range AS c{i}" for i in range(15))
+    db.execute(f"CREATE TABLE wide AS SELECT {columns} FROM range(2)")
+    assert "c11 и ещё 3" in relations.describe_catalog(db, ["wide"], "c0")
 
 
 def test_join_keeps_one_copy_of_the_key(demo) -> None:
@@ -262,3 +284,98 @@ def test_joined_table_is_recorded_in_the_turn(demo) -> None:
     memory.record_step(step)
     memory.record_step(step.model_copy(update={"arguments": {"right_table": "$step_1"}}))
     assert memory._turn["tables"] == ["demo_events", "demo_users"]
+
+
+class SpyPlanner:
+    """Запоминает контекст; первый шаг читает таблицу first_input."""
+
+    def __init__(self, first_input: str = "$source") -> None:
+        self.first_input = first_input
+        self.contexts: list[dict] = []
+
+    async def plan(self, question: str, context: dict) -> ResearchPlan:
+        self.contexts.append(context)
+        step = ResearchStep(step_id=1, tool="copy", input=self.first_input)
+        return ResearchPlan(steps=[step], final_viz="table")
+
+
+class CopyExecutor:
+    def __init__(self, db: DuckDBManager) -> None:
+        self.db = db
+        self.inputs: list[str] = []
+
+    async def execute(self, step: ResearchStep, input_table: str, **_: object) -> str:
+        table = input_table if step.input in ("$source", "$prev") else step.input
+        self.inputs.append(table)
+        return self.db.save_step_result(table, f"SELECT * FROM {table}")
+
+
+class StubInsight:
+    async def generate(self, question: str, result_table: str, **_: object) -> Insight:
+        return Insight(headline="ответ", details=[])
+
+
+def ask(db: DuckDBManager, planner: SpyPlanner, session: str, question: str):
+    executor = CopyExecutor(db)
+    agent = AgentOrchestrator(planner=planner, executor=executor, insight_gen=StubInsight(), db=db)
+
+    async def collect() -> list[dict]:
+        request = ChatRequest(session_id=session, question=question)
+        return [event async for event in agent.run(request)]
+
+    return asyncio.run(collect()), executor
+
+
+def planning_tables(events: list[dict]) -> list[str]:
+    return next(
+        event["data"]["tables"]
+        for event in events
+        if event["type"] == "progress" and event["data"]["stage"] == "planning"
+    )
+
+
+def test_session_table_brings_its_related_tables(demo) -> None:
+    SessionMemory("with-table").set_table("demo_events")
+    planner = SpyPlanner()
+    events, _ = ask(demo, planner, "with-table", "Сумма по region")
+    assert planning_tables(events) == ["demo_events", "demo_users"]
+    assert [item.table for item in planner.contexts[0]["related"]] == ["demo_users"]
+    assert "catalog" not in planner.contexts[0]
+
+
+def test_clear_winner_needs_no_catalog(demo) -> None:
+    planner = SpyPlanner()
+    events, executor = ask(demo, planner, "winner", "Сколько event по дням")
+    assert planning_tables(events) == ["demo_events", "demo_users"]
+    assert executor.inputs == ["demo_events"]
+    assert SessionMemory("winner").table == "demo_events"
+
+
+def test_planner_picks_the_table_from_the_catalog(demo) -> None:
+    planner = SpyPlanner(first_input="demo_users")
+    events, executor = ask(demo, planner, "catalog", "Выручка по регионам")
+    assert planning_tables(events) == ["demo_events", "demo_users"]
+    assert "Таблица для вопроса не выбрана" in planner.contexts[0]["catalog"]
+    assert executor.inputs == ["demo_users"]
+    memory = SessionMemory("catalog")
+    assert memory.table == "demo_users"
+    assert memory._state["turns"][0]["tables"] == ["demo_users"]
+
+
+def test_catalog_keeps_the_first_table_when_the_plan_uses_source(demo) -> None:
+    events, executor = ask(demo, SpyPlanner(), "catalog-source", "Выручка по регионам")
+    assert events[-1]["type"] == "done"
+    assert executor.inputs == ["demo_events"]
+    assert SessionMemory("catalog-source").table == "demo_events"
+
+
+def test_broken_relation_store_leaves_the_plan_without_related(demo, monkeypatch) -> None:
+    def broken(*_):
+        raise duckdb.Error("каталог недоступен")
+
+    monkeypatch.setattr(relations, "related_tables", broken)
+    SessionMemory("broken").set_table("demo_events")
+    planner = SpyPlanner()
+    events, _ = ask(demo, planner, "broken", "Сумма по region")
+    assert planning_tables(events) == ["demo_events"]
+    assert planner.contexts[0]["related"] == []
