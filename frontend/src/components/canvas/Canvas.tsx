@@ -311,15 +311,22 @@ export default function Canvas({ sessionId }: Props) {
     setExportMenuOpen(false);
     try {
       // Excel — по таблице результата последнего графика с ней (temp_result_vN);
-      // PDF дополнительно получает спеку и инсайт этой плитки (E-01).
+      // PDF дополнительно получает заголовок, инсайт и спеку этой плитки (E-01).
       const source = [...displayTiles].reverse().find((tile) => tile.result_table);
+      const target = source ?? displayTiles[0];
       const { blob, filename } = await exportArtifact(
         {
           session_id: sessionId,
           format,
           result_ref: source?.result_table,
-          spec: source?.spec,
-          headline: source?.insight,
+          dashboard_id: dashboardId ?? undefined,
+          ...(format === "pdf" && target
+            ? {
+                headline: target.title || target.insight,
+                details: target.insight ? [target.insight] : undefined,
+                spec: target.spec,
+              }
+            : {}),
         },
         `${dashboardTitle || "dashboard"}.${format}`,
       );

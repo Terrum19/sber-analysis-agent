@@ -1,6 +1,9 @@
+import logging
+
 import pytest
 
 from app.config import settings
+from app.core import logging_setup
 
 
 def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item]) -> None:
@@ -25,6 +28,20 @@ def _isolated_storage(request: pytest.FixtureRequest, tmp_path_factory, monkeypa
     monkeypatch.setattr(settings, "storage_dir", str(root))
     monkeypatch.setattr(settings, "duckdb_path", str(root / "duckdb" / "main.duckdb"))
     monkeypatch.setattr(settings, "sqlite_path", str(root / "sessions" / "sessions.sqlite"))
+
+
+@pytest.fixture(autouse=True)
+def _restore_root_logging():
+    root = logging.getLogger()
+    saved_handlers = list(root.handlers)
+    saved_level = root.level
+    yield root
+    for handler in logging_setup._installed_handlers:
+        root.removeHandler(handler)
+        handler.close()
+    logging_setup._installed_handlers.clear()
+    root.handlers[:] = saved_handlers
+    root.setLevel(saved_level)
 
 
 @pytest.fixture

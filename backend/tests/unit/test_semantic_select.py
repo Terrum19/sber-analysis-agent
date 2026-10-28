@@ -132,6 +132,28 @@ def test_other_columns_are_capped_and_can_be_disabled() -> None:
     assert describe_other_columns([], PROFILE) == ""
 
 
+def test_other_columns_beyond_the_cap_are_ranked_by_the_question() -> None:
+    from app.core.data.semantic_select import describe_other_columns
+
+    names = ["comment", "created_at", "region", "amount"]
+    titles = {"amount": "Выручка"}
+    text = describe_other_columns(names, PROFILE, titles, limit=2, question="Выручка по region")
+    assert text == (
+        "Остальные колонки таблицы (без выжимки): region [text], amount «Выручка» [numeric] и ещё 2"
+    )
+    unranked = describe_other_columns(names, PROFILE, titles, limit=2)
+    assert unranked.startswith(
+        "Остальные колонки таблицы (без выжимки): comment [text], created_at"
+    )
+
+
+def test_other_columns_within_the_cap_keep_table_order() -> None:
+    from app.core.data.semantic_select import describe_other_columns
+
+    asked = describe_other_columns(NAMES, PROFILE, question="Выручка по регионам")
+    assert asked == describe_other_columns(NAMES, PROFILE)
+
+
 def test_other_columns_without_profile_are_listed_by_name() -> None:
     from app.core.data.semantic_select import describe_other_columns
 
@@ -162,3 +184,30 @@ def test_planner_prompt_lists_columns_outside_the_top_k(monkeypatch) -> None:
     asyncio.run(StepPlanner(llm=LLM()).plan("Какая средняя выручка?", context))
     others = LLM.prompt.split("Остальные колонки таблицы (без выжимки): ", 1)[1].split("\n")[0]
     assert {"region", "comment", "created_at"} <= {e.split(" ")[0] for e in others.split(", ")}
+
+
+def test_planner_ranks_other_columns_by_the_question(monkeypatch) -> None:
+    import asyncio
+
+    from app.config import settings
+
+    monkeypatch.setattr(settings, "semantic_top_k", 1)
+    monkeypatch.setattr(settings, "semantic_other_columns", 1)
+
+    from app.core.agent.planner import StepPlanner
+    from app.models.research_step import ResearchPlan, ResearchStep
+
+    class LLM:
+        prompt = ""
+
+        async def complete_structured(self, system, user, schema):
+            LLM.prompt = user
+            return ResearchPlan(
+                steps=[ResearchStep(tool="aggregate", arguments={"column": "region"})]
+            )
+
+    context = {"columns": NAMES, "profile": PROFILE, "titles": {"amount": "Выручка"}}
+    asyncio.run(StepPlanner(llm=LLM()).plan("Выручка по region", context))
+    assert (
+        "Остальные колонки таблицы (без выжимки): amount «Выручка» [numeric] и ещё 2" in LLM.prompt
+    )

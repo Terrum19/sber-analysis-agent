@@ -330,15 +330,22 @@ export default function DashboardPage({ params }: { params: { id: string } }) {
     setExportMenuOpen(false);
     try {
       // Excel — по таблице результата последнего графика с ней (temp_result_vN);
-      // PDF дополнительно получает спеку и инсайт этой плитки (E-01).
+      // PDF дополнительно получает заголовок, инсайт и спеку этой плитки (E-01).
       const source = [...config.tiles].reverse().find((tile) => tile.result_table);
+      const target = source ?? config.tiles[0];
       const { blob, filename } = await exportArtifact(
         {
           session_id: config.session_id || params.id,
           format,
           result_ref: source?.result_table,
-          spec: source?.spec,
-          headline: source?.insight,
+          dashboard_id: params.id,
+          ...(format === "pdf" && target
+            ? {
+                headline: target.title || target.insight,
+                details: target.insight ? [target.insight] : undefined,
+                spec: target.spec,
+              }
+            : {}),
         },
         `${config.title || "dashboard"}.${format}`,
       );

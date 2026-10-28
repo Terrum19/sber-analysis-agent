@@ -8,11 +8,12 @@
  */
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
-import { getSession, setSessionTable, listTables, streamChat } from "@/api/client";
+import { getSession, setSessionTable, listTables, streamChat, exportArtifact } from "@/api/client";
 import { useSessionStore, useSessionDatabase, type ChatMessage } from "@/store/sessionStore";
 import { useCanvasStore } from "@/store/canvasStore";
 import { useUiStore } from "@/store/uiStore";
 import { useOpenArtifact } from "@/hooks/useOpenArtifact";
+import { downloadBlob, safeFilename } from "@/lib/download";
 import Icon from "@/components/ui/Icon";
 import ClarificationCard from "@/components/chat/ClarificationCard";
 import StepProgress from "@/components/chat/StepProgress";
@@ -532,6 +533,37 @@ export default function ChatPanel({ sessionId }: Props) {
     setCanvasOpen(true);
   }
 
+  const [exportingMessageId, setExportingMessageId] = useState<string | null>(null);
+
+  async function handleExportMessagePdf(msg: ChatMessage, index: number) {
+    if (!msg.chart) return;
+    const msgId = msg.id || String(index);
+    setExportingMessageId(msgId);
+    try {
+      const prevUserQ = messages
+        .slice(0, index)
+        .reverse()
+        .find((x) => x.role === "user")?.content;
+      const { blob, filename } = await exportArtifact(
+        {
+          session_id: sessionId,
+          format: "pdf",
+          result_ref: msg.chart.result_table,
+          question: prevUserQ,
+          headline: msg.chart.caption,
+          details: msg.content ? [msg.content] : undefined,
+          spec: msg.chart.spec,
+        },
+        safeFilename(msg.chart.caption || t("chat.exportFallbackName"), "pdf"),
+      );
+      downloadBlob(blob, filename);
+    } catch (err: any) {
+      console.error("PDF export error:", err);
+    } finally {
+      setExportingMessageId(null);
+    }
+  }
+
   return (
     <div className="flex h-full flex-col bg-graphite-900 text-graphite-100">
       {/* Шапка чата: база данных и переключение таблицы */}
@@ -736,6 +768,14 @@ export default function ChatPanel({ sessionId }: Props) {
                         {t("chat.chartOnPanel")}
                       </span>
                     </span>
+                    <button
+                      onClick={() => handleExportMessagePdf(m, i)}
+                      disabled={exportingMessageId === (m.id || String(i))}
+                      className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-graphite-400 hover:bg-graphite-800 hover:text-graphite-100 disabled:opacity-50 transition"
+                      title={t("canvas.exportPdf")}
+                    >
+                      <Icon name="download" size={14} />
+                    </button>
                     <button
                       onClick={() => setCanvasOpen(true)}
                       className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-graphite-400 hover:bg-graphite-800 hover:text-graphite-100"

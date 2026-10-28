@@ -510,6 +510,8 @@ export interface ExportPayload {
   format: "xlsx" | "pdf";
   /** Ссылка на temp_result_vN в DuckDB (обязательна для Excel). */
   result_ref?: string | null;
+  /** Дашборд-источник: владение результатом проверяется по его плиткам. */
+  dashboard_id?: string;
   /** Вопрос пользователя — для PDF-отчёта (E-01). */
   question?: string;
   /** Заголовок инсайта — для PDF-отчёта (E-01). */
@@ -530,10 +532,10 @@ export async function exportArtifact(
   payload: ExportPayload,
   fallbackName?: string,
 ): Promise<ExportResult> {
-  const { session_id, format, result_ref, ...insight } = payload;
+  const { session_id, format, result_ref, dashboard_id, ...insight } = payload;
   const fallback = fallbackName ?? `agent_export.${format}`;
   if (isMockMode()) {
-    const content = `Экспорт (${format.toUpperCase()})\nСессия: ${session_id}\nДата: ${new Date().toLocaleString("ru-RU")}`;
+    const content = `Экспорт отчёта (${format.toUpperCase()})\nСессия: ${session_id}\nДата: ${new Date().toLocaleString("ru-RU")}`;
     return {
       blob: new Blob([content], {
         type: format === "xlsx" ? "application/vnd.ms-excel" : "application/pdf",
@@ -549,6 +551,7 @@ export async function exportArtifact(
         session_id,
         format,
         result_ref: result_ref || null,
+        dashboard_id: dashboard_id || null,
         ...insight,
       }),
     });

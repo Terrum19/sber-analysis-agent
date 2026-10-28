@@ -50,6 +50,7 @@ backend/
 │   │       └── dashboard.py    — DashboardOut/TileOut/Create/Update, DashboardSummary
 │   │
 │   ├── core/              — ЯДРО: агент, данные, тулы, память, визуализация
+│   │   ├── logging_setup.py — логи: формат, [сессия/ход] из contextvars, файл storage/logs
 │   │   ├── llm/
 │   │   │   ├── client.py            — единый клиент к LLM (OpenAI-совместимый: vLLM/Ollama)
 │   │   │   ├── instructor_service.py — structured output через Instructor + Pydantic
@@ -67,6 +68,7 @@ backend/
 │   │   │   ├── step_executor.py   — последовательное выполнение шагов
 │   │   │   ├── parser.py          — ROBUST-парсинг вывода LLM (несколько стратегий)
 │   │   │   ├── insight.py         — генерация финального вывода
+│   │   │   ├── turn_log.py        — лог хода: время инсайта и графика, строка итога
 │   │   │   └── recovery.py        — ошибки: какие сбои шага исправляет планировщик
 │   │   │
 │   │   ├── data/           — слой данных поверх DuckDB
@@ -146,7 +148,8 @@ backend/
 │   │   │
 │   │   └── export/         — выгрузка инсайта в делимый файл
 │   │       ├── excel.py           — openpyxl: таблицы + графики -> .xlsx
-│   │       └── pdf.py             — Typst/ReportLab -> .pdf-отчёт
+│   │       ├── pdf.py             — ReportLab -> .pdf-отчёт
+│   │       └── charts.py          — vl-convert: Vega-Lite -> PNG для экспорта
 │   │
 │   ├── models/            — доменные Pydantic-модели (контракты конвейера)
 │   │   ├── research_step.py   — ResearchStep: тул, колонки, parameters, флаг LLM-кодген
@@ -159,6 +162,7 @@ backend/
 ├── storage/               — РАНТАЙМ-состояние (gitignored)
 │   ├── sessions/          — SQLite: истории диалогов, дашборды и их плитки
 │   ├── duckdb/            — *.duckdb: сырые данные, temp-таблицы шагов, паспорт данных (_meta)
+│   ├── logs/              — backend.log с ротацией 5 МБ × 3 (README, «Логи»)
 │   └── exports/           — .xlsx / .pdf для скачивания
 │
 └── tests/
