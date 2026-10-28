@@ -1,0 +1,8 @@
+{
+  "name": "sber-agent-sandbox",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "pyodide": "0.29.5"
+  }
+}

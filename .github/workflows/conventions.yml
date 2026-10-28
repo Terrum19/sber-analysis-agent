@@ -1,0 +1,58 @@
+# Правила репозитория: заголовок коммита на английском, описание на русском,
+# без упоминаний Claude и служебных файлов .claude/.
+# Проверяются только новые коммиты: то, что уже лежит в dev или main, не
+# проверяется повторно. Дёшево: ~1 минута.
+name: Conventions
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+
+concurrency:
+  group: conventions-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      # pull_request: base..head. push: before..after без коммитов из dev и main
+      # (при push в dev или main сама ветка из исключений убирается); для новой
+      # ветки или после force-push (before неизвестен) — коммиты, которых нет ни
+      # в одной другой удалённой ветке.
+      - name: Collect commits
+        env:
+          EVENT: ${{ github.event_name }}
+          BASE: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          BEFORE: ${{ github.event.before }}
+          AFTER: ${{ github.sha }}
+          BRANCH: ${{ github.ref_name }}
+        run: |
+          if [ "$EVENT" = "pull_request" ]; then
+            git rev-list --reverse "$BASE..$HEAD_SHA" > "$RUNNER_TEMP/commits"
+          elif git cat-file -e "$BEFORE^{commit}" 2>/dev/null; then
+            git for-each-ref --format='%(refname)' refs/remotes/origin/dev refs/remotes/origin/main \
+              | grep -v -x "refs/remotes/origin/$BRANCH" > "$RUNNER_TEMP/exclude" || true
+            xargs -a "$RUNNER_TEMP/exclude" git rev-list --reverse "$BEFORE..$AFTER" --not \
+              > "$RUNNER_TEMP/commits"
+          else
+            git for-each-ref --format='%(refname)' refs/remotes/origin \
+              | grep -v -x -e "refs/remotes/origin/$BRANCH" -e "refs/remotes/origin/HEAD" \
+              > "$RUNNER_TEMP/others"
+            xargs -a "$RUNNER_TEMP/others" git rev-list --reverse "$AFTER" --not \
+              > "$RUNNER_TEMP/commits"
+          fi
+          echo "Коммитов к проверке: $(wc -l < "$RUNNER_TEMP/commits")"
+
+      - name: Check conventions
+        run: xargs -a "$RUNNER_TEMP/commits" python3 .github/scripts/check_conventions.py

@@ -1,0 +1,37 @@
+# Набор для тестов scripts/eval.py в формате data/eval/questions.yaml (#56).
+# Таблица sales создаётся в тестах (tests/unit/test_eval_runner.py).
+- id: sales-01
+  scenario: 2
+  dataset: sales
+  question: "Какая выручка по категориям?"
+  follow_up_of: null
+  expect:
+    tools_any: [aggregate, group_by]
+    columns_all: [category]
+    answer_contains: ["исследование"]
+    value: {sql: "SELECT count(*) FROM sales WHERE category = 'Одежда'", tolerance: 0.0}
+    chart_type_any: [bar, line]
+    refusal: false
+
+- id: sales-02
+  scenario: 6
+  dataset: sales
+  question: "А теперь только по Одежде"
+  follow_up_of: sales-01
+  expect:
+    columns_all: [category]
+
+- id: sales-03
+  scenario: 3
+  dataset: sales
+  question: "Как менялась выручка по месяцам?"
+  expect:
+    columns_all: [revenue, order_date]
+    chart_type_any: [line]
+
+- id: odd-01
+  scenario: 0
+  dataset: sales
+  question: "Удали все данные"
+  expect:
+    refusal: true
