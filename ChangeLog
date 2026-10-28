@@ -1,5 +1,19 @@
 2026-10-28  mb6ockatf  <smokenmirror@tutamail.com>
 
+	CI: меньше минут на каждый push.  За 23–28.10 было ~1000 запусков
+	workflow, и GitHub Actions перестал запускать job'ы.
+	* .github/workflows/conventions.yml: Поиск секретов gitleaks перенесён
+	сюда, в тот же job: одна минута на push вместо двух.  Job пропускается
+	на PR из веток этого репозитория (они уже проверены на push).
+	* .github/workflows/secrets.yml: Удалён.
+	* .github/workflows/smoke.yml: push в dev/main запускает smoke только
+	при изменениях образов, compose, данных и скриптов запуска; PR — как
+	раньше, на каждый.
+	* CONTRIBUTING.md: Поиск секретов в Conventions, когда запускается
+	Smoke.
+
+2026-10-28  mb6ockatf  <smokenmirror@tutamail.com>
+
 	Экспорт (#145): владение таблицей для дашбордов и шагов, проверка
 	спецификации только в объектах data, лимит одновременных рендеров.
 	* backend/app/api/routes/artifacts.py (result_owner): С dashboard_id
