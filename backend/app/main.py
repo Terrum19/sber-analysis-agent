@@ -14,7 +14,7 @@ from contextlib import asynccontextmanager, suppress
 
 from fastapi import FastAPI
 
-from app.api.routes import artifacts, chat, dashboards, datasources, llm, sessions
+from app.api.routes import artifacts, chat, dashboards, datasources, llm, metrics, sessions
 from app.config import settings
 from app.core.data.duckdb_manager import DuckDBManager
 from app.core.data.restore import restore_saved_sources
@@ -34,7 +34,6 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     модели на сервере Ollama и запрос контекста сервера LLM."""
     log_file = configure_logging(settings.log_level, settings.storage_dir)
     logger.info("%s", startup_summary(settings, log_file))
-    # TODO(round-2): инициализация ToolRegistry, WASMRuntime
     app.state.db = DuckDBManager(settings.duckdb_path)
     cleanup(app.state.db)
     interrupted = ProfileMemory(app.state.db).fail_pending()
@@ -70,6 +69,7 @@ app.include_router(datasources.router, prefix="/api/datasources", tags=["datasou
 app.include_router(dashboards.router, prefix="/api/dashboards", tags=["dashboards"])
 app.include_router(artifacts.router, prefix="/api/artifacts", tags=["artifacts"])
 app.include_router(llm.router, prefix="/api/llm", tags=["llm"])
+app.include_router(metrics.router, prefix="/api/metrics", tags=["metrics"])
 
 
 @app.get("/health", tags=["health"])

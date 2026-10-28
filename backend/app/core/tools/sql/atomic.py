@@ -53,10 +53,13 @@ class SelectColumnsTool(BaseTool):
     Args = SelectColumnsArgs
 
     def execute(self, db, input_table: str, args: SelectColumnsArgs) -> str:
-        return db.save_step_result(
-            input_table,
+        sql = self.build_sql(db, input_table, args)
+        return db.save_step_result(input_table, sql)
+
+    def build_sql(self, db, input_table: str, args: SelectColumnsArgs) -> str:
+        return (
             f"SELECT {', '.join(identifier(column) for column in args.columns)} "
-            f"FROM {identifier(input_table)}",
+            f"FROM {identifier(input_table)}"
         )
 
 
@@ -114,6 +117,9 @@ class FilterRowsTool(BaseTool):
     Args = FilterRowsArgs
 
     def execute(self, db, input_table: str, args: FilterRowsArgs) -> str:
+        return db.save_step_result(input_table, self.build_sql(db, input_table, args))
+
+    def build_sql(self, db, input_table: str, args: FilterRowsArgs) -> str:
         column = identifier(args.column)
         if args.operator in {"IS NULL", "IS NOT NULL"}:
             condition = f"{column} {args.operator}"
@@ -125,9 +131,7 @@ class FilterRowsTool(BaseTool):
             condition = f"{column} BETWEEN {literal(low)} AND {literal(high)}"
         else:
             condition = f"{column} {args.operator} {literal(args.value)}"
-        return db.save_step_result(
-            input_table, f"SELECT * FROM {identifier(input_table)} WHERE {condition}"
-        )
+        return f"SELECT * FROM {identifier(input_table)} WHERE {condition}"
 
 
 class CreateColumnArgs(ToolArgs):
@@ -236,6 +240,9 @@ class GroupByTool(BaseTool):
     Args = GroupByArgs
 
     def execute(self, db, input_table: str, args: GroupByArgs) -> str:
+        return db.save_step_result(input_table, self.build_sql(db, input_table, args))
+
+    def build_sql(self, db, input_table: str, args: GroupByArgs) -> str:
         by = [args.by] if isinstance(args.by, str) else args.by
         metrics = args.metrics or [Metric(function=args.function, column=args.column)]
         selected = [
@@ -245,14 +252,11 @@ class GroupByTool(BaseTool):
         ]
         if not by:
             # by=[] — один итог по всей таблице (H-T1, agent/quality_fixes.py).
-            return db.save_step_result(
-                input_table, f"SELECT {', '.join(selected)} FROM {identifier(input_table)}"
-            )
+            return f"SELECT {', '.join(selected)} FROM {identifier(input_table)}"
         keys = ", ".join(identifier(column) for column in by)
-        return db.save_step_result(
-            input_table,
+        return (
             f"SELECT {keys}, {', '.join(selected)} FROM {identifier(input_table)} "
-            f"GROUP BY {keys} ORDER BY {keys}",
+            f"GROUP BY {keys} ORDER BY {keys}"
         )
 
 
@@ -314,6 +318,9 @@ class TimeBucketTool(BaseTool):
     Args = TimeBucketArgs
 
     def execute(self, db, input_table: str, args: TimeBucketArgs) -> str:
+        return db.save_step_result(input_table, self.build_sql(db, input_table, args))
+
+    def build_sql(self, db, input_table: str, args: TimeBucketArgs) -> str:
         metric = (
             f"{aggregate_sql(args.function, args.metric_column)} AS "
             f"{identifier(aggregate_alias(args.function, args.metric_column))}"
@@ -321,10 +328,9 @@ class TimeBucketTool(BaseTool):
         by = [identifier(column) for column in args.by]
         keys = ", ".join(["period", *by])
         extra = "".join(f", {column}" for column in by)
-        return db.save_step_result(
-            input_table,
+        return (
             f"SELECT date_trunc('{args.interval}', {identifier(args.date_column)}) AS period{extra}, "
-            f"{metric} FROM {identifier(input_table)} GROUP BY {keys} ORDER BY {keys}",
+            f"{metric} FROM {identifier(input_table)} GROUP BY {keys} ORDER BY {keys}"
         )
 
 
@@ -340,13 +346,15 @@ class SortLimitTool(BaseTool):
     Args = SortLimitArgs
 
     def execute(self, db, input_table: str, args: SortLimitArgs) -> str:
+        return db.save_step_result(input_table, self.build_sql(db, input_table, args))
+
+    def build_sql(self, db, input_table: str, args: SortLimitArgs) -> str:
         order = [args.order_by] if isinstance(args.order_by, str) else args.order_by
         direction = "DESC" if args.descending else "ASC"
         limit = f" LIMIT {args.limit}" if args.limit else ""
-        return db.save_step_result(
-            input_table,
+        return (
             f"SELECT * FROM {identifier(input_table)} "
-            f"ORDER BY {', '.join(f'{identifier(column)} {direction}' for column in order)}{limit}",
+            f"ORDER BY {', '.join(f'{identifier(column)} {direction}' for column in order)}{limit}"
         )
 
 

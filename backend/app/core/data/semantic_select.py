@@ -111,6 +111,34 @@ def rank_columns(
     columns: list[str],
     profile: TableProfile | None = None,
     titles: dict[str, str] | None = None,
+    retriever: object | None = None,
+    table: str | None = None,
+) -> list[str]:
+    """Отобрать и отсортировать колонки по релевантности вопросу.
+
+    ``retriever`` (SchemaRetriever) добавляет semantic/vector-кандидатов;
+    его отсутствие или сбой не мешает лексическому отбору.
+    """
+    retrieved: list[str] = []
+    if retriever is not None and table:
+        try:
+            objects = retriever.retrieve(question, table, top_k=max(len(columns), 8))
+            retrieved = [
+                item.name for item in objects if item.kind in ("column", "value") and item.name in columns
+            ]
+        except Exception:  # noqa: BLE001 — retriever необязателен, lexical остаётся
+            retrieved = []
+    ranked = _rank_columns(question, columns, profile, titles)
+    if retrieved:
+        ranked = list(dict.fromkeys([*retrieved, *ranked]))
+    return ranked
+
+
+def _rank_columns(
+    question: str,
+    columns: list[str],
+    profile: TableProfile | None = None,
+    titles: dict[str, str] | None = None,
 ) -> list[str]:
     question_tokens = tokenize(question)
     wanted = preferred_kinds(question) if profile else set()

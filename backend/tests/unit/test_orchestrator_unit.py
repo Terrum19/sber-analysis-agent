@@ -228,6 +228,32 @@ def test_insight_failure_ends_the_stream(orchestrator):
     assert events[-3]["data"]["error"] == "LLM timeout"
 
 
+def test_unreadable_insight_falls_back_to_template(orchestrator):
+    class UnreadableInsightGen:
+        async def generate(self, question, result_table, **_):
+            raise ValueError("LLM не вернула валидный JSON для схемы Insight")
+
+        def fallback_insight(self, question, result_table, steps=None, error=""):
+            from app.models.insight import Insight
+
+            return Insight(
+                headline="Результат готов",
+                details=["Строк в результате: 2"],
+                limits=error,
+            )
+
+    orchestrator.insight_gen = UnreadableInsightGen()
+    events = collect(orchestrator, "s1")
+
+    assert "insight:failed" not in stages(events)
+    assert "error" not in stages(events)
+    assert "insight:started" in stages(events)
+    assert "text" in stages(events)
+    assert stages(events)[-1] == "done"
+    text = next(event for event in events if event["type"] == "text")
+    assert text["data"]["headline"] == "Результат готов"
+
+
 def test_dashboard_failure_keeps_the_answer(orchestrator, monkeypatch):
     from app.core.dashboards.generator import DashboardGenerator
     from app.models.research_step import ResearchPlan
@@ -309,9 +335,14 @@ def test_done_counts_truncated_prompts(orchestrator):
     events = collect(orchestrator, "s1")
 
     assert events[-1]["data"]["prompt_truncated"] == 2
-    # Следующий ход без обрезок — в done только turn_id.
+    # Следующий ход без обрезок — в done turn_id и аддитивные метрики.
     orchestrator.planner, orchestrator.insight_gen = FakePlanner(), FakeInsightGen()
-    assert list(collect(orchestrator, "s2")[-1]["data"]) == ["turn_id"]
+    data = collect(orchestrator, "s2")[-1]["data"]
+    assert data["turn_id"]
+    assert data["route"] == "complex"
+    assert data["llm_calls"] == 0
+    assert data["total_ms"] >= 1
+    assert "prompt_truncated" not in data
 
 
 def test_clarification_counts_truncated_prompts(orchestrator):
@@ -378,6 +409,7 @@ def test_overview_question_skips_planner(orchestrator):
     assert spec["usermeta"]["chart_type"] == "table"
     assert [row["Колонка"] for row in spec["data"]["values"]] == ["a"]
     assert stages(ask(orchestrator, "Сколько строк?")) == OVERVIEW_STAGES
+    assert stages(ask(orchestrator, "Что перед тобой?")) == OVERVIEW_STAGES
     assert llm.calls == 1
     assert SessionMemory("s1").last_chart() is None
 

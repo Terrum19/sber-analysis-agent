@@ -37,7 +37,9 @@ class FakeLLM:
         """Возвращает фиксированную строку-ответ."""
         return "Fake LLM response"
 
-    async def complete_structured(self, system: str, user: str, schema: type[T]) -> T:
+    async def complete_structured(
+        self, system: str, user: str, schema: type[T], **_: object
+    ) -> T:
         """Генерирует объект по схеме с фиксированными значениями.
 
         - ResearchPlan: 1 шаг (aggregate) + final_viz=bar

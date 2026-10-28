@@ -12,7 +12,7 @@ def test_wasm_settings_defaults():
     defaults = Settings(_env_file=None)
     assert defaults.wasm_timeout_s == 60
     assert defaults.wasm_mem_mb == 2048
-    assert defaults.agent_max_steps == 12
+    assert defaults.agent_max_steps == 8
 
 
 def test_llm_settings_defaults():

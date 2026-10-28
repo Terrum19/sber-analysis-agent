@@ -42,3 +42,4 @@ out/
 # --- временные ---
 non/
 .agents
+.clineignore

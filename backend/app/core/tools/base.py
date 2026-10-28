@@ -9,6 +9,8 @@
 полям ``Args`` в порядке объявления; именованные аргументы его дополняют.
 """
 
+import asyncio
+import difflib
 import json
 import threading
 import types
@@ -207,7 +209,12 @@ class BaseTool(ABC):
     def parse_args(
         self, columns: list[Any] | None = None, arguments: dict[str, Any] | None = None
     ) -> ToolArgs:
-        """Собрать и провалидировать аргументы (ValueError при ошибке)."""
+        """Собрать и провалидировать аргументы (ValueError при ошибке).
+
+        Для лишнего поля подсказываем ближайшее имя: LLM часто пишет
+        ``column`` вместо ``metric_column`` или ``date`` вместо
+        ``date_column`` — подсказка экономит целый fix_step.
+        """
         data: dict[str, Any] = {}
         positional = list(columns or [])
         for field_name, field in self.Args.model_fields.items():
@@ -225,10 +232,33 @@ class BaseTool(ABC):
         try:
             return self.Args.model_validate(data)
         except ValidationError as exc:
+            error = exc.errors()[0]
+            message = error["msg"]
+            if error.get("type") == "extra_forbidden":
+                field = str(error.get("loc", ("",))[0])
+                hint = difflib.get_close_matches(field, list(self.Args.model_fields), n=1)
+                if hint:
+                    message += f"; возможно, имелось в виду {hint[0]!r}"
             raise ValueError(
-                f"{self.name}: invalid arguments ({exc.errors()[0]['msg']}); "
-                f"expected {self.signature()}"
+                f"{self.name}: invalid arguments ({message}); expected {self.signature()}"
             ) from exc
+
+    def column_fields(self) -> set[str]:
+        """Top-level аргументы вида column/list[column] — для preflight колонок.
+
+        Поля-назначения (``new_column``, ``new_name``, ``alias``) не читают
+        исходную таблицу: их значения могут отсутствовать до выполнения шага.
+        """
+        output_names = {"new_column", "new_name", "alias"}
+        names: set[str] = set()
+        for field_name, field in self.Args.model_fields.items():
+            if field_name in output_names:
+                continue
+            kind = _type_name(field.annotation, field.metadata)
+            parts = kind.replace("list[", "").replace("]", "").split(" | ")
+            if "column" in parts:
+                names.add(field_name)
+        return names
 
     def enabled(self) -> bool:
         """Доступен ли тул сейчас; выключенный реестр не выдаёт и не показывает."""
@@ -249,13 +279,26 @@ class BaseTool(ABC):
         /,
         **arguments: Any,
     ) -> str:
-        """Точка входа исполнителя; тулы, которым нужны LLM или песочница, её переопределяют."""
-        return self.run(db, input_table, columns, **arguments)
+        """Точка входа исполнителя.
+
+        SQL-тулы синхронные, поэтому по умолчанию уходят в рабочий поток:
+        тяжёлый DuckDB-запрос не блокирует event loop и SSE-пинги. Тулы,
+        которым нужны LLM или песочница, переопределяют метод.
+        """
+        return await asyncio.to_thread(self.run, db, input_table, columns, **arguments)
 
     @abstractmethod
     def execute(self, db, input_table: str, args: Any) -> str:
         """Выполнить тул с уже провалидированными аргументами."""
         raise NotImplementedError
+
+    def build_sql(self, db, input_table: str, args: Any) -> str | None:
+        """SQL, который выполнит тул, без записи результата (для dry-run).
+
+        SQL-тулы могут переопределить метод; None — тул не SQL (стат-тест,
+        codegen) и dry-run его пропускает.
+        """
+        return None
 
     def signature(self) -> str:
         """Сигнатура аргументов: name: type (обязательный) / name: type = default."""

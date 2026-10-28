@@ -6,6 +6,10 @@
 вопрос пользователя
   |
   v
+[0] Router (правила, <10 мс) --> простой вопрос: шаблонный план без LLM
+  |        «сколько строк», «общая сумма», «топ-N», «по месяцам», «распределение»
+  |
+  v
 [1] Planner (LLM + Instructor) --> ResearchPlan {steps[], final_viz, dashboard_requested,
   |        dashboard_title, template_id, dashboard_tiles[]} (план дашборда: docs/visualization.md)
   |        вход: вопрос, топ-5 релевантных колонок (semantic_select), контекст сессии
@@ -17,10 +21,11 @@
   |        нет тула -> WASM-песочница (кодогенерация LLM)
   |        каждый шаг -> temp_result_vN в DuckDB (state cache)
   |        устаревшие temp_result_vN удаляются по RESULT_TTL_S (docs/memory.md)
+  |        SQL выполняется в рабочем потоке с SQL_TIMEOUT_S и interrupt()
   |        сбой -> recovery: планировщик исправляет шаг по тексту ошибки
-  |        (до 2 раз, событие progress/fixing) -> уточнение у пользователя
+  |        (AGENT_STEP_FIX_ATTEMPTS) -> уточнение у пользователя
   v
-[3] InsightGenerator (LLM) --> Insight {headline, details, limits}
+[3] InsightGenerator (LLM или шаблон для одной ячейки) --> Insight {headline, details, limits}
   |
   v
 [4] Визуализация: chart_selector -> vega_spec_builder (Vega-Lite JSON)
@@ -28,7 +33,7 @@
   v
 [5] (опц.) DashboardGenerator -> DashboardStore (SQLite: плитки, Vega, снимки данных)
   |        плитки — из dashboard_tiles плана: по плитке на шаг, вывод LLM — только
-  |        у insight_needed; плиток нет — одна плитка с графиком ответа
+  |        у insight_needed; плитки считаются параллельно (AGENT_MAX_PARALLEL_LLM)
   v
 [6] (опц.) Экспорт: ExcelExporter (.xlsx) / PDFExporter (.pdf)
 ```
@@ -47,6 +52,52 @@
 | **Замкнутый контур** | Ollama/vLLM локально; интернет — только к разрешённым доменам (HuggingFace, пакеты) |
 | **Контекст LLM на сервере, проверка в клиенте** | Ollama молча обрезает начало длинного промпта, а `options.num_ctx` в `/v1` не действует (0.24, 0.35.1). Контекст задаёт сервер (`LLM_NUM_CTX` = `OLLAMA_CONTEXT_LENGTH` / `--max-model-len`); клиент сверяет `usage.prompt_tokens` с контекстом сервера (0.24 упирается в него) и с оценкой по символам вместе со схемой тулов (0.35.1 оставляет ~половину контекста); контекст сервера спрашивается при старте бэкенда и переспрашивается, пока сервер его не назовёт; бюджет промпта — `core/llm/budget.py` |
 
+## Бюджет хода и деградация
+
+Каждый ход ограничен жёстким дедлайном `AGENT_TURN_TIMEOUT_S` (870 с = 14.5 мин).
+`TurnBudget` (`core/agent/budget.py`) хранит общий остаток, лимиты этапов
+(`planning`, `steps`, `insight`, `chart`, `dashboard`) и счётчик вызовов LLM.
+
+| Что закончилось | Поведение |
+|---|---|
+| Общий дедлайн | `error` с текстом «Не удалось завершить ход за N минут» + `done{message:"timeout"}`; задача плана отменяется |
+| Бюджет планирования | `clarification_needed`: попросить уточнить/сузить вопрос |
+| Бюджет шага/SQL | шаг прерывается (`interrupt()`), recovery не тратит больше `AGENT_STEP_FIX_ATTEMPTS` |
+| Бюджет инсайта | шаблонный `fallback_insight`: результат уже есть, LLM не вызывается |
+| Бюджет дашборда | дашборд пропускается, текст и график остаются у пользователя |
+| Лимит `AGENT_MAX_LLM_CALLS` | следующий `LLMClient.complete` поднимает `BudgetExceeded` до сети |
+
+Лимиты: `AGENT_MAX_STEPS=8`, `LLM_MAX_TOKENS=1536`, `AGENT_MAX_REPLANS=1`,
+`SQL_TIMEOUT_S=60`. Простые вопросы обслуживает `core/agent/router.py` без
+планировщика; одна числовая ячейка получает шаблонный инсайт без LLM.
+Метрики хода (`route`, `llm_calls`, `prompt_tokens`, `total_ms`, этапы) есть в
+`done`, в итоговой строке лога и в SQLite (`GET /api/metrics/turns`, `/summary`).
+
+## P1: semantic layer, DAG, typed schema, pool, cache
+
+P1-возможности включаются флагами (`AGENT_SEMANTIC_LAYER`, `AGENT_DAG_EXECUTOR`,
+`AGENT_TYPED_SCHEMA`, `AGENT_PLAN_CACHE`, `AGENT_RESULT_CACHE`), по умолчанию
+выключены, чтобы не менять поведение P0.
+
+- **Semantic layer** (`models/semantic.py`, `core/data/semantic_model.py`):
+  метрики/измерения/joins хранятся в `_meta.semantic_model`, API —
+  `GET/PUT/DELETE /api/datasources/tables/{table}/semantic-model`.
+  `SemanticPlanner` маппит вопрос на метрики и время, `SemanticCompiler`
+  собирает обычный `ResearchPlan` или SQL для dry-run.
+- **DAG**: `ResearchStep.depends_on`, `PlanGraph` выводит зависимости из
+  `$prev`/`$step_N`, `ParallelPlanExecutor` выполняет независимые слои
+  параллельно; ошибка узла не запускает dependents.
+- **Typed schema**: `core/tools/schema.py` строит `oneOf` по top-k тулам или
+  компактный `tool.enum` для полного списка; `LLMClient.complete_structured`
+  принимает `schema_override`.
+- **Dry-run**: `DryRunValidator` проверяет SQL шагов через `EXPLAIN` до выполнения.
+- **Model pool** (`core/llm/profiles.py`): роли planner/fast/sql/fallback,
+  переопределения `LLM_MODEL_PLANNER/FAST/SQL` и `LLM_BASE_URL_FAST/SQL`.
+- **Caches** (`core/cache/`): exact-match планы и результаты по
+  question/schema/model/data_version, TTL и инвалидация по таблице.
+- **Schema index** (`core/data/schema_index.py`): lexical всегда, embeddings —
+  при установленном `sentence-transformers` и заданном `EMBED_MODEL`.
+
 ## Память
 
 Подробности — в [memory.md](memory.md).
@@ -64,7 +115,7 @@
 | `dashboard` | `DashboardPayload {dashboard_id, title, tiles}` | дашборд собран по запросу; приходит после `chart` (график и инсайт ответа отдаются и при запросе дашборда) |
 | `clarification_needed` | `{step_id, error, suggestions}`, может быть `prompt_truncated` | шаг не выполнился, ждём `recovery_response`; `prompt_truncated` — как в `done` |
 | `error` | `{message}` | сбой хода; дальше `done` |
-| `done` | `{}` или `{prompt_truncated}` | ход завершён; `prompt_truncated` — сколько промптов хода сервер LLM обрезал (только если > 0) |
+| `done` | `{turn_id, route, llm_calls, prompt_tokens, total_ms}` (+ `message`, `prompt_truncated`) | ход завершён; `prompt_truncated` — сколько промптов хода сервер LLM обрезал (только если > 0); `message="timeout"` — сработал жёсткий дедлайн |
 
 `ProgressPayload`: `stage` (`planning` / `step` / `insight` / `chart` /
 `dashboard`), `status` (`started` / `finished` / `failed` / `fixing`) и

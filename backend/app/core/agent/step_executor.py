@@ -6,6 +6,7 @@
 Финальная таблица — основание для инсайта/графика/дашборда.
 """
 
+import difflib
 import logging
 import re
 from typing import Any
@@ -87,7 +88,13 @@ class StepExecutor:
         except KeyError:
             msg = f"Инструмент '{step.tool}' не зарегистрирован в реестре"
             logger.error(msg)
-            raise ValueError(msg)
+            raise ValueError(msg) from None
+
+        # Preflight колонок: ошибка ловится до выполнения, fix_step не тратится.
+        # Проверяем только шаги над исходной таблицей: у $prev/$step_N колонки
+        # могли быть переименованы или вычислены предыдущими шагами.
+        if table == (source_table or input_table):
+            self._validate_columns(step, tool, resolve, table)
 
         result = await tool.arun(
             self.context,
@@ -98,6 +105,30 @@ class StepExecutor:
         )
         logger.debug("<<< StepExecutor.execute() УСПЕШНО result_table=%s", result)
         return result
+
+    def _validate_columns(
+        self, step: ResearchStep, tool: Any, resolve: "_Resolver", table: str
+    ) -> None:
+        """Проверить колоночные аргументы шага против схемы входной таблицы."""
+        try:
+            available = set(self.db.columns(table))
+        except Exception:  # noqa: BLE001 — каталог недоступен, preflight не блокирует шаг
+            # Каталог недоступен — не блокируем шаг: точную ошибку даст SQL.
+            logger.warning("    шаг %d: колонки %s не прочитаны, preflight пропущен", step.step_id, table)
+            return
+        if not available:
+            return
+        args = tool.parse_args(resolve.value(step.columns), resolve.value(step.arguments))
+        for name in tool.column_fields():
+            value = getattr(args, name, None)
+            for item in value if isinstance(value, list) else [value]:
+                if not isinstance(item, str) or item.startswith("$") or item in available:
+                    continue
+                hint = difflib.get_close_matches(item, sorted(available), n=1)
+                suffix = f"; возможно, имелось в виду {hint[0]!r}" if hint else ""
+                raise ValueError(
+                    f"шаг {step.step_id}: колонки {item!r} нет в таблице {table}{suffix}"
+                )
 
 
 def resolve_input(

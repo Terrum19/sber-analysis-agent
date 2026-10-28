@@ -104,6 +104,17 @@ class ToolRegistry:
             f"- {tool.describe()}{hints.get(tool.name, '')}" for tool in self.planner_tools()
         )
 
+    def tool_schema(self, name: str):
+        """Typed JSON schema тула по имени (P1)."""
+        from app.core.tools.schema import tool_schema
+
+        return tool_schema(self.get(name))
+
+    def describe_for_schema(self, names: list[str] | None = None) -> dict[str, dict]:
+        """Схемы аргументов выбранных тулов (для typed planner_schema)."""
+        chosen = names or [tool.name for tool in self.planner_tools()]
+        return {name: self.tool_schema(name).json_schema for name in chosen}
+
 
 tool_registry = ToolRegistry()
 

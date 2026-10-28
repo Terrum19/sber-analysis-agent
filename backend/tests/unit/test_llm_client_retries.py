@@ -44,6 +44,22 @@ def tool_call_response(arguments: dict) -> dict:
     }
 
 
+def text_response(content: str, finish_reason: str = "stop") -> dict:
+    return {
+        "id": "c1",
+        "object": "chat.completion",
+        "created": 0,
+        "model": "m",
+        "choices": [
+            {
+                "index": 0,
+                "finish_reason": finish_reason,
+                "message": {"role": "assistant", "content": content},
+            }
+        ],
+    }
+
+
 def client_with(responses: list[httpx.Response]) -> tuple[LLMClient, list[httpx.Request]]:
     requests: list[httpx.Request] = []
 
@@ -83,6 +99,38 @@ async def test_invalid_answer_is_asked_again(monkeypatch: pytest.MonkeyPatch) ->
         ]
     )
     assert (await llm.complete_structured("s", "u", Answer)).value == 42
+    assert len(requests) == 2
+
+
+async def test_length_cut_answer_is_retried_with_more_tokens(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Reasoning-модель потратила весь max_tokens на рассуждение: content пуст,
+    # finish_reason=length. Повтор с увеличенным лимитом возвращает ответ.
+    monkeypatch.setattr(settings, "llm_max_tokens", 16)
+    monkeypatch.setattr(settings, "llm_length_retry_tokens", 256)
+    llm, requests = client_with(
+        [
+            httpx.Response(200, json=text_response("", "length")),
+            httpx.Response(200, json=text_response("ок")),
+        ]
+    )
+    assert await llm.complete("s", "u") == "ок"
+    assert len(requests) == 2
+    assert json.loads(requests[0].content)["max_tokens"] == 16
+    assert json.loads(requests[1].content)["max_tokens"] == 256
+
+
+async def test_length_retry_happens_once(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(settings, "llm_max_tokens", 16)
+    monkeypatch.setattr(settings, "llm_length_retry_tokens", 256)
+    llm, requests = client_with(
+        [
+            httpx.Response(200, json=text_response("", "length")),
+            httpx.Response(200, json=text_response("", "length")),
+        ]
+    )
+    assert await llm.complete("s", "u") == ""
     assert len(requests) == 2
 
 

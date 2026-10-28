@@ -81,6 +81,18 @@
   возвращается системе, а переиспользуется под новые таблицы.
 
 ## 3. Метапамять: паспорт данных и глоссарий — `core/memory/profile_memory.py`
+
+Дополнительно в схеме `_meta` лежат аддитивные таблицы P1:
+
+- `_meta.semantic_model(table_name, model JSON, version, updated_at)` — управляемая
+  семантика таблицы (метрики/измерения/joins), API
+  `/api/datasources/tables/{table}/semantic-model`;
+- `_meta.schema_embedding(table_name, object_type, object_name, text_hash, model,
+  vector, updated_at)` — индекс схемы для embeddings; при отсутствии модели
+  retrieval работает лексически.
+
+Старые данные не мигрируются: таблицы создаются через `CREATE TABLE IF NOT EXISTS`,
+отсутствие semantic model означает работу планировщика по колонкам паспорта.
 - **Хранит:** структуру таблиц, статистику, названия и описания колонок из
   описания таблицы, бизнес-словарь.
 - **Зачем:** не сканировать источник заново на каждый вопрос; агент

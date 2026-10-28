@@ -4,12 +4,15 @@
 Замкнутый контур: по умолчанию локальный LLM endpoint (Ollama/vLLM).
 """
 
+import logging
 from functools import lru_cache
 from pathlib import Path
 from typing import Literal
 
 from pydantic import AliasChoices, Field, SecretStr, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+logger = logging.getLogger(__name__)
 
 _BACKEND_DIR = Path(__file__).resolve().parent.parent
 _REPO_ROOT = _BACKEND_DIR.parent
@@ -24,6 +27,14 @@ class Settings(BaseSettings):
     # LLM (локально, без облака)
     llm_base_url: str = "http://localhost:11434/v1"  # Ollama / vLLM (OpenAI-совместимый)
     llm_model: str = "qwen2.5-coder:14b"
+    # P1: пул моделей по ролям. Пустое значение — использовать llm_model/llm_base_url.
+    llm_model_planner: str = ""
+    llm_model_fast: str = ""
+    llm_model_sql: str = ""
+    llm_base_url_fast: str = ""
+    llm_base_url_sql: str = ""
+    # P1: эмбеддинги для schema linking; пусто — только lexical fallback.
+    embed_model: str = ""
     # Ключ провайдера (OpenRouter и т.п.); локальным Ollama/vLLM не нужен.
     llm_api_key: SecretStr = SecretStr("not-needed")
     # План на CPU строится 90-180 с (docs/reports/llm_perf); 120 с обрывали ход.
@@ -36,12 +47,17 @@ class Settings(BaseSettings):
     # Как просить structured output (docs/reports/llm_perf, П2-П4):
     # json_schema — response_format=json_schema (грамматика на стороне
     # Ollama/vLLM) + толерантный разбор + один переспрос с ошибкой;
-    # tools — instructor TOOLS с fallback-цепочкой. Локальный Qwen
-    # tool_call не возвращает, и каждый ответ стоил три вызова.
-    llm_structured_mode: Literal["json_schema", "tools"] = "json_schema"
-    # Предел токенов ответа (None — без предела; Ollama тогда может
-    # генерировать до конца контекста).
-    llm_max_tokens: int | None = None
+    # json_object — только JSON-режим без грамматики (провайдеры, которые
+    # не поддерживают json_schema); tools — instructor TOOLS с fallback-цепочкой.
+    # Локальный Qwen tool_call не возвращает, и каждый ответ стоил три вызова.
+    llm_structured_mode: Literal["json_schema", "tools", "json_object"] = "json_schema"
+    # Предел токенов ответа. Без предела Ollama генерирует до конца контекста,
+    # и один ход может стоить минуты только на генерации.
+    llm_max_tokens: int = 1536
+    # Reasoning-модели (Qwen3 и т.п. через OpenRouter) тратят max_tokens на
+    # скрытые рассуждения и возвращают пустой content с finish_reason=length.
+    # В этом случае — один повтор с увеличенным лимитом; 0 отключает повтор.
+    llm_length_retry_tokens: int = 4096
     # Исправления качества плана и инсайта (app/core/agent/quality_fixes.py).
     agent_quality_fixes: bool = True
     # H-R1: в промпт планировщика — только релевантные вопросу тулы.
@@ -74,7 +90,33 @@ class Settings(BaseSettings):
     codegen_enabled: bool = True
     codegen_attempts: int = 2
     codegen_max_rows: int = 200_000
-    agent_max_steps: int = 12
+    # --- Бюджет хода (P0) ---
+    # Жёсткий дедлайн хода, секунды: 14.5 мин, чтобы фронт успел получить done
+    # и не упёрся в 15-минутный SLO.
+    agent_turn_timeout_s: int = 870
+    agent_plan_timeout_s: int = 240
+    agent_step_timeout_s: int = 60
+    # Один шаг может исправляться планировщиком; бюджет хода всё равно главный.
+    agent_step_fix_attempts: int = 1
+    agent_insight_timeout_s: int = 90
+    agent_dashboard_timeout_s: int = 120
+    agent_max_llm_calls: int = 6
+    agent_max_steps: int = 8
+    agent_max_parallel_llm: int = 2
+    agent_max_parallel_steps: int = 2
+    agent_fast_insight: bool = True
+    agent_simple_router: bool = True
+    # P1-флаги: по умолчанию выключены, чтобы не менять поведение P0.
+    agent_semantic_layer: bool = False
+    agent_dag_executor: bool = False
+    agent_typed_schema: bool = False
+    agent_plan_cache: bool = False
+    agent_result_cache: bool = False
+    agent_cache_ttl_s: int = 3600
+    agent_metrics_store: bool = True
+    sql_timeout_s: int = 60
+    # Лимит на достройку плана после lookup-шага: каждый replan — ещё LLM-вызов.
+    agent_max_replans: int = 1
     semantic_top_k: int = 5
     # Сколько колонок вне топ-K перечислить планировщику по именам (0 — не показывать).
     semantic_other_columns: int = 80
@@ -109,6 +151,46 @@ class Settings(BaseSettings):
         if not value or value == ":memory:" or Path(value).is_absolute():
             return value
         return str(_REPO_ROOT / value)
+
+    @field_validator("llm_base_url", "llm_base_url_fast", "llm_base_url_sql")
+    @classmethod
+    def _normalize_base_url(cls, value: str) -> str:
+        """Привести OpenAI-совместимый URL к виду ``.../v1``.
+
+        Пользователи копируют полный адрес ``/v1/chat/completions`` из
+        документации или OpenRouter — клиент openai добавляет путь сам, и
+        запрос уходил бы на ``/chat/completions/chat/completions``.
+        """
+        text = (value or "").strip().rstrip("/")
+        if not text:
+            return text
+        text = text.removesuffix("/chat/completions")
+        if not text.endswith("/v1"):
+            logger.warning("LLM base URL не заканчивается на /v1: %s", text)
+        return text
+
+    @field_validator(
+        "llm_max_tokens",
+        "agent_turn_timeout_s",
+        "agent_plan_timeout_s",
+        "agent_step_timeout_s",
+        "agent_step_fix_attempts",
+        "agent_insight_timeout_s",
+        "agent_dashboard_timeout_s",
+        "agent_max_llm_calls",
+        "agent_max_steps",
+        "agent_max_parallel_llm",
+        "agent_max_parallel_steps",
+        "agent_max_replans",
+        "agent_cache_ttl_s",
+        "sql_timeout_s",
+    )
+    @classmethod
+    def _positive_int(cls, value: int) -> int:
+        """Лимиты и таймауты меньше 1 отключили бы этап или сломали бюджет."""
+        if value <= 0:
+            raise ValueError("значение должно быть больше 0")
+        return value
 
 
 @lru_cache

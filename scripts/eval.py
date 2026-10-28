@@ -139,6 +139,12 @@ class Turn:
     parent_chart: str | None = None
     table_rows_before: int | None = None
     table_rows: int | None = None
+    # P0: метрики из аддитивных полей события done.
+    route: str | None = None
+    llm_calls: int | None = None
+    prompt_tokens: int | None = None
+    total_ms: int | None = None
+    budget_exceeded: str | None = None
 
 
 @dataclass(frozen=True)
@@ -365,6 +371,17 @@ class RecordingPlanner:
             self.trace.selections.append(selection)
 
 
+def _argument_strings(value: object) -> list[str]:
+    """Строковые значения аргументов шага (для recall быстрого роутера)."""
+    if isinstance(value, str):
+        return [value]
+    if isinstance(value, dict):
+        return [item for item in value.values() for item in _argument_strings(item)]
+    if isinstance(value, list | tuple):
+        return [item for entry in value for item in _argument_strings(entry)]
+    return []
+
+
 class RecordingExecutor:
     def __init__(self, inner, trace: Trace) -> None:
         self._inner = inner
@@ -375,6 +392,15 @@ class RecordingExecutor:
 
     async def execute(self, step, *args, **kwargs) -> str:
         table = await self._inner.execute(step, *args, **kwargs)
+        if not self.trace.selections:
+            # Быстрый роутер не зовёт planner.plan: для recall фиксируем колонки,
+            # которые он выбрал из паспорта.
+            columns = [
+                str(value)
+                for value in [*step.columns, *_argument_strings(step.arguments)]
+                if isinstance(value, str) and not value.startswith("$")
+            ]
+            self.trace.selections.append(Selection(columns=list(dict.fromkeys(columns)), profiled=True))
         self.trace.steps.append(
             {"tool": step.tool, "columns": list(step.columns), "arguments": dict(step.arguments)}
         )
@@ -423,6 +449,16 @@ async def run_turn(
     except Exception as error:
         logger.exception("ход %s упал", session_id)
         turn.error = f"{type(error).__name__}: {error}"
+    for event in reversed(turn.events):
+        if event["type"] not in TURN_END_EVENTS:
+            continue
+        data = event.get("data") or {}
+        turn.route = data.get("route")
+        turn.llm_calls = data.get("llm_calls")
+        turn.prompt_tokens = data.get("prompt_tokens")
+        turn.total_ms = data.get("total_ms")
+        turn.budget_exceeded = data.get("budget_exceeded")
+        break
     turn.steps, turn.selections = list(trace.steps), list(trace.selections)
     return turn
 
@@ -942,6 +978,11 @@ def question_result(
         ],
         "first_event_s": turn.first_event_s,
         "done_s": turn.end_s,
+        "route": turn.route,
+        "llm_calls": turn.llm_calls,
+        "prompt_tokens": turn.prompt_tokens,
+        "total_ms": turn.total_ms,
+        "budget_exceeded": turn.budget_exceeded,
         "ended": next(
             (event["type"] for event in reversed(turn.events) if event["type"] in TURN_END_EVENTS),
             None,
@@ -1103,7 +1144,7 @@ def rate(passed: int, total: int) -> float | None:
 
 
 def timing(results: list[dict], key: str) -> dict:
-    values = [result[key] for result in results if result[key] is not None]
+    values = [result[key] for result in results if result.get(key) is not None]
     return {"p50": percentile(values, 0.5), "p95": percentile(values, 0.95), "count": len(values)}
 
 
@@ -1163,6 +1204,10 @@ def summarize(results: list[dict], model: str, questions_path: Path, day: date) 
             "first_event_s": timing(results, "first_event_s"),
             "done_s": timing(results, "done_s"),
         },
+        "llm_calls": timing(results, "llm_calls"),
+        "prompt_tokens": timing(results, "prompt_tokens"),
+        "total_ms": timing(results, "total_ms"),
+        "budget_exceeded": sum(1 for result in results if result.get("budget_exceeded")),
         "column_selection": {
             "measured": len(measured),
             "covered": covered,
@@ -1245,7 +1290,16 @@ def render(report: dict) -> str:
         "|---|---|---|",
         f"| До первого события | {cell(first['p50'])} | {cell(first['p95'])} |",
         f"| До конца хода | {cell(done['p50'])} | {cell(done['p95'])} |",
+        (
+            f"| Вызовов LLM | {cell(report.get('llm_calls', {}).get('p50'))} | "
+            f"{cell(report.get('llm_calls', {}).get('p95'))} |"
+        ),
     ]
+    if report.get("max_p95_s") is not None:
+        status = "да" if report.get("budget_p95_ok") else "нет"
+        lines.append(f"| Бюджет p95 ≤ {cell(report['max_p95_s'])} с | {status} | |")
+    if report.get("budget_exceeded"):
+        lines.append(f"Ходов с превышением бюджета: {report['budget_exceeded']}.")
     selection = report["column_selection"]
     recall = selection["recall"]
     lines += [
@@ -1345,6 +1399,8 @@ def configure_environment(args: argparse.Namespace, storage: Path) -> None:
         os.environ["LLM_MODEL"] = args.model
     os.environ["STORAGE_DIR"] = str(storage)
     os.environ["SQLITE_PATH"] = str(storage / "sessions.sqlite")
+    if args.turn_timeout_s:
+        os.environ["AGENT_TURN_TIMEOUT_S"] = str(args.turn_timeout_s)
     if args.db:
         os.environ["DUCKDB_PATH"] = str(Path(args.db).resolve())
 
@@ -1400,6 +1456,10 @@ async def evaluate(args: argparse.Namespace) -> int:
     finally:
         db.close()
     report = summarize(results, model, args.questions, date.today())
+    if args.max_p95_s is not None:
+        done_p95 = (report.get("timing") or {}).get("done_s", {}).get("p95")
+        report["max_p95_s"] = args.max_p95_s
+        report["budget_p95_ok"] = done_p95 is not None and done_p95 <= args.max_p95_s
     write_report(report, markdown, data)
     print(f"Прошло {report['passed']} из {report['total']} ({cell(report['pass_rate'])} %)")
     print(f"Отчёт: {markdown}\nJSON:  {data}")
@@ -1408,6 +1468,13 @@ async def evaluate(args: argparse.Namespace) -> int:
     if report["no_session"]:
         print(f"Не открылась сессия у {report['no_session']} вопросов", file=sys.stderr)
         return SESSION_FAILED
+    if args.max_p95_s is not None and not report.get("budget_p95_ok"):
+        p95 = (report.get("timing") or {}).get("done_s", {}).get("p95")
+        print(
+            f"p95 до done {p95} с превышает бюджет {args.max_p95_s} с",
+            file=sys.stderr,
+        )
+        return 4
     return 0
 
 
@@ -1415,6 +1482,13 @@ def positive(text: str) -> int:
     number = int(text)
     if number < 1:
         raise argparse.ArgumentTypeError("нужно целое число не меньше 1")
+    return number
+
+
+def positive_float(text: str) -> float:
+    number = float(text)
+    if number <= 0:
+        raise argparse.ArgumentTypeError("нужно число больше 0")
     return number
 
 
@@ -1452,6 +1526,16 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--columns-recall-only",
         action="store_true",
         help="columns_all не влияет на итог вопроса, только на recall (набор data/eval/hk)",
+    )
+    parser.add_argument(
+        "--turn-timeout-s",
+        type=positive,
+        help="AGENT_TURN_TIMEOUT_S на время прогона (жёсткий бюджет хода)",
+    )
+    parser.add_argument(
+        "--max-p95-s",
+        type=positive_float,
+        help="порог p95 до done в секундах: budget_p95_ok и код возврата",
     )
     return parser.parse_args(argv)
 

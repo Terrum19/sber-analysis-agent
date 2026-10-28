@@ -56,8 +56,8 @@ def test_plan_includes_columns_in_context(planner):
     import asyncio
 
     context = {
-        "columns": ["x", "y", "z"],
-        "columns_summary": "x, y, z",
+        "columns": ["category", "revenue", "date"],
+        "columns_summary": "category, revenue, date",
         "datasource": "raw",
         "summary": "",
         "messages": [],
@@ -372,7 +372,7 @@ def test_prompt_shows_previous_turns_with_plan_arguments():
         "headline": "Пик в июле",
         "result_columns": ["bucket", "sum_revenue"],
     }
-    context = {"columns": ["date", "revenue"], "turns": [turn]}
+    context = {"columns": ["date", "revenue", "category"], "turns": [turn]}
     asyncio.run(StepPlanner(llm=llm).plan("А теперь только для Одежды", context))
     assert "1. Вопрос: Выручка по месяцам" in llm.prompt
     assert '"date_column": "date"' in llm.prompt
