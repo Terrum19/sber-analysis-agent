@@ -18,6 +18,11 @@ make hooks
 (`.github/scripts/check_conventions.py`, workflow Conventions). Файлы
 коммита проверяет только CI.
 
+Тот же job Conventions ищет секреты (пароли, токены, ключи) во всей
+истории git с помощью gitleaks. Он запускается на каждый push в любую
+ветку и на PR из форков; PR из веток этого репозитория уже проверены на
+push, и для них job пропускается.
+
 Хук `pre-commit` (`.githooks/pre-commit`, подключается тем же
 `make hooks`) запускает `ruff check` и `ruff format --check` на
 индексированных `.py`-файлах `backend/` с конфигом
@@ -45,8 +50,10 @@ make test   # pytest
 
 ## Smoke-тест чистого запуска
 
-Workflow Smoke (`.github/workflows/smoke.yml`, #79) на каждый PR и push в
-`dev`/`main` поднимает `docker compose up -d --build backend frontend` с
+Workflow Smoke (`.github/workflows/smoke.yml`, #79) на каждый PR и на push в
+`dev`/`main`, меняющий `backend/`, `frontend/`, `infra/`, `data/`,
+compose-файлы, `.env.example`, `.gitattributes`, `.githooks/` или скрипты
+запуска (`*.sh`, `*.command`), поднимает `docker compose up -d --build backend frontend` с
 надстройкой `docker-compose.ci.yml`: без профиля Ollama не стартует, бэкенд
 отвечает фейковой LLM (`USE_FAKE_LLM=true`). Затем `scripts/smoke.sh`
 загружает `data/sample_datasets/demo_events.csv`, создаёт сессию над первой

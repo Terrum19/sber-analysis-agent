@@ -291,7 +291,7 @@ class FakeMemory:
         self.steps: list[int] = []
         self.pending: dict | None = None
 
-    def record_step(self, step) -> None:
+    def record_step(self, step, result_table=None) -> None:
         self.steps.append(step.step_id)
 
     def set_pending_recovery(self, data: dict) -> None:

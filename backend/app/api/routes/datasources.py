@@ -12,6 +12,7 @@ CSV-источник — это файлы в storage/uploads/<id> и посто
 помеченные комментарием «csv:<id>/<файл>»; DELETE удаляет и то и другое.
 """
 
+import asyncio
 import logging
 import re
 import shutil
@@ -110,7 +111,7 @@ def read_description(upload: UploadFile | None) -> str | None:
     return data.decode("utf-8-sig", errors="replace")
 
 
-async def describe_tables(
+def describe_tables(
     connector: BaseConnector,
     db: DuckDBManager,
     tables: list[str],
@@ -120,8 +121,19 @@ async def describe_tables(
     """Фоновый перенос описания в паспорт, затем описание «что передо мной».
 
     Сбой не затрагивает подключение; описание таблицы строится и после
-    сбоя переноса — без названий колонок из документа.
+    сбоя переноса — без названий колонок из документа. Идёт в потоке пула
+    со своим loop (#189): ожидание db.lock не останавливает loop сервера.
     """
+    asyncio.run(_describe_tables(connector, db, tables, document, job))
+
+
+async def _describe_tables(
+    connector: BaseConnector,
+    db: DuckDBManager,
+    tables: list[str],
+    document: str | None,
+    job: ingest.DescribeJob,
+) -> None:
     try:
         await ingest.describe(connector, db, tables, document, job=job)
     except Exception:

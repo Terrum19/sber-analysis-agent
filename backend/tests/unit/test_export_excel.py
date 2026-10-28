@@ -389,8 +389,14 @@ def test_export_dashboard_without_data(tmp_path: Path, exporter: ExcelExporter) 
 
 
 def test_api_export_artifact_single_table(client: TestClient, test_db: DuckDBManager) -> None:
-    # Подготовим таблицу в DuckDB
+    from app.core.memory.session_memory import SessionMemory
+
+    # Подготовим таблицу в DuckDB и сессию в SessionMemory
     test_db.query("CREATE TABLE temp_result_v1 AS SELECT 'Москва' AS city, 100 AS val")
+    memory = SessionMemory("test-session", test_db)
+    memory.set_table("raw")
+    memory.start_turn("Вопрос")
+    memory.finish_turn("ok", result_table="temp_result_v1")
 
     from app.api.deps import get_db
 
@@ -453,12 +459,27 @@ def test_api_export_artifact_dashboard(client: TestClient, test_db: DuckDBManage
 
 
 def test_api_export_errors(client: TestClient) -> None:
-    # 501 на PDF
+    store = DashboardStore()
+    dash = Dashboard(
+        session_id="s1",
+        title="Тест ошибок",
+        tiles=[],
+    )
+    store.create(dash)
+
+    # 501 на экспорт дашборда в PDF
     res_pdf = client.post(
         "/api/artifacts/export",
-        json={"session_id": "s1", "format": "pdf", "result_ref": "temp_result_v1"},
+        json={"session_id": "s1", "format": "pdf", "dashboard_id": dash.id},
     )
     assert res_pdf.status_code == 501
+
+    # 400 без session_id
+    res_no_sess = client.post(
+        "/api/artifacts/export",
+        json={"session_id": "", "format": "xlsx"},
+    )
+    assert res_no_sess.status_code == 400
 
     # 400 без result_ref и без dashboard_id
     res_empty = client.post(
@@ -520,14 +541,27 @@ def test_api_dashboard_export_get_endpoint(client: TestClient, test_db: DuckDBMa
         app.dependency_overrides.pop(get_db, None)
 
 
-def test_api_export_duckdb_error(client: TestClient) -> None:
-    # 404 при ошибке DuckDB (таблица не найдена)
-    res = client.post(
-        "/api/artifacts/export",
-        json={"session_id": "s1", "format": "xlsx", "result_ref": "temp_result_v999"},
-    )
-    assert res.status_code == 404
-    assert "не найден" in res.json()["detail"]
+def test_api_export_duckdb_error(client: TestClient, test_db: DuckDBManager) -> None:
+    from app.core.memory.session_memory import SessionMemory
+
+    memory = SessionMemory("s1", test_db)
+    memory.set_table("raw")
+    memory.start_turn("Вопрос")
+    memory.finish_turn("ok", result_table="temp_result_v999")
+
+    from app.api.deps import get_db
+
+    app.dependency_overrides[get_db] = lambda: test_db
+    try:
+        # 404 при ошибке DuckDB (таблица не найдена)
+        res = client.post(
+            "/api/artifacts/export",
+            json={"session_id": "s1", "format": "xlsx", "result_ref": "temp_result_v999"},
+        )
+        assert res.status_code == 404
+        assert "не удалось прочитать" in res.json()["detail"].lower()
+    finally:
+        app.dependency_overrides.pop(get_db, None)
 
 
 def test_extract_kpi_value_and_format_branches() -> None:
