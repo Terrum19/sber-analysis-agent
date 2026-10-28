@@ -5,6 +5,7 @@
 """
 
 import asyncio
+from typing import Any
 
 import pytest
 
@@ -164,11 +165,11 @@ class DashboardLLM(FakeLLM):
         self.plan = plan
         self.prompts: list[str] = []
 
-    async def complete_structured(self, system, user, schema):
+    async def complete_structured(self, system, user, schema, **kwargs: Any):
         if schema.__name__ == "ResearchPlan":
             self.prompts.append(user)
             return self.plan.model_copy(deep=True)
-        return await super().complete_structured(system, user, schema)
+        return await super().complete_structured(system, user, schema, **kwargs)
 
     async def complete(self, system, user, **kwargs):
         self.prompts.append(user)
