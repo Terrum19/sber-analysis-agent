@@ -114,6 +114,18 @@ async def test_reasoning_effort_goes_to_request(monkeypatch, effort, reasoning) 
     assert json.loads(requests[0].content).get("reasoning") == reasoning
 
 
+@pytest.mark.parametrize(
+    ("provider", "routing"),
+    [(None, None), ("deepinfra", {"only": ["deepinfra"]}), ("a, b", {"only": ["a", "b"]})],
+)
+async def test_provider_goes_to_request(monkeypatch, provider, routing) -> None:
+    # С размышлениями json_schema-план держат не все провайдеры (docs/eval.md).
+    monkeypatch.setattr(settings, "llm_provider", provider)
+    llm, requests = client_with([httpx.Response(200, json=chat_response("ок"))])
+    assert await llm.complete("s", "u") == "ок"
+    assert json.loads(requests[0].content).get("provider") == routing
+
+
 # --- Длина контекста (I-04) ---
 
 

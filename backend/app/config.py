@@ -46,6 +46,10 @@ class Settings(BaseSettings):
     # medium, high; none — размышления выключены. None — параметр не
     # передаётся, решает провайдер. Ollama/vLLM его не понимают.
     llm_reasoning_effort: Literal["none", "low", "medium", "high"] | None = None
+    # Провайдеры OpenRouter через запятую (provider.only), например deepinfra.
+    # С размышлениями часть провайдеров ломает json_schema-план; None — выбирает
+    # OpenRouter. Ollama/vLLM параметр не понимают.
+    llm_provider: str | None = None
     # Исправления качества плана и инсайта (app/core/agent/quality_fixes.py).
     agent_quality_fixes: bool = True
     # H-R1: в промпт планировщика — только релевантные вопросу тулы.

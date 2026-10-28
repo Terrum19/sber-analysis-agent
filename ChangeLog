@@ -1,5 +1,17 @@
 2026-10-28  Alexander Yurits  <143354682+Terrum19@users.noreply.github.com>
 
+	Провайдер OpenRouter закрепляется флагом LLM_PROVIDER.
+	* backend/app/config.py (Settings.llm_provider),
+	backend/app/core/llm/client.py (LLMClient.complete): Список
+	провайдеров через запятую уходит в provider.only; без значения
+	параметр не передаётся.  С размышлениями JSON плана держит DeepInfra,
+	Near AI и Modal его ломают.
+	* .env.example: Строка LLM_PROVIDER, закомментирована.
+	* docs/eval.md (Тестовый конфиг): Замер 28.10: 3 из 15 без
+	размышлений, 11 из 15 с ними и DeepInfra; конфиг для оценки качества.
+	* backend/tests/unit/test_llm_client_retries.py
+	(test_provider_goes_to_request): Новый тест.
+
 	План без пустых аргументов, пустых планов и шагов не по той таблице.
 	* backend/app/models/research_step.py (ResearchStep, ResearchPlan):
 	В JSON-схеме обязательны tool, input, arguments, purpose и steps,
