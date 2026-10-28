@@ -322,6 +322,7 @@ def test_tables_go_from_facts_to_references(shop) -> None:
     assert order == ["orders", "clients", "cities", "regions"]
     links = relations.load(shop)
     assert relations.role(links, "orders") == "факты"
+    assert relations.role(links, "clients") == "справочник"
     assert relations.role(links, "regions") == "справочник"
     assert relations.references(links, "cities") == ["regions"]
 
@@ -372,7 +373,7 @@ def test_tied_tables_linked_by_keys_are_one_choice(demo) -> None:
 
 def test_unrelated_tables_without_titles_go_to_the_catalog(two_sources) -> None:
     assert relations.choose_table(two_sources, "выручка по регионам") == TableChoice(
-        table="demo_events", catalog=["demo_events", "demo_users", "weather"]
+        table="demo_events", catalog=["demo_events", "weather", "demo_users"]
     )
     # Одинаковые названия не различить — вопрос пользователю не задаём.
     set_titles(two_sources, {"demo_events": "Данные", "weather": "Данные"})
@@ -551,7 +552,7 @@ def test_clear_winner_needs_no_catalog(demo) -> None:
 def test_planner_picks_the_table_from_the_catalog(two_sources) -> None:
     planner = SpyPlanner(first_input="weather")
     events, executor = ask(two_sources, planner, "catalog", "Выручка по регионам")
-    assert planning_tables(events) == ["demo_events", "demo_users", "weather"]
+    assert planning_tables(events) == ["demo_events", "weather", "demo_users"]
     assert "Таблица для вопроса не выбрана" in planner.contexts[0]["catalog"]
     assert executor.inputs == ["weather"]
     memory = SessionMemory("catalog")
@@ -627,7 +628,7 @@ def test_overview_describes_linked_tables_by_priority(shop) -> None:
     )
     assert text["details"][0].startswith("1. «Заказы» (orders) — факты: 40 строк, 3 колонки")
     assert text["details"][0].endswith(". Описание данных.")
-    assert text["details"][1].startswith("2. clients — факты: 6 строк")
+    assert text["details"][1].startswith("2. clients — справочник: 6 строк")
     assert text["details"][2].endswith(SUMMARY_UNAVAILABLE)
     assert text["details"][3].startswith("4. «Регионы» (regions) — справочник")
     assert text["details"][4].startswith("Связи: ")

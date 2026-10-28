@@ -417,22 +417,28 @@ def references(relations: list[Relation], table: str) -> list[str]:
     )
 
 
+def is_reference(relations: list[Relation], table: str) -> bool:
+    """Справочник — таблица, на которую ссылаются другие (клиенты, города, регионы)."""
+    return any(r.ref_table == table and r.table != table for r in relations)
+
+
 def priority_order(db, tables, relations: list[Relation] | None = None) -> list[str]:
     """Таблицы по важности данных: сначала факты, затем справочники.
 
-    Факты — таблицы, которые ссылаются на другие (заказы -> клиенты); внутри
-    группы выше таблица с большим числом строк.
+    Факты — таблицы, на которые никто не ссылается (заказы); справочники — те,
+    на которые ссылаются (клиенты, города, регионы). Внутри группы выше
+    таблица с большим числом строк: в цепочке справочников это ближние к фактам.
     """
     relations = load(db) if relations is None else relations
     rows = {table: row_count(db, table) for table in tables}
     return sorted(
         tables,
-        key=lambda table: (not references(relations, table), -rows[table], table),
+        key=lambda table: (is_reference(relations, table), -rows[table], table),
     )
 
 
 def role(relations: list[Relation], table: str) -> str:
-    return "факты" if references(relations, table) else "справочник"
+    return "справочник" if is_reference(relations, table) else "факты"
 
 
 def table_title(db, table: str) -> str | None:

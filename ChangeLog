@@ -1,3 +1,32 @@
+2026-10-29  Alexander Yurits  <143354682+Terrum19@users.noreply.github.com>
+
+	Цепочки соединений, обзор связанных таблиц и вопрос «какие данные
+	взять?» (#165).
+	* backend/app/core/tools/sql/join_related.py: Новый.  join_related —
+	связанные таблицы по ключам одним шагом, путь через промежуточные.
+	* backend/app/core/data/relations.py (paths, component, join_hops)
+	(output_names): Новые.  Пути до MAX_HOPS переходов, группа связанных
+	таблиц, имена колонок после соединения.  (priority_order, role)
+	(references, is_reference, table_title, choose_table, TableChoice):
+	Новые.  Справочник — таблица, на которую ссылаются.
+	(related_tables, describe_related): Таблицы через промежуточные, пример
+	join_related.  (Relation.condition): Удалена.
+	* backend/app/core/agent/orchestrator.py (_turn): Уточнение таблицы
+	(TABLE_CHOICE) и ответ на него.  (_table_answer): Новая.
+	(_overview): Группа связанных таблиц — _schema_overview.
+	(_schema_overview): Новая.
+	* backend/app/core/tools/base.py (ToolContext.source): Новое.
+	* backend/app/core/agent/step_executor.py (execute): Передаёт source.
+	* backend/app/core/memory/session_memory.py (record_step): Таблицы
+	join_related — в таблицы хода.
+	* backend/app/core/tools/registry.py, backend/app/core/agent/quality_fixes.py:
+	join_related в реестре и в ядре тулов.
+	* frontend/src/types/chat.ts (ClarificationEvent.kind): Новое.
+	* frontend/src/components/chat/ClarificationCard.tsx: Выбор таблицы
+	одной кнопкой.
+	* backend/tests/unit/test_relations.py
+	* backend/tests/integration/test_postgres_connector.py: Тесты того же.
+
 2026-10-28  Dmitriy Yakushonok  <dmitriyyakushonok@yandex.ru>
 
 	Каскадное удаление дашбордов и графиков при удалении базы данных или сессии.
