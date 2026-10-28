@@ -86,6 +86,34 @@ async def test_invalid_answer_is_asked_again(monkeypatch: pytest.MonkeyPatch) ->
     assert len(requests) == 2
 
 
+def chat_response(content: str) -> dict:
+    return {
+        "id": "c1",
+        "object": "chat.completion",
+        "created": 0,
+        "model": "m",
+        "choices": [
+            {
+                "index": 0,
+                "finish_reason": "stop",
+                "message": {"role": "assistant", "content": content},
+            }
+        ],
+    }
+
+
+@pytest.mark.parametrize(
+    ("effort", "reasoning"),
+    [(None, None), ("none", {"enabled": False}), ("low", {"effort": "low"})],
+)
+async def test_reasoning_effort_goes_to_request(monkeypatch, effort, reasoning) -> None:
+    # Без размышлений провайдеры OpenRouter не ломают json_schema-план (docs/eval.md).
+    monkeypatch.setattr(settings, "llm_reasoning_effort", effort)
+    llm, requests = client_with([httpx.Response(200, json=chat_response("ок"))])
+    assert await llm.complete("s", "u") == "ок"
+    assert json.loads(requests[0].content).get("reasoning") == reasoning
+
+
 # --- Длина контекста (I-04) ---
 
 

@@ -20,6 +20,25 @@ python3 scripts/eval.py --questions data/eval/hk/questions.yaml \
     --columns-recall-only --repeat 3 --model ...
 ```
 
+## Тестовый конфиг
+
+Все прогоны и eval команда делает на одном конфиге: `qwen/qwen3.8-27b` в
+OpenRouter с выключенными размышлениями (строки — в `.env.example`):
+
+```bash
+LLM_BASE_URL=https://openrouter.ai/api/v1    # без /chat/completions: его добавит клиент
+LLM_MODEL=qwen/qwen3.8-27b
+LLM_API_KEY=...                              # ключ OpenRouter, не в git
+LLM_REASONING_EFFORT=none
+```
+
+С размышлениями часть провайдеров OpenRouter (Near AI, Modal) ломает ответ по
+`json_schema`: план приходит одной строкой в поле `tool`, и ход падает. В прогоне
+#197 с размышлениями дошли до ответа 2 хода из 19, без них — все. Квантизация ни
+при чём: DeepInfra (bf16) и ModelRun (fp4) давали 6 валидных планов из 6, Near AI
+(fp8) — 0 из 6. Для локальных Ollama и vLLM флаг не нужен: они его не понимают, а
+схему ответа держит сам сервер.
+
 ## Запуск
 
 Таблицы набора — датасеты хакатона в DuckDB (`make hk-data`). Backend на время

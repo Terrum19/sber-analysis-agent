@@ -1,3 +1,16 @@
+2026-10-28  Alexander Yurits  <143354682+Terrum19@users.noreply.github.com>
+
+	Тестовый конфиг команды: qwen3.8-27b в OpenRouter без размышлений.
+	* backend/app/config.py (Settings.llm_reasoning_effort),
+	backend/app/core/llm/client.py (LLMClient.complete): Флаг
+	LLM_REASONING_EFFORT из testing/first_test (thebulkapro): none
+	передаёт OpenRouter reasoning.enabled=false, low/medium/high —
+	reasoning.effort, без значения параметр не передаётся.
+	* .env.example: Строки тестового конфига, закомментированы.
+	* docs/eval.md (Тестовый конфиг): Конфиг и почему без размышлений.
+	* backend/tests/unit/test_llm_client_retries.py
+	(test_reasoning_effort_goes_to_request): Новый тест.
+
 2026-10-28  mb6ockatf  <smokenmirror@tutamail.com>
 
 	Экспорт (#145): владение таблицей для дашбордов и шагов, проверка
