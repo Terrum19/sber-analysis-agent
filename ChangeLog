@@ -11,6 +11,33 @@
 	* backend/tests/unit/test_llm_client_retries.py
 	(test_reasoning_effort_goes_to_request): Новый тест.
 
+	DuckDB не останавливает loop сервера (#189).
+	* backend/app/api/routes/chat.py (iterate_in_thread): Новая.  Ход
+	агента идёт в своём потоке и loop, loop сервера только пересылает
+	события: запрос DuckDB или ожидание db.lock, который держит загрузка
+	CSV, больше не останавливают пинги SSE, /health и другие запросы.
+	(chat): Импорт и создание оркестратора — в потоке хода.
+	* backend/app/core/tools/base.py (BaseTool.arun): SQL тула — через
+	asyncio.to_thread: события шагов уходят, пока идёт запрос.
+	* backend/app/api/routes/datasources.py (describe_tables): Синхронная,
+	в потоке пула со своим loop.
+	* backend/tests/unit/test_chat_api.py, backend/tests/unit/test_tools.py:
+	Тесты того же.
+
+2026-10-28  mb6ockatf  <smokenmirror@tutamail.com>
+
+	CI: меньше минут на каждый push.  За 23–28.10 было ~1000 запусков
+	workflow, и GitHub Actions перестал запускать job'ы.
+	* .github/workflows/conventions.yml: Поиск секретов gitleaks перенесён
+	сюда, в тот же job: одна минута на push вместо двух.  Job пропускается
+	на PR из веток этого репозитория (они уже проверены на push).
+	* .github/workflows/secrets.yml: Удалён.
+	* .github/workflows/smoke.yml: push в dev/main запускает smoke только
+	при изменениях образов, compose, данных и скриптов запуска; PR — как
+	раньше, на каждый.
+	* CONTRIBUTING.md: Поиск секретов в Conventions, когда запускается
+	Smoke.
+
 2026-10-28  mb6ockatf  <smokenmirror@tutamail.com>
 
 	Экспорт (#145): владение таблицей для дашбордов и шагов, проверка

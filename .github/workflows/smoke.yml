@@ -1,13 +1,29 @@
 # Smoke-тест чистого запуска (#79): docker compose без профиля (Ollama не
 # поднимается — это профиль ci из #79) с фейковой LLM из docker-compose.ci.yml,
 # затем scripts/smoke.sh: CSV -> сессия -> чат (SSE до done) -> фронтенд 200.
-# Без фильтров paths и без пропуска PR: job должен быть обязательным для PR в
+# PR — без фильтров paths и без пропуска: job должен быть обязательным для PR в
 # main, а обязательная проверка, которая не запустилась, блокирует PR.
+# Бюджет минут: push в dev/main — только при изменениях, которые попадают в
+# образы, compose или запуск (сборка образов — самый долгий шаг); слияние
+# только ChangeLog или документации smoke не запускает.
 name: Smoke
 
 on:
   push:
     branches: [dev, main]
+    paths:
+      - "backend/**"
+      - "frontend/**"
+      - "infra/**"
+      - "data/**"
+      - "docker-compose.yml"
+      - "docker-compose.ci.yml"
+      - ".env.example"
+      - ".gitattributes"
+      - ".githooks/**"
+      - "**.sh"
+      - "**.command"
+      - ".github/workflows/smoke.yml"
   pull_request:
   workflow_dispatch:
 
