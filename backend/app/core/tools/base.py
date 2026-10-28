@@ -24,6 +24,7 @@ from pydantic import AfterValidator, BaseModel, ConfigDict, ValidationError, mod
 
 if TYPE_CHECKING:
     from app.core.llm.client import LLMClient
+    from app.core.memory.session_memory import SessionMemory
     from app.core.sandbox.wasm_runtime import WASMSandbox
 
 ToolKind = Literal["transform", "analysis", "lookup"]
@@ -31,10 +32,14 @@ ToolKind = Literal["transform", "analysis", "lookup"]
 
 @dataclass(frozen=True)
 class ToolContext:
-    """Что исполнитель даёт тулу помимо таблицы: LLM и песочница (None — по умолчанию)."""
+    """Что исполнитель даёт тулу помимо таблицы: LLM, песочница, память сессии.
+
+    None — по умолчанию; ``history`` есть только у шагов хода (read_history).
+    """
 
     llm: "LLMClient | None" = None
     sandbox: "WASMSandbox | None" = None
+    history: "SessionMemory | None" = None
 
 
 _FORBIDDEN_FUNCTIONS = frozenset({"current_setting", "getenv", "getvariable"})
@@ -267,7 +272,10 @@ class BaseTool(ABC):
         parts = []
         for field_name, field in self.Args.model_fields.items():
             text = f"{field_name}: {_type_name(field.annotation, field.metadata)}"
-            if not field.is_required():
+            if field.is_required():
+                # Без пометки модель пропускала обязательный аргумент (group_by без by).
+                text += " (обязательный)"
+            else:
                 default = field.get_default(call_default_factory=True)
                 text += f" = {default!r}"
             parts.append(text)

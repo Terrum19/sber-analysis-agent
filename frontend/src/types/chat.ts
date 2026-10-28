@@ -44,7 +44,12 @@ export interface ErrorEvent {
 
 export interface DoneEvent {
   type: "done";
-  data: Record<string, unknown>;
+  data: {
+    /** Идентификатор завершённого хода: по нему строится reply_to (F-12). */
+    turn_id?: string;
+    /** Сколько символов истории обрезано планировщиком. */
+    prompt_truncated?: number;
+  };
 }
 
 /** Шаг упал и не исправился (или план пуст): поток закрывается без done. */
@@ -54,6 +59,8 @@ export interface ClarificationEvent {
     step_id?: number;
     error: string;
     suggestions: string[];
+    /** Ход, к которому относится уточнение (для полноты контракта #166). */
+    turn_id?: string;
   };
 }
 

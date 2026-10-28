@@ -8,10 +8,12 @@
 
 import logging
 import re
+from dataclasses import replace
 from typing import Any
 
 from app.core.data.duckdb_manager import DuckDBManager
 from app.core.llm.client import LLMClient
+from app.core.memory.session_memory import SessionMemory
 from app.core.sandbox.wasm_runtime import WASMSandbox
 from app.core.tools.base import ToolContext, ToolKind
 from app.core.tools.registry import tool_registry
@@ -48,6 +50,7 @@ class StepExecutor:
         input_table: str,
         step_tables: dict[int, str] | None = None,
         source_table: str | None = None,
+        history: SessionMemory | None = None,
     ) -> str:
         """Выполнить один шаг, вернуть имя результирующей temp-таблицы.
 
@@ -55,6 +58,7 @@ class StepExecutor:
             input_table: таблица для ссылки $prev.
             step_tables: результаты уже выполненных шагов (для $step_N).
             source_table: исходная таблица (для $source), по умолчанию input_table.
+            history: память сессии хода — из неё read_history берёт прошлые ходы.
 
         Raises:
             ValueError: если входная таблица не существует, ссылка указывает
@@ -89,8 +93,9 @@ class StepExecutor:
             logger.error(msg)
             raise ValueError(msg)
 
+        context = self.context if history is None else replace(self.context, history=history)
         result = await tool.arun(
-            self.context,
+            context,
             self.db,
             table,
             resolve.value(step.columns),

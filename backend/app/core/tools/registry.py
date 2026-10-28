@@ -19,6 +19,7 @@ from app.core.tools.funnel.funnel_drop_off import FunnelDropOffTool
 from app.core.tools.funnel.funnel_steps import FunnelStepsTool
 from app.core.tools.funnel.retention_matrix import RetentionMatrixTool
 from app.core.tools.inspect_temp_table import InspectTempTableTool
+from app.core.tools.read_history import ReadHistoryTool
 from app.core.tools.sql.aggregate import AggregateTool
 from app.core.tools.sql.atomic import (
     CreateColumnTool,
@@ -139,6 +140,7 @@ for _tool in (
     ChiSquareTool(),
     SearchCategoricalValuesTool(),
     InspectTempTableTool(),
+    ReadHistoryTool(),
     KSTestTool(),
     ShapiroWilkTool(),
     ForecastTool(),

@@ -104,6 +104,24 @@ def test_delete_session_removes_session(client) -> None:
     assert client.get(f"/api/sessions/{session_id}").status_code == 404
 
 
+def test_delete_session_removes_its_dashboards(client) -> None:
+    session_id = client.post("/api/sessions", json={"table": "sales"}).json()["session_id"]
+    dash_res = client.post(
+        "/api/dashboards",
+        json={"session_id": session_id, "title": "Дашборд сессии", "tiles": []},
+    )
+    assert dash_res.status_code == 201
+    dash_id = dash_res.json()["id"]
+
+    assert client.get(f"/api/dashboards/{dash_id}").status_code == 200
+    assert len(client.get(f"/api/dashboards?session_id={session_id}").json()) == 1
+
+    client.delete(f"/api/sessions/{session_id}")
+
+    assert client.get(f"/api/dashboards/{dash_id}").status_code == 404
+    assert len(client.get(f"/api/dashboards?session_id={session_id}").json()) == 0
+
+
 def test_delete_session_not_found_is_404(client) -> None:
     assert client.delete("/api/sessions/nope").status_code == 404
 
@@ -248,3 +266,41 @@ def test_patch_without_table_or_title_is_422(client, body) -> None:
 
 def test_patch_title_unknown_session_is_404(client) -> None:
     assert client.patch("/api/sessions/nope", json={"title": "X"}).status_code == 404
+
+
+def test_memories_api_lists_adds_and_toggles(client) -> None:
+    session_id = client.post("/api/sessions", json={"table": "sales"}).json()["session_id"]
+    url = f"/api/sessions/{session_id}/memories"
+    assert client.get(url).json() == []
+
+    created = client.post(url, json={"text": "  выручка   без НДС "})
+    assert created.status_code == 201
+    item = created.json()
+    assert (item["text"], item["source"], item["enabled"], item["turn_id"]) == (
+        "выручка без НДС",
+        "user",
+        True,
+        None,
+    )
+
+    off = client.patch(f"{url}/{item['memory_id']}", json={"enabled": False})
+    assert off.json()["enabled"] is False
+    # Выключенная запись в списке остаётся, но в контекст хода не идёт.
+    assert [m["enabled"] for m in client.get(url).json()] == [False]
+    assert SessionMemory(session_id).build_context("?")["memories"] == []
+
+    # Тот же текст снова — без дубля, запись включается.
+    again = client.post(url, json={"text": "Выручка без НДС"}).json()
+    assert again["memory_id"] == item["memory_id"]
+    assert again["enabled"] is True
+    assert len(client.get(url).json()) == 1
+
+
+def test_memories_api_rejects_unknown_session_memory_and_empty_text(client) -> None:
+    session_id = client.post("/api/sessions", json={"table": "sales"}).json()["session_id"]
+    url = f"/api/sessions/{session_id}/memories"
+    assert client.get("/api/sessions/nope/memories").status_code == 404
+    assert client.post("/api/sessions/nope/memories", json={"text": "x"}).status_code == 404
+    assert client.patch(f"{url}/nope", json={"enabled": False}).status_code == 404
+    assert client.post(url, json={"text": "   "}).status_code == 422
+    assert client.patch(f"{url}/nope", json={}).status_code == 422
