@@ -663,6 +663,15 @@ def test_validate_chart_spec_non_serializable_and_non_dict_children() -> None:
     cleaned = validate_chart_spec(spec)
     assert cleaned["layer"] == ["not-a-dict-item"]
 
+    # Проверка обнаружения url и sequence на любой глубине (facet, списки, трансформации)
+    with pytest.raises(ValueError, match="data.url запрещены"):
+        validate_chart_spec(
+            {"facet": {"row": {"data": {"url": "http://127.0.0.1:8767/internal.csv"}}}}
+        )
+
+    with pytest.raises(ValueError, match="data.sequence запрещён"):
+        validate_chart_spec({"nested": [{"deep": {"sequence": {"start": 0, "stop": 100}}}]})
+
 
 def test_render_chart_png_empty_stdout(monkeypatch) -> None:
     """Подпроцесс завершился с кодом 0, но с пустым stdout."""

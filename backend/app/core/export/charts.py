@@ -63,34 +63,26 @@ def validate_chart_spec(spec: dict[str, Any]) -> dict[str, Any]:
 
     clean_spec = copy.deepcopy(spec)
 
-    def _check_node(node: Any) -> None:
-        if not isinstance(node, dict):
-            return
+    def _scan_node(node: Any) -> None:
+        if isinstance(node, dict):
+            for k, v in list(node.items()):
+                if k == "sequence":
+                    raise ValueError("Генератор данных data.sequence запрещён в целях безопасности")
+                if k == "url":
+                    raise ValueError(
+                        "Внешние источники данных data.url запрещены в целях безопасности"
+                    )
+                if k in ("graticule", "sphere"):
+                    raise ValueError("Генераторы данных запрещены в целях безопасности")
+                if k == "values" and isinstance(v, list) and len(v) > MAX_DATA_ROWS:
+                    node["values"] = v[:MAX_DATA_ROWS]
+                else:
+                    _scan_node(v)
+        elif isinstance(node, list):
+            for item in node:
+                _scan_node(item)
 
-        if "data" in node and isinstance(node["data"], dict):
-            data = node["data"]
-            if "sequence" in data:
-                raise ValueError("Генератор данных data.sequence запрещён в целях безопасности")
-            if "url" in data:
-                raise ValueError("Внешние источники данных data.url запрещены в целях безопасности")
-            if "graticule" in data or "sphere" in data:
-                raise ValueError("Генераторы данных запрещены в целях безопасности")
-            if (
-                "values" in data
-                and isinstance(data["values"], list)
-                and len(data["values"]) > MAX_DATA_ROWS
-            ):
-                data["values"] = data["values"][:MAX_DATA_ROWS]
-
-        for container in ("layer", "concat", "hconcat", "vconcat"):
-            if container in node and isinstance(node[container], list):
-                for child in node[container]:
-                    _check_node(child)
-
-        if "spec" in node and isinstance(node["spec"], dict):
-            _check_node(node["spec"])
-
-    _check_node(clean_spec)
+    _scan_node(clean_spec)
     return clean_spec
 
 
