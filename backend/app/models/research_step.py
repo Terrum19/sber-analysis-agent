@@ -15,10 +15,15 @@ SOURCE = "$source"
 class ResearchStep(BaseModel):
     """Один шаг плана исследования."""
 
-    model_config = ConfigDict(json_schema_extra={"required": ["tool", "arguments", "purpose"]})
+    # input обязателен в схеме: без него модель молча продолжала с $prev,
+    # хотя второй независимый расчёт нужен по исходной таблице.
+    model_config = ConfigDict(
+        json_schema_extra={"required": ["tool", "input", "arguments", "purpose"]}
+    )
 
     step_id: int = 0
-    tool: str | None = None
+    # null в схеме не разрешаем: шаг без инструмента валидация всё равно отклонит.
+    tool: str | None = Field(default=None, json_schema_extra={"anyOf": [{"type": "string"}]})
     input: str = PREVIOUS
     arguments: dict[str, Any] = Field(default_factory=dict)
     # Старый позиционный формат: раскладывается по аргументам тула по порядку.

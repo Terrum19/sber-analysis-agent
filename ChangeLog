@@ -1,5 +1,25 @@
 2026-10-28  Alexander Yurits  <143354682+Terrum19@users.noreply.github.com>
 
+	План без пустых аргументов, пустых планов и шагов не по той таблице.
+	* backend/app/models/research_step.py (ResearchStep, ResearchPlan):
+	В JSON-схеме обязательны tool, input, arguments, purpose и steps,
+	tool не null, template_id — только id шаблонов (97c10fc, thebulkapro,
+	дополнено полем input).
+	* backend/app/core/tools/base.py (BaseTool.signature): Обязательные
+	аргументы помечены «(обязательный)»: модель пропускала by у group_by.
+	* backend/app/core/llm/prompts/step_planner.py (STEP_PLANNER): Правило
+	обязательных аргументов; input указывать всегда, независимый расчёт —
+	"$source".  (EMPTY_PLAN): Новый.
+	* backend/app/core/agent/planner.py (StepPlanner.plan): Пустой план на
+	новый вопрос переспрашивается один раз.
+	* backend/app/core/agent/orchestrator.py (AgentOrchestrator._from_source):
+	Новая.  (_run_step): Колонки из ошибки DuckDB нет в $prev, но она есть
+	в источнике — шаг повторяется на $source без вызова LLM.
+	* backend/app/core/data/overview.py (_OVERVIEW): «что это», «что это
+	такое», «что тут есть» — обзор таблицы, а не планировщик.
+	* backend/tests/unit/test_plan_execution.py, test_planner.py,
+	test_tool_registry.py, test_overview.py: Тесты того же.
+
 	Тестовый конфиг команды: qwen3.8-27b в OpenRouter без размышлений.
 	* backend/app/config.py (Settings.llm_reasoning_effort),
 	backend/app/core/llm/client.py (LLMClient.complete): Флаг
