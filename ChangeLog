@@ -1,5 +1,11 @@
 2026-10-28  Alexander Yurits  <143354682+Terrum19@users.noreply.github.com>
 
+	Тестовый конфиг: размышления low, провайдер DeepInfra обязателен.
+	* .env.example: LLM_REASONING_EFFORT=low и LLM_PROVIDER=deepinfra в
+	строках тестового конфига вместо none.
+	* docs/eval.md (Тестовый конфиг): Почему с размышлениями (3 из 15
+	проверок без них, 11 из 15 с ними) и почему провайдер закреплён.
+
 	Провайдер OpenRouter закрепляется флагом LLM_PROVIDER.
 	* backend/app/config.py (Settings.llm_provider),
 	backend/app/core/llm/client.py (LLMClient.complete): Список
