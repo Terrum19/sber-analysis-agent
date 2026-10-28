@@ -323,13 +323,17 @@ export function mockStreamChat(
   question: string,
   onEvent: (event: ChatStreamEvent) => void,
   onClose?: (error?: string) => void,
-  _options?: { recoveryResponse?: string },
+  _options?: { recoveryResponse?: string; replyTo?: string | null },
 ): () => void {
   let isCancelled = false;
   const isDashboardRequest = /дашборд|панел|график|kpi|отчет|показател/i.test(question);
+  // turn_id нужен кнопкам «Спросить об этом» и цитате в демо-режиме (F-12).
+  const turnId = `mock-turn-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
+  // Видимая проверка, что reply_to дошёл до мока.
+  const replyPrefix = _options?.replyTo ? "Уточняю по прошлому ответу…\n" : "";
 
   const steps = [
-    { delay: 300, chunk: "Изучаю схему данных в DuckDB...\n" },
+    { delay: 300, chunk: `${replyPrefix}Изучаю схему данных в DuckDB...\n` },
     { delay: 700, chunk: "Выполняю расчет шага 1: агрегация продаж по регионам (temp_result_v1).\n" },
     {
       delay: 1200,
@@ -384,7 +388,7 @@ export function mockStreamChat(
       if (idx === steps.length - 1) {
         const finishTimer = setTimeout(() => {
           if (!isCancelled) {
-            onEvent({ type: "done", data: {} });
+            onEvent({ type: "done", data: { turn_id: turnId } });
             onClose?.();
           }
         }, 400);

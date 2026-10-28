@@ -22,11 +22,15 @@ import DashboardTile from "@/components/canvas/DashboardTile";
 import Icon from "@/components/ui/Icon";
 import ZoomControl from "@/components/ui/ZoomControl";
 import ItemActionMenu from "@/components/layout/ItemActionMenu";
-import { MIN_SIZE, applyGridLayout, isKpiTile, tileGridLayout } from "@/lib/tileLayout";
+import { MIN_SIZE, STACK_BELOW, applyGridLayout, isKpiTile, tileGridLayout } from "@/lib/tileLayout";
 import { CHART_TYPES, chartTypeOf, withChartType, type ChartType } from "@/lib/chartTypes";
 import { dashboardSnapshotAt } from "@/lib/dashboard";
 import FitGrid from "@/components/canvas/FitGrid";
 import { useOpenArtifact } from "@/hooks/useOpenArtifact";
+import { useAskAgent } from "@/hooks/useAskAgent";
+import { useElementSize } from "@/hooks/useElementSize";
+import { drillQuestion, type ChartSelection } from "@/lib/chartSelection";
+import { downloadBlob } from "@/lib/download";
 import { useSessionStore } from "@/store/sessionStore";
 import { useUiStore } from "@/store/uiStore";
 import { useDateLocale, useT } from "@/i18n/useT";
@@ -41,6 +45,10 @@ export default function DashboardPage({ params }: { params: { id: string } }) {
   const dateLocale = useDateLocale();
   const zoom = useUiStore((s) => s.zoom);
   const openArtifact = useOpenArtifact();
+  const askAgent = useAskAgent();
+  // На узком экране плитки идут одной колонкой, drag/resize и раскладка отключены.
+  const { ref: pageBodyRef, width: pageWidth } = useElementSize<HTMLDivElement>();
+  const stack = pageWidth > 0 && pageWidth * zoom < STACK_BELOW;
   const [config, setConfig] = useState<DashboardConfig | null>(null);
   const [loading, setLoading] = useState(true);
   const [notFound, setNotFound] = useState(false);
@@ -234,6 +242,17 @@ export default function DashboardPage({ params }: { params: { id: string } }) {
     markDirty();
   }
 
+  /** «Дообследовать»: вопрос агенту в чат сессии дашборда (F-09). */
+  function handleElaborate(index: number, selection?: ChartSelection) {
+    if (!config?.session_id) {
+      flash(t("drill.noSession"));
+      return;
+    }
+    const tile = config.tiles[index];
+    if (!tile) return;
+    askAgent(config.session_id, drillQuestion(t, tile.title, selection));
+  }
+
   function handleAddKpi() {
     if (!config) return;
     const newKpi: DashboardTileType = {
@@ -249,10 +268,10 @@ export default function DashboardPage({ params }: { params: { id: string } }) {
     markDirty();
   }
 
-  const gridLayout: Layout[] = tileGridLayout(config?.tiles || [], isKpiTile);
+  const gridLayout: Layout[] = tileGridLayout(config?.tiles || [], isKpiTile, { stack });
 
   function handleLayoutChange(newLayout: Layout[]) {
-    if (!isEditing || !config) return;
+    if (!isEditing || !config || stack) return;
     const tiles = applyGridLayout(config.tiles, newLayout);
     const changed = tiles.some((tile, i) => {
       const before = config.tiles[i]?.layout;
@@ -300,32 +319,44 @@ export default function DashboardPage({ params }: { params: { id: string } }) {
 
   async function handleExport(format: "xlsx" | "pdf") {
     if (!config) return;
+    if (format === "xlsx") {
+      const source = [...config.tiles].reverse().find((tile) => tile.result_table);
+      if (!source?.result_table) {
+        flash(t("canvas.exportNoTable"), 3500);
+        return;
+      }
+    }
     setIsExporting(format);
     setExportMenuOpen(false);
     try {
-      // Ищем плитку с таблицей результата или спецификацией
-      const targetTile = [...config.tiles].reverse().find((tile) => tile.result_table) || config.tiles[0];
-      const resultRef = targetTile?.result_table;
-      const options =
-        format === "pdf" && targetTile
-          ? {
-              headline: targetTile.title || targetTile.insight,
-              details: targetTile.insight ? [targetTile.insight] : undefined,
-              spec: targetTile.spec,
-              dashboardId: params.id,
-            }
-          : { dashboardId: params.id };
-      const blob = await exportArtifact(config.session_id || params.id, format, resultRef, options);
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement("a");
-      a.href = url;
-      const filename = format === "pdf" ? "отчет" : (config.title || "dashboard");
-      a.download = `${filename}.${format}`;
-      a.click();
-      URL.revokeObjectURL(url);
+      // Excel — по таблице результата последнего графика с ней (temp_result_vN);
+      // PDF дополнительно получает заголовок, инсайт и спеку этой плитки (E-01).
+      const source = [...config.tiles].reverse().find((tile) => tile.result_table);
+      const target = source ?? config.tiles[0];
+      const { blob, filename } = await exportArtifact(
+        {
+          session_id: config.session_id || params.id,
+          format,
+          result_ref: source?.result_table,
+          dashboard_id: params.id,
+          ...(format === "pdf" && target
+            ? {
+                headline: target.title || target.insight,
+                details: target.insight ? [target.insight] : undefined,
+                spec: target.spec,
+              }
+            : {}),
+        },
+        `${config.title || "dashboard"}.${format}`,
+      );
+      downloadBlob(blob, filename);
       flash(format === "pdf" ? t("canvas.pdfDone") : t("canvas.xlsxDone"), 3500);
     } catch (err: any) {
-      flash(t("canvas.exportError", { msg: err?.detail || err?.message || String(err) }), 3500);
+      if (err?.status === 501) {
+        flash(t("chat.exportPdfInProgress"), 4000);
+      } else {
+        flash(t("canvas.exportError", { msg: err?.detail || err?.message || String(err) }), 3500);
+      }
     } finally {
       setIsExporting(null);
     }
@@ -395,10 +426,11 @@ export default function DashboardPage({ params }: { params: { id: string } }) {
 
   const snapshotAt = dashboardSnapshotAt(config);
   const staleCount = config.tiles.filter((tile) => tile.stale).length;
+  const hasResultTable = config.tiles.some((tile) => Boolean(tile.result_table));
 
   return (
     <WorkspaceShell tab={tab}>
-      <div className="h-full overflow-y-auto">
+      <div ref={pageBodyRef} className="h-full overflow-y-auto">
         <div className="mx-auto max-w-6xl space-y-5 px-6 py-6 md:px-8">
           {/* Заголовок и действия */}
           <div className="flex flex-col justify-between gap-4 border-b border-graphite-800 pb-4 md:flex-row md:items-end">
@@ -506,15 +538,21 @@ export default function DashboardPage({ params }: { params: { id: string } }) {
                 </button>
                 {exportMenuOpen && (
                   <div className="absolute right-0 top-full z-50 mt-1 w-40 rounded-lg border border-graphite-700 bg-graphite-850 p-1 shadow-2xl">
-                    {(["xlsx", "pdf"] as const).map((f) => (
-                      <button
-                        key={f}
-                        onClick={() => handleExport(f)}
-                        className="flex w-full rounded-md px-2.5 py-1.5 text-left text-[12px] text-graphite-200 hover:bg-graphite-700"
-                      >
-                        {f === "xlsx" ? t("canvas.exportXlsx") : t("canvas.exportPdf")}
-                      </button>
-                    ))}
+                    <button
+                      onClick={() => handleExport("xlsx")}
+                      disabled={!hasResultTable}
+                      title={!hasResultTable ? t("canvas.exportNoTable") : undefined}
+                      className="flex w-full rounded-md px-2.5 py-1.5 text-left text-[12px] text-graphite-200 hover:bg-graphite-700 disabled:cursor-not-allowed disabled:opacity-50"
+                    >
+                      {t("canvas.exportXlsx")}
+                    </button>
+                    <button
+                      disabled
+                      title={t("chat.exportPdfSoon")}
+                      className="flex w-full rounded-md px-2.5 py-1.5 text-left text-[12px] text-graphite-400 opacity-50 cursor-not-allowed"
+                    >
+                      {t("canvas.exportPdf")}
+                    </button>
                   </div>
                 )}
               </div>
@@ -576,8 +614,8 @@ export default function DashboardPage({ params }: { params: { id: string } }) {
                   rowHeight={Math.round(60 * zoom)}
                   margin={[16, 16]}
                   containerPadding={[0, 0]}
-                  isDraggable={isEditing}
-                  isResizable={isEditing}
+                  isDraggable={isEditing && !stack}
+                  isResizable={isEditing && !stack}
                   onLayoutChange={handleLayoutChange}
                   useCSSTransforms
                 >
@@ -592,6 +630,7 @@ export default function DashboardPage({ params }: { params: { id: string } }) {
                           onRename={(newTitle) => handleRenameTile(i, newTitle)}
                           onDelete={() => handleDeleteTile(i)}
                           onOpen={() => openArtifact(tile, config.session_id)}
+                          onElaborate={(selection) => handleElaborate(i, selection)}
                           onMenu={(rect) => setMenu({ index: i, rect })}
                         />
                       </div>
@@ -615,6 +654,7 @@ export default function DashboardPage({ params }: { params: { id: string } }) {
           onDelete={() => handleDeleteTile(menu.index)}
           onChartTypeChange={(type) => handleChartTypeChange(menu.index, type as ChartType)}
           onOpen={() => openArtifact(config.tiles[menu.index], config.session_id)}
+          onElaborate={() => handleElaborate(menu.index)}
         />
       )}
     </WorkspaceShell>

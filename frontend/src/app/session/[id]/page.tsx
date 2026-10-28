@@ -30,6 +30,13 @@ export default function SessionPage({ params }: { params: { id: string } }) {
     }
   }, [params.id, setSession]);
 
+  // «Дообследовать» из канваса: на мобильном показываем вкладку чата.
+  useEffect(() => {
+    const focusChat = () => setMobileTab("chat");
+    window.addEventListener("chat:focus", focusChat);
+    return () => window.removeEventListener("chat:focus", focusChat);
+  }, []);
+
   return (
     <WorkspaceShell tab={{ kind: "session", id: params.id }}>
       {/* Переключатель Чат / Дашборд для экранов < lg */}
