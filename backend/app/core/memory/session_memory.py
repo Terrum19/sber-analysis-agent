@@ -262,14 +262,14 @@ class SessionMemory:
     def use_table(self, table: str) -> None:
         """Агент сам выбрал таблицу под вопрос: она становится таблицей сессии и хода.
 
-        Таблица, выбранная раньше в этом же ходе, из таблиц хода убирается.
+        Вызывается в начатом ходе. Таблица, выбранная раньше в этом же ходе,
+        из таблиц хода убирается.
         """
         previous = self.table
         self.set_table(table)
-        if self._turn is not None:
-            others = [name for name in self._turn["tables"] if name not in (table, previous)]
-            self._turn["tables"] = [table, *others]
-            self._persist()
+        others = [name for name in self._turn["tables"] if name not in (table, previous)]
+        self._turn["tables"] = [table, *others]
+        self._persist()
 
     def resume_turn(self, turn_id: str | None) -> bool:
         """Продолжить ход после уточнения; False — такого хода нет."""
