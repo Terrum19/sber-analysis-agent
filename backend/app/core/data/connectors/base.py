@@ -25,6 +25,13 @@ class BaseConnector(ABC):
         """
         return {}
 
+    def foreign_keys(self, db) -> list:
+        """Внешние ключи из схемы источника между подключёнными таблицами (по умолчанию нет).
+
+        Список relations.Relation с именами таблиц, которые вернул connect().
+        """
+        return []
+
     def skip(self, db, table: str, error: Exception) -> bool:
         """Таблицу не удалось прочитать при профилировании: пропустить её?
 

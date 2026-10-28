@@ -66,7 +66,7 @@ def test_sse_progress_events(fake_llm):
         if line.startswith("data: ")
     ]
     progress = [event["data"] for event in events if event["type"] == "progress"]
-    assert {"stage": "planning", "status": "started"} in progress
+    assert {"stage": "planning", "status": "started", "tables": ["raw"]} in progress
     assert {"stage": "insight", "status": "started"} in progress
     assert {"stage": "chart", "status": "started"} in progress
     planned = next(

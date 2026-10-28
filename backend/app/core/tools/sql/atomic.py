@@ -186,11 +186,29 @@ class JoinTablesTool(BaseTool):
     def execute(self, db, input_table: str, args: JoinArgs) -> str:
         condition = re.sub(r"\bt1\.", "t.", args.condition)
         condition = re.sub(r"\bt2\.", "t_right.", condition)
+        # Ключ t.k = t_right.k попал бы в результат дважды (k и k_1): правый не берём.
+        keys = _same_name_keys(condition) & set(db.columns(input_table))
+        right = f"t_right.* EXCLUDE ({', '.join(identifier(key) for key in sorted(keys))})"
         return db.save_step_result(
             input_table,
-            f"SELECT * FROM {identifier(input_table)} AS t "
+            f"SELECT t.*, {right if keys else 't_right.*'} FROM {identifier(input_table)} AS t "
             f"{self.join} {identifier(args.right_table)} AS t_right ON ({condition})",
         )
+
+
+_KEY_PART = r'(?:"((?:[^"]|"")+)"|(\w+))'
+_SAME_KEY = re.compile(rf"\bt\.{_KEY_PART}\s*=\s*t_right\.{_KEY_PART}")
+
+
+def _same_name_keys(condition: str) -> set[str]:
+    """Колонки k из равенств t.k = t_right.k (с кавычками или без) в условии соединения."""
+    keys = set()
+    for quoted, plain, right_quoted, right_plain in _SAME_KEY.findall(condition):
+        left = quoted.replace('""', '"') if quoted else plain
+        right = right_quoted.replace('""', '"') if right_quoted else right_plain
+        if left == right:
+            keys.add(left)
+    return keys
 
 
 class LeftJoinTablesTool(JoinTablesTool):

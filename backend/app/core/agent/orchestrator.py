@@ -69,7 +69,7 @@ from app.core.agent.triage import small_talk_reply
 from app.core.agent.turn_log import TurnLog, describe_plan
 from app.core.dashboards.generator import DashboardGenerator
 from app.core.dashboards.models import DashboardTile
-from app.core.data import overview
+from app.core.data import overview, relations
 from app.core.data.duckdb_manager import DuckDBManager
 from app.core.llm.budget import track_truncations
 from app.core.logging_setup import set_turn_id
@@ -297,6 +297,12 @@ class AgentOrchestrator:
 
         # Small talk выше: «привет» отвечается и без подключённой таблицы.
         table = memory.table
+        if table is None and pending is None:
+            # Таблица не выбрана — берём подходящую под вопрос без вызова LLM (#165).
+            table = relations.pick_table(self.db, request.question)
+            if table is not None:
+                logger.info("таблица выбрана по вопросу: %s", table)
+                memory.use_table(table)
         if table is None:
             memory.finish_turn("failed")
             yield {"type": "error", "data": {"message": NO_TABLE_MESSAGE}}
@@ -477,8 +483,14 @@ class AgentOrchestrator:
 
         # Обычный путь: новый вопрос -> план -> выполнение шагов.
         context = memory.build_context(request.question)
+        related = self._related(memory.table, request.question)
+        context["related"] = related
         logger.debug(">>> run() планируем шаги (planner.plan)")
-        emit(_progress_event("planning", "started"))
+        emit(
+            _progress_event(
+                "planning", "started", tables=[memory.table, *(item.table for item in related)]
+            )
+        )
         try:
             plan = await self._plan(request.question, context)
         except Exception as exc:
@@ -512,6 +524,14 @@ class AgentOrchestrator:
         )
         execution.remembered = remembered
         return request.question, execution
+
+    def _related(self, table: str, question: str) -> list[relations.Related]:
+        """Связанные с таблицей хода таблицы; сбой каталога — план без них."""
+        try:
+            return relations.related_tables(self.db, table, question)
+        except duckdb.Error:
+            logger.exception("связанные таблицы %s не прочитаны", table)
+            return []
 
     async def _plan(self, question: str, context: dict) -> ResearchPlan:
         """План от планировщика; невалидный и после переспроса — уточнение у пользователя."""

@@ -16,6 +16,7 @@ logger = logging.getLogger(__name__)
 from app.core.agent.step_executor import tool_kind
 from app.core.dashboards import templates
 from app.core.dashboards.templates import DashboardTemplate
+from app.core.data.relations import describe_related
 from app.core.data.semantic_select import (
     describe_columns,
     describe_other_columns,
@@ -90,9 +91,11 @@ class StepPlanner:
             context.get("titles"),
             question=question,
         )
+        described = f"{described}\n{others}" if others else described
+        related = describe_related(context.get("datasource"), context.get("related", []))
         prompt = STEP_PLANNER.format(
             tools=tools,
-            columns=f"{described}\n{others}" if others else described,
+            columns=f"{described}\n\n{related}" if related else described,
             memories=describe_memories(context.get("memories", [])),
             history=describe_history(context),
             executed=context.get("executed", "нет"),

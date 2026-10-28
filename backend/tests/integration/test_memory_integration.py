@@ -104,7 +104,21 @@ def test_planner_gets_columns_of_session_table(agent, db):
     assert agent.planner.columns == [["region", "revenue"], ["age", "city"]]
 
 
-def test_session_without_table_asks_to_connect_data(agent):
+def test_session_without_table_picks_the_table_by_question(agent):
+    events = ask(agent, "no-table", "Средний age по city")
+
+    assert events[-1]["type"] == "done"
+    assert agent.planner.columns == [["age", "city"]]
+    memory = SessionMemory("no-table")
+    assert memory.table == "users"
+    assert memory._state["turns"][0]["tables"] == ["users"]
+
+
+def test_session_without_tables_asks_to_connect_data():
+    db = DuckDBManager(":memory:")
+    agent = AgentOrchestrator(
+        planner=SpyPlanner(), executor=CopyExecutor(db), insight_gen=StubInsight(), db=db
+    )
     events = ask(agent, "no-table", "Выручка по регионам")
 
     assert events[0] == {"type": "error", "data": {"message": NO_TABLE_MESSAGE}}
