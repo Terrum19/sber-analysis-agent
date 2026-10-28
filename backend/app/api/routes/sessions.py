@@ -3,6 +3,8 @@
 Сессия — единица памяти (память уровня 1): session_id -> ходы диалога
 (см. core/memory/session_memory.py). Таблица при создании необязательна;
 PATCH меняет таблицу по умолчанию и/или название, ходы при этом остаются.
+Воспоминания сессии (#197) — ``/{id}/memories``: список, добавление,
+включение и выключение записи.
 Источник правды — SQLite SessionMemory: сессии и их метаданные переживают
 перезапуск.
 """
@@ -13,7 +15,14 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, HTTPException, Query
 
 from app.api.deps import get_db
-from app.api.schemas.chat import SessionCreate, SessionOut, SessionUpdate
+from app.api.schemas.chat import (
+    MemoryCreate,
+    MemoryOut,
+    MemoryUpdate,
+    SessionCreate,
+    SessionOut,
+    SessionUpdate,
+)
 from app.core.data.duckdb_manager import DuckDBManager
 from app.core.memory.session_memory import SessionMemory
 
@@ -28,6 +37,14 @@ def table_columns(db: DuckDBManager, table: str) -> list[str]:
     if not columns:
         raise HTTPException(status_code=404, detail=f"Таблица «{table}» не найдена.")
     return columns
+
+
+def existing(session_id: str) -> SessionMemory:
+    """Сохранённая сессия; 404, если её нет."""
+    memory = SessionMemory(session_id)
+    if not memory.exists():
+        raise HTTPException(status_code=404, detail="Сессия не найдена.")
+    return memory
 
 
 def session_out(memory: SessionMemory) -> SessionOut:
@@ -83,10 +100,28 @@ def update_session(
 @router.get("/{session_id}", response_model=SessionOut)
 def get_session(session_id: str) -> SessionOut:
     """Получить метаданные сессии."""
-    memory = SessionMemory(session_id)
-    if not memory.exists():
-        raise HTTPException(status_code=404, detail="Сессия не найдена.")
-    return session_out(memory)
+    return session_out(existing(session_id))
+
+
+@router.get("/{session_id}/memories", response_model=list[MemoryOut])
+def list_memories(session_id: str) -> list[MemoryOut]:
+    """Все воспоминания сессии, включённые и выключенные, старые первыми."""
+    return [MemoryOut(**item) for item in existing(session_id).memories(include_disabled=True)]
+
+
+@router.post("/{session_id}/memories", response_model=MemoryOut, status_code=201)
+def add_memory(session_id: str, payload: MemoryCreate) -> MemoryOut:
+    """Добавить воспоминание; тот же текст не дублируется, а снова включается."""
+    return MemoryOut(**existing(session_id).remember(payload.text))
+
+
+@router.patch("/{session_id}/memories/{memory_id}", response_model=MemoryOut)
+def update_memory(session_id: str, memory_id: str, payload: MemoryUpdate) -> MemoryOut:
+    """Включить или выключить воспоминание: выключенное не идёт в контекст хода."""
+    item = existing(session_id).set_memory_enabled(memory_id, payload.enabled)
+    if item is None:
+        raise HTTPException(status_code=404, detail="Воспоминание не найдено.")
+    return MemoryOut(**item)
 
 
 @router.delete("/{session_id}")

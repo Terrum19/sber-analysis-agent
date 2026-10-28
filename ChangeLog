@@ -67,7 +67,152 @@
 	список без пустых сессий.
 	* docs/memory.md, docs/data_connectors.md, docs/prompts.md: То же.
 
+2026-10-28  Dmitriy Yakushonok  <dmitriyyakushonok@yandex.ru>
+
+	Каскадное удаление дашбордов и графиков при удалении базы данных или сессии.
+	* backend/app/core/dashboards/store.py (DashboardStore.delete_by_session,
+	delete_by_sessions): Удаление дашбордов сессии и их плиток (CASCADE).
+	(DashboardStore.prune_orphaned): Очистка осиротевших дашбордов без сессии.
+	* backend/app/core/memory/session_memory.py (SessionMemory.delete):
+	Каскадное удаление дашбордов при удалении сессии.
+	(SessionMemory.find_by_datasource): Поиск сессий источника данных.
+	* backend/app/api/routes/datasources.py (detach): Удаление всех сессий
+	и дашбордов источника при его отключении.
+	* backend/tests/unit/test_dashboard_store.py,
+	backend/tests/unit/test_datasource_delete.py,
+	backend/tests/unit/test_sessions_api.py: Тесты каскадного удаления.
+	* frontend/src/store/uiStore.ts (closeTabsForSessions): Закрытие
+	вкладок дашбордов удалённых сессий.
+	* frontend/src/components/layout/LeftSidebar.tsx (handleDeleteDatabase,
+	handleDeleteSession): Удаление дашбордов через API, закрытие вкладок,
+	очистка канваса и оповещение dashboards:changed.
+	* frontend/src/components/layout/RecentDashboards.tsx,
+	frontend/src/app/dashboards/page.tsx: Фильтрация дашбордов удалённых баз.
+
 2026-10-28  Alexander Yurits  <143354682+Terrum19@users.noreply.github.com>
+
+	Воспоминания сессии — в своей таблице: запись через API во время
+	хода больше не затирается сохранением хода (ревью #203).
+	* backend/app/core/memory/session_memory.py (_connect): Таблица
+	session_memories, UNIQUE (session_id, text_key).
+	(memories, remember, set_memory_enabled): Читают и пишут строки
+	session_memories, а не state["memories"].  (context_memories): Новая.
+	Последние settings.context_memories включённых записей.
+	(delete): Удаляет и воспоминания сессии.
+	* backend/app/config.py (context_memories): Новая, по умолчанию 20.
+	* backend/app/models/research_step.py (NOTE_LIMIT, NOTES_PER_PLAN):
+	Новые.  (ResearchPlan.remember): Пределы в JSON-схеме; лишнее
+	отрезается при разборе.
+	* backend/app/api/schemas/chat.py (MemoryText): Предел — NOTE_LIMIT.
+	* backend/app/core/agent/orchestrator.py (_turn): Инсайт получает
+	context_memories.
+	* docs/memory.md: Хранение, пределы, запись при упавших шагах.
+	* backend/tests/unit/test_context_memory.py: Тесты того же.
+
+2026-10-28  Alexander Yurits  <143354682+Terrum19@users.noreply.github.com>
+
+	API воспоминаний сессии: список, добавление, выключение (#197).
+	* backend/app/api/routes/sessions.py (list_memories, add_memory)
+	(update_memory): Новые.  GET, POST и PATCH /{id}/memories.
+	(existing): Новая.  Сессия или 404.
+	* backend/app/api/schemas/chat.py (MemoryCreate, MemoryUpdate)
+	(MemoryOut): Новые.
+	* backend/app/core/memory/session_memory.py (memories): Аргумент
+	include_disabled.  (set_memory_enabled): Новая.  (remember): Тот же
+	текст включает выключенную запись.
+	* frontend/src/types/datasource.ts (MemoryItem, MemoryCreatePayload)
+	(MemoryPatchPayload): Новые.
+	* docs/memory.md: То же.
+	* backend/tests/unit/test_sessions_api.py,
+	backend/tests/unit/test_context_memory.py: Тесты API и выключения.
+
+2026-10-28  Alexander Yurits  <143354682+Terrum19@users.noreply.github.com>
+
+	Контекст хода: последние ходы всегда, история по запросу,
+	воспоминания (#197).
+	* backend/app/core/memory/session_memory.py (recent_turns): Последние
+	settings.context_turns ходов любого статуса, кроме идущего, с
+	номером хода; шаги — только у ходов ok (#107).
+	(find_turns): Новая.  Ход по номеру или поиск по вопросам и ответам.
+	(memories, remember): Новые.  Воспоминания сессии в state["memories"].
+	(build_context): Поле memories — все включённые записи.
+	(CONTEXT_TURNS): Удалена, вместо неё settings.context_turns.
+	* backend/app/config.py (context_turns): Новая, по умолчанию 5.
+	* backend/app/core/tools/read_history.py: Новый lookup-тул.
+	* backend/app/core/tools/base.py (ToolContext.history): Новое поле.
+	* backend/app/core/agent/step_executor.py (execute): Аргумент history.
+	* backend/app/core/agent/orchestrator.py (_research): Записи из
+	plan.remember — в воспоминания; просьба без вопроса к данным
+	отвечается подтверждением.  (_turn): Воспоминания — в инсайт,
+	подтверждение — в details.  (_run_step): Память сессии — в шаг.
+	* backend/app/core/agent/planner.py (describe_memories): Новая.
+	(describe_history, describe_turns): Номер хода, ответ упавшего хода,
+	указание на read_history для ходов старше окна.
+	* backend/app/core/agent/insight.py (generate): Аргумент memories.
+	* backend/app/core/llm/prompts/step_planner.py (MEMORIES, OLDER_TURNS):
+	Новые.  (STEP_PLANNER): Поле remember.  (PAST_TURNS): Продолжается
+	последний ход с планом.
+	* backend/app/core/llm/prompts/insight_summary.py (INSIGHT_MEMORIES):
+	Новый.
+	* backend/app/models/research_step.py (ResearchPlan.remember): Новое.
+	* backend/app/core/agent/quality_fixes.py (CORE_TOOLS): read_history.
+	* docs/memory.md, docs/prompts.md, .env.example: То же.
+	* backend/tests/unit/test_context_memory.py,
+	backend/tests/unit/test_context_memory_flow.py: Новые.
+	* backend/tests/unit/test_session_memory.py,
+	backend/tests/unit/test_orchestrator_viz.py: Упавшие ходы — в
+	контексте без шагов, окно — 5 ходов.
+
+2026-10-28  Alexander Yurits  <143354682+Terrum19@users.noreply.github.com>
+
+	Тестовый конфиг: размышления low, провайдер DeepInfra обязателен.
+	* .env.example: LLM_REASONING_EFFORT=low и LLM_PROVIDER=deepinfra в
+	строках тестового конфига вместо none.
+	* docs/eval.md (Тестовый конфиг): Почему с размышлениями (3 из 15
+	проверок без них, 11 из 15 с ними) и почему провайдер закреплён.
+
+	Провайдер OpenRouter закрепляется флагом LLM_PROVIDER.
+	* backend/app/config.py (Settings.llm_provider),
+	backend/app/core/llm/client.py (LLMClient.complete): Список
+	провайдеров через запятую уходит в provider.only; без значения
+	параметр не передаётся.  С размышлениями JSON плана держит DeepInfra,
+	Near AI и Modal его ломают.
+	* .env.example: Строка LLM_PROVIDER, закомментирована.
+	* docs/eval.md (Тестовый конфиг): Замер 28.10: 3 из 15 без
+	размышлений, 11 из 15 с ними и DeepInfra; конфиг для оценки качества.
+	* backend/tests/unit/test_llm_client_retries.py
+	(test_provider_goes_to_request): Новый тест.
+
+	План без пустых аргументов, пустых планов и шагов не по той таблице.
+	* backend/app/models/research_step.py (ResearchStep, ResearchPlan):
+	В JSON-схеме обязательны tool, input, arguments, purpose и steps,
+	tool не null, template_id — только id шаблонов (97c10fc, thebulkapro,
+	дополнено полем input).
+	* backend/app/core/tools/base.py (BaseTool.signature): Обязательные
+	аргументы помечены «(обязательный)»: модель пропускала by у group_by.
+	* backend/app/core/llm/prompts/step_planner.py (STEP_PLANNER): Правило
+	обязательных аргументов; input указывать всегда, независимый расчёт —
+	"$source".  (EMPTY_PLAN): Новый.
+	* backend/app/core/agent/planner.py (StepPlanner.plan): Пустой план на
+	новый вопрос переспрашивается один раз.
+	* backend/app/core/agent/orchestrator.py (AgentOrchestrator._from_source):
+	Новая.  (_run_step): Колонки из ошибки DuckDB нет в $prev, но она есть
+	в источнике — шаг повторяется на $source без вызова LLM.
+	* backend/app/core/data/overview.py (_OVERVIEW): «что это», «что это
+	такое», «что тут есть» — обзор таблицы, а не планировщик.
+	* backend/tests/unit/test_plan_execution.py, test_planner.py,
+	test_tool_registry.py, test_overview.py: Тесты того же.
+
+	Тестовый конфиг команды: qwen3.8-27b в OpenRouter без размышлений.
+	* backend/app/config.py (Settings.llm_reasoning_effort),
+	backend/app/core/llm/client.py (LLMClient.complete): Флаг
+	LLM_REASONING_EFFORT из testing/first_test (thebulkapro): none
+	передаёт OpenRouter reasoning.enabled=false, low/medium/high —
+	reasoning.effort, без значения параметр не передаётся.
+	* .env.example: Строки тестового конфига, закомментированы.
+	* docs/eval.md (Тестовый конфиг): Конфиг и почему без размышлений.
+	* backend/tests/unit/test_llm_client_retries.py
+	(test_reasoning_effort_goes_to_request): Новый тест.
 
 	DuckDB не останавливает loop сервера (#189).
 	* backend/app/api/routes/chat.py (iterate_in_thread): Новая.  Ход

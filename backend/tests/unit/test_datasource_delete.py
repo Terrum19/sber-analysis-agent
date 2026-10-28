@@ -125,3 +125,35 @@ def test_unknown_source_is_404(client, db, identity) -> None:
     response = client.delete(f"/api/datasources/{identity}")
     assert response.status_code == 404
     assert client.get("/api/datasources/tables").json() == ["orders"]
+
+
+def test_delete_datasource_removes_sessions_and_dashboards(client, db) -> None:
+    body = upload(client, ("orders.csv", b"id,amount\n1,10\n"))
+    source = body["datasource_id"]
+
+    # Создаём сессию на этой базе
+    session_res = client.post(
+        "/api/sessions",
+        json={"table": "orders", "datasource_id": source, "title": "Сессия заказов"},
+    )
+    assert session_res.status_code == 200
+    session_id = session_res.json()["session_id"]
+
+    # Создаём дашборд для этой сессии
+    dash_res = client.post(
+        "/api/dashboards",
+        json={"session_id": session_id, "title": "Дашборд заказов", "tiles": []},
+    )
+    assert dash_res.status_code == 201
+    dash_id = dash_res.json()["id"]
+
+    # Проверяем наличие
+    assert client.get(f"/api/sessions/{session_id}").status_code == 200
+    assert client.get(f"/api/dashboards/{dash_id}").status_code == 200
+
+    # Удаляем источник данных
+    assert client.delete(f"/api/datasources/{source}").status_code == 204
+
+    # Сессия и дашборд удалены
+    assert client.get(f"/api/sessions/{session_id}").status_code == 404
+    assert client.get(f"/api/dashboards/{dash_id}").status_code == 404

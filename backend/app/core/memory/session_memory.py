@@ -5,9 +5,18 @@
 закрывает его ответом и статусом (ok / failed / clarification). Ответ
 на уточнение продолжает тот же ход (``resume_turn``).
 
-В контекст планировщика идут последние ``CONTEXT_TURNS`` успешных ходов
-с планом: вопрос, шаги с аргументами, итог и колонки результата. Размер
-контекста не растёт с числом ходов, шаги упавших ходов в него не попадают.
+В контекст планировщика идут последние ``settings.context_turns`` ходов
+любого статуса: вопрос и ответ, у успешных — ещё шаги с аргументами и
+колонки результата. Шаги упавших и прерванных уточнением ходов в контекст
+не попадают (#107). Ходы старше окна планировщик получает по запросу:
+тул ``read_history`` ищет их через ``find_turns``.
+
+Воспоминания — короткие записи сессии: что пользователь попросил
+запомнить. Последние ``settings.context_memories`` включённых идут в
+контекст планировщика и инсайта каждого хода, без отбора по вопросу (#197):
+их мало. Они лежат в своей таблице ``session_memories``, по строке на
+запись, а не в состоянии сессии: ход держит состояние до ``finish_turn`` и
+пишет его целиком, запись через API во время хода иначе затиралась бы.
 
 Ход-ответ на прошлое сообщение (``reply_to``) вместо прошлых ходов получает
 цепочку ответов: выбранный ход и его предков по ``reply_to``. План выбранного
@@ -24,6 +33,7 @@
 """
 
 import json
+import re
 import sqlite3
 import time
 import uuid
@@ -36,12 +46,14 @@ from app.config import settings
 from app.core.data.duckdb_manager import DuckDBManager
 from app.core.memory.profile_memory import ProfileMemory
 
-# Сколько прошлых успешных ходов видит планировщик.
-CONTEXT_TURNS = 3
+# Сколько ходов отдаёт поиск по истории (read_history).
+HISTORY_HITS = 3
+# Первые буквы слова при поиске по истории: «выручка» и «выручку» совпадают.
+STEM_LETTERS = 5
 
 
 def _connect(path: Path) -> sqlite3.Connection:
-    """Открыть SQLite сессий, создав таблицу ``session_state`` при первом обращении."""
+    """Открыть SQLite сессий, создав таблицы при первом обращении."""
     path.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(str(path))
     conn.execute(
@@ -50,6 +62,22 @@ def _connect(path: Path) -> sqlite3.Connection:
             session_id TEXT PRIMARY KEY,
             state TEXT NOT NULL,
             updated_at REAL
+        )
+        """
+    )
+    # text_key — текст без регистра и лишних пробелов: тот же текст не дублируется.
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS session_memories (
+            memory_id TEXT PRIMARY KEY,
+            session_id TEXT NOT NULL,
+            text TEXT NOT NULL,
+            text_key TEXT NOT NULL,
+            source TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            enabled INTEGER NOT NULL,
+            turn_id TEXT,
+            UNIQUE (session_id, text_key)
         )
         """
     )
@@ -67,6 +95,8 @@ class SessionMemory:
         self._state = self._load()
         self._state.setdefault("turns", [])
         self._turn: dict | None = None
+        # Текущий ход ещё не закрыт finish_turn: в прошлые ходы он не входит.
+        self._open = False
 
     @staticmethod
     def list_sessions(limit: int, offset: int = 0) -> list[dict]:
@@ -127,18 +157,41 @@ class SessionMemory:
         return row is not None
 
     @staticmethod
+    def find_by_datasource(datasource_id: str) -> list[str]:
+        """Список session_id сессий, привязанных к источнику данных."""
+        conn = _connect(Path(settings.sqlite_path))
+        try:
+            rows = conn.execute(
+                """
+                SELECT session_id
+                FROM session_state
+                WHERE json_extract(state, '$.datasource_id') = ?
+                """,
+                (datasource_id,),
+            ).fetchall()
+            return [row[0] for row in rows]
+        finally:
+            conn.close()
+
+    @staticmethod
     def delete(session_id: str) -> bool:
-        """Удалить сессию из SQLite."""
+        """Удалить сессию из SQLite и каскадно удалить её дашборды."""
         conn = _connect(Path(settings.sqlite_path))
         try:
             cursor = conn.execute(
                 "DELETE FROM session_state WHERE session_id = ?",
                 (session_id,),
             )
+            conn.execute("DELETE FROM session_memories WHERE session_id = ?", (session_id,))
             conn.commit()
-            return cursor.rowcount > 0
+            deleted = cursor.rowcount > 0
         finally:
             conn.close()
+        if deleted:
+            from app.core.dashboards.store import DashboardStore
+
+            DashboardStore(Path(settings.sqlite_path)).delete_by_session(session_id)
+        return deleted
 
     def _persist(self) -> None:
         """Сохранить состояние сессии в SQLite."""
@@ -227,6 +280,7 @@ class SessionMemory:
             "reply_to": reply_to,
         }
         self._state["turns"].append(self._turn)
+        self._open = True
         self._persist()
         return self._turn["turn_id"]
 
@@ -236,6 +290,7 @@ class SessionMemory:
         if turn is None:
             return False
         self._turn = turn
+        self._open = True
         return True
 
     def _find(self, turn_id: str | None) -> dict | None:
@@ -254,7 +309,7 @@ class SessionMemory:
         if target is None or target["status"] != "ok" or not target["steps"]:
             return []
         chain = [target]
-        while len(chain) < CONTEXT_TURNS:
+        while len(chain) < settings.context_turns:
             parent = self._find(chain[-1].get("reply_to"))
             if parent is None or parent["status"] != "ok":
                 break
@@ -305,6 +360,7 @@ class SessionMemory:
             result_table=result_table,
             result_columns=list(result_columns or []),
         )
+        self._open = False
         self._persist()
 
     def last_chart(self) -> dict | None:
@@ -317,13 +373,126 @@ class SessionMemory:
                 return turn["chart"]
         return None
 
+    def _past_turns(self) -> list[dict]:
+        """Ходы, кроме идущего, с номером в сессии (с 1); шаги — только у успешных."""
+        return [
+            {**turn, "number": number, "steps": turn["steps"] if turn["status"] == "ok" else []}
+            for number, turn in enumerate(self._state["turns"], 1)
+            if not (self._open and turn is self._turn)
+        ]
+
     def recent_turns(self) -> list[dict]:
-        """Последние CONTEXT_TURNS успешных ходов с планом, старые первыми."""
-        done = [t for t in self._state["turns"] if t["status"] == "ok" and t["steps"]]
-        return done[-CONTEXT_TURNS:]
+        """Последние ``settings.context_turns`` ходов любого статуса, старые первыми."""
+        return self._past_turns()[-settings.context_turns :] if settings.context_turns else []
+
+    def find_turns(self, query: str | None = None, number: int | None = None) -> list[dict]:
+        """Прошлые ходы для read_history: ход по номеру или поиск по вопросам и ответам.
+
+        Поиск — по словам запроса в вопросе и ответе хода (совпадение первых
+        ``STEM_LETTERS`` букв), лучшие ``HISTORY_HITS`` ходов, старые первыми.
+        """
+        past = self._past_turns()
+        if number is not None:
+            return [turn for turn in past if turn["number"] == number]
+        wanted = _stems(query or "")
+        scored = [
+            (len(wanted & _stems(f"{turn['question']} {turn.get('headline') or ''}")), turn)
+            for turn in past
+        ]
+        hits = sorted((pair for pair in scored if pair[0]), key=lambda pair: -pair[0])
+        return sorted((turn for _, turn in hits[:HISTORY_HITS]), key=lambda turn: turn["number"])
+
+    # --- Воспоминания ---
+
+    def memories(self, include_disabled: bool = False) -> list[dict]:
+        """Воспоминания сессии, старые первыми: включённые или все.
+
+        Читаются из SQLite на каждый вызов: запись, добавленная через API
+        во время хода, видна сразу.
+        """
+        query = (
+            "SELECT memory_id, text, source, created_at, enabled, turn_id"
+            " FROM session_memories WHERE session_id = ?"
+        )
+        if not include_disabled:
+            query += " AND enabled"
+        conn = self._connect()
+        conn.row_factory = sqlite3.Row
+        try:
+            rows = conn.execute(query + " ORDER BY rowid", (self.session_id,)).fetchall()
+        finally:
+            conn.close()
+        return [{**row, "enabled": bool(row["enabled"])} for row in map(dict, rows)]
+
+    def context_memories(self) -> list[str]:
+        """Тексты последних ``settings.context_memories`` включённых воспоминаний."""
+        limit = settings.context_memories
+        return [item["text"] for item in self.memories()[-limit:]] if limit else []
+
+    def remember(self, text: str, source: str = "user") -> dict | None:
+        """Добавить воспоминание и вернуть его запись; пустой текст — None.
+
+        Уже записанный текст (без учёта регистра и пробелов) не дублируется:
+        возвращается прежняя запись, выключенная — снова включается. ``source`` —
+        откуда запись: ``user`` (просьба в чате или кнопка), позже — результаты
+        глубокого исследования.
+        """
+        text = " ".join(text.split())
+        if not text:
+            return None
+        conn = self._connect()
+        try:
+            conn.execute(
+                """
+                INSERT INTO session_memories
+                    (memory_id, session_id, text, text_key, source, created_at, enabled, turn_id)
+                VALUES (?, ?, ?, ?, ?, ?, 1, ?)
+                ON CONFLICT (session_id, text_key) DO UPDATE SET enabled = 1
+                """,
+                (
+                    uuid.uuid4().hex,
+                    self.session_id,
+                    text,
+                    text.casefold(),
+                    source,
+                    datetime.now(UTC).isoformat(),
+                    self.turn_id,
+                ),
+            )
+            conn.commit()
+            (memory_id,) = conn.execute(
+                "SELECT memory_id FROM session_memories WHERE session_id = ? AND text_key = ?",
+                (self.session_id, text.casefold()),
+            ).fetchone()
+        finally:
+            conn.close()
+        return self._memory(memory_id)
+
+    def set_memory_enabled(self, memory_id: str, enabled: bool) -> dict | None:
+        """Включить или выключить воспоминание; None — такой записи нет."""
+        conn = self._connect()
+        try:
+            conn.execute(
+                "UPDATE session_memories SET enabled = ? WHERE session_id = ? AND memory_id = ?",
+                (int(enabled), self.session_id, memory_id),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+        return self._memory(memory_id)
+
+    def _memory(self, memory_id: str) -> dict | None:
+        return next(
+            (
+                item
+                for item in self.memories(include_disabled=True)
+                if item["memory_id"] == memory_id
+            ),
+            None,
+        )
 
     def build_context(self, question: str) -> dict:
-        """Собрать контекст: прошлые ходы или цепочка ответа + колонки + паспорт таблицы."""
+        """Собрать контекст: прошлые ходы или цепочка ответа, воспоминания, колонки, паспорт."""
         datasource = self.table
 
         # Профиль данных (паспорт таблицы) для долгосрочного контекста;
@@ -349,6 +518,7 @@ class SessionMemory:
         return {
             "turns": [] if reply else self.recent_turns(),
             "reply": reply,
+            "memories": self.context_memories(),
             "question": question,
             "columns": columns,
             "datasource": datasource,
@@ -373,3 +543,8 @@ class SessionMemory:
         """Очистить состояние ожидания уточнения после успешного восстановления."""
         self._state["pending_recovery"] = None
         self._persist()
+
+
+def _stems(text: str) -> set[str]:
+    """Основы слов для поиска по истории: слова от 3 букв, первые STEM_LETTERS букв."""
+    return {word[:STEM_LETTERS] for word in re.findall(r"\w{3,}", text.casefold())}

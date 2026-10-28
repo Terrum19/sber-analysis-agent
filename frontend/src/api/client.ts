@@ -30,6 +30,7 @@ import {
   mockStreamChat,
   mockUpdateDashboard,
 } from "./mockData";
+import { filenameFromDisposition } from "@/lib/download";
 
 const API = "/api";
 
@@ -291,13 +292,14 @@ export async function renameTableApi(table: string, displayName: string): Promis
 /**
  * Подписка на SSE-поток диалога; onEvent вызывается на каждое событие,
  * onClose — один раз, когда поток закончился, оборвался или был отменён.
+ * replyTo — turn_id из события done: вопрос продолжает конкретный прошлый ход (#166).
  */
 export function streamChat(
   sessionId: string,
   question: string,
   onEvent: (event: ChatStreamEvent) => void,
   onClose?: (error?: string) => void,
-  optionsOrRecoveryResponse?: { recoveryResponse?: string } | string,
+  optionsOrRecoveryResponse?: { recoveryResponse?: string; replyTo?: string | null } | string,
 ): () => void {
   const options =
     typeof optionsOrRecoveryResponse === "string"
@@ -319,6 +321,7 @@ export function streamChat(
           session_id: sessionId,
           question,
           recovery_response: options?.recoveryResponse ?? null,
+          reply_to: options?.replyTo ?? null,
         }),
         signal: controller.signal,
       });
@@ -534,42 +537,63 @@ export async function recalculateDashboard(id: string): Promise<DashboardConfig>
   }
 }
 
-export interface ExportArtifactOptions {
+/** Выгрузка артефактов (Excel / PDF). */
+export interface ExportPayload {
+  session_id: string;
+  format: "xlsx" | "pdf";
+  /** Ссылка на temp_result_vN в DuckDB (обязательна для Excel). */
+  result_ref?: string | null;
+  /** Дашборд-источник: владение результатом проверяется по его плиткам. */
+  dashboard_id?: string;
+  /** Вопрос пользователя — для PDF-отчёта (E-01). */
   question?: string;
+  /** Заголовок инсайта — для PDF-отчёта (E-01). */
   headline?: string;
+  /** Детали инсайта — для PDF-отчёта (E-01). */
   details?: string[];
-  spec?: Record<string, any>;
-  dashboardId?: string;
+  /** Vega-Lite спека графика — для картинки в PDF (E-01). */
+  spec?: Record<string, unknown>;
 }
 
-/** Выгрузка артефактов (Excel / PDF). */
+export interface ExportResult {
+  blob: Blob;
+  /** Имя из Content-Disposition либо запасное. */
+  filename: string;
+}
+
 export async function exportArtifact(
-  sessionId: string,
-  format: "xlsx" | "pdf",
-  resultRef?: string,
-  options?: ExportArtifactOptions,
-): Promise<Blob> {
+  payload: ExportPayload,
+  fallbackName?: string,
+): Promise<ExportResult> {
+  const { session_id, format, result_ref, dashboard_id, ...insight } = payload;
+  const fallback = fallbackName ?? `agent_export.${format}`;
   if (isMockMode()) {
-    const content = `Экспорт отчёта (${format.toUpperCase()})\nСессия: ${sessionId}\nДата: ${new Date().toLocaleString("ru-RU")}`;
-    return new Blob([content], { type: format === "xlsx" ? "application/vnd.ms-excel" : "application/pdf" });
+    const content = `Экспорт отчёта (${format.toUpperCase()})\nСессия: ${session_id}\nДата: ${new Date().toLocaleString("ru-RU")}`;
+    return {
+      blob: new Blob([content], {
+        type: format === "xlsx" ? "application/vnd.ms-excel" : "application/pdf",
+      }),
+      filename: fallback,
+    };
   }
   try {
     const res = await fetch(`${API}/artifacts/export`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        session_id: sessionId,
+        session_id,
         format,
-        result_ref: resultRef || null,
-        question: options?.question || null,
-        headline: options?.headline || null,
-        details: options?.details || null,
-        spec: options?.spec || null,
-        dashboard_id: options?.dashboardId || null,
+        result_ref: result_ref || null,
+        dashboard_id: dashboard_id || null,
+        ...insight,
       }),
     });
     if (!res.ok) throw await parseApiError(res);
-    return await res.blob();
+    const blob = await res.blob();
+    return {
+      blob,
+      filename: filenameFromDisposition(res.headers.get("Content-Disposition"), fallback),
+    };
   } catch (err) {
     throw toApiError(err);
   }

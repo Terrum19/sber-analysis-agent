@@ -7,6 +7,7 @@
  * - Клик открывает дашборд во вкладке, «✕» удаляет
  */
 import { useEffect, useMemo, useRef, useState } from "react";
+import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { deleteDashboard, fetchDashboard, fetchDashboards, isNotFound } from "@/api/client";
 import WorkspaceShell from "@/components/layout/WorkspaceShell";
@@ -56,6 +57,7 @@ export default function DashboardsListPage() {
   const [searchQuery, setSearchQuery] = useState("");
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [deleteError, setDeleteError] = useState<{ id: string; message: string } | null>(null);
   const mountedRef = useRef(true);
 
   useEffect(() => {
@@ -107,15 +109,19 @@ export default function DashboardsListPage() {
     }
   }
 
-  async function handleDelete(id: string, e: React.MouseEvent) {
-    e.stopPropagation();
+  async function handleDelete(id: string, e?: React.MouseEvent) {
+    e?.stopPropagation();
     if (!confirm(t("registry.deleteConfirm"))) return;
+    setDeleteError(null);
     try {
       await deleteDashboard(id);
     } catch (err) {
       // 404 — дашборд уже удалён: убираем его из списка, не пугаем пользователя
       if (!isNotFound(err)) {
-        alert(t("registry.deleteError", { msg: (err as any)?.detail || (err as any)?.message || String(err) }));
+        setDeleteError({
+          id,
+          message: (err as any)?.detail || (err as any)?.message || String(err),
+        });
         return;
       }
     }
@@ -142,10 +148,21 @@ export default function DashboardsListPage() {
     return date ? date.toLocaleString(dateLocale, { dateStyle: "medium", timeStyle: "short" }) : "—";
   }
 
+  const visibleDashboards = useMemo(() => {
+    return dashboards.filter((d) => {
+      if (!d.session_id) return false;
+      const dbId = sessionDatabase[d.session_id];
+      if (dbId) {
+        return databases.some((x) => x.id === dbId);
+      }
+      return databases.some((x) => x.sessions?.some((s) => s.id === d.session_id));
+    });
+  }, [dashboards, sessionDatabase, databases]);
+
   const filtered = useMemo(() => {
     const q = searchQuery.toLowerCase().trim();
-    if (!q) return dashboards;
-    return dashboards.filter((d) => {
+    if (!q) return visibleDashboards;
+    return visibleDashboards.filter((d) => {
       const date = toDate(d.updated_at ?? d.created_at);
       // Дата ищется в нескольких записях: 17.10.2026, 2026-10-17, «17 окт. 2026 г.»
       const dateTexts = date
@@ -160,7 +177,7 @@ export default function DashboardsListPage() {
       );
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [dashboards, searchQuery, databases, sessionDatabase, dateLocale]);
+  }, [visibleDashboards, searchQuery, databases, sessionDatabase, dateLocale]);
 
   return (
     <WorkspaceShell tab={{ kind: "dashboards" }}>
@@ -190,6 +207,26 @@ export default function DashboardsListPage() {
             )}
           </div>
 
+          {deleteError && (
+            <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-bad/30 bg-bad/10 px-4 py-2.5 text-[12px] text-bad">
+              <span>{t("registry.deleteError", { msg: deleteError.message })}</span>
+              <div className="flex items-center gap-1.5">
+                <button
+                  onClick={() => void handleDelete(deleteError.id)}
+                  className="rounded-md border border-bad/40 px-2.5 py-1 text-[11px] hover:bg-bad/20 transition"
+                >
+                  {t("registry.retry")}
+                </button>
+                <button
+                  onClick={() => setDeleteError(null)}
+                  className="rounded-md px-2 py-1 text-[11px] text-graphite-300 hover:bg-graphite-800 transition"
+                >
+                  {t("sidebar.cancel")}
+                </button>
+              </div>
+            </div>
+          )}
+
           {loading ? (
             <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-3">
               {[1, 2, 3].map((i) => (
@@ -204,11 +241,19 @@ export default function DashboardsListPage() {
                 {t("registry.retry")}
               </button>
             </div>
-          ) : dashboards.length === 0 ? (
-            <div className="flex h-56 flex-col items-center justify-center gap-2 rounded-xl border border-graphite-800 text-center">
+          ) : visibleDashboards.length === 0 ? (
+            <div className="flex h-56 flex-col items-center justify-center gap-3 rounded-xl border border-graphite-800 text-center">
               <Icon name="layout" size={22} className="text-graphite-500" />
-              <p className="text-[14px] text-graphite-200">{t("registry.emptyTitle")}</p>
-              <p className="max-w-sm text-[12px] text-graphite-500">{t("registry.emptyText")}</p>
+              <div>
+                <p className="text-[14px] text-graphite-200">{t("registry.emptyTitle")}</p>
+                <p className="mt-1 max-w-sm text-[12px] text-graphite-500">{t("registry.emptyText")}</p>
+              </div>
+              <Link
+                href="/"
+                className="rounded-lg bg-graphite-100 px-3.5 py-1.5 text-[12px] font-medium text-graphite-950 hover:bg-graphite-50 transition"
+              >
+                {t("registry.emptyAction")}
+              </Link>
             </div>
           ) : filtered.length === 0 ? (
             <p className="py-10 text-center text-[13px] text-graphite-400">{t("registry.notFound", { q: searchQuery })}</p>

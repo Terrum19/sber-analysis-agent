@@ -1,20 +1,35 @@
 """Схемы плана исследования: ResearchStep и ResearchPlan."""
 
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+
+from app.core.dashboards.templates import TEMPLATES
 
 # Ссылки на таблицы в плане: $prev — результат последнего transform-шага,
 # $source — исходная таблица источника, $step_N — результат шага N.
 PREVIOUS = "$prev"
 SOURCE = "$source"
 
+# Воспоминание сессии: длина записи (та же у API) и записей за один план.
+# Пределы попадают в JSON-схему плана: свободная строка без них — место,
+# где слабая модель зацикливается (#81).
+NOTE_LIMIT = 500
+NOTES_PER_PLAN = 3
+
 
 class ResearchStep(BaseModel):
     """Один шаг плана исследования."""
 
+    # input обязателен в схеме: без него модель молча продолжала с $prev,
+    # хотя второй независимый расчёт нужен по исходной таблице.
+    model_config = ConfigDict(
+        json_schema_extra={"required": ["tool", "input", "arguments", "purpose"]}
+    )
+
     step_id: int = 0
-    tool: str | None = None
+    # null в схеме не разрешаем: шаг без инструмента валидация всё равно отклонит.
+    tool: str | None = Field(default=None, json_schema_extra={"anyOf": [{"type": "string"}]})
     input: str = PREVIOUS
     arguments: dict[str, Any] = Field(default_factory=dict)
     # Старый позиционный формат: раскладывается по аргументам тула по порядку.
@@ -91,6 +106,8 @@ class DashboardTilePlan(BaseModel):
 class ResearchPlan(BaseModel):
     """Полный план исследования: упорядоченные шаги + мета."""
 
+    model_config = ConfigDict(json_schema_extra={"required": ["steps"]})
+
     steps: list[ResearchStep] = Field(default_factory=list)
     final_viz: Literal[
         "bar",
@@ -109,10 +126,21 @@ class ResearchPlan(BaseModel):
     # Шаг, чей результат идёт в ответ и на график (None — последний шаг).
     result_step: int | None = None
     dashboard_title: str | None = None
-    template_id: str | None = None
+    template_id: str | None = Field(
+        default=None,
+        json_schema_extra={
+            "anyOf": [{"type": "string", "enum": [t.id for t in TEMPLATES]}, {"type": "null"}]
+        },
+    )
     dashboard_tiles: list[DashboardTilePlan] = Field(default_factory=list)
+    # Что пользователь попросил запомнить в этом вопросе (воспоминания сессии, #197).
+    remember: list[Annotated[str, Field(max_length=NOTE_LIMIT)]] = Field(
+        default_factory=list, max_length=NOTES_PER_PLAN
+    )
 
-    @field_validator("final_viz", "dashboard_requested", "dashboard_tiles", mode="before")
+    @field_validator(
+        "final_viz", "dashboard_requested", "dashboard_tiles", "remember", mode="before"
+    )
     @classmethod
     def _null_is_default(cls, value: Any, info) -> Any:
         """LLM присылает null вместо значения по умолчанию: final_viz=null -> auto."""
@@ -120,6 +148,21 @@ class ResearchPlan(BaseModel):
             field_info = cls.model_fields[info.field_name]
             return field_info.get_default(call_default_factory=True)
         return value
+
+    @field_validator("remember", mode="before")
+    @classmethod
+    def _one_note_is_list(cls, value: Any) -> Any:
+        """Одна запись строкой вместо списка; лишние записи и хвост длинной — отрезаются.
+
+        Провайдер может не соблюдать пределы схемы, а план из-за записи терять нельзя.
+        """
+        if isinstance(value, str):
+            value = [value]
+        if not isinstance(value, list):
+            return value
+        return [
+            note[:NOTE_LIMIT] if isinstance(note, str) else note for note in value[:NOTES_PER_PLAN]
+        ]
 
     @model_validator(mode="after")
     def _tiles_mean_dashboard(self) -> "ResearchPlan":

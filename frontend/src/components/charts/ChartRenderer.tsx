@@ -11,6 +11,7 @@
 import dynamic from "next/dynamic";
 import type { EChartsOption } from "echarts";
 import { VegaLite, type VisualizationSpec } from "react-vega";
+import { useDateLocale, useT } from "@/i18n/useT";
 
 const ReactECharts = dynamic(() => import("echarts-for-react"), { ssr: false });
 
@@ -59,18 +60,20 @@ function columnsOf(spec: Spec, rows: Row[]): ColumnMeta[] {
   return Array.from(fields, (field) => ({ field }));
 }
 
-function formatCell(value: unknown): string {
+function formatCell(value: unknown, locale: string): string {
   if (value === null || value === undefined) return "—";
-  if (typeof value === "number") return value.toLocaleString("ru-RU", { maximumFractionDigits: 2 });
+  if (typeof value === "number") return value.toLocaleString(locale, { maximumFractionDigits: 2 });
   if (typeof value === "object") return JSON.stringify(value);
   return String(value);
 }
 
 export function DataTable({ spec, height }: { spec: Spec; height: number }) {
+  const t = useT();
+  const locale = useDateLocale();
   const rows = rowsOf(spec).slice(0, TABLE_ROW_LIMIT);
   const columns = columnsOf(spec, rows);
   if (!rows.length) {
-    return <p className="p-3 text-sm text-graphite-500">Нет данных для отображения</p>;
+    return <p className="p-3 text-sm text-graphite-500">{t("tile.noData")}</p>;
   }
   return (
     <div className="overflow-auto rounded border border-graphite-200" style={{ maxHeight: height }}>
@@ -92,7 +95,7 @@ export function DataTable({ spec, height }: { spec: Spec; height: number }) {
                   key={column.field}
                   className={`border-b border-graphite-100 px-3 py-1.5 text-graphite-900 ${column.type === "quantitative" ? "text-right tabular-nums" : ""}`}
                 >
-                  {formatCell(row[column.field])}
+                  {formatCell(row[column.field], locale)}
                 </td>
               ))}
             </tr>
