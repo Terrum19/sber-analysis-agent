@@ -155,7 +155,6 @@ export default function TopHeader({ active }: { active: WorkspaceTab }) {
   const moveTab = useUiStore((s) => s.moveTab);
   const canvasOpen = useUiStore((s) => s.canvasOpen);
   const setCanvasOpen = useUiStore((s) => s.setCanvasOpen);
-  const setMobileSidebarOpen = useUiStore((s) => s.setMobileSidebarOpen);
   const [dragKey, setDragKey] = useState<string | null>(null);
   const [overKey, setOverKey] = useState<string | null>(null);
   const activeKey = tabKey(active);
@@ -164,18 +163,6 @@ export default function TopHeader({ active }: { active: WorkspaceTab }) {
 
   return (
     <header className="relative flex h-10 w-full shrink-0 items-stretch border-b border-graphite-800 bg-graphite-950 text-graphite-300 select-none">
-      {/* Кнопка вызова мобильного меню (Drawer) */}
-      <div className="flex items-center md:hidden px-2 shrink-0">
-        <button
-          type="button"
-          onClick={() => setMobileSidebarOpen(true)}
-          className="flex h-8 w-8 items-center justify-center rounded-lg text-graphite-300 hover:bg-graphite-800 hover:text-graphite-50 transition"
-          title="Меню"
-        >
-          <Icon name="menu" size={18} />
-        </button>
-      </div>
-
       {/* Вкладки: прокрутка колесом, перетаскивание для порядка */}
       <nav
         onWheel={(e) => {
@@ -209,7 +196,7 @@ export default function TopHeader({ active }: { active: WorkspaceTab }) {
         <div className="absolute inset-y-0 right-0 flex items-center gap-1.5 bg-graphite-950 pl-2 pr-3 before:pointer-events-none before:absolute before:inset-y-0 before:right-full before:w-10 before:bg-gradient-to-l before:from-graphite-950 before:to-transparent">
           <button
             onClick={() => setCanvasOpen(!canvasOpen)}
-            className={`flex h-8 w-8 items-center justify-center rounded-lg transition ${
+            className={`flex h-7 w-7 items-center justify-center rounded-lg transition ${
               canvasOpen ? "bg-graphite-800 text-graphite-100" : "text-graphite-400 hover:bg-graphite-800 hover:text-graphite-100"
             }`}
             title={canvasOpen ? t("header.hidePanel") : t("header.showPanel")}

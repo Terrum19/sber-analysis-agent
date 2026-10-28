@@ -90,26 +90,6 @@ export default function WelcomeScreen() {
                     </span>
                   )}
                 </button>
-                <StartLink
-                  icon="sparkle"
-                  label="Открыть демо-данные (быстрый старт)"
-                  onClick={() => {
-                    const demoDb = databases.find((d) => d.tables && d.tables.length > 0);
-                    if (demoDb) {
-                      startSession(demoDb);
-                    } else {
-                      const ds = {
-                        datasource_id: "demo-sales",
-                        kind: "csv" as const,
-                        tables: ["sales_orders"],
-                        profiles: [{ table: "sales_orders", rows: 1500, columns: 6, period_from: "2024-01-01", period_to: "2024-12-31", description_status: "ready" as const, warnings: [] }],
-                        profile_summary: "Демо DuckDB: 1 таблица (sales_orders)",
-                      };
-                      const folder = useSessionStore.getState().addDatabase(ds, "sales_orders (Демо)");
-                      startSession(folder);
-                    }
-                  }}
-                />
                 <StartLink icon="upload" label={t("welcome.uploadCsv")} onClick={openFilePicker} />
                 <StartLink icon="database" label={t("welcome.connectDb")} onClick={() => setDbModalOpen(true)} />
                 <StartLink icon="layout" label={t("welcome.openRegistry")} onClick={() => router.push("/dashboards")} />
@@ -117,25 +97,6 @@ export default function WelcomeScreen() {
                   <p className="pt-1 text-[11px] text-graphite-400 animate-pulse">{t("sidebar.processing")}</p>
                 )}
                 {errorMsg && <p className="pt-1 text-[11px] leading-tight text-bad">{errorMsg}</p>}
-
-                <div
-                  onDragOver={(e) => e.preventDefault()}
-                  onDrop={(e) => {
-                    e.preventDefault();
-                    if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
-                      const input = fileInputRef.current;
-                      if (input) {
-                        input.files = e.dataTransfer.files;
-                        input.dispatchEvent(new Event("change", { bubbles: true }));
-                      }
-                    }
-                  }}
-                  onClick={openFilePicker}
-                  className="mt-3 w-full cursor-pointer rounded-xl border border-dashed border-graphite-700 hover:border-graphite-500 bg-graphite-900/40 hover:bg-graphite-900/80 p-3 text-center transition"
-                >
-                  <p className="text-xs text-graphite-300">Перетащите сюда .CSV файлы для анализа</p>
-                  <p className="text-[11px] text-graphite-500 mt-0.5">или нажмите, чтобы выбрать файлы</p>
-                </div>
               </div>
             </section>
 

@@ -21,6 +21,7 @@ import DashboardPreviewCard from "@/components/chat/DashboardPreviewCard";
 import LlmStatusBanner from "@/components/chat/LlmStatusBanner";
 import { useLlmStatus } from "@/hooks/useLlmStatus";
 import { useT } from "@/i18n/useT";
+import { getDatasetQuestions } from "@/lib/datasetQuestions";
 import type { DashboardTile as DashboardTileType } from "@/types/dashboard";
 import { RECOVERY_SKIP_STEP, applyProgress, type DashboardEvent, type TurnProgress } from "@/types/chat";
 
@@ -426,21 +427,22 @@ export default function ChatPanel({ sessionId }: Props) {
               </div>
             )}
             {(() => {
-              const isElectricity = Boolean(
-                (activeTable && /electric|price|volume|energy|pz|ues/i.test(activeTable)) ||
-                (database?.title && /electric|price|volume|energy|pz|ues/i.test(database.title))
+              const chips = getDatasetQuestions(
+                activeTable,
+                database?.title,
+                activeBrief?.summary || database?.description
               );
-              const chips = isElectricity
-                ? ["Покажи динамику средней цены и объемов", "Сравни цены РСВ по регионам и часам"]
-                : [t("chat.suggest1"), t("chat.suggest2")];
               return (
-                <div className="mt-6 flex flex-col items-start gap-1">
+                <div className="mt-6 flex flex-col items-start gap-1.5">
+                  <span className="text-[11px] font-medium text-graphite-400 uppercase tracking-wider mb-1">
+                    Релевантные вопросы к датасету:
+                  </span>
                   {chips.map((q) => (
                     <button
                       key={q}
                       onClick={() => sendQuestion(q)}
                       disabled={!activeTable}
-                      className="rounded-lg px-2 py-1 -mx-2 text-[13px] text-graphite-300 hover:bg-graphite-800 hover:text-graphite-50 transition disabled:opacity-50 disabled:cursor-not-allowed"
+                      className="rounded-lg px-2.5 py-1.5 -mx-2.5 text-left text-[13px] text-graphite-300 hover:bg-graphite-800 hover:text-graphite-50 transition disabled:opacity-50 disabled:cursor-not-allowed"
                     >
                       {t("chat.quoted", { q })}
                     </button>

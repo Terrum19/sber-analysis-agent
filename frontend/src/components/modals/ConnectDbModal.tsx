@@ -14,8 +14,6 @@ const DSN_PLACEHOLDER: Record<DbKind, string> = {
   clickhouse: "clickhouse://analyst:pass@host:8123/db",
 };
 
-const DEMO_DSN = "postgresql://analyst:demo_pass@localhost:5432/demo_analytics";
-
 export default function ConnectDbModal() {
   const t = useT();
   const dbModalOpen = useUiStore((s) => s.dbModalOpen);
@@ -32,19 +30,11 @@ export default function ConnectDbModal() {
 
   if (!dbModalOpen) return null;
 
-  function handleFillDemo() {
-    setDbKind("postgres");
-    setDsn(DEMO_DSN);
-    setSchema("public");
-    setDbDescription("Демонстрационная аналитическая база данных (PostgreSQL / DuckDB)");
-    setDbErrorMsg(null);
-  }
-
   async function handleDbConnect(e?: React.FormEvent) {
     e?.preventDefault();
     const rawDsn = dsn.trim();
     if (!rawDsn) {
-      setDbErrorMsg("Пожалуйста, укажите строку подключения (DSN). Либо используйте кнопку «Заполнить демо-данные».");
+      setDbErrorMsg("Пожалуйста, укажите строку подключения (DSN).");
       return;
     }
 
@@ -111,23 +101,6 @@ export default function ConnectDbModal() {
           >
             <Icon name="x" size={16} />
           </button>
-        </div>
-
-        {/* Быстрое подключение демо */}
-        <div className="rounded-lg border border-graphite-700/80 bg-graphite-800/50 p-3 flex flex-col gap-2">
-          <div className="flex items-center justify-between">
-            <span className="text-xs text-graphite-300 font-medium">Нет своей базы для теста?</span>
-            <button
-              type="button"
-              onClick={handleFillDemo}
-              className="text-xs font-medium text-graphite-100 hover:text-white bg-graphite-700 hover:bg-graphite-650 px-2.5 py-1 rounded transition"
-            >
-              Заполнить демо-данные
-            </button>
-          </div>
-          <p className="text-[11px] text-graphite-400 leading-tight">
-            Будут подставлены тестовые параметры подключения с примерами таблиц заказов и выручки.
-          </p>
         </div>
 
         <form onSubmit={handleDbConnect} className="space-y-3">

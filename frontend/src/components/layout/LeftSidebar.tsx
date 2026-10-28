@@ -339,7 +339,7 @@ function PreferencesBar() {
   );
 }
 
-export default function LeftSidebar({ onAction }: { onAction?: () => void } = {}) {
+export default function LeftSidebar() {
   const t = useT();
   const router = useRouter();
   const params = useParams();
@@ -444,7 +444,6 @@ export default function LeftSidebar({ onAction }: { onAction?: () => void } = {}
           label={t("sidebar.uploadCsv")}
           title={isGenerating ? t("chat.cannotSwitchWhileGenerating") : t("sidebar.csvHint")}
           onClick={() => {
-            onAction?.();
             openFilePicker();
           }}
           disabled={isBusy || isGenerating}
@@ -454,7 +453,6 @@ export default function LeftSidebar({ onAction }: { onAction?: () => void } = {}
           label={t("sidebar.connectDb")}
           title={isGenerating ? t("chat.cannotSwitchWhileGenerating") : undefined}
           onClick={() => {
-            onAction?.();
             setDbModalOpen(true);
           }}
           disabled={isBusy || isGenerating}
@@ -463,7 +461,6 @@ export default function LeftSidebar({ onAction }: { onAction?: () => void } = {}
           icon="layout"
           label={t("sidebar.allDashboards")}
           href="/dashboards"
-          onClick={() => onAction?.()}
           title={isGenerating ? t("chat.cannotSwitchWhileGenerating") : undefined}
           disabled={isGenerating}
         />
