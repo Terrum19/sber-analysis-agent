@@ -148,10 +148,21 @@ export default function DashboardsListPage() {
     return date ? date.toLocaleString(dateLocale, { dateStyle: "medium", timeStyle: "short" }) : "—";
   }
 
+  const visibleDashboards = useMemo(() => {
+    return dashboards.filter((d) => {
+      if (!d.session_id) return false;
+      const dbId = sessionDatabase[d.session_id];
+      if (dbId) {
+        return databases.some((x) => x.id === dbId);
+      }
+      return databases.some((x) => x.sessions?.some((s) => s.id === d.session_id));
+    });
+  }, [dashboards, sessionDatabase, databases]);
+
   const filtered = useMemo(() => {
     const q = searchQuery.toLowerCase().trim();
-    if (!q) return dashboards;
-    return dashboards.filter((d) => {
+    if (!q) return visibleDashboards;
+    return visibleDashboards.filter((d) => {
       const date = toDate(d.updated_at ?? d.created_at);
       // Дата ищется в нескольких записях: 17.10.2026, 2026-10-17, «17 окт. 2026 г.»
       const dateTexts = date
@@ -166,7 +177,7 @@ export default function DashboardsListPage() {
       );
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [dashboards, searchQuery, databases, sessionDatabase, dateLocale]);
+  }, [visibleDashboards, searchQuery, databases, sessionDatabase, dateLocale]);
 
   return (
     <WorkspaceShell tab={{ kind: "dashboards" }}>
@@ -230,7 +241,7 @@ export default function DashboardsListPage() {
                 {t("registry.retry")}
               </button>
             </div>
-          ) : dashboards.length === 0 ? (
+          ) : visibleDashboards.length === 0 ? (
             <div className="flex h-56 flex-col items-center justify-center gap-3 rounded-xl border border-graphite-800 text-center">
               <Icon name="layout" size={22} className="text-graphite-500" />
               <div>

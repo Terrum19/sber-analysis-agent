@@ -112,6 +112,62 @@ def test_delete_cascades_to_tiles(store: DashboardStore, store_path: str) -> Non
     assert store.delete(removed.id) is False
 
 
+def test_delete_by_session(store: DashboardStore, store_path: str) -> None:
+    d1 = make_dashboard(session_id="sess_a", tiles_count=2)
+    d2 = make_dashboard(session_id="sess_a", tiles_count=3)
+    d3 = make_dashboard(session_id="sess_b", tiles_count=1)
+    store.create(d1)
+    store.create(d2)
+    store.create(d3)
+    assert tile_rows(store_path) == 6
+
+    deleted_ids = store.delete_by_session("sess_a")
+    assert set(deleted_ids) == {d1.id, d2.id}
+    assert store.get(d1.id) is None
+    assert store.get(d2.id) is None
+    assert store.get(d3.id) is not None
+    assert tile_rows(store_path) == 1
+
+
+def test_delete_by_sessions(store: DashboardStore, store_path: str) -> None:
+    assert store.delete_by_sessions([]) == []
+    assert store.delete_by_sessions(["non_existent"]) == []
+    d1 = make_dashboard(session_id="sess_1", tiles_count=2)
+    d2 = make_dashboard(session_id="sess_2", tiles_count=2)
+    d3 = make_dashboard(session_id="sess_3", tiles_count=1)
+    store.create(d1)
+    store.create(d2)
+    store.create(d3)
+
+    assert set(store.delete_by_sessions(["sess_1", "sess_2"])) == {d1.id, d2.id}
+    assert store.get(d3.id) is not None
+    assert tile_rows(store_path) == 1
+
+
+def test_prune_orphaned(store: DashboardStore, store_path: str) -> None:
+    # До создания таблицы session_state prune_orphaned возвращает пустой список
+    assert store.prune_orphaned() == []
+
+    d1 = make_dashboard(session_id="existing_sess", tiles_count=1)
+    d2 = make_dashboard(session_id="dead_sess", tiles_count=2)
+    store.create(d1)
+    store.create(d2)
+
+    conn = sqlite3.connect(store_path)
+    try:
+        conn.execute("CREATE TABLE session_state (session_id TEXT PRIMARY KEY, state TEXT)")
+        conn.execute("INSERT INTO session_state VALUES ('existing_sess', '{}')")
+        conn.commit()
+    finally:
+        conn.close()
+
+    pruned = store.prune_orphaned()
+    assert pruned == [d2.id]
+    assert store.get(d1.id) is not None
+    assert store.get(d2.id) is None
+    assert tile_rows(store_path) == 1
+
+
 def test_update_snapshot(store: DashboardStore) -> None:
     dashboard = make_dashboard(tiles_count=1)
     store.create(dashboard)

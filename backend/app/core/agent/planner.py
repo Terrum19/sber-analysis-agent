@@ -28,6 +28,7 @@ from app.core.llm.prompts.step_planner import (
     DASHBOARD_PLAN,
     DASHBOARD_TEMPLATE,
     MEMORIES,
+    EMPTY_PLAN,
     NO_TEMPLATE_TILES,
     NO_TILES,
     OLDER_TURNS,
@@ -113,6 +114,11 @@ class StepPlanner:
         logger.debug(">>> StepPlanner.plan() вопрос=%r", question)
         logger.debug("    промпт=%r", prompt)
         plan = await self._ask(prompt, start, template)
+        if not plan.steps and start == 0:
+            # Без размышлений модель отдаёт пустой план и на вопросы о данных
+            # («что с выручкой каждый июль?»); второй шанс — один вызов.
+            logger.warning("    план пустой, переспрос")
+            plan = await self._ask(prompt + EMPTY_PLAN, start, template)
         # Проверяем и ответ на переспрос: непроверенный план упал бы уже при
         # исполнении, потратив попытки fix_step и показав ошибку шага.
         errors = validate_plan(plan, known_steps=start)

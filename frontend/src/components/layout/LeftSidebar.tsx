@@ -13,13 +13,16 @@ import Link from "next/link";
 import { useParams, useRouter } from "next/navigation";
 import {
   attachDb,
+  deleteDashboard,
   deleteDatasourceApi,
   deleteSessionApi,
+  fetchDashboards,
   listSessions,
   renameSessionApi,
   SESSIONS_PAGE,
 } from "@/api/client";
 import { useSessionStore, type DatabaseFolder, type SessionItem } from "@/store/sessionStore";
+import { useCanvasStore } from "@/store/canvasStore";
 import { useArtifactStore } from "@/store/artifactStore";
 import { tabHref, useUiStore } from "@/store/uiStore";
 import { useStartSession } from "@/hooks/useStartSession";
@@ -363,38 +366,94 @@ export default function LeftSidebar() {
     });
   }, [databases]);
 
-  function handleDeleteSession(sessionId: string) {
+  async function handleDeleteSession(sessionId: string) {
+    let dashboardIds: string[] = [];
+    try {
+      const allDashboards = await fetchDashboards();
+      dashboardIds = allDashboards
+        .filter((d) => d.session_id === sessionId)
+        .map((d) => d.id);
+    } catch {
+      // Игнорируем сетевые ошибки
+    }
+
     const artStore = useArtifactStore.getState();
     const artIdsToRemove = Object.values(artStore.artifacts)
       .filter((a) => a.sessionId === sessionId)
       .map((a) => a.id);
     artStore.removeArtifactsBySessionIds([sessionId]);
-    const nextTab = useUiStore.getState().closeTabsForSessions([sessionId], artIdsToRemove);
+    const nextTab = useUiStore.getState().closeTabsForSessions([sessionId], artIdsToRemove, dashboardIds);
+
+    const canvasStore = useCanvasStore.getState();
+    if (
+      (canvasStore.dashboardId && dashboardIds.includes(canvasStore.dashboardId)) ||
+      useSessionStore.getState().sessionId === sessionId
+    ) {
+      canvasStore.clearCanvas();
+    }
+
     deleteSession(sessionId);
-    deleteSessionApi(sessionId).catch(() => undefined);
-    if (currentSessionId === sessionId) {
+    Promise.allSettled([
+      deleteSessionApi(sessionId),
+      ...dashboardIds.map((did) => deleteDashboard(did)),
+    ]).finally(() => {
+      window.dispatchEvent(new Event("dashboards:changed"));
+    });
+
+    const isCurrentSession = currentSessionId === sessionId;
+    const isCurrentDashboard = Boolean(params?.id && dashboardIds.includes(params.id as string));
+    if (isCurrentSession || isCurrentDashboard) {
       router.push(nextTab ? tabHref(nextTab) : "/");
     }
   }
 
-  function handleDeleteDatabase(databaseId: string) {
+  async function handleDeleteDatabase(databaseId: string) {
     const db = databases.find((d) => d.id === databaseId);
     const sessionIds = db ? db.sessions.map((s) => s.id) : [];
-    const artStore = useArtifactStore.getState();
     const sSet = new Set(sessionIds);
+
+    let dashboardIds: string[] = [];
+    try {
+      const allDashboards = await fetchDashboards();
+      dashboardIds = allDashboards
+        .filter((d) => sSet.has(d.session_id))
+        .map((d) => d.id);
+    } catch {
+      // Игнорируем сетевые ошибки
+    }
+
+    const artStore = useArtifactStore.getState();
     const artIdsToRemove = Object.values(artStore.artifacts)
       .filter((a) => a.sessionId && sSet.has(a.sessionId))
       .map((a) => a.id);
     artStore.removeArtifactsBySessionIds(sessionIds);
-    const nextTab = useUiStore.getState().closeTabsForSessions(sessionIds, artIdsToRemove);
+    const nextTab = useUiStore.getState().closeTabsForSessions(sessionIds, artIdsToRemove, dashboardIds);
+
+    const canvasStore = useCanvasStore.getState();
+    if (
+      (canvasStore.dashboardId && dashboardIds.includes(canvasStore.dashboardId)) ||
+      (currentSessionId && sSet.has(currentSessionId))
+    ) {
+      canvasStore.clearCanvas();
+    }
+
     deleteDatabase(databaseId);
-    // Сначала сессии источника, затем сам источник: его таблицы уходят из DuckDB,
-    // и список таблиц в шапке чата перечитывается.
-    Promise.allSettled(sessionIds.map((sid) => deleteSessionApi(sid)))
+    // Сначала сессии и дашборды источника, затем сам источник: его таблицы уходят из DuckDB,
+    // список таблиц в шапке чата перечитывается и сайдбар обновляет дашборды.
+    Promise.allSettled([
+      ...sessionIds.map((sid) => deleteSessionApi(sid)),
+      ...dashboardIds.map((did) => deleteDashboard(did)),
+    ])
       .then(() => deleteDatasourceApi(databaseId))
       .catch(() => undefined)
-      .finally(() => useUiStore.getState().refreshTables());
-    if (currentSessionId && sessionIds.includes(currentSessionId)) {
+      .finally(() => {
+        useUiStore.getState().refreshTables();
+        window.dispatchEvent(new Event("dashboards:changed"));
+      });
+
+    const isCurrentSessionDeleted = Boolean(currentSessionId && sSet.has(currentSessionId));
+    const isCurrentDashboardDeleted = Boolean(params?.id && dashboardIds.includes(params.id as string));
+    if (isCurrentSessionDeleted || isCurrentDashboardDeleted) {
       router.push(nextTab ? tabHref(nextTab) : "/");
     }
   }

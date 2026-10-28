@@ -26,6 +26,7 @@ from fastapi import APIRouter, BackgroundTasks, Depends, File, HTTPException, Up
 from app.api.deps import get_db
 from app.api.schemas.datasource import DatasourceCreate, DatasourceOut, TableBrief
 from app.config import settings
+from app.core.dashboards.store import DashboardStore
 from app.core.data import ingest, overview, relations, restore
 from app.core.data.connectors.base import BaseConnector
 from app.core.data.connectors.clickhouse import (
@@ -47,6 +48,7 @@ from app.core.data.connectors.postgres import (
 from app.core.data.duckdb_manager import DuckDBManager
 from app.core.data.profiling import TableProfile
 from app.core.memory.profile_memory import ProfileMemory
+from app.core.memory.session_memory import SessionMemory
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -292,7 +294,14 @@ def detach(datasource_id: str, db: Annotated[DuckDBManager, Depends(get_db)]) ->
 
     После рестарта удалённый источник не возвращается.
     """
-    if restore.forget(db, datasource_id) is not None:
-        return
-    if forget_csv(db, datasource_id) is None:
+    detached = False
+    if restore.forget(db, datasource_id) is not None or forget_csv(db, datasource_id) is not None:
+        detached = True
+
+    if not detached:
         raise HTTPException(status_code=404, detail=f"Источник «{datasource_id}» не найден.")
+
+    # Удалить все сессии источника и их дашборды
+    for sid in SessionMemory.find_by_datasource(datasource_id):
+        SessionMemory.delete(sid)
+    DashboardStore().prune_orphaned()

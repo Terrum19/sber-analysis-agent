@@ -299,32 +299,42 @@ export default function Canvas({ sessionId }: Props) {
   }
 
   async function handleExport(format: "xlsx" | "pdf") {
-    if (format === "xlsx") {
-      const source = [...displayTiles].reverse().find((tile) => tile.result_table);
-      if (!source?.result_table) {
-        setSaveStatus(tr("canvas.exportNoTable"));
-        setTimeout(() => setSaveStatus(null), 3500);
-        return;
-      }
+    // Если нет ни плиток с DuckDB-таблицей, ни сохранённого дашборда, ни плиток вообще
+    if (format === "xlsx" && displayTiles.length === 0) {
+      setSaveStatus(tr("canvas.exportNoTable"));
+      setTimeout(() => setSaveStatus(null), 3500);
+      return;
     }
     setIsExporting(format);
     setExportMenuOpen(false);
     try {
-      // Excel — по таблице результата последнего графика с ней (temp_result_vN);
-      // PDF дополнительно получает заголовок, инсайт и спеку этой плитки (E-01).
       const source = [...displayTiles].reverse().find((tile) => tile.result_table);
       const target = source ?? displayTiles[0];
+
+      // Готовим спецификацию с данными (из spec или snapshot_data)
+      let spec = target?.spec as Record<string, any> | undefined;
+      const specData = spec?.data as Record<string, any> | undefined;
+      if (
+        spec &&
+        Array.isArray(target?.snapshot_data) &&
+        (!specData || !Array.isArray(specData.values))
+      ) {
+        spec = { ...spec, data: { values: target.snapshot_data } };
+      } else if (!spec && Array.isArray(target?.snapshot_data)) {
+        spec = { data: { values: target.snapshot_data } };
+      }
+
       const { blob, filename } = await exportArtifact(
         {
           session_id: sessionId,
           format,
           result_ref: source?.result_table,
           dashboard_id: dashboardId ?? undefined,
-          ...(format === "pdf" && target
+          ...(target
             ? {
                 headline: target.title || target.insight,
                 details: target.insight ? [target.insight] : undefined,
-                spec: target.spec,
+                spec,
               }
             : {}),
         },
