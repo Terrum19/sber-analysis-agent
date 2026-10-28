@@ -124,8 +124,25 @@ class SessionMemory:
         return row is not None
 
     @staticmethod
+    def find_by_datasource(datasource_id: str) -> list[str]:
+        """Список session_id сессий, привязанных к источнику данных."""
+        conn = _connect(Path(settings.sqlite_path))
+        try:
+            rows = conn.execute(
+                """
+                SELECT session_id
+                FROM session_state
+                WHERE json_extract(state, '$.datasource_id') = ?
+                """,
+                (datasource_id,),
+            ).fetchall()
+            return [row[0] for row in rows]
+        finally:
+            conn.close()
+
+    @staticmethod
     def delete(session_id: str) -> bool:
-        """Удалить сессию из SQLite."""
+        """Удалить сессию из SQLite и каскадно удалить её дашборды."""
         conn = _connect(Path(settings.sqlite_path))
         try:
             cursor = conn.execute(
@@ -133,9 +150,14 @@ class SessionMemory:
                 (session_id,),
             )
             conn.commit()
-            return cursor.rowcount > 0
+            deleted = cursor.rowcount > 0
         finally:
             conn.close()
+        if deleted:
+            from app.core.dashboards.store import DashboardStore
+
+            DashboardStore(Path(settings.sqlite_path)).delete_by_session(session_id)
+        return deleted
 
     def _persist(self) -> None:
         """Сохранить состояние сессии в SQLite."""

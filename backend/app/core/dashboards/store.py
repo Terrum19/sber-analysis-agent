@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import sqlite3
 import time
-from collections.abc import Iterator
+from collections.abc import Collection, Iterator
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
@@ -145,6 +145,55 @@ class DashboardStore:
         with self._transaction() as connection:
             cursor = connection.execute("DELETE FROM dashboards WHERE id = ?", (dashboard_id,))
         return cursor.rowcount > 0
+
+    def delete_by_session(self, session_id: str) -> list[str]:
+        """Удалить все дашборды сессии и их плитки. Возвращает список ID удалённых дашбордов."""
+        with self._transaction() as connection:
+            rows = connection.execute(
+                "SELECT id FROM dashboards WHERE session_id = ?", (session_id,)
+            ).fetchall()
+            ids = [row["id"] for row in rows]
+            if ids:
+                connection.execute("DELETE FROM dashboards WHERE session_id = ?", (session_id,))
+        return ids
+
+    def delete_by_sessions(self, session_ids: Collection[str]) -> list[str]:
+        """Удалить дашборды для списка сессий."""
+        if not session_ids:
+            return []
+        placeholders = ",".join("?" for _ in session_ids)
+        with self._transaction() as connection:
+            rows = connection.execute(
+                f"SELECT id FROM dashboards WHERE session_id IN ({placeholders})",
+                tuple(session_ids),
+            ).fetchall()
+            ids = [row["id"] for row in rows]
+            if ids:
+                connection.execute(
+                    f"DELETE FROM dashboards WHERE session_id IN ({placeholders})",
+                    tuple(session_ids),
+                )
+        return ids
+
+    def prune_orphaned(self) -> list[str]:
+        """Удалить дашборды, чьи сессии больше не существуют в session_state."""
+        with self._transaction() as connection:
+            has_session_state = connection.execute(
+                "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'session_state'"
+            ).fetchone()
+            if not has_session_state:
+                return []
+            rows = connection.execute(
+                "SELECT id FROM dashboards WHERE session_id NOT IN (SELECT session_id FROM session_state)"
+            ).fetchall()
+            ids = [row["id"] for row in rows]
+            if ids:
+                placeholders = ",".join("?" for _ in ids)
+                connection.execute(
+                    f"DELETE FROM dashboards WHERE id IN ({placeholders})",
+                    tuple(ids),
+                )
+        return ids
 
     def update_snapshot(self, tile_id: str, records: list[dict] | dict) -> bool:
         with self._transaction() as connection:

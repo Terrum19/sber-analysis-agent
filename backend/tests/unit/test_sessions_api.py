@@ -104,6 +104,24 @@ def test_delete_session_removes_session(client) -> None:
     assert client.get(f"/api/sessions/{session_id}").status_code == 404
 
 
+def test_delete_session_removes_its_dashboards(client) -> None:
+    session_id = client.post("/api/sessions", json={"table": "sales"}).json()["session_id"]
+    dash_res = client.post(
+        "/api/dashboards",
+        json={"session_id": session_id, "title": "Дашборд сессии", "tiles": []},
+    )
+    assert dash_res.status_code == 201
+    dash_id = dash_res.json()["id"]
+
+    assert client.get(f"/api/dashboards/{dash_id}").status_code == 200
+    assert len(client.get(f"/api/dashboards?session_id={session_id}").json()) == 1
+
+    client.delete(f"/api/sessions/{session_id}")
+
+    assert client.get(f"/api/dashboards/{dash_id}").status_code == 404
+    assert len(client.get(f"/api/dashboards?session_id={session_id}").json()) == 0
+
+
 def test_delete_session_not_found_is_404(client) -> None:
     assert client.delete("/api/sessions/nope").status_code == 404
 
