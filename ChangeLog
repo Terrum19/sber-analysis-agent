@@ -1,5 +1,22 @@
 2026-10-28  mb6ockatf  <smokenmirror@tutamail.com>
 
+	Остальные колонки широкой таблицы — по близости к вопросу (#162).
+	* backend/app/core/data/semantic_select.py (rank_columns): Новая.
+	Оценка колонок из select_columns: слова вопроса в имени, названии и
+	частых значениях плюс бонус за вид.
+	(select_columns): Через rank_columns.
+	(describe_other_columns): Новый аргумент question.  Колонок больше
+	потолка SEMANTIC_OTHER_COLUMNS — в строку идут самые близкие к
+	вопросу, в порядке таблицы; до потолка строка не меняется.
+	* backend/app/core/agent/planner.py (StepPlanner.plan): Передаёт вопрос
+	в describe_other_columns.
+	* scripts/column_recall.py (build_wide_table): Новая.  Таблица wide:
+	80 посторонних колонок перед колонками продаж.
+	(evaluate): Режимы prompt+rank и prompt+titles+rank.
+	* backend/tests/unit/test_semantic_select.py: Тесты отбора за потолком,
+	неизменной строки до потолка и вопроса из планировщика.
+	* docs/data_connectors.md, .env.example: Описан отбор.
+
 	Время шага без «0.0 с» (#185).
 	* backend/app/core/agent/orchestrator.py (_elapsed_ms): Не меньше
 	1 мс: шаг DuckDB быстрее 0,5 мс давал elapsed_ms = 0.

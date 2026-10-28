@@ -103,6 +103,15 @@ def select_columns(
     по ним русский вопрос находит колонки с латинскими именами («выручка» -> revenue).
     """
     limit = top_k or settings.semantic_top_k
+    return rank_columns(question, columns, profile, titles)[:limit]
+
+
+def rank_columns(
+    question: str,
+    columns: list[str],
+    profile: TableProfile | None = None,
+    titles: dict[str, str] | None = None,
+) -> list[str]:
     question_tokens = tokenize(question)
     wanted = preferred_kinds(question) if profile else set()
     kinds = {column.name: column.kind for column in profile.columns} if profile else {}
@@ -121,7 +130,7 @@ def select_columns(
         bonus = KIND_WEIGHT if kinds.get(column) in wanted else 0
         return TOKEN_WEIGHT * matches + bonus
 
-    return sorted(columns, key=lambda column: -score(column))[:limit]
+    return sorted(columns, key=lambda column: -score(column))
 
 
 def describe_columns(
@@ -158,6 +167,7 @@ def describe_other_columns(
     profile: TableProfile | None = None,
     titles: dict[str, str] | None = None,
     limit: int | None = None,
+    question: str | None = None,
 ) -> str:
     """Колонки вне топ-K одной строкой: имя, название и вид, без выжимки паспорта.
 
@@ -169,8 +179,12 @@ def describe_other_columns(
     if not columns or limit <= 0:
         return ""
     kinds = {column.name: column.kind for column in profile.columns} if profile else {}
+    shown = columns[:limit]
+    if question and len(columns) > limit:
+        kept = set(rank_columns(question, columns, profile, titles)[:limit])
+        shown = [name for name in columns if name in kept]
     entries = []
-    for name in columns[:limit]:
+    for name in shown:
         entry = name
         if (titles or {}).get(name):
             entry += f" «{titles[name]}»"
