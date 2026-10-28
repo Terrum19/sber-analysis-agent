@@ -59,7 +59,7 @@ def session_out(memory: SessionMemory) -> SessionOut:
 
 @router.get("", response_model=list[SessionOut])
 def list_sessions(offset: Annotated[int, Query(ge=0)] = 0) -> list[SessionOut]:
-    """Сессии для сайдбара, недавно изменённые первыми, по SESSION_LIST_LIMIT с offset."""
+    """Сессии с ходами для сайдбара, недавно изменённые первыми, по SESSION_LIST_LIMIT с offset."""
     rows = SessionMemory.list_sessions(SESSION_LIST_LIMIT, offset)
     return [SessionOut(**row) for row in rows]
 

@@ -64,7 +64,8 @@
   с `{title}` (`set_title`; можно вместе с `table`, пустое тело — 422). Источник правды — SQLite: `GET /api/sessions/{id}`
   собирает ответ из `SessionMemory` (404, если `exists()` ложно), сессия и
   её метаданные переживают перезапуск. `GET /api/sessions` — по 30 сессий
-  для сайдбара по `updated_at`, недавно изменённые первыми (`?offset=` —
+  с хотя бы одним ходом для сайдбара (пустая сессия, открытая без вопроса,
+  в список не попадает) по `updated_at`, недавно изменённые первыми (`?offset=` —
   следующие страницы)
   (`SessionMemory.list_sessions` — один запрос, метаданные через
   `json_extract`). Таблицы для
@@ -169,7 +170,7 @@
 
 | Таблица | Строка | Содержимое |
 |---|---|---|
-| `_meta.table_passport` | таблица | `row_count`, `column_count`, `empty_rows`, `glossary` (JSON), `summary` и `summary_fingerprint` (описание «что передо мной», см. ниже), `profiled_at`, `enriched_at`, `description_status`, `description_run` |
+| `_meta.table_passport` | таблица | `row_count`, `column_count`, `empty_rows`, `glossary` (JSON), `summary` и `summary_fingerprint` (описание «что передо мной», см. ниже), `display_name` и `name_source` (название таблицы для пользователя: `llm` или `user`), `profiled_at`, `enriched_at`, `description_status`, `description_run` |
 | `_meta.column_passport` | колонка, PK `(table_name, column_name)` | `position` (порядок как в `DESCRIBE`), `dtype`, `kind`, статистика `ColumnStats`, название, описание, `fingerprint`, `enriched_at` |
 
 Полный DDL — `SCHEMA` в `profile_memory.py`. Статистика колонки — поля
@@ -237,10 +238,15 @@ EXISTS`). Записи — одной транзакцией под `DuckDBManag
 - `load_glossary(table) -> dict | None`.
 - `save_enrichment(table, rows)` / `load_enrichment(table) -> list[ColumnEnrichment]`
   (`app/models/enrichment.py`) — названия и описания колонок.
-- `save_summary(table, text, fingerprint)` / `load_summary(table) -> (text, fingerprint) | None` —
+- `save_summary(table, text, fingerprint, display_name=None)` / `load_summary(table) -> (text, fingerprint) | None` —
   описание таблицы «что передо мной» и отпечаток промпта, по которому оно
-  написано. `save_profile` их не затирает; без паспорта `save_summary`
-  ничего не пишет.
+  написано. `display_name` — название от LLM (`name_source = 'llm'`); `None`
+  оставляет прежнее, название пользователя не перезаписывается.
+  `save_profile` их не затирает; без паспорта `save_summary` ничего не пишет.
+- `save_display_name(table, name) -> bool` — название от пользователя
+  (`name_source = 'user'`, `PATCH /api/datasources/tables/{table}`); `False`,
+  если паспорта нет. `load_display_name(table) -> str | None`. Имя таблицы
+  в DuckDB и SQL не меняется.
 - `delete(table)` — удалить паспорт таблицы.
 
 ### Подключение — `core/data/ingest.py`
@@ -266,8 +272,14 @@ EXISTS`). Записи — одной транзакцией под `DuckDBManag
 
 `describe_dataset(db, table, llm=None) -> str` собирает промпт
 `SCHEMA_DESCRIBE` из паспорта и вызывает LLM, только если отпечаток промпта
-(sha256 вместе с системным промптом) отличается от сохранённого в
-`summary_fingerprint`. Изменились профиль, названия и описания колонок или
+(sha256 вместе с системным промптом и `SCHEMA_DESCRIBE_JSON`) отличается от
+сохранённого в `summary_fingerprint`. Тот же вызов возвращает JSON
+`DatasetDescription` (`app/models/enrichment.py`): `summary` и `display_name`
+— название таблицы для пользователя («События пользователей»), до 60
+символов без кавычек (`display_name()`). Не разобрался JSON (`ValueError`
+после повторов `complete_structured`) — описание просится ещё раз простым
+текстом, без названия. Недоступная LLM (соединение, таймаут) второго
+запроса не получает. Изменились профиль, названия и описания колонок или
 сам промпт — описание пишется заново; повторное профилирование тех же данных
 (`profiled_at` в промпт не входит) его не сбрасывает. Пустой ответ не
 сохраняется, ошибка LLM пробрасывается и оставляет прежнее описание. Нет
@@ -296,6 +308,12 @@ EXISTS`). Записи — одной транзакцией под `DuckDBManag
 `cached_summary(db, table)` — сохранённое описание, только если оно написано
 по текущему паспорту (без LLM): его отдаёт `TableBrief.summary` в ответе
 подключения и в `GET /api/datasources/tables/{table}`.
+`key_columns(profile, enrichment)` — сущности (коды: числовые и текстовые
+с именем вроде `user_id`; текстовые колонки до 50 различных значений) и метрики (числа) без констант, до 5 каждых,
+по названиям колонок. `starter_questions(profile, enrichment)` — подсказки
+к первому вопросу по шаблонам: «Что передо мной?», динамика метрики по
+месяцам (если есть даты), сравнение и топ-5 по категории. Оба без LLM:
+подсказки есть сразу в ответе подключения и при недоступной LLM.
 
 ### Описание таблицы — `core/data/schema_enrichment.py`
 

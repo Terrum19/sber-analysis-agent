@@ -9,7 +9,7 @@
 import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { useSessionStore } from "@/store/sessionStore";
+import { tableTitle, useSessionStore } from "@/store/sessionStore";
 import { tabHref, tabKey, useUiStore, type WorkspaceTab } from "@/store/uiStore";
 import { useT } from "@/i18n/useT";
 import Icon, { type IconName } from "@/components/ui/Icon";
@@ -27,18 +27,29 @@ function useTabTitle(tab: WorkspaceTab): string {
   const sessionTitle = useSessionStore((s) =>
     tab.kind === "session" ? s.databases.flatMap((d) => d.sessions).find((x) => x.id === tab.id)?.title : undefined,
   );
+  const activeTableTitle = useActiveTableTitle(tab);
   switch (tab.kind) {
     case "welcome":
       return t("tabs.welcome");
     case "dashboards":
       return t("tabs.dashboards");
     case "session":
-      return sessionTitle ?? t("sidebar.newSession");
+      return sessionTitle ?? activeTableTitle ?? t("sidebar.newSession");
     case "dashboard":
       return tab.title ?? t("tabs.dashboard");
     case "artifact":
       return tab.title ?? t("tabs.artifact");
   }
+}
+
+/** Название активной таблицы сессии для пользователя (display_name), без сессии — undefined. */
+function useActiveTableTitle(tab: WorkspaceTab): string | undefined {
+  return useSessionStore((s) => {
+    if (tab.kind !== "session") return undefined;
+    const table = s.sessionActiveTable[tab.id];
+    if (!table) return undefined;
+    return tableTitle(s.databases.find((d) => d.id === s.sessionDatabase[tab.id]), table);
+  });
 }
 
 function Tab({
@@ -72,9 +83,7 @@ function Tab({
     const dbId = s.sessionDatabase[tab.id];
     return s.databases.find((d) => d.id === dbId)?.title;
   });
-  const activeTable = useSessionStore((s) =>
-    tab.kind === "session" ? s.sessionActiveTable[tab.id] : undefined
-  );
+  const activeTable = useActiveTableTitle(tab);
 
   // Активная вкладка всегда видна в полосе
   useEffect(() => {
@@ -89,13 +98,12 @@ function Tab({
     if (active) router.push(next ? tabHref(next) : "/");
   }
 
+  const tableNote = activeTable && activeTable !== title ? ` (${activeTable})` : "";
   const tooltipTitle = isLocked
     ? t("chat.cannotSwitchWhileGenerating")
     : databaseTitle
-    ? `${databaseTitle} / ${title}${activeTable ? ` (${activeTable})` : ""}`
-    : activeTable
-    ? `${title} (${activeTable})`
-    : title;
+    ? `${databaseTitle} / ${title}${tableNote}`
+    : `${title}${tableNote}`;
 
   return (
     <Link
