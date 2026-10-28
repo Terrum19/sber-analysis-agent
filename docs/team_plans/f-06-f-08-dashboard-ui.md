@@ -121,17 +121,7 @@ F-08 — последней, когда страницы и API уже стаб�
 `backend/app/core/viz/vega_spec_builder.py`:
 
 ```python
-CHART_TYPES = (
-    "bar",
-    "line",
-    "area",
-    "scatter",
-    "histogram",
-    "box",
-    "heatmap",
-    "table",
-    "kpi",
-)
+CHART_TYPES = ("bar", "line", "area", "scatter", "histogram", "box", "heatmap", "table", "kpi")
 ```
 
 `recalculate.rebuild_spec` берёт `usermeta.requested_type or usermeta.chart_type`.
@@ -330,7 +320,6 @@ yield {"type": "dashboard", "data": {"dashboard_id": dashboard.id}}
 
 ```python
 from app.api.schemas.chat import DashboardPayload
-
 ...
 payload = DashboardPayload.from_dashboard(dashboard)
 yield {"type": "dashboard", "data": payload.model_dump()}

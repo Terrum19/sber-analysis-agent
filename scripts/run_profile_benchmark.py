@@ -18,7 +18,7 @@ def measure(db, table: str, repeats: int) -> dict:
             started = time.perf_counter()
             profile = profile_table(db, table)
             timings.append((time.perf_counter() - started) * 1000)
-    except Exception as error:  # noqa: BLE001
+    except Exception as error:
         message = f"{type(error).__name__}: {error}".splitlines()[0]
         return {"table": table, "error": message}
     return {
@@ -51,9 +51,7 @@ def synthetic_sql(rows: int, columns: int) -> str:
     return f"SELECT {', '.join(expressions)} FROM range({rows})"
 
 
-def sources(
-    db, data_dir: Path, synthetic_rows: int, synthetic_columns: int
-) -> list[str]:
+def sources(db, data_dir: Path, synthetic_rows: int, synthetic_columns: int) -> list[str]:
     tables = []
     for path in sorted(data_dir.glob("*.csv")):
         db.attach_csv(path.stem, str(path))
@@ -86,9 +84,7 @@ def render(results: list[dict]) -> str:
 def main() -> int:
     from app.core.data.duckdb_manager import DuckDBManager
 
-    parser = argparse.ArgumentParser(
-        description="Бенчмарк профилирования таблиц (profile_table)"
-    )
+    parser = argparse.ArgumentParser(description="Бенчмарк профилирования таблиц (profile_table)")
     default_data = ROOT / "data" / "sample_datasets"
     parser.add_argument("--data-dir", type=Path, default=default_data)
     parser.add_argument("--repeats", type=int, default=5)
@@ -101,10 +97,7 @@ def main() -> int:
     db = DuckDBManager(":memory:")
     try:
         tables = sources(
-            db,
-            arguments.data_dir,
-            arguments.synthetic_rows,
-            arguments.synthetic_columns,
+            db, arguments.data_dir, arguments.synthetic_rows, arguments.synthetic_columns
         )
         results = [measure(db, table, arguments.repeats) for table in tables]
     finally:

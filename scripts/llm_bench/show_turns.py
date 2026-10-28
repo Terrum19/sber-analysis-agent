@@ -33,9 +33,7 @@ def main() -> None:
             )
             print(f"[{mode}] {question.group(1)}\n  план: {plan or content[:200]}")
         else:
-            headline = (
-                parsed.get("headline") if isinstance(parsed, dict) else content[:200]
-            )
+            headline = parsed.get("headline") if isinstance(parsed, dict) else content[:200]
             print(f"  ответ: {headline}")
 
 

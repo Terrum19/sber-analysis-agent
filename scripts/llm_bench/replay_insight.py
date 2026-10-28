@@ -28,9 +28,7 @@ def main() -> None:
     parser.add_argument("run", type=Path, help="каталог run/ прогона run_dialog.sh")
     parser.add_argument("out", type=Path)
     parser.add_argument("--repeats", type=int, default=3)
-    parser.add_argument(
-        "--backend", type=Path, default=Path(__file__).parents[2] / "backend"
-    )
+    parser.add_argument("--backend", type=Path, default=Path(__file__).parents[2] / "backend")
     parser.add_argument("--session", default="cli-session")
     args = parser.parse_args()
 
@@ -44,9 +42,7 @@ def main() -> None:
 
     row = (
         sqlite3.connect(args.run / "sessions.sqlite")
-        .execute(
-            "SELECT state FROM session_state WHERE session_id = ?", (args.session,)
-        )
+        .execute("SELECT state FROM session_state WHERE session_id = ?", (args.session,))
         .fetchone()
     )
     turns = json.loads(row[0])["turns"]
@@ -62,9 +58,7 @@ def main() -> None:
                 continue
             kwargs = {}
             if takes_steps:
-                kwargs["steps"] = [
-                    ResearchStep.model_validate(s) for s in turn["steps"]
-                ]
+                kwargs["steps"] = [ResearchStep.model_validate(s) for s in turn["steps"]]
             headlines = []
             for _ in range(args.repeats):
                 try:

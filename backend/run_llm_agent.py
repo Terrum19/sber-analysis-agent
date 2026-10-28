@@ -17,14 +17,14 @@ import time
 
 sys.path.insert(0, "/home/terrum/Desktop/Jupyter/sberAnalyticalAgent/backend")
 
-from app.api.schemas.chat import ChatRequest
-from app.config import settings
-from app.core.agent.insight import InsightGenerator
 from app.core.agent.orchestrator import AgentOrchestrator
 from app.core.agent.planner import StepPlanner
+from app.core.agent.insight import InsightGenerator
 from app.core.agent.step_executor import StepExecutor
 from app.core.data.duckdb_manager import DuckDBManager
 from app.core.llm.client import LLMClient
+from app.api.schemas.chat import ChatRequest
+from app.config import settings
 
 
 def print_banner():
@@ -73,7 +73,7 @@ async def main():
             user="Скажи просто: привет",
         )
         print(f"    LLM отвечает: {test_resp[:80]}...\n")
-    except Exception as e:  # noqa: BLE001
+    except Exception as e:
         print(f"    [ERROR] LLM недоступен: {e}\n")
         print("\n[!] Убедись, что Ollama запущен и модель доступна:\n")
         print("    ollama serve\n    ollama pull qwen2.5vl:7b\n")
@@ -97,7 +97,7 @@ async def main():
         if not question or question.lower() in ("exit", "quit", "q"):
             break
 
-        print(f'\n[*] Обработка вопроса: "{question}"\n')
+        print(f"\n[*] Обработка вопроса: \"{question}\"\n")
         print("-" * 60)
 
         start = time.time()
@@ -126,10 +126,9 @@ async def main():
                     print("\n[DONE] Цикл завершён\n")
 
                 print("-" * 60)
-        except Exception as e:  # noqa: BLE001
+        except Exception as e:
             print(f"\n[ERROR] Исключение при выполнении: {e}\n")
             import traceback
-
             traceback.print_exc()
 
         elapsed = time.time() - start

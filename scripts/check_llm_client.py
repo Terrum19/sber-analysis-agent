@@ -23,10 +23,10 @@ os.environ.pop("USE_FAKE_LLM", None)
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "backend"))
 
-from app.config import settings
-from app.core.llm import budget
-from app.core.llm.client import LLMClient
-from app.models.research_step import ResearchPlan, ResearchStep
+from app.config import settings  # noqa: E402
+from app.core.llm import budget  # noqa: E402
+from app.core.llm.client import LLMClient  # noqa: E402
+from app.models.research_step import ResearchPlan, ResearchStep  # noqa: E402
 
 
 async def main() -> None:

@@ -345,16 +345,12 @@ Issues заведены в GitHub (метка `roadmap`, майлстоуны M0
    ```python
    for attempt in range(STEP_FIX_ATTEMPTS + 1):
        try:
-           table = await self.executor.execute(
-               step, current, step_tables=tables, source_table=source
-           )
+           table = await self.executor.execute(step, current, step_tables=tables, source_table=source)
            break
        except (ValueError, duckdb.Error, SandboxError) as exc:
            if attempt == STEP_FIX_ATTEMPTS:
                ...  # текущая логика pending_recovery + ClarificationNeeded
-           step = await self.planner.fix_step(
-               step, str(exc), memory.build_context(question)
-           )
+           step = await self.planner.fix_step(step, str(exc), memory.build_context(question))
            steps[index] = step
    ```
    `STEP_FIX_ATTEMPTS = 2` — константа модуля. Сетевые ошибки LLM уже
@@ -425,7 +421,7 @@ Issues заведены в GitHub (метка `roadmap`, майлстоуны M0
    class GuardVerdict(BaseModel):
        kind: Literal["ok", "out_of_scope", "no_data", "ambiguous", "unsafe"]
        reason: str = ""
-       suggestions: list[str] = []  # 2–3 переформулировки под имеющиеся колонки
+       suggestions: list[str] = []   # 2–3 переформулировки под имеющиеся колонки
    ```
 2. Промпт: вопрос + название таблицы + список колонок с описаниями из паспорта
    (`context["descriptions"]`) + последние 3 сообщения (чтобы «а теперь по месяцам»
@@ -493,10 +489,9 @@ Issues заведены в GitHub (метка `roadmap`, майлстоуны M0
    class DashboardTilePlan(BaseModel):
        title: str
        step_id: int
-       chart_type: str = "auto"  # bar|line|…|kpi|table
+       chart_type: str = "auto"      # bar|line|…|kpi|table
        is_kpi: bool = False
        insight_needed: bool = False
-
 
    class ResearchPlan(BaseModel):
        ...
@@ -599,7 +594,6 @@ Issues заведены в GitHub (метка `roadmap`, майлстоуны M0
        snapshot_data: list[dict] | None = None
        snapshot_at: float | None = None
 
-
    class Dashboard(BaseModel):
        id: str = Field(default_factory=lambda: uuid4().hex[:12])
        session_id: str
@@ -633,16 +627,15 @@ Issues заведены в GitHub (метка `roadmap`, майлстоуны M0
    ```python
    class TemplateTile(BaseModel):
        title: str
-       purpose: str  # подсказка планировщику, какой шаг нужен
+       purpose: str          # подсказка планировщику, какой шаг нужен
        chart_type: str
        is_kpi: bool = False
        insight_needed: bool = False
 
-
    class DashboardTemplate(BaseModel):
        id: str
        name: str
-       required_roles: dict[str, list[str]]  # роль -> варианты имён/алиасов колонок
+       required_roles: dict[str, list[str]]   # роль -> варианты имён/алиасов колонок
        tiles: list[TemplateTile]
    ```
    Роли, а не точные имена: `{"date": ["date", "order_date", "дата"], "amount": ["revenue", "amount", "сумма"]}`.
@@ -1082,7 +1075,7 @@ DuckDB растёт за демо на гигабайты.
 кириллический заголовок и картинку; API-тест на 200 и `application/pdf`.
 
 **Готово, когда**
-- [x] PDF по ответу скачивается и читается, кириллица без «квадратиков».
+- [ ] PDF по ответу скачивается и читается, кириллица без «квадратиков».
 
 ### E-02 · Экспорт дашборда в PDF и XLSX
 **Кто:** @dmitriy-ya · **Срок:** 25.10 · **Зависит:** E-01, B-01

@@ -70,11 +70,7 @@ MONEY = {"revenue", "profit"}
 # формулировка («деньги», «кто», «когда»), X — значение категории, D — производная метрика.
 QUESTIONS = [
     ("Средний revenue по region", "L", [{"revenue"}, {"region"}]),
-    (
-        "Распределение delivery_days по warehouse",
-        "L",
-        [{"delivery_days"}, {"warehouse"}],
-    ),
+    ("Распределение delivery_days по warehouse", "L", [{"delivery_days"}, {"warehouse"}]),
     ("Какая выручка по регионам?", "R", [{"revenue"}, {"region"}]),
     ("Как меняется себестоимость по месяцам?", "R", [{"cost"}, {"order_date"}]),
     ("Сколько заказов оплачено через СБП?", "X", [{"payment_method"}]),
@@ -87,46 +83,18 @@ QUESTIONS = [
     ("Насколько быстро доставляем в Новосибирск?", "V", [{"delivery_days"}, {"city"}]),
     ("Довольны ли покупатели товарами Электроники?", "V", [{"rating"}, {"category"}]),
     ("Какой менеджер продаёт лучше всех?", "R", [{"manager"}, MONEY]),
-    (
-        "Какая маржинальность по подкатегориям?",
-        "D",
-        [{"profit", "cost"}, {"subcategory"}],
-    ),
-    (
-        "Отличается ли возраст покупателей B2B и B2C?",
-        "X",
-        [{"customer_age"}, {"segment"}],
-    ),
-    (
-        "Мужчины или женщины покупают больше?",
-        "V",
-        [{"gender"}, {"revenue", "quantity"}],
-    ),
-    (
-        "Какие промокоды самые эффективные?",
-        "R",
-        [{"promo_code"}, {"revenue", "discount"}],
-    ),
+    ("Какая маржинальность по подкатегориям?", "D", [{"profit", "cost"}, {"subcategory"}]),
+    ("Отличается ли возраст покупателей B2B и B2C?", "X", [{"customer_age"}, {"segment"}]),
+    ("Мужчины или женщины покупают больше?", "V", [{"gender"}, {"revenue", "quantity"}]),
+    ("Какие промокоды самые эффективные?", "R", [{"promo_code"}, {"revenue", "discount"}]),
     ("Сколько штук iPhone 15 продали?", "X", [{"quantity"}, {"product_name"}]),
     ("С какого склада чаще всего возвраты?", "R", [{"warehouse"}, {"is_returned"}]),
-    (
-        "Сколько дней в среднем между заказом и отгрузкой?",
-        "D",
-        [{"order_date"}, {"ship_date"}],
-    ),
-    (
-        "Какая цена за единицу у самых дорогих товаров?",
-        "R",
-        [{"unit_price"}, {"product_name"}],
-    ),
+    ("Сколько дней в среднем между заказом и отгрузкой?", "D", [{"order_date"}, {"ship_date"}]),
+    ("Какая цена за единицу у самых дорогих товаров?", "R", [{"unit_price"}, {"product_name"}]),
     ("Есть ли сезонность продаж?", "V", [{"order_date"}, {"revenue", "quantity"}]),
     ("Покажи топ городов по обороту", "V", [{"city"}, {"revenue"}]),
     ("Где больше всего недовольных клиентов?", "V", [{"rating"}, {"city", "region"}]),
-    (
-        "Сколько уникальных покупателей в каждом канале?",
-        "R",
-        [{"customer_id"}, {"channel"}],
-    ),
+    ("Сколько уникальных покупателей в каждом канале?", "R", [{"customer_id"}, {"channel"}]),
     ("Влияет ли время доставки на оценку?", "R", [{"delivery_days"}, {"rating"}]),
     ("Сравни маркетплейс и магазин по прибыли", "X", [{"channel"}, {"profit"}]),
 ]
@@ -139,10 +107,7 @@ CITIES = {
     "Екатеринбург": "Урал",
 }
 CATALOG = {
-    "Электроника": {
-        "Смартфоны": ["iPhone 15", "Galaxy S24"],
-        "Ноутбуки": ["MacBook Air"],
-    },
+    "Электроника": {"Смартфоны": ["iPhone 15", "Galaxy S24"], "Ноутбуки": ["MacBook Air"]},
     "Одежда": {"Куртки": ["Пуховик"], "Обувь": ["Кроссовки"]},
     "Дом": {"Кухня": ["Чайник", "Сковорода"], "Текстиль": ["Плед"]},
 }
@@ -245,9 +210,7 @@ def evaluate(profile, columns, verbose: bool) -> None:
 
     modes = {
         "top5": lambda q: set(select_columns(q, columns, profile=profile)),
-        "top5+titles": lambda q: set(
-            select_columns(q, columns, profile=profile, titles=TITLES)
-        ),
+        "top5+titles": lambda q: set(select_columns(q, columns, profile=profile, titles=TITLES)),
         "prompt": lambda q: visible_in_prompt(prompt_text(q), columns),
         "prompt+titles": lambda q: visible_in_prompt(prompt_text(q, TITLES), columns),
         "prompt+rank": lambda question: visible_in_prompt(

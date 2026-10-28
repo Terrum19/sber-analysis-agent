@@ -30,9 +30,9 @@ from pathlib import Path
 BACKEND = Path(__file__).resolve().parents[2] / "backend"
 sys.path.insert(0, str(BACKEND))
 
-from app.core.agent.planner import validate_plan
-from app.core.tools.registry import tool_registry
-from app.models.research_step import ResearchPlan
+from app.core.agent.planner import validate_plan  # noqa: E402
+from app.core.tools.registry import tool_registry  # noqa: E402
+from app.models.research_step import ResearchPlan  # noqa: E402
 
 PLANNER_MARK = "Ты планируешь исследование данных шагами."
 TOOLS_START = "arguments={имя: тип = значение по умолчанию}):\n"
@@ -40,15 +40,8 @@ TOOLS_END = "\n\nРелевантные колонки"
 
 # Тулы, нужные почти любому вопросу: остальные добавляются по словам вопроса.
 CORE_TOOLS = (
-    "filter_rows",
-    "group_by",
-    "time_bucket",
-    "sort_limit",
-    "aggregate",
-    "create_column",
-    "select_columns",
-    "describe_stats",
-    "search_categorical_values",
+    "filter_rows", "group_by", "time_bucket", "sort_limit", "aggregate",
+    "create_column", "select_columns", "describe_stats", "search_categorical_values",
 )
 
 # Что должен содержать разумный план (грубая метрика качества).
@@ -57,10 +50,7 @@ EXPECTED = {
     "Сколько событий по месяцам?": [{"time_bucket", "group_by"}],
     "Средняя сумма события по месяцам": [{"time_bucket", "group_by"}],
     "Топ-5 пользователей по сумме amount": [{"group_by"}, {"sort_limit"}],
-    "Сколько событий с суммой больше 150?": [
-        {"filter_rows"},
-        {"aggregate", "group_by"},
-    ],
+    "Сколько событий с суммой больше 150?": [{"filter_rows"}, {"aggregate", "group_by"}],
     "Есть ли выбросы в amount?": [{"describe_stats", "bootstrap_ci", "shapiro_wilk"}],
     "Как менялась выручка во времени, есть ли тренд?": [
         {"trend_analysis", "time_bucket", "linear_regression", "revenue_analysis"}
@@ -82,14 +72,8 @@ def planner_prompts(calls_path: Path) -> list[dict]:
         if question in seen or "Твой предыдущий план" in user:
             continue
         seen.add(question)
-        out.append(
-            {
-                "question": question,
-                "request": req,
-                "user": user,
-                "system": next(m["content"] for m in msgs if m["role"] == "system"),
-            }
-        )
+        out.append({"question": question, "request": req, "user": user,
+                    "system": next(m["content"] for m in msgs if m["role"] == "system")})
     return out
 
 
@@ -114,35 +98,20 @@ def topk_tools(user: str, question: str) -> str:
 
 def post(url: str, payload: dict, timeout: float = 1800) -> dict:
     req = urllib.request.Request(
-        url,
-        data=json.dumps(payload).encode(),
-        headers={"Content-Type": "application/json"},
+        url, data=json.dumps(payload).encode(), headers={"Content-Type": "application/json"}
     )
     with urllib.request.urlopen(req, timeout=timeout) as resp:
         return json.loads(resp.read())
 
 
-def run_native(
-    base: str, model: str, system: str, user: str, fmt, num_ctx: int, max_tokens: int
-) -> dict:
+def run_native(base: str, model: str, system: str, user: str, fmt, num_ctx: int,
+               max_tokens: int) -> dict:
     t0 = time.time()
-    resp = post(
-        f"{base}/api/chat",
-        {
-            "model": model,
-            "stream": False,
-            "format": fmt,
-            "options": {
-                "temperature": 0,
-                "num_ctx": num_ctx,
-                "num_predict": max_tokens,
-            },
-            "messages": [
-                {"role": "system", "content": system},
-                {"role": "user", "content": user},
-            ],
-        },
-    )
+    resp = post(f"{base}/api/chat", {
+        "model": model, "stream": False, "format": fmt,
+        "options": {"temperature": 0, "num_ctx": num_ctx, "num_predict": max_tokens},
+        "messages": [{"role": "system", "content": system}, {"role": "user", "content": user}],
+    })
     return {
         "wall_s": time.time() - t0,
         "prompt_tokens": resp.get("prompt_eval_count"),
@@ -163,11 +132,7 @@ def run_tools(base: str, request: dict, max_tokens: int) -> dict:
     msg = resp["choices"][0]["message"]
     calls = msg.get("tool_calls") or []
     usage = resp.get("usage") or {}
-    content = (
-        calls[0]["function"]["arguments"]
-        if len(calls) == 1
-        else msg.get("content") or ""
-    )
+    content = calls[0]["function"]["arguments"] if len(calls) == 1 else msg.get("content") or ""
     return {
         "wall_s": time.time() - t0,
         "prompt_tokens": usage.get("prompt_tokens"),
@@ -181,12 +146,7 @@ def run_tools(base: str, request: dict, max_tokens: int) -> dict:
 
 def judge(question: str, content: str) -> dict:
     """Валидность ответа как ResearchPlan и грубая оценка выбора тулов."""
-    out: dict = {
-        "valid_json": False,
-        "valid_schema": False,
-        "plan_errors": None,
-        "tools": [],
-    }
+    out: dict = {"valid_json": False, "valid_schema": False, "plan_errors": None, "tools": []}
     try:
         json.loads(content)
         out["valid_json"] = True
@@ -220,18 +180,13 @@ def main() -> None:
     args = ap.parse_args()
 
     schema = ResearchPlan.model_json_schema()
-    hint = (
-        "\n\nОтветь только JSON-объектом по этой JSON-схеме, без пояснений:\n"
-        + json.dumps(schema, ensure_ascii=False)
-    )
+    hint = ("\n\nОтветь только JSON-объектом по этой JSON-схеме, без пояснений:\n"
+            + json.dumps(schema, ensure_ascii=False))
     prompts = planner_prompts(args.calls)
     if args.limit:
         prompts = prompts[: args.limit]
-    print(
-        f"промптов планировщика: {len(prompts)}; тулов в реестре: "
-        f"{len(tool_registry.planner_tools())}",
-        flush=True,
-    )
+    print(f"промптов планировщика: {len(prompts)}; тулов в реестре: "
+          f"{len(tool_registry.planner_tools())}", flush=True)
 
     # Порядок: режим снаружи, вопросы внутри — так видно и холодный, и
     # «тёплый» (общий префикс в KV-кеше Ollama) prefill.
@@ -245,46 +200,24 @@ def main() -> None:
                     if mode == "tools":
                         res = run_tools(args.base, item["request"], args.max_tokens)
                     elif mode.startswith("json_hint"):
-                        res = run_native(
-                            args.base,
-                            args.model,
-                            item["system"],
-                            user + hint,
-                            "json",
-                            args.num_ctx,
-                            args.max_tokens,
-                        )
+                        res = run_native(args.base, args.model, item["system"], user + hint,
+                                         "json", args.num_ctx, args.max_tokens)
                     elif mode.startswith("json_schema"):
-                        res = run_native(
-                            args.base,
-                            args.model,
-                            item["system"],
-                            user,
-                            schema,
-                            args.num_ctx,
-                            args.max_tokens,
-                        )
+                        res = run_native(args.base, args.model, item["system"], user,
+                                         schema, args.num_ctx, args.max_tokens)
                     else:
                         raise SystemExit(f"неизвестный режим {mode}")
                     res |= judge(q, res["content"])
                 except Exception as exc:  # noqa: BLE001
                     res = {"error": repr(exc)[:500]}
-                res |= {
-                    "mode": mode,
-                    "question": q,
-                    "rep": rep,
-                    "prompt_chars": len(user),
-                }
+                res |= {"mode": mode, "question": q, "rep": rep, "prompt_chars": len(user)}
                 with args.out.open("a", encoding="utf-8") as fh:
                     fh.write(json.dumps(res, ensure_ascii=False, default=str) + "\n")
-                print(
-                    f"[{mode}] {q[:40]!r}: wall={res.get('wall_s', 0):.1f}s "
-                    f"pt={res.get('prompt_tokens')} gt={res.get('gen_tokens')} "
-                    f"schema={res.get('valid_schema')} errs={res.get('plan_errors')} "
-                    f"ok={res.get('expected_ok')} tools={res.get('tools')} "
-                    f"{res.get('error', '')}",
-                    flush=True,
-                )
+                print(f"[{mode}] {q[:40]!r}: wall={res.get('wall_s', 0):.1f}s "
+                      f"pt={res.get('prompt_tokens')} gt={res.get('gen_tokens')} "
+                      f"schema={res.get('valid_schema')} errs={res.get('plan_errors')} "
+                      f"ok={res.get('expected_ok')} tools={res.get('tools')} "
+                      f"{res.get('error', '')}", flush=True)
 
 
 if __name__ == "__main__":
