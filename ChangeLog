@@ -180,6 +180,33 @@
 
 2026-10-28  mb6ockatf  <smokenmirror@tutamail.com>
 
+	Тулы сценария 3: аномалии, лаги, «каждый июль» (#65).
+	* backend/app/core/tools/stats/detect_anomalies.py (DetectAnomaliesTool):
+	Новый.  Выбросы по IQR (с запасным stddev_pop, если IQR = 0) или
+	z-score оконными функциями, в группе by; с period — сначала сумма по
+	периодам.  Только выбросы, с колонками score и direction.
+	* backend/app/core/tools/timeseries/lag_correlation.py
+	(LagCorrelationTool): Новый.  Ряды x и y по date_trunc(interval);
+	corr(x(t), y(t - lag)) для lag = 0..max_lag соединением по календарному
+	сдвигу, пропуски периодов не сдвигают пары.
+	* backend/app/core/tools/timeseries/period_compare.py
+	(PeriodCompareTool): Новый.  Строка на год и part (месяц, квартал, день
+	недели): value, отклонение от среднего этого part по годам и от
+	среднего part этого года.
+	* backend/app/core/tools/registry.py: Три тула видны планировщику.
+	* backend/app/core/llm/prompts/quality_rules.py (PLANNER_RULES): Когда
+	брать period_compare, detect_anomalies и lag_correlation.
+	* data/eval/questions.yaml (sales-03, psych-age): Новые тулы в
+	tools_any.
+	* data/eval/hk/questions.yaml (sales-s3-july): То же.
+	* backend/tests/unit/test_advanced_tools.py: Тесты с выбросом, лагом 3,
+	всплеском в июле и проверкой аргументов.
+	* backend/tests/unit/test_quality_fixes.py
+	(test_select_tools_offers_scenario_three_tools): Новый.
+	* backend/tests/unit/test_tool_registry.py (EXPECTED_TOOLS):
+	* backend/tests/unit/test_source_names.py: Новые тулы.
+	* docs/repo_structure.md, docs/roadmap.md: Новые тулы.
+
 	CI: меньше минут на каждый push.  За 23–28.10 было ~1000 запусков
 	workflow, и GitHub Actions перестал запускать job'ы.
 	* .github/workflows/conventions.yml: Поиск секретов gitleaks перенесён

@@ -73,6 +73,21 @@ def test_select_tools_keeps_core_and_matches_question() -> None:
     assert "- funnel_steps" not in text
 
 
+@pytest.mark.parametrize(
+    ("question", "tool"),
+    [
+        ("Что происходит с выручкой каждый июль?", "period_compare"),
+        ("Есть ли аномальные значения возраста респондентов?", "detect_anomalies"),
+        ("Есть ли выбросы в ценах?", "detect_anomalies"),
+        ("Есть ли запаздывание между рекламой и выручкой?", "lag_correlation"),
+    ],
+)
+def test_select_tools_offers_scenario_three_tools(question: str, tool: str) -> None:
+    from app.core.agent.quality_fixes import select_tools
+
+    assert f"- {tool} [" in select_tools(question)
+
+
 class _ScriptedLLM:
     """complete_structured отдаёт заготовленные заголовки по очереди."""
 
