@@ -1,3 +1,31 @@
+2026-10-28  mb6ockatf  <smokenmirror@tutamail.com>
+
+	Экспорт (#145): владение таблицей для дашбордов и шагов, проверка
+	спецификации только в объектах data, лимит одновременных рендеров.
+	* backend/app/api/routes/artifacts.py (result_owner): С dashboard_id
+	result_ref должен быть таблицей плитки этого дашборда; без него —
+	таблицей хода сессии, как раньше.  Экспорт с дашборда больше не
+	получает 404 за таблицу промежуточного шага или дашборд без сессии.
+	* backend/app/api/schemas/chat.py (ExportRequest): Поле dashboard_id.
+	* backend/app/core/memory/session_memory.py (record_step): Таблица
+	шага пишется в results хода.  (owns_result): Итог, график и таблицы
+	шагов ходов, таблицы ожидающего уточнения.  Возвращение старой модели
+	состояния (steps и tables вне ходов, set_table с колонками) отменено.
+	* backend/app/core/agent/orchestrator.py (_execute_plan): Передаёт
+	таблицу шага в record_step.
+	* backend/app/core/export/charts.py (validate_chart_spec): url,
+	sequence, graticule и sphere запрещены только внутри объектов data;
+	колонка данных с таким именем больше не убирает график из отчёта.
+	datasets обрезаются до 1000 строк.  (render_chart_png): Не больше
+	двух рендеров одновременно (MAX_PARALLEL_RENDERS).
+	* frontend/src/api/client.ts, frontend/src/app/dashboard/[id]/page.tsx,
+	frontend/src/components/canvas/Canvas.tsx: Экспорт дашборда передаёт
+	dashboard_id.
+	* scripts/, docs/team_plans/, backend/run_llm_agent.py: Возвращены к
+	dev: изменения в них были только форматированием.
+	* docs/architecture.md: Правила владения, проверки спецификации и
+	лимит рендеров.
+
 2026-10-28  dmitriy-ya  <dmitriyyakushonok@yandex.ru>
 
 	Экспорт аналитического отчёта по ответу агента в PDF (#62, E-01).

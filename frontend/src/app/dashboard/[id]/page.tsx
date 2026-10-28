@@ -312,8 +312,9 @@ export default function DashboardPage({ params }: { params: { id: string } }) {
               headline: targetTile.title || targetTile.insight,
               details: targetTile.insight ? [targetTile.insight] : undefined,
               spec: targetTile.spec,
+              dashboardId: params.id,
             }
-          : undefined;
+          : { dashboardId: params.id };
       const blob = await exportArtifact(config.session_id || params.id, format, resultRef, options);
       const url = URL.createObjectURL(blob);
       const a = document.createElement("a");

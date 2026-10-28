@@ -156,8 +156,9 @@ def test_5_api_export_pdf_endpoint(client: TestClient, tmp_path: Path) -> None:
 
     # Привязываем сессию и промежуточный результат к памяти
     memory = SessionMemory("test_session_123", db)
-    memory.set_table("raw", ["category", "revenue"])
-    memory.record_step({"step_id": 1, "purpose": "Группировка по категориям"}, "temp_result_v1")
+    memory.set_table("raw")
+    memory.start_turn("Вопрос")
+    memory.finish_turn("ok", result_table="temp_result_v1")
 
     payload = {
         "session_id": "test_session_123",
@@ -221,8 +222,9 @@ def test_api_export_xlsx_endpoint(client: TestClient, tmp_path: Path) -> None:
     db.execute("CREATE TABLE temp_result_v2 AS SELECT 'Товар' AS item, 100 AS price")
 
     memory = SessionMemory("s1", db)
-    memory.set_table("raw", ["item", "price"])
-    memory.record_step({"step_id": 1, "purpose": "Выборка товаров"}, "temp_result_v2")
+    memory.set_table("raw")
+    memory.start_turn("Вопрос")
+    memory.finish_turn("ok", result_table="temp_result_v2")
 
     resp = client.post(
         "/api/artifacts/export",
@@ -281,9 +283,10 @@ def test_api_export_suppressed_error_fixed_raises_404(client: TestClient) -> Non
     """Проверка исправления подавления ошибок: если result_ref не удаётся прочитать, возвращается 404, а не пустой отчёт."""
     db: DuckDBManager = client.app.dependency_overrides[get_db]()
     memory = SessionMemory("session_err", db)
-    memory.set_table("raw", ["col1"])
+    memory.set_table("raw")
     # Записываем шаг, но таблицы в DuckDB нет
-    memory.record_step({"step_id": 1, "purpose": "step"}, "temp_result_v99")
+    memory.start_turn("Вопрос")
+    memory.finish_turn("ok", result_table="temp_result_v99")
 
     payload = {
         "session_id": "session_err",
@@ -305,12 +308,13 @@ def test_api_export_session_isolation(client: TestClient) -> None:
 
     # Сессия А владеет temp_result_v10
     mem_a = SessionMemory("session_alice", db)
-    mem_a.set_table("raw", ["id", "val"])
-    mem_a.record_step({"step_id": 1, "purpose": "step"}, "temp_result_v10")
+    mem_a.set_table("raw")
+    mem_a.start_turn("Вопрос")
+    mem_a.finish_turn("ok", result_table="temp_result_v10")
 
     # Сессия Б существует, но не владеет temp_result_v10
     mem_b = SessionMemory("session_bob", db)
-    mem_b.set_table("raw", ["id", "val"])
+    mem_b.set_table("raw")
 
     # Сессия Б пытается запросить результат Сессии А
     resp_b = client.post(
@@ -413,8 +417,9 @@ def test_api_export_empty_result_ref_is_404(client: TestClient) -> None:
     db: DuckDBManager = client.app.dependency_overrides[get_db]()
     db.execute("CREATE TABLE temp_result_v77 AS SELECT 1 AS id WHERE 1=0")
     memory = SessionMemory("s_empty_test", db)
-    memory.set_table("raw", ["id"])
-    memory.record_step({"step_id": 1, "purpose": "step"}, "temp_result_v77")
+    memory.set_table("raw")
+    memory.start_turn("Вопрос")
+    memory.finish_turn("ok", result_table="temp_result_v77")
 
     resp = client.post(
         "/api/artifacts/export",
@@ -428,7 +433,7 @@ def test_api_export_pdf_insight_only(client: TestClient) -> None:
     """Проверка успешного экспорта отчёта только с инсайтом (без result_ref)."""
     db: DuckDBManager = client.app.dependency_overrides[get_db]()
     memory = SessionMemory("s_insight_only", db)
-    memory.set_table("raw", ["id"])
+    memory.set_table("raw")
 
     resp = client.post(
         "/api/artifacts/export",
@@ -670,7 +675,17 @@ def test_validate_chart_spec_non_serializable_and_non_dict_children() -> None:
         )
 
     with pytest.raises(ValueError, match="data.sequence запрещён"):
-        validate_chart_spec({"nested": [{"deep": {"sequence": {"start": 0, "stop": 100}}}]})
+        validate_chart_spec(
+            {"transform": [{"lookup": "k", "from": {"data": {"sequence": {"stop": 100}}}}]}
+        )
+
+    rows = {"data": {"values": [{"url": "a.ru", "sequence": 1}]}, "mark": "bar"}
+    assert validate_chart_spec(rows)["data"]["values"] == [{"url": "a.ru", "sequence": 1}]
+
+    datasets = {"datasets": {"big": [{"x": index} for index in range(1500)], "name": "x"}}
+    cleaned = validate_chart_spec(datasets)
+    assert len(cleaned["datasets"]["big"]) == 1000
+    assert cleaned["datasets"]["name"] == "x"
 
 
 def test_render_chart_png_empty_stdout(monkeypatch) -> None:
@@ -758,3 +773,62 @@ def test_branch_coverage_remaining_branches(tmp_path: Path) -> None:
     p3 = tmp_path / "empty_records.pdf"
     PdfExporter().export_answer(str(p3), records=[{}, {}])
     assert p3.is_file()
+
+
+def test_render_chart_png_skips_when_all_render_slots_are_busy(monkeypatch) -> None:
+    from app.core.export import charts
+
+    class BusySlots:
+        def acquire(self, timeout: float) -> bool:
+            return False
+
+    monkeypatch.setattr(charts, "_render_slots", BusySlots())
+    assert charts.render_chart_png({"mark": "bar"}) is None
+
+
+def test_api_export_xlsx_of_a_dashboard_tile(client: TestClient) -> None:
+    from app.core.dashboards.models import Dashboard, DashboardTile
+    from app.core.dashboards.store import DashboardStore
+
+    db: DuckDBManager = client.app.dependency_overrides[get_db]()
+    db.execute("CREATE OR REPLACE TABLE temp_result_v61 AS SELECT 1 AS id, 'a' AS name")
+    dashboard_id = DashboardStore().create(
+        Dashboard(
+            session_id="dashboard_session_gone",
+            title="Дашборд",
+            tiles=[DashboardTile(title="Плитка", result_table="temp_result_v61")],
+        )
+    )
+
+    owned = client.post(
+        "/api/artifacts/export",
+        json={
+            "session_id": "dashboard_session_gone",
+            "format": "xlsx",
+            "result_ref": "temp_result_v61",
+            "dashboard_id": dashboard_id,
+        },
+    )
+    assert owned.status_code == 200
+
+    foreign = client.post(
+        "/api/artifacts/export",
+        json={
+            "session_id": "dashboard_session_gone",
+            "format": "xlsx",
+            "result_ref": "temp_result_v62",
+            "dashboard_id": dashboard_id,
+        },
+    )
+    assert foreign.status_code == 404
+
+    missing = client.post(
+        "/api/artifacts/export",
+        json={
+            "session_id": "dashboard_session_gone",
+            "format": "xlsx",
+            "result_ref": "temp_result_v61",
+            "dashboard_id": "no_such_dashboard",
+        },
+    )
+    assert missing.status_code == 404

@@ -506,6 +506,7 @@ export interface ExportArtifactOptions {
   headline?: string;
   details?: string[];
   spec?: Record<string, any>;
+  dashboardId?: string;
 }
 
 /** Выгрузка артефактов (Excel / PDF). */
@@ -531,6 +532,7 @@ export async function exportArtifact(
         headline: options?.headline || null,
         details: options?.details || null,
         spec: options?.spec || null,
+        dashboard_id: options?.dashboardId || null,
       }),
     });
     if (!res.ok) throw await parseApiError(res);

@@ -29,7 +29,6 @@ import time
 import uuid
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
 
 import duckdb
 
@@ -185,7 +184,7 @@ class SessionMemory:
         self._state["title"] = title
         self._persist()
 
-    def set_table(self, table: str, columns: list[str] | None = None) -> None:
+    def set_table(self, table: str) -> None:
         """Сделать таблицу таблицей по умолчанию ($source) для следующих ходов.
 
         Ходы остаются: вопрос по новой таблице может продолжать прошлый.
@@ -193,11 +192,7 @@ class SessionMemory:
         При смене таблицы сбрасывается и ``datasource_id``: новая таблица
         может быть из другого источника.
         """
-        if columns is not None:
-            self._state["columns"] = list(columns)
         if table == self.table:
-            if columns is not None:
-                self._persist()
             return
         if self.table is not None:
             self._state["datasource_id"] = None
@@ -263,43 +258,35 @@ class SessionMemory:
             chain.append(parent)
         return chain[::-1]
 
-    def record_step(self, step: Any, result_table: str | None = None) -> None:
+    def record_step(self, step, result_table: str | None = None) -> None:
         """Записать выполненный шаг в текущий ход (сохраняется в finish_turn)."""
-
-        def _get(obj: Any, key: str, default: Any = None) -> Any:
-            if isinstance(obj, dict):
-                return obj.get(key, default)
-            return getattr(obj, key, default)
-
-        step_data: dict[str, Any] = {
-            "step_id": _get(step, "step_id"),
-            "tool": _get(step, "tool"),
-            "input": _get(step, "input"),
-            "arguments": _get(step, "arguments"),
-            "columns": _get(step, "columns"),
-            "purpose": _get(step, "purpose", ""),
-        }
         if result_table:
-            step_data["result"] = result_table
-
-        if self._turn is not None:
-            self._turn["steps"].append(step_data)
-            if result_table and not self._turn.get("result_table"):
-                self._turn["result_table"] = result_table
-        else:
-            self._state.setdefault("steps", []).append(step_data)
-            self._persist()
+            self._turn.setdefault("results", []).append(result_table)
+        self._turn["steps"].append(
+            {
+                "step_id": step.step_id,
+                "tool": step.tool,
+                "input": step.input,
+                "arguments": step.arguments,
+                "columns": step.columns,
+                "purpose": step.purpose,
+            }
+        )
 
     def record_chart(self, chart_type: str, result_table: str, title: str = "") -> None:
         """Запомнить график текущего хода (для смены вида без LLM)."""
-        chart_data = {"type": chart_type, "title": title, "result_table": result_table}
-        if self._turn is not None:
-            self._turn["chart"] = chart_data
-        else:
-            self._state.setdefault("tables", {})
-            tbl = self.table or "$default"
-            self._state["tables"].setdefault(tbl, {})["last_chart"] = chart_data
-            self._persist()
+        self._turn["chart"] = {"type": chart_type, "title": title, "result_table": result_table}
+
+    def owns_result(self, result_table: str) -> bool:
+        for turn in self._state["turns"]:
+            chart = turn.get("chart") or {}
+            if result_table in (turn.get("result_table"), chart.get("result_table")):
+                return True
+            if result_table in turn.get("results", []):
+                return True
+        pending = self._state.get("pending_recovery") or {}
+        tables = pending.get("step_tables") or {}
+        return result_table in tables.values() or result_table == pending.get("input_table")
 
     def finish_turn(
         self,
@@ -367,44 +354,6 @@ class SessionMemory:
             "titles": {row.column: row.title for row in enrichment if row.title},
             "descriptions": {row.column: row.description for row in enrichment if row.description},
         }
-
-    def owns_result(self, result_table: str) -> bool:
-        """Проверить, принадлежит ли промежуточная таблица данной сессии."""
-        if not result_table:
-            return False
-
-        # 1. Походовая модель: проверка всех ходов сессии (включая текущий активный)
-        for turn in self._state.get("turns", []):
-            if turn.get("result_table") == result_table:
-                return True
-            chart = turn.get("chart")
-            if isinstance(chart, dict) and chart.get("result_table") == result_table:
-                return True
-            for step in turn.get("steps", []):
-                if isinstance(step, dict) and step.get("result") == result_table:
-                    return True
-
-        # 2. Устаревшая модель состояния (шаги и таблицы до #163)
-        for step in self._state.get("steps", []):
-            if isinstance(step, dict) and step.get("result") == result_table:
-                return True
-
-        for tbl_data in self._state.get("tables", {}).values():
-            if isinstance(tbl_data, dict):
-                chart = tbl_data.get("last_chart")
-                if isinstance(chart, dict) and chart.get("result_table") == result_table:
-                    return True
-
-        # 3. Состояние восстановления после ошибки шага
-        pending = self._state.get("pending_recovery")
-        if isinstance(pending, dict):
-            step_tables = pending.get("step_tables", {})
-            if isinstance(step_tables, dict) and result_table in step_tables.values():
-                return True
-            if pending.get("input_table") == result_table:
-                return True
-
-        return False
 
     # --- pending_recovery (восстановление после ошибки шага) ---
 

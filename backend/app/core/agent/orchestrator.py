@@ -571,7 +571,7 @@ class AgentOrchestrator:
             logger.info("<<< _execute_plan шаг %d УСПЕШЕН result_table=%s", step.step_id, table)
             inputs[step.step_id] = resolve_input(step, current, tables, source)
             tables[step.step_id] = table
-            memory.record_step(step)
+            memory.record_step(step, table)
             if kind == "transform":
                 current = table
             index += 1

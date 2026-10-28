@@ -305,8 +305,9 @@ export default function Canvas({ sessionId }: Props) {
               headline: targetTile.title || targetTile.insight,
               details: targetTile.insight ? [targetTile.insight] : undefined,
               spec: targetTile.spec,
+              dashboardId: dashboardId ?? undefined,
             }
-          : undefined;
+          : { dashboardId: dashboardId ?? undefined };
       const blob = await exportArtifact(sessionId, format, resultRef, options);
       const url = URL.createObjectURL(blob);
       const a = document.createElement("a");

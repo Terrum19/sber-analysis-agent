@@ -7,6 +7,7 @@
 import logging
 import re
 import uuid
+from collections.abc import Callable
 from pathlib import Path
 from typing import Annotated
 
@@ -17,6 +18,7 @@ from fastapi.responses import FileResponse
 from app.api.deps import get_db
 from app.api.schemas.chat import ExportRequest
 from app.config import settings
+from app.core.dashboards.store import DashboardStore
 from app.core.data.duckdb_manager import DuckDBManager
 from app.core.export.charts import render_chart_png
 from app.core.export.excel import ExcelExporter
@@ -27,6 +29,25 @@ router = APIRouter()
 logger = logging.getLogger(__name__)
 # result_ref попадает в SQL как имя таблицы — пускаем только temp_result_vN.
 RESULT_REF = re.compile(r"temp_result_v\d+")
+
+
+def result_owner(payload: ExportRequest, db: DuckDBManager) -> Callable[[str], bool]:
+    if payload.dashboard_id:
+        dashboard = DashboardStore().get(payload.dashboard_id)
+        if dashboard is None:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Дашборд «{payload.dashboard_id}» не найден.",
+            )
+        tables = {tile.result_table for tile in dashboard.tiles if tile.result_table}
+        return lambda table: table in tables
+    memory = SessionMemory(payload.session_id, db)
+    if not memory.exists():
+        raise HTTPException(
+            status_code=404,
+            detail=f"Сессия «{payload.session_id}» не найдена.",
+        )
+    return memory.owns_result
 
 
 @router.post("/export")
@@ -60,16 +81,11 @@ def export_artifact(
             detail="Для экспорта в PDF необходимо указать result_ref или передать данные инсайта.",
         )
 
-    memory = SessionMemory(payload.session_id, db)
-    if not memory.exists():
-        raise HTTPException(
-            status_code=404,
-            detail=f"Сессия «{payload.session_id}» не найдена.",
-        )
+    owns_result = result_owner(payload, db)
 
     records: list[dict] = []
     if payload.result_ref:
-        if not memory.owns_result(payload.result_ref):
+        if not owns_result(payload.result_ref):
             raise HTTPException(
                 status_code=404,
                 detail=f"Результат «{payload.result_ref}» не найден в сессии «{payload.session_id}».",

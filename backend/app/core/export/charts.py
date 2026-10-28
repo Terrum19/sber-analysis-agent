@@ -10,6 +10,7 @@ import json
 import logging
 import subprocess
 import sys
+import threading
 from typing import Any
 
 logger = logging.getLogger(__name__)
@@ -20,6 +21,9 @@ DEFAULT_SCALE = 2.0
 MAX_SPEC_JSON_BYTES = 256 * 1024  # 256 KB
 MAX_DATA_ROWS = 1000
 RENDER_TIMEOUT_S = 7.0
+MAX_PARALLEL_RENDERS = 2
+
+_render_slots = threading.BoundedSemaphore(MAX_PARALLEL_RENDERS)
 
 _RENDER_SUBPROCESS_SCRIPT = """
 import sys, json
@@ -63,21 +67,28 @@ def validate_chart_spec(spec: dict[str, Any]) -> dict[str, Any]:
 
     clean_spec = copy.deepcopy(spec)
 
+    def _check_data(data: dict[str, Any]) -> None:
+        if "sequence" in data:
+            raise ValueError("Генератор данных data.sequence запрещён в целях безопасности")
+        if "url" in data:
+            raise ValueError("Внешние источники данных data.url запрещены в целях безопасности")
+        if "graticule" in data or "sphere" in data:
+            raise ValueError("Генераторы данных запрещены в целях безопасности")
+
     def _scan_node(node: Any) -> None:
         if isinstance(node, dict):
-            for k, v in list(node.items()):
-                if k == "sequence":
-                    raise ValueError("Генератор данных data.sequence запрещён в целях безопасности")
-                if k == "url":
-                    raise ValueError(
-                        "Внешние источники данных data.url запрещены в целях безопасности"
-                    )
-                if k in ("graticule", "sphere"):
-                    raise ValueError("Генераторы данных запрещены в целях безопасности")
-                if k == "values" and isinstance(v, list) and len(v) > MAX_DATA_ROWS:
-                    node["values"] = v[:MAX_DATA_ROWS]
+            for key, value in list(node.items()):
+                if key == "data" and isinstance(value, dict):
+                    _check_data(value)
+                if key == "values" and isinstance(value, list):
+                    node["values"] = value[:MAX_DATA_ROWS]
+                elif key == "datasets" and isinstance(value, dict):
+                    node["datasets"] = {
+                        name: rows[:MAX_DATA_ROWS] if isinstance(rows, list) else rows
+                        for name, rows in value.items()
+                    }
                 else:
-                    _scan_node(v)
+                    _scan_node(value)
         elif isinstance(node, list):
             for item in node:
                 _scan_node(item)
@@ -149,6 +160,9 @@ def render_chart_png(
 
     input_payload = json.dumps({"spec": normalized, "scale": scale}).encode("utf-8")
 
+    if not _render_slots.acquire(timeout=timeout_s):
+        logger.warning("Рендеринг графика пропущен: заняты все %d слота", MAX_PARALLEL_RENDERS)
+        return None
     try:
         proc = subprocess.run(
             [sys.executable, "-c", _RENDER_SUBPROCESS_SCRIPT],
@@ -163,6 +177,8 @@ def render_chart_png(
     except OSError as exc:
         logger.warning("Ошибка запуска подпроцесса рендеринга графика: %s", exc)
         return None
+    finally:
+        _render_slots.release()
 
     if proc.returncode != 0:
         err = proc.stderr.decode("utf-8", errors="replace").strip()
