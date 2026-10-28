@@ -5,10 +5,12 @@
 """
 
 from collections.abc import Collection
-from typing import Annotated
+from pathlib import Path
+from typing import Annotated, Literal
 from uuid import uuid4
 
 from fastapi import APIRouter, Depends, HTTPException, Response, status
+from fastapi.responses import FileResponse
 
 from app.api.deps import get_db
 from app.api.schemas.dashboard import (
@@ -18,10 +20,12 @@ from app.api.schemas.dashboard import (
     DashboardTileOut,
     DashboardUpdate,
 )
+from app.config import settings
 from app.core.dashboards.models import Dashboard, DashboardTile
 from app.core.dashboards.recalculate import recalculate
 from app.core.dashboards.store import DashboardStore
 from app.core.data.duckdb_manager import DuckDBManager
+from app.core.export.excel import ExcelExporter
 
 router = APIRouter()
 
@@ -105,3 +109,31 @@ def recalculate_dashboard(
     if result is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, NOT_FOUND)
     return dashboard_out(result.dashboard, result.stale_tiles)
+
+
+@router.get("/{dashboard_id}/export")
+def export_dashboard(
+    dashboard_id: str,
+    db: Annotated[DuckDBManager, Depends(get_db)],
+    format: Literal["xlsx", "pdf"] = "xlsx",
+) -> FileResponse:
+    """Экспорт дашборда в .xlsx (или .pdf)."""
+    if format == "pdf":
+        raise HTTPException(
+            status.HTTP_501_NOT_IMPLEMENTED,
+            "Экспорт дашборда в PDF пока не реализован. Попробуйте .xlsx.",
+        )
+    dashboard = DashboardStore().get(dashboard_id)
+    if dashboard is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, NOT_FOUND)
+
+    filename = f"dashboard_{dashboard_id}_{uuid4().hex[:8]}.xlsx"
+    export_dir = Path(settings.storage_dir) / "exports"
+    export_dir.mkdir(parents=True, exist_ok=True)
+    path = export_dir / filename
+    ExcelExporter().export_dashboard(dashboard, str(path), db=db)
+    return FileResponse(
+        path,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        filename=filename,
+    )
