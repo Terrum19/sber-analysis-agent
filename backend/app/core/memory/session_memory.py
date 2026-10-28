@@ -373,7 +373,7 @@ class SessionMemory:
         if not result_table:
             return False
 
-        # 1. Походовая модель: проверка всех ходов сессии
+        # 1. Походовая модель: проверка всех ходов сессии (включая текущий активный)
         for turn in self._state.get("turns", []):
             if turn.get("result_table") == result_table:
                 return True
@@ -384,18 +384,7 @@ class SessionMemory:
                 if isinstance(step, dict) and step.get("result") == result_table:
                     return True
 
-        # 2. Текущий активный ход (если не закрыт finish_turn)
-        if self._turn is not None:
-            if self._turn.get("result_table") == result_table:
-                return True
-            chart = self._turn.get("chart")
-            if isinstance(chart, dict) and chart.get("result_table") == result_table:
-                return True
-            for step in self._turn.get("steps", []):
-                if isinstance(step, dict) and step.get("result") == result_table:
-                    return True
-
-        # 3. Устаревшая модель состояния (шаги и таблицы до #163)
+        # 2. Устаревшая модель состояния (шаги и таблицы до #163)
         for step in self._state.get("steps", []):
             if isinstance(step, dict) and step.get("result") == result_table:
                 return True
@@ -406,9 +395,9 @@ class SessionMemory:
                 if isinstance(chart, dict) and chart.get("result_table") == result_table:
                     return True
 
-        # 4. Состояние восстановления после ошибки шага
+        # 3. Состояние восстановления после ошибки шага
         pending = self._state.get("pending_recovery")
-        if pending and isinstance(pending, dict):
+        if isinstance(pending, dict):
             step_tables = pending.get("step_tables", {})
             if isinstance(step_tables, dict) and result_table in step_tables.values():
                 return True

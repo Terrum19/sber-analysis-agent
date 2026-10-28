@@ -34,13 +34,14 @@
 	* backend/requirements.txt, backend/pyproject.toml: Зависимости
 	reportlab, vl-convert-python, pypdf.
 	* backend/Dockerfile: Установка пакета fonts-dejavu-core.
-	* backend/tests/unit/test_export_pdf.py: Набор unit-тестов (27 тестов)
-	со 100% покрытием всех модулей экспорта и API: рендеринг графиков,
-	защита от DoS/OOM в Vega-Lite, структура PDF (pypdf), кириллица, картинки,
-	экранирование XML, защита от LayoutError, изоляция сессий, обработка
-	отсутствия шрифтов, таймаутов подпроцесса и API 500.
-	* backend/tests/unit/test_session_memory.py: Тесты owns_result со 100%
-	покрытием.
+	* backend/tests/unit/test_export_pdf.py: Набор unit-тестов (28 тестов)
+	со 100% покрытием строк и ветвей (branch coverage) всех модулей экспорта
+	и API: рендеринг графиков, защита от DoS/OOM в Vega-Lite, структура PDF
+	(pypdf), кириллица, картинки, экранирование XML, защита от LayoutError,
+	изоляция сессий, обработка отсутствия шрифтов, таймаутов подпроцесса
+	и API 500.
+	* backend/tests/unit/test_session_memory.py: Полное 100% покрытие строк
+	и ветвей для owns_result, record_step, record_chart и set_table.
 	* docs/repo_structure.md, docs/roadmap.md, docs/architecture.md:
 	Актуализация документации по экспорту и конвейеру генерации PDF.
 

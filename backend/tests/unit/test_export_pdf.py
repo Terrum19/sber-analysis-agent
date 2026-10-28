@@ -728,3 +728,33 @@ def test_pdf_exporter_zero_dimension_image(monkeypatch) -> None:
     monkeypatch.setattr("PIL.Image.open", lambda *args, **kwargs: DummyImg())
     img = PdfExporter()._build_image(b"fake_bytes", 500, 300)
     assert img is None
+
+
+def test_branch_coverage_remaining_branches(tmp_path: Path) -> None:
+    """100% ветвевое покрытие для charts.py, excel.py и pdf.py."""
+    from app.core.export.charts import normalize_spec
+    from app.core.export.excel import ExcelExporter
+
+    # 1. charts.py: normalize_spec с фиксированной шириной (ветка 98->101)
+    norm = normalize_spec({"width": 500, "height": 300})
+    assert norm["width"] == 500
+
+    # 2. excel.py: экспорт с пустым списком records (ветка 19->29)
+    xlsx_path = tmp_path / "empty.xlsx"
+    ExcelExporter().export([], str(xlsx_path))
+    assert xlsx_path.is_file()
+
+    # 3. pdf.py: только вопрос без инсайта (ветка 327->355)
+    p1 = tmp_path / "q_only.pdf"
+    PdfExporter().export_answer(str(p1), question="Только вопрос")
+    assert p1.is_file()
+
+    # 4. pdf.py: битое изображение графика (ветка 361->365)
+    p2 = tmp_path / "broken_img.pdf"
+    PdfExporter().export_answer(str(p2), question="Вопрос", chart_png=b"not_an_image")
+    assert p2.is_file()
+
+    # 5. pdf.py: список пустых записей без колонок (ветка 395->398)
+    p3 = tmp_path / "empty_records.pdf"
+    PdfExporter().export_answer(str(p3), records=[{}, {}])
+    assert p3.is_file()

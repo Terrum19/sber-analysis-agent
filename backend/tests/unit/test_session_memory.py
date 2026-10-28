@@ -183,21 +183,56 @@ def test_owns_result_all_branches(memory):
     assert not memory.owns_result("")
     assert not memory.owns_result(None)
 
-    # 2. Шаги плана
-    memory.set_table("raw", ["col"])
-    step = ResearchStep(step_id=1, tool="aggregate", purpose="step 1")
-    memory.record_step(step, "temp_result_v1")
-    # Шаг есть, но имя не совпадает (ветка 256->255)
-    assert not memory.owns_result("temp_result_v999")
-    # Шаг совпадает
-    assert memory.owns_result("temp_result_v1")
+    # 2. Походовая модель: завершённые ходы с result_table, chart и step
+    # 2.1. Ход с result_table
+    memory.start_turn("Ход 1")
+    memory.finish_turn("ok", result_table="temp_result_t1")
+    assert memory.owns_result("temp_result_t1")
 
-    # 3. Графики (last_chart)
-    memory.record_chart("bar", "temp_result_v2", "Диаграмма")
-    assert memory.owns_result("temp_result_v2")
+    # 2.2. Ход только с графиком (без result_table)
+    memory.start_turn("Ход 2")
+    memory.record_chart("line", "temp_result_t2_chart")
+    memory.finish_turn("ok")
+    assert memory.owns_result("temp_result_t2_chart")
+
+    # 2.3. Ход только с шагом (без result_table и графика)
+    memory.start_turn("Ход 3")
+    step_obj = ResearchStep(step_id=1, tool="aggregate", purpose="step 1")
+    memory.record_step(step_obj, "temp_result_t3_step")
+    # Также шаг через dict (покрытие _get с dict)
+    memory.record_step({"step_id": 2, "tool": "sql", "purpose": "dict step"}, "temp_result_dict")
+    assert memory.owns_result("temp_result_t3_step")
+    assert memory.owns_result("temp_result_dict")
+    memory.finish_turn("ok")
+
+    # 2.4. Активный незавершённый ход
+    memory.start_turn("Ход 4 активный")
+    memory.record_step(step_obj, "temp_result_t4_active")
+    assert memory.owns_result("temp_result_t4_active")
+    memory.finish_turn("ok")
+
+    # 3. Устаревшая модель состояния (вне ходов, self._turn is None)
+    memory._turn = None
+    memory.set_table("raw", ["col"])
+    # Повторный set_table без колонок (ветка columns is None)
+    memory.set_table("raw")
+    # Повторный set_table с той же таблицей и новыми колонками (покрытие строки 200: self._persist())
+    memory.set_table("raw", ["col", "col_extra"])
+
+    memory.record_step(step_obj, "temp_result_legacy_step")
+    assert not memory.owns_result("temp_result_v999")
+    assert memory.owns_result("temp_result_legacy_step")
+
+    # Графики в устаревшей модели (last_chart)
+    memory.record_chart("bar", "temp_result_legacy_chart", "Диаграмма")
+    assert memory.owns_result("temp_result_legacy_chart")
     # Переключение на другую таблицу
     memory.set_table("other", ["col2"])
-    assert memory.owns_result("temp_result_v2")  # сохранён из таблицы raw
+    assert memory.owns_result("temp_result_legacy_chart")
+
+    # Некорректный элемент в tables (ветка isinstance(tbl_data, dict) == False)
+    memory._state["tables"]["invalid_key"] = "not_a_dict"
+    assert not memory.owns_result("temp_result_nonexistent")
 
     # 4. pending_recovery со step_tables и input_table
     memory.set_pending_recovery(
