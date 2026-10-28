@@ -1,5 +1,17 @@
 2026-10-29  Alexander Yurits  <143354682+Terrum19@users.noreply.github.com>
 
+	Выбор таблицы по группам связанных таблиц; join_related — только при
+	связях (#165, полный прогон).
+	* backend/app/core/data/relations.py (choose_table): Вопрос сравнивается
+	с группой связанных таблиц целиком; в группе — самая подходящая таблица.
+	(question_words, table_words): Новые.  Без слов короче MIN_WORD и без
+	описания таблицы.  (candidate_tables, table_score): Удалены.
+	* backend/app/core/agent/planner.py (plan): Без связанных таблиц и
+	каталога join_related в промпт не попадает.
+	* backend/tests/unit/test_relations.py: Тесты того же.
+
+2026-10-29  Alexander Yurits  <143354682+Terrum19@users.noreply.github.com>
+
 	Цепочки соединений, обзор связанных таблиц и вопрос «какие данные
 	взять?» (#165).
 	* backend/app/core/tools/sql/join_related.py: Новый.  join_related —
