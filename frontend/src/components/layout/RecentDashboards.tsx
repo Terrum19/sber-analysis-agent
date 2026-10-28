@@ -10,6 +10,7 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { fetchDashboards } from "@/api/client";
 import { useCanvasStore } from "@/store/canvasStore";
+import { useSessionStore } from "@/store/sessionStore";
 import { useT } from "@/i18n/useT";
 import Icon from "@/components/ui/Icon";
 import type { DashboardListItem } from "@/types/dashboard";
@@ -30,6 +31,8 @@ export default function RecentDashboards() {
   const t = useT();
   const pathname = usePathname();
   const canvasDashboardId = useCanvasStore((s) => s.dashboardId);
+  const databases = useSessionStore((s) => s.databases);
+  const sessionDatabase = useSessionStore((s) => s.sessionDatabase);
   const [items, setItems] = useState<DashboardListItem[]>([]);
   const [revision, setRevision] = useState(0);
 
@@ -44,15 +47,23 @@ export default function RecentDashboards() {
     fetchDashboards(undefined, controller.signal)
       .then((list) => {
         if (controller.signal.aborted) return;
+        const validList = list.filter((item) => {
+          if (!item.session_id) return false;
+          const dbId = sessionDatabase[item.session_id];
+          if (dbId) {
+            return databases.some((d) => d.id === dbId);
+          }
+          return databases.some((d) => d.sessions?.some((s) => s.id === item.session_id));
+        });
         setItems(
-          [...list]
+          [...validList]
             .sort((a, b) => updatedAt(b) - updatedAt(a))
             .slice(0, MAX_ITEMS),
         );
       })
       .catch(() => undefined); // сайдбар не должен ломать приложение
     return () => controller.abort();
-  }, [pathname, canvasDashboardId, revision]);
+  }, [pathname, canvasDashboardId, revision, databases, sessionDatabase]);
 
   if (items.length === 0) return null;
 

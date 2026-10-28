@@ -1,3 +1,25 @@
+2026-10-28  Dmitriy Yakushonok  <dmitriyyakushonok@yandex.ru>
+
+	Каскадное удаление дашбордов и графиков при удалении базы данных или сессии.
+	* backend/app/core/dashboards/store.py (DashboardStore.delete_by_session,
+	delete_by_sessions): Удаление дашбордов сессии и их плиток (CASCADE).
+	(DashboardStore.prune_orphaned): Очистка осиротевших дашбордов без сессии.
+	* backend/app/core/memory/session_memory.py (SessionMemory.delete):
+	Каскадное удаление дашбордов при удалении сессии.
+	(SessionMemory.find_by_datasource): Поиск сессий источника данных.
+	* backend/app/api/routes/datasources.py (detach): Удаление всех сессий
+	и дашбордов источника при его отключении.
+	* backend/tests/unit/test_dashboard_store.py,
+	backend/tests/unit/test_datasource_delete.py,
+	backend/tests/unit/test_sessions_api.py: Тесты каскадного удаления.
+	* frontend/src/store/uiStore.ts (closeTabsForSessions): Закрытие
+	вкладок дашбордов удалённых сессий.
+	* frontend/src/components/layout/LeftSidebar.tsx (handleDeleteDatabase,
+	handleDeleteSession): Удаление дашбордов через API, закрытие вкладок,
+	очистка канваса и оповещение dashboards:changed.
+	* frontend/src/components/layout/RecentDashboards.tsx,
+	frontend/src/app/dashboards/page.tsx: Фильтрация дашбордов удалённых баз.
+
 2026-10-28  Alexander Yurits  <143354682+Terrum19@users.noreply.github.com>
 
 	Воспоминания сессии — в своей таблице: запись через API во время
