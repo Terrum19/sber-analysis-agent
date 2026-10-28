@@ -133,6 +133,53 @@ make eval EVAL_ARGS=--fake         # FakeLLM, без модели
 спрашивает контекст у сервера и пишет warning, если он меньше `LLM_NUM_CTX`, а
 каждый обрезанный промпт — warning «Промпт обрезан сервером LLM».
 
+### Логи
+
+Бэкенд пишет лог в консоль (`docker compose logs backend`, при `make dev` — в
+терминал) и в файл `backend/storage/logs/backend.log` (в контейнере
+`/app/storage/logs/backend.log`). Файл лежит на томе `./backend/storage` и
+переживает `docker compose down`; при 5 МБ он ротируется, хранятся три прошлых
+файла (`backend.log.1` … `backend.log.3`).
+
+Формат строки: `время уровень [сессия/ход] модуль: сообщение`. Строки одного хода
+помечены его `session_id` и `turn_id` — и строки планировщика, тулов, LLM и
+песочницы. Вне хода вместо них `-`. На INFO ход виден целиком:
+
+```text
+… INFO [f0eb…/9940…] app.core.agent.orchestrator: ход начат: вопрос='Сумма по категориям'
+… INFO [f0eb…/9940…] app.core.agent.orchestrator: маршрут: план
+… INFO [f0eb…/9940…] app.core.agent.orchestrator: план за 3.2 с: шагов=1 [0 aggregate] final_viz=bar dashboard=False
+… INFO [f0eb…/9940…] app.core.agent.orchestrator: шаг 0 готов за 7 мс: temp_result_v1
+… INFO [f0eb…/9940…] app.core.agent.turn_log: инсайт за 4.1 с
+… INFO [f0eb…/9940…] app.core.agent.turn_log: график bar за 0.1 с
+… INFO [f0eb…/9940…] app.core.agent.turn_log: итог хода: ok за 7.5 с
+```
+
+- Маршрут: `small talk`, `обзор таблицы`, `смена вида графика`, `план` или
+  `ответ на уточнение`.
+- Итог хода — одна строка: `ok`, `failed`, `clarification` или `disconnected`
+  (клиент закрыл поток), общее время, а для неуспешного хода — этап (`start`,
+  `planning`, `step N`, `insight`, `chart`) и причина. `failed` и `disconnected` —
+  на уровне WARNING.
+- Вызов LLM: модель, схема ответа, время, `prompt_tokens` и длина ответа. Сбой —
+  тип (таймаут, соединение, `HTTP <код>`), адрес сервера без логина и пароля и
+  сколько ждали.
+- При старте — одна строка `старт:` с моделью, адресом LLM, structured mode,
+  контекстом, таймаутом и путём к файлу логов; ключи и DSN не пишутся.
+
+Уровень задаёт `LOG_LEVEL` (`DEBUG`, `INFO` — по умолчанию, `WARNING`, `ERROR`).
+На `DEBUG` в лог идут промпты и ответы модели целиком; на `INFO` их нет. httpx,
+openai и instructor всегда на WARNING. В логе есть вопросы пользователей, поэтому
+он хранится только локально в `storage/`.
+
+Найти ход: `turn_id` приходит фронту в событии `done` (и `clarification_needed`).
+
+```bash
+docker compose logs backend | grep <turn_id>
+grep <turn_id> backend/storage/logs/backend.log*
+grep 'итог хода: failed' backend/storage/logs/backend.log   # все упавшие ходы
+```
+
 ## Структура репозитория
 
 Подробности — в [docs/repo_structure.md](docs/repo_structure.md).
