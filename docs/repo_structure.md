@@ -107,6 +107,7 @@ backend/
 │   │   │   │   ├── ks_test.py / shapiro_wilk.py — проверка нормальности
 │   │   │   │   ├── describe_stats.py    — n, mean, std, min, max, квартили, skew, kurtosis
 │   │   │   │   ├── bootstrap_ci.py / bootstrap_corr.py — bootstrap-ДИ статистики и корреляции
+│   │   │   │   ├── detect_anomalies.py  — выбросы по IQR или z-score (в группе, по периодам), score
 │   │   │   │   └── search_categorical_values.py — fuzzy-поиск реальных значений категории
 │   │   │   ├── funnel/            — воронки и когорты
 │   │   │   │   ├── _common.py           — порядок шагов и подсчёт пользователей по шагам
@@ -120,6 +121,8 @@ backend/
 │   │   │   │   └── trend_analysis.py / seasonal_decompose.py — тренд, сезонные индексы, разложение
 │   │   │   └── timeseries/        — анализ временных рядов
 │   │   │       ├── seasonality.py — сезонные пики (каждый июль / 12 месяцев)
+│   │   │       ├── period_compare.py  — один месяц/квартал/день недели по годам, отклонения от средних
+│   │   │       ├── lag_correlation.py — corr(x, y со сдвигом lag) для lag = 0..max_lag
 │   │   │       └── forecast.py    — экстраполяция линейным трендом на N периодов
 │   │   │
 │   │   ├── sandbox/        — выполнение кода, сгенерированного LLM
