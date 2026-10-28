@@ -7,7 +7,10 @@ export type DescriptionStatus = "none" | "pending" | "ready" | "failed";
 
 /** Сводка паспорта таблицы для карточки (TableBrief). */
 export interface TableBrief {
+  /** Имя таблицы в DuckDB: для SQL и запросов к API. */
   table: string;
+  /** Название для пользователя (его или от LLM); нет — показываем table. */
+  display_name?: string | null;
   rows: number;
   columns: number;
   period_from?: string | null;
@@ -17,6 +20,12 @@ export interface TableBrief {
   summary?: string | null;
   /** Замечания о данных (исправления при загрузке и предупреждения профилировщика). */
   warnings: string[];
+  /** Коды и категории — по названиям колонок из профиля. */
+  entities?: string[];
+  /** Числовые колонки. */
+  metrics?: string[];
+  /** Подсказки к первому вопросу по колонкам таблицы. */
+  suggested_questions?: string[];
 }
 
 export interface Datasource {

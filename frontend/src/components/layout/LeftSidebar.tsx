@@ -33,7 +33,7 @@ import RecentDashboards from "./RecentDashboards";
 
 const DSN_PLACEHOLDER: Record<DbKind, string> = {
   postgres: "postgresql://analyst:pass@host:5432/db",
-  clickhouse: "clickhouse://analyst:pass@host:8123/db",
+  clickhouse: "clickhouse://analyst:pass@host:9000/db",
 };
 
 function SidebarAction({
@@ -162,7 +162,13 @@ function DatabaseRow({
               ? t("chat.cannotSwitchWhileGenerating")
               : !hasTables
               ? t("welcome.noDataToStart")
-              : `${t("sidebar.openNewSession", { title: database.title })}\n${description}`
+              : [
+                  t("sidebar.openNewSession", { title: database.title }),
+                  description,
+                  database.fileName !== database.title ? database.fileName : null,
+                ]
+                  .filter(Boolean)
+                  .join("\n")
           }
         >
           <Icon name={collapsed ? "folder" : "folderOpen"} className="mt-0.5 shrink-0 text-graphite-400" />
@@ -581,22 +587,16 @@ export default function LeftSidebar() {
                     />
                     <span>PostgreSQL</span>
                   </label>
-                  <label
-                    className="flex items-center gap-2 cursor-not-allowed text-xs text-graphite-500"
-                    title={t("modal.comingSoon")}
-                  >
+                  <label className="flex items-center gap-2 cursor-pointer text-xs text-graphite-100">
                     <input
                       type="radio"
                       name="dbKind"
                       value="clickhouse"
-                      disabled
-                      checked={false}
-                      className="accent-graphite-100 cursor-not-allowed opacity-50"
+                      checked={dbKind === "clickhouse"}
+                      onChange={() => setDbKind("clickhouse")}
+                      className="accent-graphite-100"
                     />
                     <span>ClickHouse</span>
-                    <span className="rounded bg-graphite-800 px-1.5 py-0.5 text-[10px] text-graphite-400 border border-graphite-700">
-                      {t("modal.comingSoon")}
-                    </span>
                   </label>
                 </div>
               </div>

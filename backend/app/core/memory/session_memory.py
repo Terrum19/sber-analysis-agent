@@ -72,7 +72,9 @@ class SessionMemory:
     def list_sessions(limit: int, offset: int = 0) -> list[dict]:
         """Метаданные сохранённых сессий одним запросом, недавно изменённые первыми.
 
-        Состояние целиком (с историей сообщений) не читается.
+        Только сессии хотя бы с одним ходом: пустая сессия (открыли чат и не
+        спросили) в сайдбар не попадает. Состояние целиком (с историей
+        сообщений) не читается.
         """
         conn = _connect(Path(settings.sqlite_path))
         conn.row_factory = sqlite3.Row
@@ -85,6 +87,7 @@ class SessionMemory:
                        json_extract(state, '$.title') AS title,
                        json_extract(state, '$.created_at') AS created_at
                 FROM session_state
+                WHERE json_array_length(state, '$.turns') > 0
                 ORDER BY updated_at DESC
                 LIMIT ? OFFSET ?
                 """,

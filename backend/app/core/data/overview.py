@@ -7,6 +7,12 @@ describe_dataset() собирает из паспорта короткий пр�
 Факты (строки, колонки, период) и таблица колонок строятся из профиля
 без LLM, поэтому числа в ответе точные.
 
+Тот же вызов даёт и название таблицы для пользователя (display_name):
+LLM отвечает JSON DatasetDescription. Не разобрался JSON — описание
+просится ещё раз простым текстом, уже без названия. Ключевые колонки
+(key_columns) и подсказки к вопросам (starter_questions) — из профиля
+и названий колонок, без LLM.
+
 Промпт помещается в контекст CONTEXT_TOKENS (по умолчанию у Ollama) даже
 при CHARS_PER_TOKEN символа на токен: PROMPT_MAX_CHARS — это контекст за
 вычетом ответа (ANSWER_MAX_TOKENS) и запаса. Однотипные колонки (Q1A…Q20A)
@@ -16,6 +22,7 @@ describe_dataset() собирает из паспорта короткий пр�
 """
 
 import hashlib
+import logging
 import re
 from datetime import datetime
 
@@ -23,9 +30,15 @@ from app.config import settings
 from app.core.data.profiling import ColumnStats, TableProfile, profile_table, quality_notes
 from app.core.data.semantic_select import column_facts, describe_columns
 from app.core.llm.client import LLMClient
-from app.core.llm.prompts.schema_describe import SCHEMA_DESCRIBE, SCHEMA_DESCRIBE_SYSTEM
+from app.core.llm.prompts.schema_describe import (
+    SCHEMA_DESCRIBE,
+    SCHEMA_DESCRIBE_JSON,
+    SCHEMA_DESCRIBE_SYSTEM,
+)
 from app.core.memory.profile_memory import ProfileMemory
-from app.models.enrichment import ColumnEnrichment
+from app.models.enrichment import ColumnEnrichment, DatasetDescription
+
+logger = logging.getLogger(__name__)
 
 CONTEXT_TOKENS = 4096
 ANSWER_MAX_TOKENS = 600
@@ -35,6 +48,10 @@ PROMPT_MAX_CHARS = int((CONTEXT_TOKENS - ANSWER_MAX_TOKENS - RESERVE_TOKENS) * C
 QUALITY_MAX_CHARS = 1000
 FAMILY_MIN_COLUMNS = 4
 TOP_VALUES = 5
+DISPLAY_NAME_MAX_CHARS = 60
+KEY_COLUMNS = 5
+CATEGORY_MAX_DISTINCT = 50
+OVERVIEW_QUESTION = "Что передо мной?"
 
 KIND_LABELS = {
     "numeric": "число",
@@ -267,18 +284,21 @@ def clip(lines: list[tuple[str, int]], limit: int, words: tuple[str, str, str]) 
 
 
 def build_prompt(profile: TableProfile, enrichment: list[ColumnEnrichment]) -> str:
-    """Промпт SCHEMA_DESCRIBE, вместе с системным — не длиннее PROMPT_MAX_CHARS."""
+    """Промпт SCHEMA_DESCRIBE; с системным и SCHEMA_DESCRIBE_JSON — до PROMPT_MAX_CHARS."""
     quality = quality_block(profile)
     header = f"{facts(profile)}."
-    fixed = len(SCHEMA_DESCRIBE_SYSTEM) + len(
-        SCHEMA_DESCRIBE.format(profile=f"{header}\n", quality=quality)
+    fixed = (
+        len(SCHEMA_DESCRIBE_SYSTEM)
+        + len(SCHEMA_DESCRIBE.format(profile=f"{header}\n", quality=quality))
+        + len(SCHEMA_DESCRIBE_JSON)
     )
     columns = clip(profile_lines(profile, enrichment), PROMPT_MAX_CHARS - fixed, COLUMN_WORDS)
     return SCHEMA_DESCRIBE.format(profile=f"{header}\n{columns}", quality=quality)
 
 
 def fingerprint(prompt: str) -> str:
-    return hashlib.sha256(f"{SCHEMA_DESCRIBE_SYSTEM}\n{prompt}".encode()).hexdigest()
+    text = f"{SCHEMA_DESCRIBE_SYSTEM}\n{prompt}\n{SCHEMA_DESCRIBE_JSON}"
+    return hashlib.sha256(text.encode()).hexdigest()
 
 
 def cached_summary(db, table: str) -> str | None:
@@ -295,8 +315,9 @@ def cached_summary(db, table: str) -> str | None:
 async def describe_dataset(db, table: str, llm: LLMClient | None = None) -> str:
     """Описание таблицы «что передо мной»: из паспорта, LLM — только если промпт изменился.
 
-    Пустой ответ LLM не сохраняется. Ошибка LLM пробрасывается, сохранённое
-    описание остаётся прежним.
+    Вместе с описанием сохраняется название таблицы от LLM. Пустое описание
+    не сохраняется. Ошибка LLM пробрасывается, сохранённое описание остаётся
+    прежним.
     """
     memory = ProfileMemory(db)
     prompt = build_prompt(passport(db, table), memory.load_enrichment(table))
@@ -305,11 +326,77 @@ async def describe_dataset(db, table: str, llm: LLMClient | None = None) -> str:
     if saved is not None and saved[1] == key:
         return saved[0]
     llm = llm or LLMClient()
-    text = await llm.complete(SCHEMA_DESCRIBE_SYSTEM, prompt, max_tokens=ANSWER_MAX_TOKENS)
-    text = text.strip()
+    try:
+        answer = await llm.complete_structured(
+            SCHEMA_DESCRIBE_SYSTEM, prompt + SCHEMA_DESCRIBE_JSON, DatasetDescription
+        )
+        text, name = answer.summary.strip(), display_name(answer.display_name)
+    except ValueError:
+        logger.warning("Название таблицы %s не разобрано, описание — простым текстом", table)
+        text = await llm.complete(SCHEMA_DESCRIBE_SYSTEM, prompt, max_tokens=ANSWER_MAX_TOKENS)
+        text, name = text.strip(), None
     if text:
-        memory.save_summary(table, text, key)
+        memory.save_summary(table, text, key, name)
     return text
+
+
+def display_name(text: str) -> str | None:
+    """Название от LLM без кавычек и лишних пробелов, не длиннее DISPLAY_NAME_MAX_CHARS."""
+    name = " ".join(text.split()).strip("«»\"'. ")
+    return name[:DISPLAY_NAME_MAX_CHARS].rstrip() or None
+
+
+def column_label(column: ColumnStats, titles: dict[str, str]) -> str:
+    return titles.get(column.name) or column.name
+
+
+def is_category(column: ColumnStats) -> bool:
+    """Текстовая колонка, по которой имеет смысл группировать."""
+    return (
+        column.kind == "text"
+        and not column.is_unique
+        and column.distinct is not None
+        and 1 < column.distinct <= CATEGORY_MAX_DISTINCT
+    )
+
+
+def key_columns(
+    profile: TableProfile, enrichment: list[ColumnEnrichment]
+) -> tuple[list[str], list[str]]:
+    """Сущности (коды и категории) и метрики (числа) — до KEY_COLUMNS каждых, без констант."""
+    titles = {row.column: row.title for row in enrichment if row.title}
+    columns = [column for column in profile.columns if not column.is_constant]
+    entities = [
+        column_label(column, titles)
+        for column in columns
+        if column.kind == "identifier" or is_category(column)
+    ]
+    metrics = [column_label(column, titles) for column in columns if column.kind == "numeric"]
+    return entities[:KEY_COLUMNS], metrics[:KEY_COLUMNS]
+
+
+def starter_questions(profile: TableProfile, enrichment: list[ColumnEnrichment]) -> list[str]:
+    """Подсказки к первому вопросу по колонкам таблицы: обзор, динамика, сравнение, топ."""
+    titles = {row.column: row.title for row in enrichment if row.title}
+    columns = [column for column in profile.columns if not column.is_constant]
+    metric = next((column for column in columns if column.kind == "numeric"), None)
+    category = next((column for column in columns if is_category(column)), None)
+    temporal = profile.temporal_column()
+    questions = [OVERVIEW_QUESTION]
+    if temporal is not None and temporal.min_date != temporal.max_date:
+        if metric is not None:
+            questions.append(f"Как менялась «{column_label(metric, titles)}» по месяцам?")
+        else:
+            questions.append("Сколько записей по месяцам?")
+    if category is not None:
+        group = column_label(category, titles)
+        if metric is not None:
+            value = column_label(metric, titles)
+            questions.append(f"Сравни «{value}» по «{group}»")
+            questions.append(f"Топ-5 «{group}» по «{value}»")
+        else:
+            questions.append(f"Сколько записей по «{group}»?")
+    return questions
 
 
 def paragraphs(text: str) -> list[str]:

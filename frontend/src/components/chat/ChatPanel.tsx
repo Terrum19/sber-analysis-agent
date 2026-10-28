@@ -8,11 +8,12 @@
  */
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
-import { getSession, setSessionTable, listTables, streamChat, exportArtifact } from "@/api/client";
-import { useSessionStore, useSessionDatabase, type ChatMessage } from "@/store/sessionStore";
+import { getSession, setSessionTable, listTables, streamChat, exportArtifact, renameTableApi } from "@/api/client";
+import { useSessionStore, useSessionDatabase, tableTitle, type ChatMessage } from "@/store/sessionStore";
 import { useCanvasStore } from "@/store/canvasStore";
 import { useUiStore } from "@/store/uiStore";
 import { useOpenArtifact } from "@/hooks/useOpenArtifact";
+import { useTableBrief } from "@/hooks/useTableBrief";
 import Icon from "@/components/ui/Icon";
 import ClarificationCard from "@/components/chat/ClarificationCard";
 import StepProgress from "@/components/chat/StepProgress";
@@ -74,6 +75,25 @@ export default function ChatPanel({ sessionId }: Props) {
   const activeBrief = database?.profiles?.find((brief) => brief.table === activeTable);
   const switchSessionTable = useSessionStore((s) => s.switchSessionTable);
   const bindSession = useSessionStore((s) => s.bindSession);
+  const updateBrief = useSessionStore((s) => s.updateBrief);
+  useTableBrief(database?.id, activeTable);
+  const suggestions = activeBrief?.suggested_questions?.length
+    ? activeBrief.suggested_questions
+    : [t("chat.suggest1"), t("chat.suggest2")];
+
+  /** Черновик названия активной таблицы; null — не редактируется. */
+  const [tableDraft, setTableDraft] = useState<string | null>(null);
+
+  async function saveTableTitle() {
+    const name = tableDraft?.trim();
+    setTableDraft(null);
+    if (!name || !activeTable || !database || name === tableTitle(database, activeTable)) return;
+    try {
+      updateBrief(database.id, await renameTableApi(activeTable, name));
+    } catch {
+      setTableError(t("chat.renameTableError"));
+    }
+  }
 
   const [remoteTables, setRemoteTables] = useState<string[]>([]);
   const tablesVersion = useUiStore((s) => s.tablesVersion);
@@ -384,7 +404,10 @@ export default function ChatPanel({ sessionId }: Props) {
       <div className="flex h-10 shrink-0 items-center justify-between border-b border-graphite-800 bg-graphite-950/60 px-4 md:px-8">
         <div className="flex items-center gap-2 min-w-0">
           <Icon name="folder" size={13} className="text-graphite-400 shrink-0" />
-          <span className="text-[12px] text-graphite-400 truncate max-w-[140px] md:max-w-[200px]" title={database?.title}>
+          <span
+            className="text-[12px] text-graphite-400 truncate max-w-[140px] md:max-w-[200px]"
+            title={database?.fileName && database.fileName !== database.title ? `${database.title}\n${database.fileName}` : database?.title}
+          >
             {database?.title ?? t("header.database")}
           </span>
           <span className="text-graphite-600 text-xs">/</span>
@@ -394,7 +417,8 @@ export default function ChatPanel({ sessionId }: Props) {
               value={activeTable || ""}
               onChange={(e) => handleTableChange(e.target.value)}
               disabled={isTableSwitching || streaming}
-              className="rounded-md border border-graphite-700 bg-graphite-850 px-2 py-0.5 text-xs font-mono text-graphite-100 outline-none focus:border-graphite-500 cursor-pointer disabled:opacity-50"
+              title={activeTable ? t("chat.tableSqlName", { name: activeTable }) : undefined}
+              className="rounded-md border border-graphite-700 bg-graphite-850 px-2 py-0.5 text-xs text-graphite-100 outline-none focus:border-graphite-500 cursor-pointer disabled:opacity-50"
             >
               {!activeTable && (
                 <option value="" disabled>
@@ -403,13 +427,16 @@ export default function ChatPanel({ sessionId }: Props) {
               )}
               {availableTables.map((tbl) => (
                 <option key={tbl} value={tbl}>
-                  {tbl}
+                  {tableTitle(database, tbl)}
                 </option>
               ))}
             </select>
           ) : (
-            <span className="rounded-md bg-graphite-800/80 px-2 py-0.5 font-mono text-xs text-graphite-200">
-              {activeTable || "—"}
+            <span
+              className="rounded-md bg-graphite-800/80 px-2 py-0.5 text-xs text-graphite-200"
+              title={activeTable ? t("chat.tableSqlName", { name: activeTable }) : undefined}
+            >
+              {activeTable ? tableTitle(database, activeTable) : "—"}
             </span>
           )}
         </div>
@@ -429,16 +456,41 @@ export default function ChatPanel({ sessionId }: Props) {
               <Icon name="folder" />
               <span className="truncate">{database?.title ?? t("header.database")}</span>
             </div>
-            <h2 className="mt-2 text-2xl font-light text-graphite-50">{sessionTitle ?? t("chat.newSession")}</h2>
-            {database && database.tables.length > 0 && (
+            {sessionTitle || !activeTable || !database ? (
+              <h2 className="mt-2 text-2xl font-light text-graphite-50">{sessionTitle ?? t("chat.newSession")}</h2>
+            ) : tableDraft !== null ? (
+              <input
+                autoFocus
+                value={tableDraft}
+                maxLength={60}
+                onChange={(e) => setTableDraft(e.target.value)}
+                onBlur={() => void saveTableTitle()}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") e.currentTarget.blur();
+                  if (e.key === "Escape") setTableDraft(null);
+                }}
+                className="mt-2 w-full rounded-md border border-graphite-700 bg-graphite-850 px-2 py-0.5 text-2xl font-light text-graphite-50 outline-none focus:border-graphite-500"
+              />
+            ) : (
+              <div className="group mt-2 flex items-center gap-2">
+                <h2 className="truncate text-2xl font-light text-graphite-50" title={t("chat.tableSqlName", { name: activeTable })}>
+                  {tableTitle(database, activeTable)}
+                </h2>
+                <button
+                  type="button"
+                  onClick={() => setTableDraft(tableTitle(database, activeTable))}
+                  disabled={database.demo}
+                  className="shrink-0 rounded-md p-1 text-graphite-500 opacity-0 transition hover:bg-graphite-800 hover:text-graphite-100 group-hover:opacity-100 focus:opacity-100 disabled:hidden"
+                  title={t("chat.renameTable")}
+                >
+                  <Icon name="pencil" size={14} />
+                </button>
+              </div>
+            )}
+            {database && database.tables.length > 1 && (
               <p className="mt-2 text-[13px] text-graphite-400">
                 {t("chat.tables")}{" "}
-                <span className="font-mono text-[12px] text-graphite-300">{database.tables.join(", ")}</span>
-                {activeTable && (
-                  <span className="ml-2 text-graphite-400">
-                    ({t("chat.activeTable")}: <strong className="text-graphite-200 font-mono font-medium">{activeTable}</strong>)
-                  </span>
-                )}
+                <span className="text-graphite-300">{database.tables.map((tbl) => tableTitle(database, tbl)).join(", ")}</span>
               </p>
             )}
             {activeBrief && (
@@ -447,7 +499,7 @@ export default function ChatPanel({ sessionId }: Props) {
               </div>
             )}
             <div className="mt-6 flex flex-col items-start gap-1">
-              {[t("chat.suggest1"), t("chat.suggest2")].map((q) => (
+              {suggestions.map((q) => (
                 <button
                   key={q}
                   onClick={() => sendQuestion(q)}

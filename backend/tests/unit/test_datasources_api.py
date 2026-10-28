@@ -654,8 +654,8 @@ def test_db_attach_reads_column_comments_once(client, storage, monkeypatch) -> N
 
 
 class SummaryLLM:
-    async def complete(self, system: str, user: str, **kwargs) -> str:
-        return "Передо мной заказы."
+    async def complete_structured(self, system: str, user: str, schema: type) -> object:
+        return schema(display_name="Заказы по дням", summary="Передо мной заказы.")
 
 
 ORDERS_CSV = [("files", ("orders.csv", b"day,amount\n2024-01-01,10\n2024-02-01,20\n"))]
@@ -666,6 +666,7 @@ def test_table_brief_shows_summary_built_in_background(client, storage) -> None:
     brief = client.get("/api/datasources/tables/orders").json()
     assert brief == {
         "table": "orders",
+        "display_name": None,
         "rows": 2,
         "columns": 2,
         "period_from": "2024-01-01",
@@ -673,10 +674,39 @@ def test_table_brief_shows_summary_built_in_background(client, storage) -> None:
         "description_status": "none",
         "summary": None,
         "warnings": [],
+        "entities": [],
+        "metrics": ["amount"],
+        "suggested_questions": ["Что передо мной?", "Как менялась «amount» по месяцам?"],
     }
     db = app.dependency_overrides[get_db]()
     asyncio.run(overview.describe_dataset(db, "orders", SummaryLLM()))
-    assert client.get("/api/datasources/tables/orders").json()["summary"] == "Передо мной заказы."
+    brief = client.get("/api/datasources/tables/orders").json()
+    assert brief["summary"] == "Передо мной заказы."
+    assert brief["display_name"] == "Заказы по дням"
+
+
+def test_renamed_table_keeps_its_sql_name(client, storage) -> None:
+    assert client.post("/api/datasources/csv", files=ORDERS_CSV).status_code == 200
+    response = client.patch("/api/datasources/tables/orders", json={"display_name": " Мои заказы "})
+    assert response.status_code == 200
+    assert response.json()["display_name"] == "Мои заказы"
+    assert response.json()["table"] == "orders"
+    db = app.dependency_overrides[get_db]()
+    asyncio.run(overview.describe_dataset(db, "orders", SummaryLLM()))
+    assert client.get("/api/datasources/tables/orders").json()["display_name"] == "Мои заказы"
+    assert db.query("SELECT count(*) AS n FROM orders")[0]["n"] == 2
+
+
+def test_rename_validates_name_and_table(client, storage) -> None:
+    assert client.post("/api/datasources/csv", files=ORDERS_CSV).status_code == 200
+    assert (
+        client.patch("/api/datasources/tables/orders", json={"display_name": "  "}).status_code
+        == 422
+    )
+    too_long = {"display_name": "а" * 61}
+    assert client.patch("/api/datasources/tables/orders", json=too_long).status_code == 422
+    missing = client.patch("/api/datasources/tables/missing", json={"display_name": "Имя"})
+    assert missing.status_code == 404
 
 
 def test_reattach_returns_saved_summary(client, storage) -> None:
@@ -687,6 +717,7 @@ def test_reattach_returns_saved_summary(client, storage) -> None:
     asyncio.run(overview.describe_dataset(db, "orders", SummaryLLM()))
     second = client.post("/api/datasources/csv", files=ORDERS_CSV).json()
     assert second["profiles"][0]["summary"] == "Передо мной заказы."
+    assert second["profiles"][0]["display_name"] == "Заказы по дням"
 
 
 def test_table_brief_of_unknown_table(client) -> None:

@@ -6,7 +6,7 @@
  */
 import type { ChatStreamEvent } from "@/types/chat";
 import type { LlmStatus } from "@/types/llm";
-import type { Datasource, DatasourceDbRequest, SessionResponse } from "@/types/datasource";
+import type { Datasource, DatasourceDbRequest, SessionResponse, TableBrief } from "@/types/datasource";
 import type {
   DashboardConfig,
   DashboardCreatePayload,
@@ -16,6 +16,7 @@ import type {
 import {
   mockAttachCsv,
   mockAttachDb,
+  mockBrief,
   mockCreateDashboard,
   mockCreateSession,
   mockDeleteDashboard,
@@ -250,6 +251,38 @@ export async function listTables(): Promise<string[]> {
     if (!res.ok) throw await parseApiError(res);
     const body: Array<string | { table: string }> = await res.json();
     return body.map((item) => (typeof item === "string" ? item : item.table));
+  } catch (err) {
+    throw toApiError(err);
+  }
+}
+
+/** Сводка паспорта таблицы: описание и название от LLM появляются в ней после подключения. */
+export async function getTableBrief(table: string): Promise<TableBrief> {
+  if (isMockMode()) {
+    return mockBrief(table);
+  }
+  try {
+    const res = await fetch(`${API}/datasources/tables/${encodeURIComponent(table)}`);
+    if (!res.ok) throw await parseApiError(res);
+    return await res.json();
+  } catch (err) {
+    throw toApiError(err);
+  }
+}
+
+/** PATCH /api/datasources/tables/{table}: название таблицы для пользователя; имя в SQL прежнее. */
+export async function renameTableApi(table: string, displayName: string): Promise<TableBrief> {
+  if (isMockMode()) {
+    return { ...mockBrief(table), display_name: displayName };
+  }
+  try {
+    const res = await fetch(`${API}/datasources/tables/${encodeURIComponent(table)}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ display_name: displayName }),
+    });
+    if (!res.ok) throw await parseApiError(res);
+    return await res.json();
   } catch (err) {
     throw toApiError(err);
   }
