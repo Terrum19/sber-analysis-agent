@@ -1,5 +1,41 @@
 2026-10-28  Alexander Yurits  <143354682+Terrum19@users.noreply.github.com>
 
+	Связанные таблицы: внешние ключи из схемы источника и JOIN в плане (#165).
+	* backend/app/core/data/relations.py: Новый.  Связи таблиц в
+	_meta.table_relation: объявленные (коннектор, duckdb_constraints) и
+	проверенные по данным у CSV (имя колонки, уникальный ключ справа,
+	90% значений).  (related_tables, describe_related): Связанные таблицы
+	и готовое условие join_tables для промпта.  (candidate_tables)
+	(describe_catalog): Таблица под вопрос без выбранной таблицы сессии;
+	при ничьей — каталог для планировщика.
+	* backend/app/core/data/connectors/base.py (foreign_keys): Новая.
+	* backend/app/core/data/connectors/postgres.py (foreign_keys): Новая.
+	FOREIGN KEY из pg_constraint, составные ключи, имена представлений.
+	* backend/app/core/data/ingest.py (attach, restore): Ищут связи.
+	* backend/app/api/routes/datasources.py: Удаление CSV удаляет связи.
+	* backend/app/core/agent/orchestrator.py (_turn): Без таблицы сессии
+	выбирает таблицу по вопросу.  (_research): Связанные таблицы или
+	каталог в контексте; tables в прогрессе planning; таблица из input
+	первого шага при каталоге.  (_related): Новая.
+	* backend/app/core/agent/planner.py (plan): Блоки связанных таблиц и
+	каталога после колонок.
+	* backend/app/core/memory/session_memory.py (use_table): Новая.
+	(record_step): Присоединённая таблица — в таблицы хода.
+	* backend/app/core/tools/sql/atomic.py (JoinTablesTool.execute): Одна
+	копия ключа t.k = t_right.k.  (_same_name_keys): Новая.
+	* backend/app/core/data/semantic_select.py (matches): Публичная.
+	* backend/app/api/schemas/chat.py (ProgressPayload.tables): Новое.
+	* backend/tests/unit/test_relations.py: Новый.
+	* backend/tests/unit/test_connectors_postgres.py
+	* backend/tests/integration/test_postgres_connector.py: Ключи из схемы.
+	* backend/tests/integration/test_memory_integration.py
+	* backend/tests/unit/test_orchestrator_unit.py
+	* backend/tests/unit/test_turn_log.py
+	* backend/tests/contract/test_sse_serialization.py: Таблицы в прогрессе
+	и выбор таблицы по вопросу.
+
+2026-10-28  Alexander Yurits  <143354682+Terrum19@users.noreply.github.com>
+
 	Воспоминания сессии — в своей таблице: запись через API во время
 	хода больше не затирается сохранением хода (ревью #203).
 	* backend/app/core/memory/session_memory.py (_connect): Таблица
