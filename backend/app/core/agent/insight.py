@@ -90,7 +90,9 @@ class InsightGenerator:
             facts = "нет"
         # Одна строка — ответ числом; ряд — лидер, минимум или число строк, а не одно значение.
         # Число строк всей таблицы, а не показанных модели (их не больше SHOWN_ROWS).
-        rows = (await db.query_async(f"SELECT COUNT(*) AS n FROM {identifier(result_table)}"))[0]["n"]
+        rows = (await db.query_async(f"SELECT COUNT(*) AS n FROM {identifier(result_table)}"))[0][
+            "n"
+        ]
         shape = SINGLE_ROW if rows <= 1 else MANY_ROWS.format(rows=rows)
         plan = describe_steps(steps or [])
         prompt += INSIGHT_RULES.format(plan=plan, facts=facts, shape=shape)
@@ -138,16 +140,16 @@ class InsightGenerator:
             try:
                 records = self.db.to_records(result_table, limit=5)
             except Exception:
-                logger.warning("запасной инсайт: таблица %s не прочитана", result_table, exc_info=True)
+                logger.warning(
+                    "запасной инсайт: таблица %s не прочитана", result_table, exc_info=True
+                )
         if not records:
             return Insight(
                 headline="Не удалось завершить анализ в отведённое время",
                 details=[],
                 limits=error or "Модель не ответила в пределах бюджета хода",
             )
-        values = ", ".join(
-            f"{key}: {format_value(value)}" for key, value in records[0].items()
-        )
+        values = ", ".join(f"{key}: {format_value(value)}" for key, value in records[0].items())
         return Insight(
             headline="Результат готов",
             details=[f"Строк в результате: {len(records)}", values[:300]],

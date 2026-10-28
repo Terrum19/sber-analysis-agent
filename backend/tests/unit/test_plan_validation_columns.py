@@ -74,8 +74,14 @@ def test_time_hint_is_satisfied_by_time_bucket() -> None:
             ResearchStep(
                 step_id=0,
                 tool="time_bucket",
-                arguments={"date_column": "order_date", "metric_column": "revenue", "function": "SUM"},
+                arguments={
+                    "date_column": "order_date",
+                    "metric_column": "revenue",
+                    "function": "SUM",
+                },
             )
         ]
     )
-    assert validate_plan(plan, columns={"revenue", "order_date"}, question="Выручка по месяцам") == []
+    assert (
+        validate_plan(plan, columns={"revenue", "order_date"}, question="Выручка по месяцам") == []
+    )

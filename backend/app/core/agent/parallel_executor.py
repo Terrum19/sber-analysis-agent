@@ -73,11 +73,7 @@ class ParallelPlanExecutor:
 
         from app.core.agent.orchestrator import Execution
 
-        executed = [
-            graph.nodes[step_id].step
-            for step_id in graph.order
-            if step_id in tables
-        ]
+        executed = [graph.nodes[step_id].step for step_id in graph.order if step_id in tables]
         if plan.result_step is not None and plan.result_step in tables:
             result_table = tables[plan.result_step]
         elif executed:
@@ -146,4 +142,7 @@ def _progress(step: ResearchStep, status: str, **fields: object) -> dict:
         "purpose": step.purpose,
         **fields,
     }
-    return {"type": "progress", "data": {key: value for key, value in data.items() if value is not None}}
+    return {
+        "type": "progress",
+        "data": {key: value for key, value in data.items() if value is not None},
+    }

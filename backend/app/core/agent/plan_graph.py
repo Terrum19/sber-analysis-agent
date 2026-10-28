@@ -46,7 +46,11 @@ class PlanGraph:
         errors: list[str] = []
         for step_id in self.order:
             node = self.nodes[step_id]
-            if node.step.input == PREVIOUS and not node.depends_on and self.order.index(step_id) == 0:
+            if (
+                node.step.input == PREVIOUS
+                and not node.depends_on
+                and self.order.index(step_id) == 0
+            ):
                 # $prev у первого шага — это источник, такие планы допустимы.
                 continue
             for dependency in sorted(node.depends_on):
@@ -79,11 +83,7 @@ class PlanGraph:
 
     def dependents(self, step_id: int) -> set[int]:
         """Шаги, которые прямо зависят от данного."""
-        return {
-            other_id
-            for other_id, node in self.nodes.items()
-            if step_id in node.depends_on
-        }
+        return {other_id for other_id, node in self.nodes.items() if step_id in node.depends_on}
 
     def _topological_order(self) -> tuple[int, ...] | None:
         remaining = set(self.order)
@@ -91,9 +91,7 @@ class PlanGraph:
         order: list[int] = []
         while remaining:
             layer = sorted(
-                step_id
-                for step_id in remaining
-                if self.nodes[step_id].depends_on <= done
+                step_id for step_id in remaining if self.nodes[step_id].depends_on <= done
             )
             if not layer:
                 return None

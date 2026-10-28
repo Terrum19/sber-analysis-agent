@@ -20,7 +20,9 @@ def key(question: str = "Сумма", table: str = "sales") -> object:
 
 def test_plan_cache_hit_miss_and_invalidation() -> None:
     cache = PlanCache()
-    plan = ResearchPlan(steps=[ResearchStep(step_id=0, tool="aggregate", arguments={"column": "amount"})])
+    plan = ResearchPlan(
+        steps=[ResearchStep(step_id=0, tool="aggregate", arguments={"column": "amount"})]
+    )
     assert cache.get(key()) is None
     cache.put(key(), plan, ttl_s=60)
     loaded = cache.get(key())

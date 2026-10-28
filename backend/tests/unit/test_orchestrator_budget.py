@@ -91,7 +91,11 @@ async def test_simple_question_skips_the_planner() -> None:
     ]
     assert events[-1]["type"] == "done"
     assert events[-1]["data"]["route"] == "simple_count"
-    assert any(event["type"] == "text" and "2" in event["data"]["headline"] for event in events if event["type"] == "text")
+    assert any(
+        event["type"] == "text" and "2" in event["data"]["headline"]
+        for event in events
+        if event["type"] == "text"
+    )
     db.close()
 
 

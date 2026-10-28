@@ -628,8 +628,7 @@ class AgentOrchestrator:
                 raise ClarificationNeeded(
                     step_id=-1,
                     error=(
-                        "Не удалось уложиться в бюджет планирования; "
-                        "уточните вопрос или сузьте его"
+                        "Не удалось уложиться в бюджет планирования; уточните вопрос или сузьте его"
                     ),
                     suggestions=["Переформулировать вопрос"],
                 ) from exc
@@ -1063,10 +1062,7 @@ class AgentOrchestrator:
                     logger.exception("    плитка %r не собрана", planned.title)
             semaphore = asyncio.Semaphore(settings.agent_max_parallel_llm)
             results = await asyncio.gather(
-                *(
-                    self._tile_insight(planned, tile, titles, semaphore)
-                    for planned, tile in specs
-                ),
+                *(self._tile_insight(planned, tile, titles, semaphore) for planned, tile in specs),
                 return_exceptions=True,
             )
         finally:
@@ -1102,9 +1098,7 @@ class AgentOrchestrator:
             logger.warning("    плитка %r: KPI не по одному числу", planned.title)
             requested = "auto"
         chart_type = select_chart(planned.title, table, requested, records)
-        spec = build_vega_spec(
-            chart_type, table, data=records, titles=titles, title=planned.title
-        )
+        spec = build_vega_spec(chart_type, table, data=records, titles=titles, title=planned.title)
         built = spec["usermeta"]["chart_type"]
         return DashboardTile(
             title=planned.title,

@@ -127,9 +127,7 @@ class StepPlanner:
                         question=question,
                     )
                     if not errors:
-                        logger.info(
-                            "план (semantic layer): %s", describe_plan(semantic_plan)
-                        )
+                        logger.info("план (semantic layer): %s", describe_plan(semantic_plan))
                         return semantic_plan
                     logger.warning("semantic layer: план отклонён: %s", errors)
         if settings.agent_tool_topk:
@@ -390,16 +388,12 @@ def validate_plan(
     """
     errors: list[str] = []
     if len(plan.steps) > settings.agent_max_steps:
-        errors.append(
-            f"в плане {len(plan.steps)} шагов, максимум {settings.agent_max_steps}"
-        )
+        errors.append(f"в плане {len(plan.steps)} шагов, максимум {settings.agent_max_steps}")
     seen = set(range(known_steps))
     for index, step in enumerate(plan.steps):
         errors.extend(_validate_step(step, seen))
         if columns:
-            errors.extend(
-                _validate_step_columns(step, columns, index=index, plan=plan, seen=seen)
-            )
+            errors.extend(_validate_step_columns(step, columns, index=index, plan=plan, seen=seen))
         seen.add(step.step_id)
     if question:
         errors.extend(_validate_time_hint(plan, question))
@@ -471,7 +465,9 @@ def _validate_time_hint(plan: ResearchPlan, question: str) -> list[str]:
     """Вопрос про динамику требует date_column или отдельного time-шага."""
     if not _TIME_HINT.search(question):
         return []
-    has_time_step = any(step.tool in ("time_bucket", "time_series", "trend_analysis") for step in plan.steps)
+    has_time_step = any(
+        step.tool in ("time_bucket", "time_series", "trend_analysis") for step in plan.steps
+    )
     for step in plan.steps:
         if step.tool != "revenue_analysis":
             continue

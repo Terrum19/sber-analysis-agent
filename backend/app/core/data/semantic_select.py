@@ -124,7 +124,9 @@ def rank_columns(
         try:
             objects = retriever.retrieve(question, table, top_k=max(len(columns), 8))
             retrieved = [
-                item.name for item in objects if item.kind in ("column", "value") and item.name in columns
+                item.name
+                for item in objects
+                if item.kind in ("column", "value") and item.name in columns
             ]
         except Exception:  # noqa: BLE001 — retriever необязателен, lexical остаётся
             retrieved = []

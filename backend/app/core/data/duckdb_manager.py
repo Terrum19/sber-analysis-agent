@@ -83,9 +83,7 @@ class DuckDBManager:
                 raise
             self._con.execute("COMMIT")
 
-    def save_step_result(
-        self, source_table: str, sql: str, timeout_s: float | None = None
-    ) -> str:
+    def save_step_result(self, source_table: str, sql: str, timeout_s: float | None = None) -> str:
         """Сохранить результат шага как temp_result_vN и вернуть его имя.
 
         Нужно, чтобы при смене визуализации или лёгкой модификации

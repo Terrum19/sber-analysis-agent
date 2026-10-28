@@ -11,9 +11,18 @@ def plan(*steps: ResearchStep) -> ResearchPlan:
 def test_prev_and_step_refs_are_inferred() -> None:
     graph = PlanGraph.from_plan(
         plan(
-            ResearchStep(step_id=0, tool="filter_rows", input="$source", arguments={"column": "a", "value": 1}),
-            ResearchStep(step_id=1, tool="group_by", input="$prev", arguments={"by": [], "function": "COUNT"}),
-            ResearchStep(step_id=2, tool="sort_limit", input="$step_0", arguments={"order_by": "a"}),
+            ResearchStep(
+                step_id=0,
+                tool="filter_rows",
+                input="$source",
+                arguments={"column": "a", "value": 1},
+            ),
+            ResearchStep(
+                step_id=1, tool="group_by", input="$prev", arguments={"by": [], "function": "COUNT"}
+            ),
+            ResearchStep(
+                step_id=2, tool="sort_limit", input="$step_0", arguments={"order_by": "a"}
+            ),
         )
     )
     assert graph.nodes[1].depends_on == frozenset({0})
@@ -67,8 +76,12 @@ def test_dependents_are_direct() -> None:
     graph = PlanGraph.from_plan(
         plan(
             ResearchStep(step_id=0, tool="aggregate", arguments={"column": "a"}),
-            ResearchStep(step_id=1, tool="sort_limit", depends_on=[0], arguments={"order_by": "cnt"}),
-            ResearchStep(step_id=2, tool="sort_limit", depends_on=[0], arguments={"order_by": "cnt"}),
+            ResearchStep(
+                step_id=1, tool="sort_limit", depends_on=[0], arguments={"order_by": "cnt"}
+            ),
+            ResearchStep(
+                step_id=2, tool="sort_limit", depends_on=[0], arguments={"order_by": "cnt"}
+            ),
         )
     )
     assert graph.dependents(0) == {1, 2}

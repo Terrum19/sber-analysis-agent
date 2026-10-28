@@ -12,7 +12,9 @@ class SemanticCompiler:
     """Компилятор управляемой семантики в обычный план тулов."""
 
     def compile(self, intent: SemanticIntent, model: SemanticModel) -> ResearchPlan:
-        metrics = [metric for metric in intent.metrics if metric.column or metric.aggregation == "COUNT"]
+        metrics = [
+            metric for metric in intent.metrics if metric.column or metric.aggregation == "COUNT"
+        ]
         if not metrics:
             raise ValueError("в вопросе не найдено ни одной метрики")
         steps: list[ResearchStep] = []
@@ -87,7 +89,9 @@ class SemanticCompiler:
 
     def to_sql(self, intent: SemanticIntent, model: SemanticModel) -> str:
         """SQL для dry-run: только чтение, без записи."""
-        metrics = [metric for metric in intent.metrics if metric.column or metric.aggregation == "COUNT"]
+        metrics = [
+            metric for metric in intent.metrics if metric.column or metric.aggregation == "COUNT"
+        ]
         if not metrics:
             raise ValueError("в вопросе не найдено ни одной метрики")
         select = [_metric_sql(metric) for metric in metrics]

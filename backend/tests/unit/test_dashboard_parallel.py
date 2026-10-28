@@ -72,7 +72,9 @@ async def test_tile_insights_run_in_parallel_and_keep_order() -> None:
 
 async def test_one_failing_tile_does_not_lose_the_others() -> None:
     class Failing(SlowInsight):
-        async def generate_tile_insight(self, title: str, result_table: str, chart_type: str) -> str:
+        async def generate_tile_insight(
+            self, title: str, result_table: str, chart_type: str
+        ) -> str:
             if title == "Заказы":
                 raise RuntimeError("LLM timeout")
             return await super().generate_tile_insight(title, result_table, chart_type)
@@ -81,7 +83,9 @@ async def test_one_failing_tile_does_not_lose_the_others() -> None:
     for number in (1, 2, 3):
         db.execute(f"CREATE TABLE temp_result_v{number} AS SELECT {number} AS value")
     fallback = DashboardTile(title="fallback", spec={"usermeta": {"chart_type": "table"}})
-    event = await make_agent(db, Failing())._build_dashboard("s1", "дашборд", execution(), {}, fallback)
+    event = await make_agent(db, Failing())._build_dashboard(
+        "s1", "дашборд", execution(), {}, fallback
+    )
     tiles = event["data"]["tiles"]
     assert [tile["title"] for tile in tiles] == ["Выручка", "Заказы", "Регионы"]
     assert tiles[1].get("insight") is None

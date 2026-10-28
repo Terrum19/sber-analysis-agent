@@ -138,8 +138,10 @@ class LLMClient:
         http_client.event_hooks = {**hooks, "response": [*hooks["response"], self._check_context]}
         resolved_url = base_url or settings.llm_base_url
         resolved_key = (
-            api_key.get_secret_value() if hasattr(api_key, "get_secret_value") else api_key
-        ) or settings.llm_api_key.get_secret_value() or "not-needed"
+            (api_key.get_secret_value() if hasattr(api_key, "get_secret_value") else api_key)
+            or settings.llm_api_key.get_secret_value()
+            or "not-needed"
+        )
         self._client = AsyncOpenAI(
             base_url=resolved_url,
             api_key=resolved_key,
@@ -266,7 +268,9 @@ class LLMClient:
             kwargs,
         )
         budget = current_budget()
-        timeout = budget.timeout_for("llm", settings.llm_timeout_s) if budget else settings.llm_timeout_s
+        timeout = (
+            budget.timeout_for("llm", settings.llm_timeout_s) if budget else settings.llm_timeout_s
+        )
         kwargs.setdefault("max_tokens", getattr(self, "max_tokens", settings.llm_max_tokens))
         kwargs.setdefault("timeout", timeout)
         messages = [
@@ -293,7 +297,9 @@ class LLMClient:
                 # чтобы планирование/инсайт деградировали по плану, а не как «ход завис».
                 self._log_failure(error, time.perf_counter() - started_at)
                 if budget is not None:
-                    raise BudgetExceeded("llm", budget.remaining(), "LLM не ответила в бюджет") from error
+                    raise BudgetExceeded(
+                        "llm", budget.remaining(), "LLM не ответила в бюджет"
+                    ) from error
                 raise
             except Exception as error:
                 self._log_failure(error, time.perf_counter() - started_at)
@@ -311,7 +317,9 @@ class LLMClient:
             completion_tokens = resp.usage.completion_tokens if resp.usage else 0
             metrics = current_metrics()
             if metrics is not None:
-                metrics.record_llm(prompt_tokens or 0, completion_tokens or 0, round(elapsed * 1000))
+                metrics.record_llm(
+                    prompt_tokens or 0, completion_tokens or 0, round(elapsed * 1000)
+                )
             logger.debug("<<< complete() ответ за %.2fs: %r", elapsed, content)
             logger.info(
                 "LLM %s: схема=%s за %.2f с, prompt_tokens=%s, ответ %d символов",
@@ -364,7 +372,9 @@ class LLMClient:
         budget = current_budget()
         if budget is not None:
             budget.consume_llm_call("llm")
-        timeout = budget.timeout_for("llm", settings.llm_timeout_s) if budget else settings.llm_timeout_s
+        timeout = (
+            budget.timeout_for("llm", settings.llm_timeout_s) if budget else settings.llm_timeout_s
+        )
         t0 = time.time()
         try:
             result = await self._instructor.chat.completions.create(
@@ -535,9 +545,7 @@ class LLMClient:
         prompt = user
         error: Exception | None = None
         for attempt in range(2):
-            raw = await self.complete(
-                system, prompt, response_format={"type": "json_object"}
-            )
+            raw = await self.complete(system, prompt, response_format={"type": "json_object"})
             try:
                 return parse_structured(schema, raw)
             except StructuredParseError as exc:

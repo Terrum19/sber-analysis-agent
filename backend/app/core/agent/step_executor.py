@@ -114,7 +114,9 @@ class StepExecutor:
             available = set(self.db.columns(table))
         except Exception:  # noqa: BLE001 — каталог недоступен, preflight не блокирует шаг
             # Каталог недоступен — не блокируем шаг: точную ошибку даст SQL.
-            logger.warning("    шаг %d: колонки %s не прочитаны, preflight пропущен", step.step_id, table)
+            logger.warning(
+                "    шаг %d: колонки %s не прочитаны, preflight пропущен", step.step_id, table
+            )
             return
         if not available:
             return

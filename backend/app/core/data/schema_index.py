@@ -74,8 +74,7 @@ class SchemaIndex:
                     SchemaObject(
                         kind="dimension",
                         name=dimension.name,
-                        text=f"{dimension.name} {dimension.column} "
-                        + " ".join(dimension.synonyms),
+                        text=f"{dimension.name} {dimension.column} " + " ".join(dimension.synonyms),
                     )
                 )
         self._objects[table] = objects

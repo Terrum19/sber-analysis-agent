@@ -276,9 +276,7 @@ def forget_csv(db: DuckDBManager, datasource_id: str) -> list[str] | None:
 
 
 @router.get("/tables/{table}/semantic-model", response_model=SemanticModel)
-def get_semantic_model(
-    table: str, db: Annotated[DuckDBManager, Depends(get_db)]
-) -> SemanticModel:
+def get_semantic_model(table: str, db: Annotated[DuckDBManager, Depends(get_db)]) -> SemanticModel:
     """Управляемая семантика таблицы (404 — модель ещё не размечена)."""
     model = SemanticRegistry(db).load(table)
     if model is None:
@@ -309,9 +307,7 @@ def put_semantic_model(
 
 
 @router.delete("/tables/{table}/semantic-model", status_code=204)
-def delete_semantic_model(
-    table: str, db: Annotated[DuckDBManager, Depends(get_db)]
-) -> None:
+def delete_semantic_model(table: str, db: Annotated[DuckDBManager, Depends(get_db)]) -> None:
     """Удалить semantic model; planner вернётся к колонкам паспорта."""
     SemanticRegistry(db).delete(table)
 

@@ -52,15 +52,17 @@ class SemanticRegistry:
                 errors.append(f"измерение {dimension.name}: для temporal нужны time_grains")
         if model.default_time_dimension is not None:
             default = next(
-                (dimension for dimension in model.dimensions if dimension.name == model.default_time_dimension),
+                (
+                    dimension
+                    for dimension in model.dimensions
+                    if dimension.name == model.default_time_dimension
+                ),
                 None,
             )
             if default is None or default.kind != "temporal":
                 errors.append("default_time_dimension должен ссылаться на temporal-измерение")
         for join in model.joins:
-            if not all(
-                (join.left_table, join.right_table, join.left_column, join.right_column)
-            ):
+            if not all((join.left_table, join.right_table, join.left_column, join.right_column)):
                 errors.append("у join пустая таблица или колонка")
         return errors
 
