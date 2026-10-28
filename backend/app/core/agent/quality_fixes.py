@@ -71,6 +71,7 @@ CORE_TOOLS = (
     "select_columns",
     "describe_stats",
     "search_categorical_values",
+    "read_history",
 )
 STEM_LENGTH = 5
 
