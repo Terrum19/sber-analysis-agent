@@ -6,6 +6,7 @@ from app.config import settings
 from app.core.agent.quality_fixes import insight_facts
 from app.core.data.duckdb_manager import DuckDBManager
 from app.core.tools.registry import tool_registry
+from app.models.research_step import ResearchStep
 
 
 @pytest.fixture
@@ -190,3 +191,179 @@ async def test_insight_prompt_keeps_small_share(db, monkeypatch) -> None:
     llm = _ScriptedLLM("Доля — 0.0259")
     await InsightGenerator(llm=llm, db=db).generate("Какая доля вин дороже $100?", "share")
     assert "share\n0.0259" in llm.prompts[0]
+
+
+def _step(step_id: int, tool: str, **arguments) -> ResearchStep:
+    return ResearchStep(step_id=step_id, tool=tool, arguments=arguments)
+
+
+SHARE_PLAN = [
+    _step(
+        1,
+        "create_column",
+        new_column="is_expensive",
+        expression="CASE WHEN price > 100 THEN 1 ELSE 0 END",
+    ),
+    _step(
+        2,
+        "group_by",
+        by=[],
+        metrics=[
+            {"function": "SUM", "column": "is_expensive", "alias": "expensive"},
+            {"function": "COUNT", "alias": "total"},
+        ],
+    ),
+    _step(3, "create_column", new_column="share", expression="expensive * 1.0 / total"),
+]
+VALUE_PLAN = [
+    _step(1, "filter_rows", column="price", operator=">", value=0),
+    _step(2, "create_column", new_column="value_ratio", expression="points * 1.0 / price"),
+    _step(3, "sort_limit", order_by="value_ratio", descending=True, limit=10),
+]
+WINE_COLUMNS = ["country", "description", "points", "price", "price_eur", "region_2"]
+
+
+def test_plan_columns_finds_source_columns_of_plan() -> None:
+    from app.core.agent.quality_fixes import plan_columns
+
+    assert plan_columns(SHARE_PLAN, WINE_COLUMNS) == ["price"]
+    assert plan_columns(VALUE_PLAN, WINE_COLUMNS) == ["points", "price"]
+    eur = [_step(1, "create_column", new_column="x", expression="price_eur * 2")]
+    assert plan_columns(eur, WINE_COLUMNS) == ["price_eur"]
+    positional = [ResearchStep(step_id=1, tool="group_by", columns=["Country"])]
+    assert plan_columns(positional, WINE_COLUMNS) == ["country"]
+
+
+def test_plan_columns_finds_names_with_spaces_and_brackets() -> None:
+    from app.core.agent.quality_fixes import plan_columns
+
+    columns = ["Принято (МСК)", "Сумма"]
+    bucket = [_step(1, "time_bucket", date_column="Принято (МСК)", interval="week")]
+    expression = [
+        _step(
+            1,
+            "create_column",
+            new_column="new",
+            expression="\"Принято (МСК)\" >= DATE '2024-01-01'",
+        )
+    ]
+    assert plan_columns(bucket, columns) == ["Принято (МСК)"]
+    assert plan_columns(expression, columns) == ["Принято (МСК)"]
+
+
+@pytest.fixture
+def wines(db):
+    from app.core.data.profiling import profile_table
+
+    db.query(
+        "CREATE TABLE wines AS SELECT * FROM (VALUES "
+        "('Italy', 87, 120.0, DATE '2024-01-05'), ('France', 90, NULL, DATE '2024-03-01'), "
+        "('Spain', 85, 15.0, NULL)) v(country, points, price, tasted)"
+    )
+    return profile_table(db, "wines", approx=False)
+
+
+def test_plan_facts_report_nulls_only_in_plan_columns(db, wines) -> None:
+    from app.core.agent.quality_fixes import plan_facts
+    from app.core.llm.prompts.quality_rules import NULLS_HINT
+
+    assert plan_facts(db, SHARE_PLAN, {}, wines, []) == (
+        ["- в исходной таблице price: 1 из 3 без значения"],
+        [NULLS_HINT],
+    )
+    average = [_step(1, "group_by", by=[], column="points", function="AVG")]
+    assert plan_facts(db, average, {}, wines, []) == ([], [])
+    assert plan_facts(db, SHARE_PLAN, {}, None, []) == ([], [])
+
+
+def test_plan_facts_report_period_of_plan_dates(db, wines) -> None:
+    from app.core.agent.quality_fixes import plan_facts
+
+    bucket = [_step(1, "time_bucket", date_column="tasted", interval="month")]
+    assert plan_facts(db, bucket, {}, wines, [])[0] == [
+        "- в исходной таблице tasted: 1 из 3 без значения",
+        "- в исходной таблице данные за период: 2024-01-05 – 2024-03-01 (tasted)",
+    ]
+    assert not any(
+        "данные за период" in line for line in plan_facts(db, SHARE_PLAN, {}, wines, [])[0]
+    )
+
+
+async def test_insight_prompt_gets_plan_facts_from_passport(db, wines, monkeypatch) -> None:
+    from app.core.agent.insight import InsightGenerator
+    from app.core.memory.profile_memory import ProfileMemory
+
+    monkeypatch.setattr(settings, "agent_quality_fixes", True)
+    db.query("CREATE TABLE share AS SELECT 1 AS expensive, 3 AS total")
+    generator = InsightGenerator(llm=_ScriptedLLM("Дорогих — 1 из 3"), db=db)
+    await generator.generate("Доля дорогих?", "share", steps=SHARE_PLAN, source="wines")
+    assert "без значения" not in generator.llm.prompts[0]
+
+    ProfileMemory(db).save_profile(wines)
+    generator = InsightGenerator(llm=_ScriptedLLM("Дорогих — 1 из 3"), db=db)
+    await generator.generate("Доля дорогих?", "share", steps=SHARE_PLAN, source="wines")
+    assert "- в исходной таблице price: 1 из 3 без значения" in generator.llm.prompts[0]
+    assert "сколько строк\n  без значения" in generator.llm.prompts[0]
+
+
+@pytest.mark.parametrize(
+    ("descending", "limit", "facts"),
+    [
+        (True, 10, ["- ничья на вершине по value_ratio: значение 21.5 у 2 строк"]),
+        (True, 1, ["- ничья на вершине по value_ratio: значение 21.5 у 2 строк"]),
+        (False, 10, []),
+    ],
+)
+def test_top_tie_counts_best_rows_of_sort_input(db, descending, limit, facts) -> None:
+    from app.core.agent.quality_fixes import top_tie
+
+    db.query(
+        "CREATE TABLE ranked AS SELECT * FROM (VALUES ('Cramele Recas', 21.5), "
+        "('Bandit NV Merlot', 21.5), ('Other', 20.0), ('Cheap', 3.0)) v(title, value_ratio)"
+    )
+    steps = [_step(3, "sort_limit", order_by="value_ratio", descending=descending, limit=limit)]
+    assert top_tie(db, steps, {3: "ranked"}) == facts
+    assert top_tie(db, steps, {}) == []
+
+
+@pytest.mark.parametrize(
+    ("start", "interval", "facts"),
+    [
+        ("2026-06-01", "week", ["- период 2026-09-28 неполный (данные по 2026-09-30)"]),
+        ("2026-06-01", "month", []),
+        ("2026-01-15", "month", ["- период 2026-01-01 неполный (данные с 2026-01-15)"]),
+        ("2026-01-15", "day", []),
+    ],
+)
+def test_partial_periods_at_the_edges_of_series(db, start, interval, facts) -> None:
+    from app.core.agent.quality_fixes import partial_periods
+    from app.core.data.profiling import profile_table
+
+    db.query(
+        f"CREATE TABLE sent AS SELECT * FROM (VALUES (DATE '{start}'), (DATE '2026-09-30')) v(day)"
+    )
+    profile = profile_table(db, "sent", approx=False)
+    steps = [_step(1, "time_bucket", date_column="day", interval=interval)]
+    assert partial_periods(steps, profile) == facts
+    assert (
+        partial_periods(
+            [_step(1, "time_bucket", date_column="created", interval=interval)], profile
+        )
+        == []
+    )
+
+
+def test_partial_period_fact_needs_period_in_result(db) -> None:
+    from app.core.agent.quality_fixes import plan_facts
+    from app.core.data.profiling import profile_table
+    from app.core.llm.prompts.quality_rules import PARTIAL_HINT
+
+    db.query(
+        "CREATE TABLE sent AS SELECT * FROM (VALUES (DATE '2026-06-01'), (DATE '2026-09-30')) v(d)"
+    )
+    profile = profile_table(db, "sent", approx=False)
+    steps = [_step(1, "time_bucket", date_column="d", interval="week")]
+    lines, hints = plan_facts(db, steps, {}, profile, ["period", "n"])
+    assert "- период 2026-09-28 неполный (данные по 2026-09-30)" in lines
+    assert PARTIAL_HINT in hints
+    assert not any("неполный" in line for line in plan_facts(db, steps, {}, profile, ["n"])[0])

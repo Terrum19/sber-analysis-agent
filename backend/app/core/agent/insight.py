@@ -8,7 +8,12 @@ import json
 import logging
 
 from app.config import settings
-from app.core.agent.quality_fixes import format_rows, insight_facts, ungrounded_numbers
+from app.core.agent.quality_fixes import (
+    format_rows,
+    insight_facts,
+    plan_facts,
+    ungrounded_numbers,
+)
 from app.core.data.duckdb_manager import DuckDBManager
 from app.core.llm.client import LLMClient
 from app.core.llm.prompts.insight_summary import (
@@ -24,6 +29,7 @@ from app.core.llm.prompts.quality_rules import (
     NUMBER_FIX,
     SINGLE_ROW,
 )
+from app.core.memory.profile_memory import ProfileMemory
 from app.core.tools.base import identifier
 from app.models.insight import Insight
 from app.models.research_step import ResearchStep
@@ -91,13 +97,21 @@ class InsightGenerator:
         except Exception:
             # Факты — подсказка, а не условие ответа: без них инсайт строится как раньше.
             logger.warning("инсайт: факты по %s не посчитались", result_table, exc_info=True)
-            facts = "нет"
+            facts = ""
+        try:
+            profile = ProfileMemory(db).load_profile(source) if source else None
+            columns = list(result[0]) if result else []
+            more, hints = plan_facts(db, steps or [], inputs or {}, profile, columns)
+        except Exception:
+            logger.warning("инсайт: факты по плану не посчитались", exc_info=True)
+            more, hints = [], []
+        facts = "\n".join(line for line in [facts, *more] if line) or "нет"
         # Одна строка — ответ числом; ряд — лидер, минимум или число строк, а не одно значение.
         # Число строк всей таблицы, а не показанных модели (их не больше SHOWN_ROWS).
         rows = db.query(f"SELECT COUNT(*) AS n FROM {identifier(result_table)}")[0]["n"]
         shape = SINGLE_ROW if rows <= 1 else MANY_ROWS.format(rows=rows)
         plan = describe_steps(steps or [])
-        prompt += INSIGHT_RULES.format(plan=plan, facts=facts, shape=shape)
+        prompt += INSIGHT_RULES.format(plan=plan, facts=facts, shape=shape, hints="".join(hints))
         # Опора — весь промпт: условия шагов плана («> 150», «2024»), воспоминания, порог 0.05.
         return await self._grounded(prompt)
 

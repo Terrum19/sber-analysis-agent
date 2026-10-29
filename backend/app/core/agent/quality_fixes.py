@@ -21,11 +21,14 @@ H-C1 (прошлые шаги видел только вопрос-продол�
 """
 
 import re
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 
 from app.core.data.duckdb_manager import DuckDBManager
+from app.core.data.profiling import TableProfile
+from app.core.llm.prompts.quality_rules import NULLS_HINT, PARTIAL_HINT, TIE_HINT
 from app.core.tools.base import identifier
 from app.core.tools.registry import tool_registry
+from app.models.research_step import ResearchStep
 
 # Число: «12345», «12 345» (разряды через пробел), «12,5», «12.5».
 _NUMBER = re.compile(r"\d{1,3}(?:[   ]\d{3})+(?:[.,]\d+)?|\d+(?:[.,]\d+)?")
@@ -153,6 +156,150 @@ def insight_facts(db: DuckDBManager, table: str, shown: int) -> str:
             f"- {name}: сумма {row[f's{i}']}, среднее {_round(row[f'a{i}'])}, {low}, {high}"
         )
     return "\n".join(lines)
+
+
+def plan_columns(steps: list[ResearchStep], columns: list[str]) -> list[str]:
+    """Колонки источника, которые использует план: факты о пропусках и датах — только по ним.
+
+    Колонка использована, если её имя — значение аргумента («by»: ["country"])
+    или отдельное слово в выражении («price > 100» — price, но не price_eur);
+    регистр не важен, как в DuckDB. Колонок, созданных по ходу плана
+    (is_expensive), в источнике нет — они отсеиваются сами.
+    """
+    texts = [text for step in steps for text in _strings([step.arguments, step.columns])]
+    return [
+        name
+        for name in columns
+        if any(re.search(rf"(?<!\w){re.escape(name)}(?!\w)", text, re.IGNORECASE) for text in texts)
+    ]
+
+
+def _strings(value: object) -> list[str]:
+    if isinstance(value, str):
+        return [value]
+    if isinstance(value, dict):
+        value = list(value.values())
+    if isinstance(value, list):
+        return [text for item in value for text in _strings(item)]
+    return []
+
+
+def plan_facts(
+    db: DuckDBManager,
+    steps: list[ResearchStep],
+    inputs: dict[int, str],
+    profile: TableProfile | None,
+    result_columns: list[str],
+) -> tuple[list[str], list[str]]:
+    """Факты о данных за результатом и подсказки инсайту к сработавшим фактам.
+
+    Пропуски и период — из паспорта по колонкам плана: запросов к источнику
+    нет, без паспорта этих фактов нет (профилировать посреди хода — полный
+    скан внешней базы). Ничья — один запрос к входу шага sort_limit.
+    """
+    used = []
+    if profile is not None:
+        names = plan_columns(steps, [column.name for column in profile.columns])
+        used = [profile.column(name) for name in names]
+    nulls = [
+        f"- в исходной таблице {c.name}: {c.nulls} из {c.total} без значения"
+        for c in used
+        if c.nulls
+    ]
+    periods = [
+        (
+            f"- в исходной таблице данные за период: {format_value(c.min_date)} – "
+            f"{format_value(c.max_date)} ({c.name})"
+        )
+        for c in used
+        if c.min_date is not None and c.max_date is not None
+    ]
+    partial = partial_periods(steps, profile) if "period" in result_columns else []
+    found = [
+        (nulls, NULLS_HINT),
+        (periods, ""),
+        (top_tie(db, steps, inputs), TIE_HINT),
+        (partial, PARTIAL_HINT),
+    ]
+    return [line for lines, _ in found for line in lines], [h for lines, h in found if lines and h]
+
+
+def top_tie(db: DuckDBManager, steps: list[ResearchStep], inputs: dict[int, str]) -> list[str]:
+    """Ничья на вершине sort_limit: сколько строк его входа делят лучшее значение.
+
+    Смотрится вход шага, а не результат: при limit=1 второе вино с тем же
+    значением отсечено. Лучшее — по первой колонке order_by, остальные
+    задают порядок внутри ничьей.
+    """
+    step = next(
+        (s for s in reversed(steps) if s.tool == "sort_limit" and s.step_id in inputs), None
+    )
+    if step is None:
+        return []
+    args = tool_registry.get("sort_limit").parse_args(step.columns, step.arguments)
+    order = [args.order_by] if isinstance(args.order_by, str) else args.order_by
+    if not order:
+        return []
+    column, table = identifier(order[0]), identifier(inputs[step.step_id])
+    best = "MAX" if args.descending else "MIN"
+    row = db.query(
+        f"SELECT COUNT(*) AS n, ANY_VALUE({column}) AS value FROM {table} "
+        f"WHERE {column} = (SELECT {best}({column}) FROM {table})"
+    )[0]
+    if row["n"] < 2:
+        return []
+    value = format_value(row["value"])
+    return [f"- ничья на вершине по {order[0]}: значение {value} у {row['n']} строк"]
+
+
+def partial_periods(steps: list[ResearchStep], profile: TableProfile | None) -> list[str]:
+    """Крайние периоды time_bucket, которые данные источника покрывают не целиком.
+
+    Последний неполный, если данные кончаются раньше его последнего дня,
+    первый — если начинаются позже его первого дня. Даты — из паспорта;
+    колонки, созданной по ходу плана, в нём нет — проверки нет.
+    """
+    step = next((s for s in reversed(steps) if s.tool == "time_bucket"), None)
+    if step is None or profile is None:
+        return []
+    args = tool_registry.get("time_bucket").parse_args(step.columns, step.arguments)
+    name = args.date_column.lower()
+    column = next((c for c in profile.columns if c.name.lower() == name), None)
+    if (
+        args.interval == "day"
+        or column is None
+        or not isinstance(column.min_date, date)
+        or not isinstance(column.max_date, date)
+    ):
+        return []
+    first, last = _day(column.min_date), _day(column.max_date)
+    lines = []
+    start = _period_start(first, args.interval)
+    if first > start:
+        lines.append(f"- период {start} неполный (данные с {first})")
+    start = _period_start(last, args.interval)
+    if last < _period_end(start, args.interval):
+        lines.append(f"- период {start} неполный (данные по {last})")
+    return lines
+
+
+def _day(value: date) -> date:
+    return value.date() if isinstance(value, datetime) else value
+
+
+def _period_start(day: date, interval: str) -> date:
+    """Начало периода, как date_trunc у time_bucket: неделя — с понедельника."""
+    if interval == "week":
+        return day - timedelta(days=day.weekday())
+    month = {"month": day.month, "quarter": (day.month - 1) // 3 * 3 + 1, "year": 1}[interval]
+    return date(day.year, month, 1)
+
+
+def _period_end(start: date, interval: str) -> date:
+    if interval == "week":
+        return start + timedelta(days=6)
+    years, month = divmod(start.month - 1 + {"month": 1, "quarter": 3, "year": 12}[interval], 12)
+    return date(start.year + years, month + 1, 1) - timedelta(days=1)
 
 
 def format_value(value: object) -> str:
