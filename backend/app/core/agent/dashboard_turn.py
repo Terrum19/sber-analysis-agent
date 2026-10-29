@@ -7,6 +7,14 @@
 выбор проверяется fits, неподошедший — один повтор, дальше вид по intent.
 
 Каждый этап шлёт событие: фронт показывает, что происходит, на каждом шаге.
+
+Сейчас сравниваем два варианта сборки плиток с одним контрактом событий:
+- plan_per_tile (эта ветка, feature/B-07-dashboard-buttons) — на каждую
+  плитку свой вызов планировщика;
+- quick_tiles (feature/B-07-dashboard-quick-tiles) — план дашборда сразу
+  отдаёт поля простых плиток (показатель, агрегат, разрез, период), шаги
+  собирает код, планировщик — только для сложных плиток.
+Вариант пишется в лог хода (DASHBOARD_VARIANT), чтобы сравнивать прогоны.
 """
 
 import asyncio
@@ -58,6 +66,9 @@ from app.models.dashboard_plan import (
 )
 
 logger = logging.getLogger(__name__)
+
+# Какой вариант сборки плиток сравниваем (см. docstring модуля).
+DASHBOARD_VARIANT = "plan_per_tile"
 
 # Плитки строятся параллельно, но не все сразу: лимиты провайдера LLM.
 TILE_CONCURRENCY = 3
@@ -134,6 +145,7 @@ class DashboardTurn:
             }
         )
         described = describe_table(self.db, table)
+        logger.info("дашборд: вариант=%s", DASHBOARD_VARIANT)
 
         emit(_progress_event("outline", "started"))
         started_at = time.perf_counter()
