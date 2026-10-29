@@ -273,3 +273,42 @@ def test_status_endpoint(monkeypatch: pytest.MonkeyPatch) -> None:
         "progress": 0.37,
         "detail": None,
     }
+
+
+async def test_embedding_model_is_pulled_quietly(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(settings, "embed_model", "bge-m3")
+    monkeypatch.setattr(settings, "embed_base_url", "")
+    http, calls = fake_ollama(
+        ["qwen2.5-coder:7b"], pull=[{"digest": "a", "total": 4, "completed": 2}]
+    )
+    await ollama_setup.prepare_embeddings(http)
+    assert [body for path, body in calls if path == "/api/pull"] == [{"model": "bge-m3:latest"}]
+    # Статус LLM не меняется: фронт не видит «скачивание» модели эмбеддингов.
+    assert ollama_setup.status()["state"] == "connecting"
+
+    http, calls = fake_ollama(["bge-m3:latest"])
+    await ollama_setup.prepare_embeddings(http)
+    assert "/api/pull" not in paths(calls)
+
+
+@pytest.mark.parametrize(
+    ("model", "base_url"), [("", ""), ("bge-m3", "https://openrouter.ai/api/v1")]
+)
+async def test_embedding_model_elsewhere_is_not_pulled(
+    monkeypatch: pytest.MonkeyPatch, model: str, base_url: str
+) -> None:
+    monkeypatch.setattr(settings, "embed_model", model)
+    monkeypatch.setattr(settings, "embed_base_url", base_url)
+    http, calls = fake_ollama([])
+    await ollama_setup.prepare_embeddings(http)
+    assert calls == []
+
+
+async def test_embedding_pull_failure_is_only_logged(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(settings, "embed_model", "bge-m3")
+    monkeypatch.setattr(settings, "embed_base_url", f"{ROOT}/v1")
+    http, _ = fake_ollama([], pull=[{"error": "pull model manifest: file does not exist"}])
+    await ollama_setup.prepare_embeddings(http)
+    http, calls = fake_ollama([], version=404)
+    await ollama_setup.prepare_embeddings(http)
+    assert paths(calls) == ["/api/version"]

@@ -71,6 +71,7 @@ from app.core.dashboards.generator import DashboardGenerator
 from app.core.dashboards.models import DashboardTile
 from app.core.data import overview, relations
 from app.core.data.duckdb_manager import DuckDBManager
+from app.core.data.table_vectors import TableVectors
 from app.core.llm.budget import track_truncations
 from app.core.logging_setup import set_turn_id
 from app.core.memory.profile_memory import ProfileMemory
@@ -251,6 +252,7 @@ class AgentOrchestrator:
         self.insight_gen = insight_gen or InsightGenerator(db=self.db)
         self.cache = cache or StateCache(self.db)
         self.profiles = ProfileMemory(self.db)
+        self.vectors = TableVectors(self.db)
 
     async def run(self, request: ChatRequest) -> AsyncIterator[dict]:
         """Выполнить исследование и вернуть поток событий для фронта.
@@ -328,11 +330,17 @@ class AgentOrchestrator:
         choice = None
         if pending is None and table is None:
             # Таблица не выбрана — подбираем по словам вопроса без вызова LLM (#165).
-            choice = relations.choose_table(self.db, request.question)
-        elif pending is None and request.idea is None:
-            # Вопрос явно про другие, несвязанные данные — переходим к ним; идея
-            # дашборда предложена по таблице сессии, её не перепроверяем.
-            choice = self._switch(table, request.question)
+            similarity = await self.vectors.similarity(request.question)
+            choice = relations.choose_table(self.db, request.question, similarity)
+        elif (
+            pending is None
+            and request.idea is None
+            and not overview.is_overview_question(request.question)
+        ):
+            # Вопрос явно про другие, несвязанные данные — переходим к ним. Идея
+            # дашборда предложена по таблице сессии, а «что передо мной?» — всегда
+            # про неё: их не перепроверяем.
+            choice = await self._switch(table, request.question)
         if choice is not None:
             if choice.options:
                 # Вопрос подходит к разным несвязанным данным: спрашиваем, какие взять.
@@ -614,10 +622,11 @@ class AgentOrchestrator:
         execution.remembered = remembered
         return request.question, execution
 
-    def _switch(self, table: str, question: str) -> relations.TableChoice | None:
+    async def _switch(self, table: str, question: str) -> relations.TableChoice | None:
         """Переход к другим данным; сбой каталога — остаёмся, ход идёт как раньше."""
         try:
-            return relations.switch_table(self.db, table, question)
+            similarity = await self.vectors.similarity(question)
+            return relations.switch_table(self.db, table, question, similarity)
         except Exception:
             logger.exception("переход от таблицы %s не проверен", table)
             return None

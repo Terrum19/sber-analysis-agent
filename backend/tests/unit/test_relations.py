@@ -14,6 +14,7 @@ from app.core.data.connectors.base import BaseConnector
 from app.core.data.connectors.csv import CSVConnector
 from app.core.data.duckdb_manager import DuckDBManager
 from app.core.data.relations import Relation, TableChoice
+from app.core.data.table_vectors import TableVectors
 from app.core.memory.profile_memory import ProfileMemory
 from app.core.memory.session_memory import SessionMemory
 from app.core.tools.base import ToolContext
@@ -795,3 +796,33 @@ def test_switch_between_titled_data_asks_which(two_sources) -> None:
     events, executor = ask(two_sources, SpyPlanner(), "which", "x", "Склад")
     assert events[0]["data"] == {"table": "stock", "previous": "demo_events", "title": "Склад"}
     assert executor.inputs == ["stock"]
+
+
+def by_meaning(monkeypatch, scores: dict[str, float]) -> list[str]:
+    """Эмбеддинги без сервера: близость к таблицам задана; вопросы — в список."""
+    asked: list[str] = []
+
+    async def similarity(self, question: str) -> dict[str, float]:
+        asked.append(question)
+        return scores
+
+    monkeypatch.setattr(TableVectors, "similarity", similarity)
+    return asked
+
+
+def test_agent_moves_to_other_data_by_meaning(two_sources, monkeypatch) -> None:
+    asked = by_meaning(monkeypatch, {"demo_events": 0.3, "demo_users": 0.3, "weather": 0.6})
+    SessionMemory("meaning").set_table("demo_events")
+    events, executor = ask(two_sources, SpyPlanner(), "meaning", "Было ли холодно в январе?")
+    assert events[0]["data"] == {"table": "weather", "previous": "demo_events", "title": None}
+    assert executor.inputs == ["weather"]
+    assert asked == ["Было ли холодно в январе?"]
+
+
+def test_overview_never_moves_to_other_data(two_sources, monkeypatch) -> None:
+    asked = by_meaning(monkeypatch, {"demo_events": 0.3, "demo_users": 0.3, "weather": 0.9})
+    SessionMemory("overview-stays").set_table("demo_events")
+    events, _ = ask(two_sources, SpyPlanner(llm=SummaryLLM()), "overview-stays", "Что передо мной?")
+    assert "table" not in [event["type"] for event in events]
+    assert asked == []
+    assert SessionMemory("overview-stays").table == "demo_events"

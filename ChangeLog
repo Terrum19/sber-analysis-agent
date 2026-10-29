@@ -1,5 +1,28 @@
 2026-10-29  Alexander Yurits  <143354682+Terrum19@users.noreply.github.com>
 
+	Переход к другим данным по смыслу вопроса — эмбеддинги (#165).
+	* backend/app/core/data/table_vectors.py: Новый.  Близость вопроса к
+	таблицам по эмбеддингам (EMBED_MODEL), векторы таблиц — в
+	_meta.table_vector по отпечатку текста.  Сбой сервера — RETRY_S только
+	по словам.
+	* backend/app/core/data/relations.py (switch_table, choose_table):
+	Параметр similarity.  Слова не назвали другие данные — решает смысл.
+	(MEANING_MARGIN, _closer_than, _closest): Новые.
+	* backend/app/core/agent/orchestrator.py (_turn, _switch): Близость по
+	смыслу; «что передо мной?» к другим данным не переходит.
+	* backend/app/core/llm/ollama_setup.py (prepare_embeddings): Новая.
+	Скачать EMBED_MODEL на ту же Ollama.  (_pull): Параметр report.
+	* backend/app/config.py (embed_model, embed_base_url, embed_api_key)
+	(embed_timeout_s): Новые.
+	* docker-compose.yml, docker-compose.release.yml, .env.example:
+	EMBED_MODEL по умолчанию bge-m3, и у backend тоже.
+	* README.md, docs/architecture.md: Переход к другим данным, событие table.
+	* backend/tests/unit/test_table_vectors.py: Новый.
+	* backend/tests/unit/test_relations.py, backend/tests/unit/test_ollama_setup.py:
+	Тесты того же.
+
+2026-10-29  Alexander Yurits  <143354682+Terrum19@users.noreply.github.com>
+
 	Агент сам переходит к другим данным посреди сессии (#165).
 	* backend/app/core/data/relations.py (switch_table): Новая.  Вопрос
 	явно про другие, несвязанные данные — таблица, к которой перейти, или
