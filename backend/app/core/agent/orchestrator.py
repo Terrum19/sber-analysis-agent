@@ -305,20 +305,14 @@ class AgentOrchestrator:
             memory.use_table(chosen or catalog[0])
             pending = None
 
-        # Дашборд по кнопке (#224) — свой маршрут, без small talk, обзора и плана
-        # хода. Просьба о дашборде текстом в обычном чате идёт туда же, а не в
-        # старую сборку плиток планировщиком с шаблонами.
-        if request.mode == "dashboard" or (
+        dashboard = request.mode == "dashboard" or (
             pending is None and is_dashboard_question(request.question)
+        )
+        if (
+            not dashboard
+            and pending is None
+            and (reply := small_talk_reply(request.question)) is not None
         ):
-            from app.core.agent.dashboard_turn import DashboardTurn
-
-            logger.info("маршрут: дашборд")
-            async for event in DashboardTurn(self).run(memory, request):
-                yield event
-            return
-
-        if pending is None and (reply := small_talk_reply(request.question)) is not None:
             # «Привет», «спасибо», «что ты умеешь» — без плана, LLM и графика.
             logger.info("маршрут: small talk")
             memory.finish_turn("ok", headline=reply)
@@ -363,6 +357,19 @@ class AgentOrchestrator:
             yield {"type": "error", "data": {"message": NO_TABLE_MESSAGE}}
             yield _done(turn_id)
             return
+
+        # Дашборд по кнопке (#224) — свой маршрут, без обзора и плана хода.
+        # Просьба о дашборде текстом в обычном чате идёт туда же, а не в старую
+        # сборку плиток планировщиком с шаблонами. Таблица уже выбрана выше:
+        # дашборд без таблицы сессии берёт её так же, как вопрос (#165).
+        if dashboard:
+            from app.core.agent.dashboard_turn import DashboardTurn
+
+            logger.info("маршрут: дашборд")
+            async for event in DashboardTurn(self).run(memory, request):
+                yield event
+            return
+
         titles = column_aliases(
             {
                 "glossary": self.profiles.load_glossary(table),

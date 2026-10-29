@@ -11,7 +11,9 @@ import hashlib
 import logging
 from collections.abc import Sequence
 
-from app.core.data import overview
+import duckdb
+
+from app.core.data import overview, relations
 from app.core.llm.client import LLMClient
 from app.core.llm.prompts.dashboard_builder import DASHBOARD_IDEAS, IDEAS_EXCLUDE
 from app.core.llm.prompts.system_analyst import SYSTEM_ANALYST
@@ -26,8 +28,13 @@ TABLE_MAX_CHARS = 6000
 _cache: dict[tuple[str, str, tuple[str, ...]], list[DashboardIdea]] = {}
 
 
-def describe_table(db, table: str) -> str:
-    """Таблица для промпта: факты, колонки с типами и значениями, описание, если есть."""
+def describe_table(db, table: str, question: str = "") -> str:
+    """Таблица для промпта: факты, колонки с типами и значениями, описание, если есть.
+
+    В конце — связанные ключами таблицы (#165): без них дашборд по заказам не
+    предложит плитку «по регионам», если регионы лежат в справочнике. question
+    упорядочивает их колонки.
+    """
     profile = overview.passport(db, table)
     enrichment = ProfileMemory(db).load_enrichment(table)
     columns = overview.clip(
@@ -35,7 +42,19 @@ def describe_table(db, table: str) -> str:
     )
     text = f"{overview.facts(profile)}.\n{columns}"
     summary = overview.cached_summary(db, table)
-    return f"{text}\n\nОписание: {summary}" if summary else text
+    if summary:
+        text = f"{text}\n\nОписание: {summary}"
+    linked = relations.describe_linked(db, table, _related(db, table, question))
+    return f"{text}\n\n{linked}" if linked else text
+
+
+def _related(db, table: str, question: str) -> list[relations.Related]:
+    """Связанные таблицы; сбой каталога — дашборд по одной таблице."""
+    try:
+        return relations.related_tables(db, table, question)
+    except duckdb.Error:
+        logger.exception("связанные таблицы %s не прочитаны", table)
+        return []
 
 
 async def generate_ideas(
@@ -45,7 +64,8 @@ async def generate_ideas(
     # Ключ — данные, а не текст промпта: описание и подписи колонок дописываются
     # в фоне после загрузки, и кэш не должен из-за них промахиваться.
     profile = overview.passport(db, table)
-    shape = f"{overview.facts(profile)} {[column.name for column in profile.columns]}"
+    linked = sorted(relations.component(relations.load(db), table) - {table})
+    shape = f"{overview.facts(profile)} {[column.name for column in profile.columns]} {linked}"
     seen = tuple(sorted({title.strip() for title in exclude if title.strip()}))
     key = (table, hashlib.sha256(shape.encode()).hexdigest(), seen)
     if key in _cache:

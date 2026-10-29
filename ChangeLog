@@ -1,5 +1,23 @@
 2026-10-29  Alexander Yurits  <143354682+Terrum19@users.noreply.github.com>
 
+	Дашборд по связанным таблицам (#165 + #224).
+	* backend/app/core/data/relations.py (describe_linked): Новая.
+	Связанные таблицы и их колонки для промпта идей и плана дашборда.
+	* backend/app/core/dashboards/ideas.py (describe_table): Дописывает
+	связанные таблицы.  (_related): Новая.  (generate_ideas): Ключ кэша
+	учитывает связанные таблицы.
+	* backend/app/core/llm/prompts/dashboard_builder.py (DASHBOARD_IDEAS)
+	(DASHBOARD_OUTLINE): Колонки связанных таблиц тоже можно брать.
+	* backend/app/core/agent/dashboard_turn.py (_build): План по запросу
+	и связанным таблицам.  (_tile): Планировщик плитки получает related —
+	join_related доступен.
+	* backend/app/core/agent/orchestrator.py (_turn): Маршрут дашборда —
+	после выбора таблицы: без таблицы сессии она берётся по вопросу.
+	Small talk не перехватывает кнопку дашборда.
+	* backend/tests/unit/test_dashboard_turn.py: Тесты того же.
+
+2026-10-29  Alexander Yurits  <143354682+Terrum19@users.noreply.github.com>
+
 	Выбор таблицы по группам связанных таблиц; join_related — только при
 	связях (#165, полный прогон).
 	* backend/app/core/data/relations.py (choose_table): Вопрос сравнивается

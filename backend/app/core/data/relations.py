@@ -527,6 +527,25 @@ def describe_related(table: str, related: list[Related]) -> str:
     return "\n".join(lines)
 
 
+def describe_linked(db, table: str, related: list[Related]) -> str:
+    """Блок промпта идей и плана дашборда: связанные таблицы и их колонки, без инструментов."""
+    if not related:
+        return ""
+    lines = [
+        (
+            f"Связанные таблицы — соединяются с {table} по ключам, их колонки тоже "
+            "можно брать в плитки:"
+        )
+    ]
+    for item in related:
+        via = [hop.to_table for hop in item.path[:-1]]
+        through = f" (через {', '.join(via)})" if via else ""
+        title = table_title(db, item.table)
+        named = f" «{title}»" if title else ""
+        lines.append(f"- {item.table}{named}{through}: колонки {_columns_line(item.columns)}")
+    return "\n".join(lines)
+
+
 def question_words(question: str) -> set[str]:
     """Слова вопроса для выбора таблицы: без коротких («в», «по»), они есть везде."""
     return {word for word in tokenize(question) if len(word) >= MIN_WORD}
