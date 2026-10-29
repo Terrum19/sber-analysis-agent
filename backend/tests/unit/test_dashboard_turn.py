@@ -571,3 +571,20 @@ async def test_dashboard_request_in_chat_mode_takes_the_new_route(db) -> None:
     events = [event async for event in agent(db, llm).run(chat)]
     assert kinds(events) == ["dashboard_outline", "dashboard", "text", "done"]
     assert "enough_info всегда true" not in llm.prompts["DashboardOutline"][0]
+
+
+async def test_outline_without_tiles_logs_the_raw_answer(db, caplog) -> None:
+    llm = ScriptedLLM(DashboardOutline=[DashboardOutline(), DashboardOutline()])
+    llm.last_raw = '{"enough_info": true, "plan": []}'
+    await collect(agent(db, llm), question="Продажи", idea=DashboardIdea(title="Продажи"))
+    raw = [record.getMessage() for record in caplog.records if "сырой ответ" in record.message]
+    assert len(raw) == 2
+    assert '(33 симв.): {"enough_info": true, "plan": []}' in raw[0]
+
+
+async def test_outline_raw_answer_may_be_unavailable(db, caplog) -> None:
+    llm = ScriptedLLM(
+        DashboardOutline=[DashboardOutline(enough_info=False)], DashboardIdeas=[RuntimeError("x")]
+    )
+    await collect(agent(db, llm), question="Сделай дашборд")
+    assert any("(? симв.): недоступен" in record.getMessage() for record in caplog.records)

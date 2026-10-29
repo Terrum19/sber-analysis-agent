@@ -118,6 +118,8 @@ class LLMClient:
         )
         self.model = ollama_setup.active_model()
         self.last_prompt_tokens: int | None = None
+        # Текст последнего ответа json_schema: для диагностики ответов без нужных полей.
+        self.last_raw: str | None = None
         self._instructor = instructor.from_openai(self._client)
         logger.debug(
             "LLMClient инициализирован: base_url=%s, model=%s, timeout=%ss, temp=%s",
@@ -392,6 +394,7 @@ class LLMClient:
         for attempt in range(2):
             t0 = time.time()
             raw = await self.complete(system, prompt, **extra)
+            self.last_raw = raw
             try:
                 result = parse_structured(schema, raw)
             except StructuredParseError as exc:
