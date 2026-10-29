@@ -162,7 +162,20 @@ def export_dashboard(
         )
 
     path = export_dir / unique_filename
-    ExcelExporter().export_dashboard(dashboard, str(path), db=db)
+    try:
+        ExcelExporter().export_dashboard(
+            dashboard,
+            str(path),
+            db=db,
+            session_title=session_title,
+            source_name=source_name,
+            database_name=database_name,
+        )
+    except Exception as exc:
+        raise HTTPException(
+            status.HTTP_500_INTERNAL_SERVER_ERROR,
+            f"Не удалось сгенерировать Excel: {exc}",
+        ) from exc
     return FileResponse(
         path,
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",

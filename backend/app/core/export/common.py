@@ -8,7 +8,10 @@
 
 from __future__ import annotations
 
+import json
 import logging
+import math
+from datetime import date, datetime
 from decimal import Decimal
 from typing import TYPE_CHECKING, Any
 
@@ -129,3 +132,85 @@ def format_cell_value(val: Any, max_len: int = 100) -> str:
     if len(s) > max_len:
         s = s[: max(0, max_len - 1)] + "…"
     return s
+
+
+def sanitize_excel_text(text: Any) -> str:
+    """Защита текста от Formula Injection (CWE-1236) для заголовков, колонок и инсайтов."""
+    if text is None:
+        return ""
+    s = str(text)
+    if not s:
+        return s
+    first_char = s[0]
+    stripped = s.lstrip()
+    danger_char = stripped[0] if stripped else first_char
+    if first_char in ("\t", "\r") or danger_char in ("=", "+", "-", "@"):
+        try:
+            float(stripped)
+            return s
+        except ValueError:
+            return "'" + s
+    return s
+
+
+def sanitize_excel_value(val: Any) -> Any:
+    """Защита от Formula Injection (CWE-1236) и подготовка типов для ячеек Excel.
+
+    - None -> ""
+    - bool -> bool (сохраняется как логический тип)
+    - datetime -> naive datetime (удаление tzinfo во избежание TypeError в openpyxl)
+    - date -> date
+    - float -> проверка на NaN (-> "") и Infinity (-> "Infinity" / "-Infinity")
+    - int, Decimal -> сохраняются
+    - list, dict -> json-строка
+    - строки -> проверка на число и экранирование формул апострофом
+    """
+    if val is None:
+        return ""
+    if isinstance(val, bool):
+        return val
+    if isinstance(val, datetime):
+        if val.tzinfo is not None:
+            val = val.astimezone().replace(tzinfo=None)
+        return val
+    if isinstance(val, date):
+        return val
+    if isinstance(val, float):
+        if math.isnan(val):
+            return ""
+        if math.isinf(val):
+            return "Infinity" if val > 0 else "-Infinity"
+        return val
+    if isinstance(val, (int, Decimal)):
+        return val
+    if isinstance(val, (list, dict)):
+        return json.dumps(val, ensure_ascii=False)
+
+    s = str(val)
+    if not s:
+        return s
+    first_char = s[0]
+    stripped = s.lstrip()
+    danger_char = stripped[0] if stripped else first_char
+    if first_char in ("\t", "\r") or danger_char in ("=", "+", "-", "@"):
+        try:
+            if "." in stripped or "e" in stripped.lower():
+                return float(stripped)
+            return int(stripped)
+        except ValueError:
+            return "'" + s
+    return s
+
+
+def extract_table_columns(records: list[dict], max_columns: int = 50) -> list[str]:
+    """Сформировать объединённый упорядоченный список колонок по всем строкам выборки."""
+    seen: dict[str, None] = {}
+    for r in records:
+        if isinstance(r, dict):
+            for k in r:
+                str_k = str(k)
+                if str_k not in seen:
+                    seen[str_k] = None
+                    if len(seen) >= max_columns:
+                        return list(seen.keys())
+    return list(seen.keys())

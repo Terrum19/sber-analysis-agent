@@ -3,15 +3,16 @@
 Поддерживает:
 1. Одиночные исследования/таблицы: карточка запроса, фирменная палитра Сбера,
    автоширина колонок, числовые форматы, автофильтр, фиксация шапки,
-   умный подбор и размещение диаграммы (BarChart, LineChart, PieChart, AreaChart).
+   детерминированный подбор диаграмм по Vega-Lite encoding или данным.
 2. Дашборды: титульный лист «Сводка» с крупными KPI-карточками, оглавлением
    и ссылками, а также отдельные листы под каждую плитку со снимком данных и графиком.
-3. Защита от Formula Injection (CWE-1236) и валидация названий листов.
+3. Полная защита от Formula Injection (CWE-1236) на всех строковых поверхностях.
+4. Безопасная работа с timezone-aware датами, NaN, Infinity и усечением массивов.
 """
 
 from __future__ import annotations
 
-import json
+import logging
 import re
 from datetime import date, datetime
 from decimal import Decimal
@@ -26,11 +27,17 @@ from openpyxl.worksheet.worksheet import Worksheet
 
 from app.core.dashboards.models import Dashboard
 from app.core.data.duckdb_manager import DuckDBManager
+from app.core.export.charts import is_table_spec
 from app.core.export.common import (
     extract_kpi_value,
+    extract_table_columns,
     format_kpi_number,
     resolve_tile_records,
+    sanitize_excel_text,
+    sanitize_excel_value,
 )
+
+logger = logging.getLogger(__name__)
 
 # Фирменная палитра Сбера
 SBER_GREEN = "088434"
@@ -65,29 +72,14 @@ KPI_BORDER = Border(
     bottom=KPI_BORDER_SIDE,
 )
 
+MAX_EXPORT_ROWS = 5000
+MAX_EXCEL_COLUMNS = 50
+MAX_CHART_CATEGORIES = 50
 
-def _sanitize_value(val: Any) -> Any:
-    """Защита от CSV/Excel Formula Injection (CWE-1236) и подготовка типов."""
-    if val is None:
-        return ""
-    if isinstance(val, bool):
-        return val
-    if isinstance(val, (int, float, Decimal, datetime, date)):
-        return val
-    if isinstance(val, (list, dict)):
-        return json.dumps(val, ensure_ascii=False)
-
-    s = str(val)
-    if s and s[0] in ("=", "+", "-", "@", "\t", "\r"):
-        # Если это нормальное число (например, "-42.5" или "+10"), возвращаем число
-        try:
-            if "." in s or "e" in s.lower():
-                return float(s)
-            return int(s)
-        except ValueError:
-            # Потенциальная формула или опасная строка — экранируем апострофом
-            return "'" + s
-    return s
+# Алиасы для обратной совместимости
+_sanitize_value = sanitize_excel_value
+_format_kpi_number = format_kpi_number
+_extract_kpi_value = extract_kpi_value
 
 
 def _safe_sheet_title(title: str, existing_titles: set[str]) -> str:
@@ -105,46 +97,104 @@ def _safe_sheet_title(title: str, existing_titles: set[str]) -> str:
     return candidate
 
 
-_format_kpi_number = format_kpi_number
-_extract_kpi_value = extract_kpi_value
-
-
 def _is_number(v: Any) -> bool:
     return isinstance(v, (int, float, Decimal)) and not isinstance(v, bool)
 
 
-def _detect_column_roles(records: list[dict], columns: list[str]) -> tuple[int, list[int]]:
-    """Определить 1-based индекс категориальной колонки (X) и числовых метрик (Y)."""
+def _detect_column_roles(
+    records: list[dict], columns: list[str], spec: dict | None = None
+) -> tuple[int, list[int]]:
+    """Определить 1-based индекс категориальной колонки (X) и числовых метрик (Y).
+
+    Приоритет:
+    1. Спецификация Vega-Lite (spec.encoding) для x/y или theta/color;
+    2. Умная эвристика по данным выборки с парсингом числовых строк и поддержкой
+       всех числовых колонок.
+    """
+    if spec and isinstance(spec, dict):
+        encoding = spec.get("encoding")
+        if isinstance(encoding, dict):
+            # Круговая диаграмма (pie / donut)
+            theta_enc = encoding.get("theta")
+            color_enc = encoding.get("color")
+            if isinstance(theta_enc, dict) and isinstance(color_enc, dict):
+                t_field = theta_enc.get("field")
+                c_field = color_enc.get("field")
+                if c_field in columns and t_field in columns:
+                    return columns.index(c_field) + 1, [columns.index(t_field) + 1]
+
+            # Декартовы диаграммы (bar, line, area, scatter)
+            x_enc = encoding.get("x")
+            y_enc = encoding.get("y")
+            if isinstance(x_enc, dict) and isinstance(y_enc, dict):
+                x_field = x_enc.get("field")
+                y_field = y_enc.get("field")
+                if x_field in columns and y_field in columns:
+                    x_idx = columns.index(x_field) + 1
+                    y_idx = columns.index(y_field) + 1
+                    x_type = (x_enc.get("type") or "").lower()
+                    y_type = (y_enc.get("type") or "").lower()
+
+                    # Горизонтальный бар: Y - категория, X - метрика
+                    if y_type in ("nominal", "ordinal") and x_type in ("quantitative",):
+                        return y_idx, [x_idx]
+                    return x_idx, [y_idx]
+
+    # Эвристический подбор по выборке
     sample = records[:50]
     numeric_cols: list[int] = []
     text_or_date_cols: list[int] = []
+
+    def is_val_numeric(v: Any) -> bool:
+        if isinstance(v, (int, float, Decimal)) and not isinstance(v, bool):
+            return True
+        if isinstance(v, str):
+            clean = v.strip().replace(" ", "").replace(",", ".").replace("%", "")
+            try:
+                float(clean)
+                return True
+            except ValueError:
+                return False
+        return False
 
     for idx, col in enumerate(columns, start=1):
         vals = [r.get(col) for r in sample if r.get(col) is not None]
         if not vals:
             continue
-        num_count = sum(1 for v in vals if _is_number(v))
+        num_count = sum(1 for v in vals if is_val_numeric(v))
         if num_count / len(vals) >= 0.7:
             numeric_cols.append(idx)
         else:
             text_or_date_cols.append(idx)
 
-    cat_col = text_or_date_cols[0] if text_or_date_cols else 1
-    numeric_cols = [c for c in numeric_cols if c != cat_col]
+    if text_or_date_cols:
+        cat_col = text_or_date_cols[0]
+        metric_cols = [c for c in numeric_cols if c != cat_col]
+    elif numeric_cols:
+        cat_col = numeric_cols[0]
+        metric_cols = numeric_cols[1:]
+    else:
+        cat_col = 1
+        metric_cols = []
 
-    # Если есть несколько числовых колонок, исключаем явные ID / коды из метрик графика
-    if len(numeric_cols) > 1:
+    # Исключаем сугубо технические ID, если есть другие метрики
+    if len(metric_cols) > 1:
         non_id = [
             c
-            for c in numeric_cols
-            if columns[c - 1].lower() not in ("id", "код", "номер", "№", "index")
+            for c in metric_cols
+            if columns[c - 1].lower()
+            not in ("id", "user_id", "order_id", "session_id", "код", "номер", "№", "index")
             and not columns[c - 1].lower().endswith("_id")
         ]
         if non_id:
-            numeric_cols = non_id
+            metric_cols = non_id
 
-    # Ограничиваем количество серий до 5, чтобы график не захламлялся
-    return cat_col, numeric_cols[:5]
+    # Если колонка одна, строим диаграмму по ней
+    if not metric_cols and numeric_cols:
+        cat_col = numeric_cols[0]
+        metric_cols = [numeric_cols[0]]
+
+    return cat_col, metric_cols[:5]
 
 
 def _detect_chart_type(spec: dict | None, category_col_name: str) -> str:
@@ -158,12 +208,14 @@ def _detect_chart_type(spec: dict | None, category_col_name: str) -> str:
             t = explicit_type.lower()
             if t in ("line", "temporal"):
                 return "line"
-            if t in ("pie", "arc"):
+            if t in ("pie", "arc", "donut"):
                 return "pie"
             if t in ("area",):
                 return "area"
-            if t in ("bar", "column"):
+            if t in ("bar", "column", "histogram"):
                 return "bar"
+            if t in ("scatter", "point"):
+                return "line"
 
         mark = spec.get("mark")
         mark_type = mark.get("type") if isinstance(mark, dict) else mark
@@ -177,8 +229,9 @@ def _detect_chart_type(spec: dict | None, category_col_name: str) -> str:
                 return "area"
             if mt in ("bar",):
                 return "bar"
+            if mt in ("point", "circle", "square", "tick"):
+                return "line"
 
-    # Фолбэк по названию категориальной колонки
     cat_lower = category_col_name.lower()
     time_keywords = (
         "date",
@@ -211,36 +264,98 @@ def _build_chart(
     if not num_cols or last_row <= header_row:
         return None
 
-    if chart_type == "line":
-        chart: Any = LineChart()
-        chart.style = 13
-    elif chart_type == "pie":
-        chart = PieChart()
-        chart.style = 10
-    elif chart_type == "area":
-        chart = AreaChart()
-        chart.style = 11
-    else:
-        chart = BarChart()
-        chart.type = "col"
-        chart.grouping = "clustered"
-        chart.style = 10
+    try:
+        if chart_type == "line":
+            chart: Any = LineChart()
+            chart.style = 13
+        elif chart_type == "pie":
+            chart = PieChart()
+            chart.style = 10
+        elif chart_type == "area":
+            chart = AreaChart()
+            chart.style = 11
+        else:
+            chart = BarChart()
+            chart.type = "col"
+            chart.grouping = "clustered"
+            chart.style = 10
 
-    if title:
-        chart.title = title[:40]
+        if title:
+            clean_title = sanitize_excel_text(title[:40])
+            chart.title = clean_title.lstrip("'")
 
-    cats = Reference(ws, min_col=cat_col, min_row=header_row + 1, max_row=last_row)
-    chart.set_categories(cats)
+        # Ограничиваем диапазон точек для графика (до 50 точек для читаемости)
+        chart_max_row = min(last_row, header_row + MAX_CHART_CATEGORIES)
+        cats = Reference(ws, min_col=cat_col, min_row=header_row + 1, max_row=chart_max_row)
+        chart.set_categories(cats)
 
-    # Для PieChart допускается только 1 серия данных
-    cols_to_add = [num_cols[0]] if chart_type == "pie" else num_cols
-    for col_idx in cols_to_add:
-        data_ref = Reference(ws, min_col=col_idx, min_row=header_row, max_row=last_row)
-        chart.add_data(data_ref, titles_from_data=True)
+        # Для PieChart допускается только 1 серия данных
+        cols_to_add = [num_cols[0]] if chart_type == "pie" else num_cols
+        for col_idx in cols_to_add:
+            data_ref = Reference(ws, min_col=col_idx, min_row=header_row, max_row=chart_max_row)
+            chart.add_data(data_ref, titles_from_data=True)
 
-    chart.width = 16
-    chart.height = 10
-    return chart
+        chart.width = 16
+        chart.height = 10
+        return chart
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Не удалось создать диаграмму Excel: %s", exc)
+        return None
+
+
+def _write_data_table(
+    ws: Worksheet,
+    records: list[dict],
+    columns: list[str],
+    header_row: int,
+) -> int:
+    """Записать стилизованную таблицу данных на лист Excel и вернуть номер последней строки."""
+    for col_idx, col_name in enumerate(columns, start=1):
+        clean_col = sanitize_excel_text(col_name)
+        c = ws.cell(row=header_row, column=col_idx, value=clean_col)
+        c.font = HEADER_FONT
+        c.fill = HEADER_FILL
+        c.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+        c.border = CELL_BORDER
+
+    cur_row = header_row + 1
+    for r_idx, r in enumerate(records):
+        is_even = r_idx % 2 == 1
+        row_fill = ZEBRA_FILL if is_even else NO_FILL
+
+        for col_idx, col_name in enumerate(columns, start=1):
+            raw_val = r.get(col_name) if isinstance(r, dict) else None
+            val = sanitize_excel_value(raw_val)
+            c = ws.cell(row=cur_row, column=col_idx, value=val)
+            c.fill = row_fill
+            c.border = CELL_BORDER
+            c.font = Font(name=FONT_NAME, size=11)
+
+            if _is_number(val):
+                c.alignment = Alignment(horizontal="right", vertical="center")
+                if isinstance(val, (float, Decimal)):
+                    c.number_format = "#,##0.00"
+                else:
+                    c.number_format = "#,##0"
+            elif isinstance(val, (datetime, date)):
+                c.alignment = Alignment(horizontal="center", vertical="center")
+                c.number_format = "yyyy-mm-dd"
+            elif isinstance(val, bool):
+                c.alignment = Alignment(horizontal="center", vertical="center")
+            else:
+                c.alignment = Alignment(
+                    horizontal="left",
+                    vertical="center",
+                    wrap_text=len(str(val)) > 40,
+                )
+
+        cur_row += 1
+
+    last_data_row = cur_row - 1
+    ws.freeze_panes = f"A{header_row + 1}"
+    last_col_letter = get_column_letter(len(columns))
+    ws.auto_filter.ref = f"A{header_row}:{last_col_letter}{last_data_row}"
+    return last_data_row
 
 
 def _auto_adjust_column_widths(
@@ -259,7 +374,6 @@ def _auto_adjust_column_widths(
                 val_str = str(cell.value)
                 for line in val_str.split("\n"):
                     max_len = max(max_len, len(line))
-        # Учитываем пропорциональный шрифт и кириллицу
         width = min(max(int(max_len * 1.15) + 4, 11), 60)
         ws.column_dimensions[col_letter].width = width
 
@@ -280,36 +394,50 @@ class ExcelExporter:
         """Экспорт отдельного результата исследования (таблицы с диаграммой)."""
         wb = openpyxl.Workbook()
         ws = wb.active
-        ws.title = _safe_sheet_title(title, set())
+        clean_title = sanitize_excel_text(title)
+        ws.title = _safe_sheet_title(clean_title, set())
 
         cur_row = 1
-        # Информационная карточка отчёта (если переданы метаданные исследования)
+        total_rows = len(records)
+        display_records = records[:MAX_EXPORT_ROWS]
+
+        # Информационная карточка отчёта
         if headline or question or details:
             if headline:
-                cell = ws.cell(row=cur_row, column=1, value=headline)
+                clean_h = sanitize_excel_text(headline)
+                cell = ws.cell(row=cur_row, column=1, value=clean_h)
                 cell.font = Font(name=FONT_NAME, size=14, bold=True, color=SBER_GREEN)
+                cell.alignment = Alignment(wrap_text=True)
                 cur_row += 1
 
             if question:
-                cell = ws.cell(row=cur_row, column=1, value=f"Вопрос: {question}")
+                clean_q = sanitize_excel_text(f"Вопрос: {question}")
+                cell = ws.cell(row=cur_row, column=1, value=clean_q)
                 cell.font = Font(name=FONT_NAME, size=11, bold=True, color="333333")
+                cell.alignment = Alignment(wrap_text=True)
                 cur_row += 1
 
             if details:
                 for d in details:
-                    cell = ws.cell(row=cur_row, column=1, value=f"• {d}")
+                    clean_d = sanitize_excel_text(f"• {d}")
+                    cell = ws.cell(row=cur_row, column=1, value=clean_d)
                     cell.font = Font(name=FONT_NAME, size=10, italic=True, color="444444")
+                    cell.alignment = Alignment(wrap_text=True)
                     cur_row += 1
 
-            meta_text = (
-                f"Сформировано: {datetime.now().strftime('%d.%m.%Y %H:%M')} | "
-                f"Записей: {len(records)}"
-            )
-            cell = ws.cell(row=cur_row, column=1, value=meta_text)
-            cell.font = Font(name=FONT_NAME, size=9, color=TEXT_MUTED)
-            cur_row += 2  # Отступ перед таблицей
+            meta_parts = [f"Сформировано: {datetime.now().strftime('%d.%m.%Y %H:%M')}"]
+            if total_rows > MAX_EXPORT_ROWS:
+                meta_parts.append(
+                    f"Показано строк: {len(display_records):,} из {total_rows:,} (лимит выборки)"
+                )
+            else:
+                meta_parts.append(f"Записей: {total_rows}")
 
-        if not records:
+            cell = ws.cell(row=cur_row, column=1, value=" | ".join(meta_parts))
+            cell.font = Font(name=FONT_NAME, size=9, color=TEXT_MUTED)
+            cur_row += 2
+
+        if not display_records:
             empty_cell = ws.cell(row=cur_row, column=1, value="Нет данных для отображения")
             empty_cell.font = Font(name=FONT_NAME, size=11, italic=True, color=TEXT_MUTED)
             Path(path).parent.mkdir(parents=True, exist_ok=True)
@@ -317,69 +445,36 @@ class ExcelExporter:
             return path
 
         header_row = cur_row
-        columns = list(records[0].keys())
+        columns = extract_table_columns(display_records, max_columns=MAX_EXCEL_COLUMNS)
 
-        # Запись заголовков таблицы
-        for col_idx, col_name in enumerate(columns, start=1):
-            cell = ws.cell(row=header_row, column=col_idx, value=col_name)
-            cell.font = HEADER_FONT
-            cell.fill = HEADER_FILL
-            cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
-            cell.border = CELL_BORDER
-
-        # Запись строк данных
-        cur_row += 1
-        for row_idx, r in enumerate(records):
-            is_even = row_idx % 2 == 1
-            row_fill = ZEBRA_FILL if is_even else NO_FILL
-
-            for col_idx, col_name in enumerate(columns, start=1):
-                raw_val = r.get(col_name)
-                val = _sanitize_value(raw_val)
-                cell = ws.cell(row=cur_row, column=col_idx, value=val)
-                cell.fill = row_fill
-                cell.border = CELL_BORDER
-                cell.font = Font(name=FONT_NAME, size=11)
-
-                if _is_number(val):
-                    cell.alignment = Alignment(horizontal="right", vertical="center")
-                    if isinstance(val, (float, Decimal)):
-                        cell.number_format = "#,##0.00"
-                    else:
-                        cell.number_format = "#,##0"
-                elif isinstance(val, (datetime, date)):
-                    cell.alignment = Alignment(horizontal="center", vertical="center")
-                    cell.number_format = "yyyy-mm-dd"
-                else:
-                    cell.alignment = Alignment(horizontal="left", vertical="center")
-
-            cur_row += 1
-
-        last_data_row = cur_row - 1
-
-        # Закрепление шапки и автофильтр
-        ws.freeze_panes = f"A{header_row + 1}"
-        last_col_letter = get_column_letter(len(columns))
-        ws.auto_filter.ref = f"A{header_row}:{last_col_letter}{last_data_row}"
-
-        # Построение диаграммы
-        cat_col, num_cols = _detect_column_roles(records, columns)
-        cat_name = columns[cat_col - 1] if cat_col <= len(columns) else ""
-        chart_type = _detect_chart_type(spec, cat_name)
-        chart = _build_chart(
+        last_data_row = _write_data_table(
             ws=ws,
-            cat_col=cat_col,
-            num_cols=num_cols,
+            records=display_records,
+            columns=columns,
             header_row=header_row,
-            last_row=last_data_row,
-            chart_type=chart_type,
-            title=title if title != "Отчёт" else None,
         )
 
-        if chart is not None:
-            # Размещение графика строго справа от таблицы с отступом в 2 колонки
-            chart_col = get_column_letter(len(columns) + 2)
-            ws.add_chart(chart, f"{chart_col}{header_row}")
+        # Построение диаграммы (если спецификация не является чистой таблицей)
+        if not is_table_spec(spec):
+            cat_col, num_cols = _detect_column_roles(display_records, columns, spec=spec)
+            cat_name = columns[cat_col - 1] if cat_col <= len(columns) else ""
+            chart_type = _detect_chart_type(spec, cat_name)
+            chart = _build_chart(
+                ws=ws,
+                cat_col=cat_col,
+                num_cols=num_cols,
+                header_row=header_row,
+                last_row=last_data_row,
+                chart_type=chart_type,
+                title=clean_title if clean_title != "Отчёт" else None,
+            )
+
+            if chart is not None:
+                chart_col = get_column_letter(len(columns) + 2)
+                try:
+                    ws.add_chart(chart, f"{chart_col}{header_row}")
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning("Не удалось добавить диаграмму на лист: %s", exc)
 
         _auto_adjust_column_widths(ws, min_col=1, max_col=len(columns), min_row=header_row)
 
@@ -392,13 +487,11 @@ class ExcelExporter:
         dashboard: Dashboard,
         path: str,
         db: DuckDBManager | None = None,
+        session_title: str | None = None,
+        source_name: str | None = None,
+        database_name: str | None = None,
     ) -> str:
-        """Экспорт целостного дашборда в многостраничный .xlsx файл.
-
-        Включает:
-        - Лист «Сводка» с крупными KPI-карточками, реестром плиток и гиперссылками.
-        - Отдельные листы под каждую плитку с исходными данными и графиком.
-        """
+        """Экспорт целостного дашборда в многостраничный .xlsx файл."""
         wb = openpyxl.Workbook()
         summary_ws = wb.active
         summary_ws.title = "Сводка"
@@ -406,16 +499,33 @@ class ExcelExporter:
         used_sheet_names: set[str] = {"Сводка"}
 
         # 1. Шапка листа «Сводка»
-        cell = summary_ws.cell(row=1, column=1, value=dashboard.title)
+        clean_dash_title = sanitize_excel_text(dashboard.title)
+        cell = summary_ws.cell(row=1, column=1, value=clean_dash_title)
         cell.font = Font(name=FONT_NAME, size=16, bold=True, color=SBER_GREEN)
 
         formatted_date = datetime.fromtimestamp(dashboard.created_at).strftime("%d.%m.%Y %H:%M")
-        meta_str = (
-            f"Дата среза: {formatted_date} | "
-            f"Сессия: {dashboard.session_id} | "
-            f"Всего блоков: {len(dashboard.tiles)}"
-        )
-        cell_meta = summary_ws.cell(row=2, column=1, value=meta_str)
+        source_label = database_name or session_title or source_name
+        if not source_label and db is not None:
+            for tile in dashboard.tiles:
+                if tile.result_table and not tile.result_table.startswith("temp_result_"):
+                    try:
+                        from app.core.memory.profile_memory import ProfileMemory
+
+                        dname = ProfileMemory(db).load_display_name(tile.result_table)
+                        if dname and dname.strip():
+                            source_label = dname.strip()
+                            break
+                    except Exception as exc:  # noqa: BLE001
+                        logger.debug("Не удалось загрузить display_name: %s", exc)
+
+        meta_parts = [f"Дата среза: {formatted_date}"]
+        if source_label:
+            meta_parts.append(f"База данных: {source_label}")
+        elif dashboard.session_id:
+            meta_parts.append(f"Сессия: {dashboard.session_id}")
+        meta_parts.append(f"Всего плиток: {len(dashboard.tiles)}")
+
+        cell_meta = summary_ws.cell(row=2, column=1, value=" | ".join(meta_parts))
         cell_meta.font = Font(name=FONT_NAME, size=10, color=TEXT_MUTED)
 
         cur_row = 4
@@ -435,7 +545,7 @@ class ExcelExporter:
             cur_row += 1
 
             cards_per_row = 4
-            card_col_width = 2  # Каждая карточка занимает 2 колонки
+            card_col_width = 2
 
             for idx, tile in enumerate(kpi_tiles):
                 grid_r = idx // cards_per_row
@@ -447,7 +557,6 @@ class ExcelExporter:
 
                 val_str, label_str = _extract_kpi_value(tile)
 
-                # Объединяем ячейки под значение
                 summary_ws.merge_cells(
                     start_row=card_top_row,
                     start_column=start_col,
@@ -458,18 +567,17 @@ class ExcelExporter:
                 val_cell.font = Font(name=FONT_NAME, size=18, bold=True, color=SBER_GREEN)
                 val_cell.alignment = Alignment(horizontal="center", vertical="center")
 
-                # Объединяем ячейки под подпись
                 summary_ws.merge_cells(
                     start_row=card_top_row + 2,
                     start_column=start_col,
                     end_row=card_top_row + 2,
                     end_column=end_col,
                 )
-                lbl_cell = summary_ws.cell(row=card_top_row + 2, column=start_col, value=label_str)
+                clean_lbl = sanitize_excel_text(label_str)
+                lbl_cell = summary_ws.cell(row=card_top_row + 2, column=start_col, value=clean_lbl)
                 lbl_cell.font = Font(name=FONT_NAME, size=9, bold=False, color=TEXT_MUTED)
                 lbl_cell.alignment = Alignment(horizontal="center", vertical="center")
 
-                # Заливка и рамка карточки
                 card_fill = PatternFill("solid", fgColor=SBER_BG_MINT)
                 for r_idx in range(card_top_row, card_top_row + 3):
                     for c_idx in range(start_col, end_col + 1):
@@ -496,11 +604,10 @@ class ExcelExporter:
         tile_start_row = cur_row
         cur_row += 1
 
-        # Предварительный маппинг плиток на листы
         tile_sheet_map: dict[str, str | None] = {}
         tile_data_map: dict[str, list[dict] | None] = {}
         for tile in dashboard.tiles:
-            records = resolve_tile_records(tile, db=db, limit=5000)
+            records = resolve_tile_records(tile, db=db, limit=MAX_EXPORT_ROWS + 1)
 
             if isinstance(records, list) and records:
                 s_name = _safe_sheet_title(tile.title, used_sheet_names)
@@ -524,11 +631,15 @@ class ExcelExporter:
                 )
             )
 
+            clean_tile_title = sanitize_excel_text(tile.title)
+            clean_type = sanitize_excel_text(type_label)
+            clean_insight = sanitize_excel_text(tile.insight or "—")
+
             row_vals = [
                 idx,
-                tile.title,
-                type_label,
-                tile.insight or "—",
+                clean_tile_title,
+                clean_type,
+                clean_insight,
             ]
 
             for col_idx, val in enumerate(row_vals, start=1):
@@ -538,10 +649,11 @@ class ExcelExporter:
                 c.font = Font(name=FONT_NAME, size=10)
                 if col_idx == 1:
                     c.alignment = Alignment(horizontal="center", vertical="center")
+                elif col_idx == 4:
+                    c.alignment = Alignment(horizontal="left", vertical="center", wrap_text=True)
                 else:
                     c.alignment = Alignment(horizontal="left", vertical="center")
 
-            # Колонка 5: ссылка на лист плитки
             target_sheet = tile_sheet_map.get(tile.id)
             c_link = summary_ws.cell(row=cur_row, column=5)
             c_link.fill = r_fill
@@ -569,81 +681,72 @@ class ExcelExporter:
 
             ws = wb.create_sheet(title=target_sheet)
 
-            # Название плитки
-            t_cell = ws.cell(row=1, column=1, value=tile.title)
+            clean_tile_title = sanitize_excel_text(tile.title)
+            t_cell = ws.cell(row=1, column=1, value=clean_tile_title)
             t_cell.font = Font(name=FONT_NAME, size=14, bold=True, color=SBER_GREEN)
 
-            # Кнопка возврата в Сводку
             back_cell = ws.cell(row=2, column=1, value="← Вернуться в Сводку")
             back_cell.hyperlink = "#'Сводка'!A1"
             back_cell.font = Font(name=FONT_NAME, size=10, color=SBER_GREEN, underline="single")
 
             tile_cur_row = 3
             if tile.insight:
-                ins_cell = ws.cell(row=tile_cur_row, column=1, value=f"Инсайт: {tile.insight}")
+                clean_ins = sanitize_excel_text(f"Инсайт: {tile.insight}")
+                ins_cell = ws.cell(row=tile_cur_row, column=1, value=clean_ins)
                 ins_cell.font = Font(name=FONT_NAME, size=10, italic=True, color="444444")
+                ins_cell.alignment = Alignment(wrap_text=True)
                 tile_cur_row += 1
 
-            tile_cur_row += 1  # Отступ перед таблицей
-
-            columns = list(records[0].keys())
-            t_header_row = tile_cur_row
-
-            # Заголовки таблицы плитки
-            for col_idx, col_name in enumerate(columns, start=1):
-                c = ws.cell(row=t_header_row, column=col_idx, value=col_name)
-                c.font = HEADER_FONT
-                c.fill = HEADER_FILL
-                c.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
-                c.border = CELL_BORDER
+            if len(records) > MAX_EXPORT_ROWS or (
+                isinstance(tile.snapshot_data, list) and len(tile.snapshot_data) > MAX_EXPORT_ROWS
+            ):
+                total_cnt = (
+                    len(tile.snapshot_data)
+                    if isinstance(tile.snapshot_data, list)
+                    else len(records)
+                )
+                msg = (
+                    f"Показано первых {MAX_EXPORT_ROWS:,} строк из {total_cnt:,}"
+                    if total_cnt > MAX_EXPORT_ROWS + 1
+                    else f"Показано первых {MAX_EXPORT_ROWS:,} строк (лимит выборки)"
+                )
+                trunc_cell = ws.cell(row=tile_cur_row, column=1, value=msg)
+                trunc_cell.font = Font(name=FONT_NAME, size=9, italic=True, color=TEXT_MUTED)
+                tile_cur_row += 1
 
             tile_cur_row += 1
-            for r_idx, r in enumerate(records):
-                is_even = r_idx % 2 == 1
-                row_fill = ZEBRA_FILL if is_even else NO_FILL
 
-                for col_idx, col_name in enumerate(columns, start=1):
-                    val = _sanitize_value(r.get(col_name))
-                    c = ws.cell(row=tile_cur_row, column=col_idx, value=val)
-                    c.fill = row_fill
-                    c.border = CELL_BORDER
-                    c.font = Font(name=FONT_NAME, size=11)
+            t_header_row = tile_cur_row
+            columns = extract_table_columns(records, max_columns=MAX_EXCEL_COLUMNS)
 
-                    if _is_number(val):
-                        c.alignment = Alignment(horizontal="right", vertical="center")
-                        if isinstance(val, (float, Decimal)):
-                            c.number_format = "#,##0.00"
-                        else:
-                            c.number_format = "#,##0"
-                    elif isinstance(val, (datetime, date)):
-                        c.alignment = Alignment(horizontal="center", vertical="center")
-                        c.number_format = "yyyy-mm-dd"
-                    else:
-                        c.alignment = Alignment(horizontal="left", vertical="center")
-
-                tile_cur_row += 1
-
-            t_last_row = tile_cur_row - 1
-            ws.freeze_panes = f"A{t_header_row + 1}"
-            ws.auto_filter.ref = f"A{t_header_row}:{get_column_letter(len(columns))}{t_last_row}"
-
-            # График для плитки
-            cat_col, num_cols = _detect_column_roles(records, columns)
-            cat_name = columns[cat_col - 1] if cat_col <= len(columns) else ""
-            chart_type = _detect_chart_type(tile.spec, cat_name)
-            chart = _build_chart(
+            t_last_row = _write_data_table(
                 ws=ws,
-                cat_col=cat_col,
-                num_cols=num_cols,
+                records=records[:MAX_EXPORT_ROWS],
+                columns=columns,
                 header_row=t_header_row,
-                last_row=t_last_row,
-                chart_type=chart_type,
-                title=tile.title,
             )
 
-            if chart is not None:
-                chart_col = get_column_letter(len(columns) + 2)
-                ws.add_chart(chart, f"{chart_col}{t_header_row}")
+            # График для плитки
+            if not is_table_spec(tile.spec):
+                cat_col, num_cols = _detect_column_roles(records, columns, spec=tile.spec)
+                cat_name = columns[cat_col - 1] if cat_col <= len(columns) else ""
+                chart_type = _detect_chart_type(tile.spec, cat_name)
+                chart = _build_chart(
+                    ws=ws,
+                    cat_col=cat_col,
+                    num_cols=num_cols,
+                    header_row=t_header_row,
+                    last_row=t_last_row,
+                    chart_type=chart_type,
+                    title=clean_tile_title,
+                )
+
+                if chart is not None:
+                    chart_col = get_column_letter(len(columns) + 2)
+                    try:
+                        ws.add_chart(chart, f"{chart_col}{t_header_row}")
+                    except Exception as exc:  # noqa: BLE001
+                        logger.warning("Не удалось добавить диаграмму плитки: %s", exc)
 
             _auto_adjust_column_widths(ws, min_col=1, max_col=len(columns), min_row=t_header_row)
 

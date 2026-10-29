@@ -181,3 +181,76 @@ def test_format_cell_value_all_types() -> None:
     truncated = format_cell_value(long_str, max_len=50)
     assert len(truncated) == 50
     assert truncated.endswith("…")
+
+
+def test_sanitize_excel_text_and_value_branches() -> None:
+    from datetime import UTC, date, datetime
+
+    from app.core.export.common import (
+        extract_table_columns,
+        sanitize_excel_text,
+        sanitize_excel_value,
+    )
+
+    # 1. sanitize_excel_text
+    assert sanitize_excel_text(None) == ""
+    assert sanitize_excel_text("") == ""
+    assert sanitize_excel_text("   ") == "   "
+    assert sanitize_excel_text("-42.5") == "-42.5"
+    assert sanitize_excel_text("+100") == "+100"
+    assert sanitize_excel_text("=1+1") == "'=1+1"
+    assert sanitize_excel_text("@calc") == "'@calc"
+    assert sanitize_excel_text("\tcmd") == "'\tcmd"
+    assert sanitize_excel_text("\rcmd") == "'\rcmd"
+    assert sanitize_excel_text("+15% рост") == "'+15% рост"
+    assert sanitize_excel_text("Обычный заголовок") == "Обычный заголовок"
+
+    # 2. sanitize_excel_value
+    assert sanitize_excel_value(None) == ""
+    assert sanitize_excel_value("") == ""
+    assert sanitize_excel_value("   ") == "   "
+    assert sanitize_excel_value(True) is True
+    assert sanitize_excel_value(False) is False
+    assert sanitize_excel_value(date(2026, 10, 30)) == date(2026, 10, 30)
+
+    # Aware datetime -> naive datetime
+    dt_aware = datetime(2026, 10, 30, 12, 0, tzinfo=UTC)
+    dt_naive = sanitize_excel_value(dt_aware)
+    assert dt_naive.tzinfo is None
+    assert dt_naive.year == 2026
+
+    # Naive datetime remains naive
+    dt_naive_orig = datetime(2026, 10, 30, 12, 0)
+    assert sanitize_excel_value(dt_naive_orig) == dt_naive_orig
+
+    # NaN and Infinity
+    assert sanitize_excel_value(float("nan")) == ""
+    assert sanitize_excel_value(float("inf")) == "Infinity"
+    assert sanitize_excel_value(float("-inf")) == "-Infinity"
+    assert sanitize_excel_value(3.14) == 3.14
+
+    # Int and Decimal
+    assert sanitize_excel_value(100) == 100
+    assert sanitize_excel_value(Decimal("99.9")) == Decimal("99.9")
+
+    # Dict and List -> JSON
+    assert sanitize_excel_value({"x": 1}) == '{"x": 1}'
+    assert sanitize_excel_value([1, 2]) == "[1, 2]"
+
+    # Strings with formula injection / numbers
+    assert sanitize_excel_value("=A1+B1") == "'=A1+B1"
+    assert sanitize_excel_value("-42.5") == -42.5
+    assert sanitize_excel_value("+100") == 100
+    assert sanitize_excel_value("+1e5") == 100000.0
+    assert sanitize_excel_value("+1e3") == 1000.0
+    assert sanitize_excel_value("Простой текст") == "Простой текст"
+
+    # 3. extract_table_columns with truncation and non-dict records
+    records = [{"a": 1, "b": 2}, {"b": 3, "c": 4, "d": 5}, "not-a-dict"]
+    cols = extract_table_columns(records, max_columns=3)
+    assert cols == ["a", "b", "c"]
+    assert len(cols) == 3
+
+    # All columns without limit
+    cols_all = extract_table_columns([{"x": 1}, {"y": 2}])
+    assert cols_all == ["x", "y"]

@@ -104,7 +104,21 @@ def export_artifact(
                 filename=filename,
             )
         path = export_dir / unique_filename
-        ExcelExporter().export_dashboard(dashboard, str(path), db=db)
+        try:
+            ExcelExporter().export_dashboard(
+                dashboard,
+                str(path),
+                db=db,
+                session_title=payload.session_title,
+                source_name=payload.source_name,
+                database_name=payload.database_name,
+            )
+        except Exception as exc:
+            logger.error("Ошибка при генерации Excel дашборда: %s", exc)
+            raise HTTPException(
+                status_code=500,
+                detail=f"Не удалось сгенерировать Excel: {exc}",
+            ) from exc
         return FileResponse(
             path,
             media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
@@ -166,15 +180,22 @@ def export_artifact(
 
     if payload.format == "xlsx":
         path = export_dir / unique_filename
-        ExcelExporter().export(
-            records,
-            str(path),
-            title=export_title,
-            question=payload.question,
-            headline=payload.headline,
-            details=payload.details,
-            spec=payload.spec,
-        )
+        try:
+            ExcelExporter().export(
+                records,
+                str(path),
+                title=export_title,
+                question=payload.question,
+                headline=payload.headline,
+                details=payload.details,
+                spec=payload.spec,
+            )
+        except Exception as exc:
+            logger.error("Ошибка при генерации Excel отчёта: %s", exc)
+            raise HTTPException(
+                status_code=500,
+                detail=f"Не удалось сгенерировать Excel: {exc}",
+            ) from exc
         return FileResponse(
             path,
             media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",

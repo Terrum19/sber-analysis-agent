@@ -787,3 +787,330 @@ def test_api_export_xlsx_with_spec_data_values_and_branches(
     exporter.export_dashboard(dash, out_path, db=test_db)
     wb_dash = openpyxl.load_workbook(out_path)
     assert "Плитка со спекой" in wb_dash.sheetnames
+
+
+def test_detect_column_roles_vega_lite_encoding() -> None:
+    # 1. Круговая диаграмма (theta & color)
+    pie_spec = {
+        "encoding": {
+            "theta": {"field": "revenue", "type": "quantitative"},
+            "color": {"field": "category", "type": "nominal"},
+        }
+    }
+    cols = ["category", "revenue", "id"]
+    cat_idx, num_idxs = _detect_column_roles([], cols, spec=pie_spec)
+    assert cat_idx == 1  # category
+    assert num_idxs == [2]  # revenue
+
+    # 2. Вертикальный бар (x nominal, y quantitative)
+    vbar_spec = {
+        "encoding": {
+            "x": {"field": "category", "type": "nominal"},
+            "y": {"field": "revenue", "type": "quantitative"},
+        }
+    }
+    cat_idx, num_idxs = _detect_column_roles([], cols, spec=vbar_spec)
+    assert cat_idx == 1  # category
+    assert num_idxs == [2]  # revenue
+
+    # 3. Горизонтальный бар (x quantitative, y nominal)
+    hbar_spec = {
+        "encoding": {
+            "x": {"field": "revenue", "type": "quantitative"},
+            "y": {"field": "category", "type": "nominal"},
+        }
+    }
+    cat_idx, num_idxs = _detect_column_roles([], cols, spec=hbar_spec)
+    assert cat_idx == 1  # category (y)
+    assert num_idxs == [2]  # revenue (x)
+
+    # 4. Пустая выборка или колонки без числовых/текстовых данных
+    cat_empty, num_empty = _detect_column_roles([], [])
+    assert cat_empty == 1
+    assert num_empty == []
+
+    cat_none, num_none = _detect_column_roles([{"a": None}], ["a"])
+    assert cat_none == 1
+    assert num_none == []
+
+
+def test_detect_chart_type_scatter_and_points() -> None:
+    # explicit_type scatter и point -> line
+    assert _detect_chart_type({"usermeta": {"chart_type": "scatter"}}, "x") == "line"
+    assert _detect_chart_type({"usermeta": {"chart_type": "point"}}, "x") == "line"
+
+    # mark point, circle, square, tick -> line
+    assert _detect_chart_type({"mark": "point"}, "x") == "line"
+    assert _detect_chart_type({"mark": {"type": "circle"}}, "x") == "line"
+    assert _detect_chart_type({"mark": "square"}, "x") == "line"
+    assert _detect_chart_type({"mark": "tick"}, "x") == "line"
+
+
+def test_build_chart_failure_handled(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from unittest.mock import MagicMock
+
+    from app.core.export.excel import _build_chart
+
+    wb = openpyxl.Workbook()
+    ws = wb.active
+
+    # 1. _build_chart исключение -> возвращает None без падения
+    monkeypatch.setattr(BarChart, "__init__", MagicMock(side_effect=RuntimeError("Chart err")))
+    res = _build_chart(ws, cat_col=1, num_cols=[2], header_row=1, last_row=10, chart_type="bar")
+    assert res is None
+
+    # 2. ws.add_chart исключение при экспорте
+    exporter = ExcelExporter()
+    monkeypatch.undo()
+
+    def broken_add_chart(self, *args, **kwargs):
+        raise RuntimeError("Add chart error")
+
+    monkeypatch.setattr(ws.__class__, "add_chart", broken_add_chart)
+
+    # Экспорт одиночного отчета с падающим add_chart
+    out_p = str(tmp_path / "chart_err.xlsx")
+    exporter.export(
+        [{"cat": "A", "val": 10}, {"cat": "B", "val": 20}],
+        out_p,
+        title="Тест сбоя диаграммы",
+    )
+    assert Path(out_p).exists()
+
+    # Экспорт дашборда с падающим add_chart
+    dash = Dashboard(
+        session_id="s1",
+        title="Тест сбоя диаграммы дашборда",
+        tiles=[
+            DashboardTile(
+                title="Плитка",
+                is_kpi=False,
+                snapshot_data=[{"cat": "A", "val": 10}, {"cat": "B", "val": 20}],
+            )
+        ],
+    )
+    out_dash = str(tmp_path / "dash_chart_err.xlsx")
+    exporter.export_dashboard(dash, out_dash)
+    assert Path(out_dash).exists()
+
+
+def test_long_text_wrapping_and_row_limit_truncation(
+    tmp_path: Path, exporter: ExcelExporter
+) -> None:
+    # Генерация выборки > 5000 строк
+    large_records = [{"name": f"Item {i}", "desc": "A" * 50, "val": i} for i in range(5005)]
+
+    # 1. Одиночный экспорт
+    p_large = str(tmp_path / "large.xlsx")
+    exporter.export(
+        large_records,
+        p_large,
+        headline="+100% Результаты за год",
+        question="=SUM(A1:B1)",
+    )
+    wb = openpyxl.load_workbook(p_large)
+    ws = wb.active
+
+    # Защита формул в headline и question
+    assert ws.cell(row=1, column=1).value == "'+100% Результаты за год"
+    assert ws.cell(row=2, column=1).value == "Вопрос: =SUM(A1:B1)"
+
+    # Проверка строки метаданных с лимитом выборки
+    meta_val = str(ws.cell(row=3, column=1).value)
+    assert "Показано строк: 5,000 из 5,005 (лимит выборки)" in meta_val
+
+    # Проверка wrap_text для длинного текста (> 40 символов)
+    # Таблица начинается с row=4 (шапка) и row=5 (первая запись)
+    c_desc = ws.cell(row=5, column=2)
+    assert c_desc.alignment.wrap_text is True
+
+    # 2. Экспорт дашборда с усечением
+    dash = Dashboard(
+        session_id="s_large",
+        title="Дашборд с большой таблицей",
+        tiles=[
+            DashboardTile(
+                title="Большая плитка",
+                is_kpi=False,
+                snapshot_data=large_records,
+                insight="Инсайт по большой таблице",
+            )
+        ],
+    )
+    p_dash_large = str(tmp_path / "dash_large.xlsx")
+    exporter.export_dashboard(dash, p_dash_large)
+    wb_dash = openpyxl.load_workbook(p_dash_large)
+    tile_ws = wb_dash["Большая плитка"]
+    tile_texts = [str(tile_ws.cell(row=r, column=1).value) for r in range(1, 10)]
+    assert any("Показано первых 5,000 строк из 5,005" in t for t in tile_texts)
+
+
+def test_export_dashboard_profile_memory_source_label(
+    tmp_path: Path, exporter: ExcelExporter, test_db: DuckDBManager
+) -> None:
+    test_db.execute("CREATE TABLE products_real (id INT, price INT)")
+    test_db.execute("INSERT INTO products_real VALUES (1, 100), (2, 200)")
+    test_db.execute("CREATE SCHEMA IF NOT EXISTS _meta")
+    test_db.execute(
+        """CREATE TABLE IF NOT EXISTS _meta.table_passport (
+            table_name VARCHAR PRIMARY KEY,
+            row_count BIGINT,
+            column_count INT,
+            profiled_at TIMESTAMPTZ,
+            display_name VARCHAR,
+            name_source VARCHAR
+        )"""
+    )
+    test_db.execute(
+        "INSERT INTO _meta.table_passport (table_name, row_count, column_count, profiled_at, display_name) "
+        "VALUES ('products_real', 2, 2, now(), 'Каталог товаров')"
+    )
+
+    dash = Dashboard(
+        session_id="s_prof",
+        title="Дашборд с источником из ProfileMemory",
+        tiles=[
+            DashboardTile(
+                title="Товары",
+                is_kpi=False,
+                result_table="products_real",
+            )
+        ],
+    )
+    out_p = str(tmp_path / "dash_prof.xlsx")
+    exporter.export_dashboard(dash, out_p, db=test_db)
+    wb = openpyxl.load_workbook(out_p)
+    ws_summary = wb["Сводка"]
+    meta_text = str(ws_summary.cell(row=2, column=1).value)
+    assert "База данных: Каталог товаров" in meta_text
+    assert "Всего плиток: 1" in meta_text
+
+    # Также проверяем передачу direct database_name
+    out_direct = str(tmp_path / "dash_direct.xlsx")
+    exporter.export_dashboard(dash, out_direct, db=test_db, database_name="Прямое имя БД")
+    wb_dir = openpyxl.load_workbook(out_direct)
+    meta_dir = str(wb_dir["Сводка"].cell(row=2, column=1).value)
+    assert "База данных: Прямое имя БД" in meta_dir
+
+    # Проверка сбоя при чтении ProfileMemory
+    from unittest.mock import MagicMock
+
+    broken_db = MagicMock()
+    broken_db.execute.side_effect = RuntimeError("Broken DB profile")
+    out_broken = str(tmp_path / "dash_broken.xlsx")
+    exporter.export_dashboard(dash, out_broken, db=broken_db)
+    assert Path(out_broken).exists()
+
+
+def test_api_export_error_handling_500(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch, test_db: DuckDBManager
+) -> None:
+    # 1. Невалидный result_ref -> 400
+    res_bad_ref = client.post(
+        "/api/artifacts/export",
+        json={
+            "session_id": "s1",
+            "format": "xlsx",
+            "result_ref": "invalid_ref_format",
+        },
+    )
+    assert res_bad_ref.status_code == 400
+    assert "result_ref должен быть ссылкой на temp_result_vN" in res_bad_ref.json()["detail"]
+
+    # 2. Исключение в ExcelExporter.export -> 500
+    from app.core.memory.session_memory import SessionMemory
+
+    memory = SessionMemory("s_err", test_db)
+    memory.set_table("t1")
+    test_db.execute("CREATE TABLE temp_result_v1 AS SELECT 1 as a")
+    memory.start_turn("тестовый вопрос")
+    memory.finish_turn("ok", result_table="temp_result_v1")
+
+    def broken_export(*args, **kwargs):
+        raise RuntimeError("Ошибка при записи файла Excel")
+
+    monkeypatch.setattr(ExcelExporter, "export", broken_export)
+    res_exp_err = client.post(
+        "/api/artifacts/export",
+        json={
+            "session_id": "s_err",
+            "format": "xlsx",
+            "result_ref": "temp_result_v1",
+        },
+    )
+    assert res_exp_err.status_code == 500
+    assert "Не удалось сгенерировать Excel" in res_exp_err.json()["detail"]
+
+    # 3. Исключение в ExcelExporter.export_dashboard в /api/artifacts/export -> 500
+    dash_id = DashboardStore().create(Dashboard(session_id="s_err", title="Сбойный дашборд"))
+
+    def broken_dash_export(*args, **kwargs):
+        raise RuntimeError("Ошибка генерации дашборда")
+
+    monkeypatch.setattr(ExcelExporter, "export_dashboard", broken_dash_export)
+    res_dash_err = client.post(
+        "/api/artifacts/export",
+        json={
+            "session_id": "s_err",
+            "dashboard_id": dash_id,
+            "format": "xlsx",
+        },
+    )
+    assert res_dash_err.status_code == 500
+    assert "Не удалось сгенерировать Excel" in res_dash_err.json()["detail"]
+
+    # 4. Исключение в GET /api/dashboards/{id}/export -> 500
+    res_get_err = client.get(f"/api/dashboards/{dash_id}/export?format=xlsx")
+    assert res_get_err.status_code == 500
+    assert "Не удалось сгенерировать Excel" in res_get_err.json()["detail"]
+
+
+def test_timezone_aware_and_table_spec_suppression(tmp_path: Path, exporter: ExcelExporter) -> None:
+    from datetime import UTC
+
+    # 1. Timezone aware datetime и формулы в данных
+    aware_dt = datetime(2026, 10, 30, 15, 30, tzinfo=UTC)
+    records = [
+        {"дата": aware_dt, "формула": "=2+2", "плюс": "+100%", "значение": 42, "активен": True},
+        {
+            "дата": aware_dt,
+            "формула": "-отрицательное",
+            "плюс": "обычно",
+            "значение": 84,
+            "активен": False,
+        },
+    ]
+
+    p_out = str(tmp_path / "aware_dt.xlsx")
+    exporter.export(
+        records,
+        p_out,
+        title="Тест часовых поясов",
+        spec={"usermeta": {"chart_type": "table"}},  # Спецификация таблицы -> график подавлен!
+    )
+    wb = openpyxl.load_workbook(p_out)
+    ws = wb.active
+    # График подавлен для table
+    assert len(ws._charts) == 0
+
+    # Проверка нейтрализации формул
+    assert ws.cell(row=2, column=2).value == "'=2+2"
+    assert ws.cell(row=2, column=3).value == "'+100%"
+    assert ws.cell(row=3, column=2).value == "'-отрицательное"
+
+
+def test_schema_drift_records_excel(tmp_path: Path, exporter: ExcelExporter) -> None:
+    # Записи с разным набором ключей (schema drift)
+    records = [
+        {"id": 1, "name": "Первый"},
+        {"id": 2, "name": "Второй", "extra_metric": 999},
+        {"id": 3, "third_field": "Значение"},
+    ]
+    p_out = str(tmp_path / "schema_drift.xlsx")
+    exporter.export(records, p_out, title="Смена схемы")
+    wb = openpyxl.load_workbook(p_out)
+    ws = wb.active
+
+    # Заголовки должны содержать объединение всех колонок: id, name, extra_metric, third_field
+    cols = [ws.cell(row=1, column=c).value for c in range(1, 5)]
+    assert cols == ["id", "name", "extra_metric", "third_field"]
