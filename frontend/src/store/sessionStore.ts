@@ -120,7 +120,8 @@ interface SessionState {
 
   setSession: (id: string) => void;
   addMessage: (msg: ChatMessage) => void;
-  appendToLastMessage: (chunk: string) => void;
+  /** Дописать текст в сообщение по id (анимация печати не зависит от порядка ленты). */
+  appendToMessage: (id: string, chunk: string) => void;
   updateLastMessage: (patch: Partial<ChatMessage>) => void;
   updateMessage: (id: string, patch: Partial<ChatMessage>) => void;
   removeMessage: (id: string) => void;
@@ -277,14 +278,13 @@ export const useSessionStore = create<SessionState>()(
           }
           return { messages: nextMessages, sessionTableCache: nextTableCache };
         }),
-      appendToLastMessage: (chunk) =>
+      appendToMessage: (id, chunk) =>
         set((s) => {
-          const last = s.messages[s.messages.length - 1];
-          if (!last) return {};
-          const nextMessages = [
-            ...s.messages.slice(0, -1),
-            { ...last, content: last.content + chunk },
-          ];
+          const index = s.messages.findIndex((m) => m.id === id);
+          if (index < 0) return {};
+          const nextMessages = s.messages.map((m) =>
+            m.id === id ? { ...m, content: m.content + chunk } : m
+          );
           let nextTableCache = s.sessionTableCache;
           if (s.sessionId && s.sessionActiveTable[s.sessionId]) {
             const curTable = s.sessionActiveTable[s.sessionId];

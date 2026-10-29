@@ -98,8 +98,24 @@ def fixing(events: list[dict]) -> list[dict]:
     ]
 
 
-PLANNED = ["planning:started", "planning:finished", "step:started"]
-ANSWERED = ["step:finished", "insight:started", "text", "chart:started", "chart", "done"]
+PLANNED = [
+    "planning:started",
+    "planning:substage",
+    "planning:substage",
+    "planning:substage",
+    "planning:finished",
+    "step:started",
+]
+ANSWERED = [
+    "step:finished",
+    "insight:started",
+    "insight:finished",
+    "text",
+    "chart:started",
+    "chart:finished",
+    "chart",
+    "done",
+]
 FAILED = ["step:failed", "clarification_needed"]
 
 
@@ -214,7 +230,16 @@ async def test_plan_still_invalid_after_retry_is_not_executed(db) -> None:
     llm.answers["ResearchPlan"].append(plan)
     events = await collect(make_agent(db, llm))
 
-    assert kinds(events) == ["planning:started", "planning:failed", "clarification_needed"]
+    assert kinds(events) == [
+        "planning:started",
+        "planning:substage",
+        "planning:substage",
+        "planning:substage",
+        "planning:substage",
+        "planning:substage",
+        "planning:failed",
+        "clarification_needed",
+    ]
     assert "$step_9" in events[-1]["data"]["error"]
     assert llm.prompts["ResearchStep"] == []
 

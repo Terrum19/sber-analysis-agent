@@ -1,15 +1,15 @@
 "use client";
 
 /**
- * Прогресс хода по событиям progress: «Планирую…», затем список шагов
- * (purpose, статус, время). Когда ход закончен — свёрнут в строку
- * «N шагов · X с», по клику раскрывается.
+ * Прогресс хода по событиям progress: полная хронология этапов (планирование,
+ * SQL-шаги, перепланирование, инсайт) с таймерами и активной стадией.
+ * В свёрнутом виде: «N шагов · X с», при раскрытии видна детальная разбивка по времени.
  */
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import Icon from "@/components/ui/Icon";
 import { useT, type Translate } from "@/i18n/useT";
 import { useUiStore, type Locale } from "@/store/uiStore";
-import type { StepState, TurnProgress } from "@/types/chat";
+import type { PlanningSubstage, StepState, TimelineStage, TurnProgress } from "@/types/chat";
 
 function stepsLabel(locale: Locale, count: number): string {
   if (locale === "en") return `${count} ${count === 1 ? "step" : "steps"}`;
@@ -29,15 +29,251 @@ function duration(t: Translate, ms: number): string {
   return t("progress.seconds", { s: seconds(ms) });
 }
 
+/** «3 из 5 шагов»: сколько шагов выполнено из запланированных. */
+function stepsOf(locale: Locale, done: number, total: number): string {
+  if (done >= total) return stepsLabel(locale, done);
+  if (locale === "en") return `${done} of ${total} ${total === 1 ? "step" : "steps"}`;
+  const mod10 = total % 10;
+  const mod100 = total % 100;
+  const genitive = mod10 === 1 && mod100 !== 11 ? "шага" : "шагов";
+  return `${done} из ${total} ${genitive}`;
+}
+
+const PLANNING_SUBSTAGES: PlanningSubstage[] = ["semantic", "llm", "validation"];
+const SUBSTAGE_LABEL = {
+  semantic: "progress.substage.semantic",
+  llm: "progress.substage.llm",
+  validation: "progress.substage.validation",
+} as const;
+
+// Планы, которые уже полностью раскрыты: при повторном открытии прогресса
+// не проигрываем анимацию заново.
+const revealedPlans = new Set<string>();
+
+/** Реальные фазы планирования от StepPlanner.plan: semantic -> llm -> validation. */
+function ActiveSubstages({ substage }: { substage?: PlanningSubstage }) {
+  const t = useT();
+  if (!substage) return null;
+  const current = PLANNING_SUBSTAGES.indexOf(substage);
+  return (
+    <ul className="mt-2 ml-4 pl-2.5 border-l border-graphite-800/80 space-y-1.5 transition-all duration-300">
+      {PLANNING_SUBSTAGES.map((key, index) => {
+        const done = index < current;
+        const active = index === current;
+        return (
+          <li
+            key={key}
+            className={`flex items-center gap-2 text-[11px] transition-all duration-200 ${
+              active
+                ? "text-graphite-200 font-medium"
+                : done
+                ? "text-graphite-400"
+                : "text-graphite-600"
+            }`}
+          >
+            {done ? (
+              <Icon name="check" size={11} className="text-good shrink-0" />
+            ) : active ? (
+              <span className="relative flex h-2 w-2 shrink-0 items-center justify-center">
+                <span className="animate-ping motion-reduce:animate-none absolute inline-flex h-full w-full rounded-full bg-good/60 opacity-75" />
+                <span className="relative inline-flex rounded-full h-1.5 w-1.5 bg-good" />
+              </span>
+            ) : (
+              <span className="h-1.5 w-1.5 rounded-full bg-graphite-700 shrink-0 ml-[1px] mr-[1px]" />
+            )}
+            <span className="truncate">{t(SUBSTAGE_LABEL[key])}</span>
+          </li>
+        );
+      })}
+    </ul>
+  );
+}
+
+/** Иконка статуса запланированного шага внутри раскрытого плана. */
+function PlannedStepIcon({ step }: { step?: StepState }) {
+  if (!step) {
+    return <span className="h-1.5 w-1.5 rounded-full bg-graphite-700 shrink-0" />;
+  }
+  if (step.status === "finished") {
+    return <Icon name="check" size={11} className="text-good shrink-0" />;
+  }
+  if (step.status === "failed") {
+    return <Icon name="x" size={11} className="text-bad shrink-0" />;
+  }
+  return (
+    <Icon
+      name="refresh"
+      size={11}
+      className={`animate-spin motion-reduce:animate-none shrink-0 ${
+        step.status === "fixing" ? "text-warn" : "text-good"
+      }`}
+    />
+  );
+}
+
+function StageRow({ stage, steps }: { stage: TimelineStage; steps: StepState[] }) {
+  const t = useT();
+  const locale = useUiStore((s) => s.locale);
+  // План открыт по умолчанию: статусы шагов теперь живут только здесь,
+  // отдельных строк шагов в таймлайне больше нет.
+  const [detailsOpen, setDetailsOpen] = useState(true);
+  const isPlanStage = stage.stage === "planning" || stage.stage === "replanning";
+  const plannedSteps = stage.planned_steps ?? [];
+  const hasPlannedSteps = isPlanStage && plannedSteps.length > 0;
+  const failed = stage.status === "failed";
+
+  // План приходит одним structured-ответом LLM. Раскрываем шаги по одному,
+  // чтобы список не появлялся целиком в один кадр.
+  const planKey = `${stage.id}:${plannedSteps.length}`;
+  const [visibleSteps, setVisibleSteps] = useState(() =>
+    revealedPlans.has(planKey) ? plannedSteps.length : 0
+  );
+  useEffect(() => {
+    if (plannedSteps.length === 0) return;
+    if (revealedPlans.has(planKey)) {
+      setVisibleSteps(plannedSteps.length);
+      return;
+    }
+    setVisibleSteps(0);
+    let shown = 0;
+    const timer = setInterval(() => {
+      shown += 1;
+      setVisibleSteps(shown);
+      if (shown >= plannedSteps.length) {
+        revealedPlans.add(planKey);
+        clearInterval(timer);
+      }
+    }, 140);
+    return () => clearInterval(timer);
+  }, [planKey, plannedSteps.length]);
+
+  const shownSteps = plannedSteps.slice(0, visibleSteps);
+
+  const label = t(stage.labelKey);
+  const icon = failed ? (
+    <Icon name="x" size={13} className="text-bad shrink-0" />
+  ) : stage.stage === "insight" ? (
+    <Icon name="sparkle" size={13} className="text-good shrink-0" />
+  ) : stage.stage === "chart" ? (
+    <Icon name="chart" size={13} className="text-good shrink-0" />
+  ) : stage.stage === "dashboard" ? (
+    <Icon name="layout" size={13} className="text-good shrink-0" />
+  ) : (
+    <Icon name="check" size={13} className="text-good shrink-0" />
+  );
+
+  const content = (
+    <>
+      <span className="shrink-0">{icon}</span>
+      <span
+        className={`min-w-0 flex-1 truncate transition-colors ${
+          failed ? "text-bad" : "text-graphite-300 group-hover:text-graphite-200"
+        }`}
+      >
+        {label}
+      </span>
+      {hasPlannedSteps && (
+        <span className="shrink-0 text-[10px] text-graphite-400 bg-graphite-800/80 px-1.5 py-0.5 rounded border border-graphite-700/50 inline-flex items-center gap-1">
+          <span>{stepsLabel(locale, plannedSteps.length)}</span>
+          <Icon
+            name={detailsOpen ? "chevronDown" : "chevronRight"}
+            size={10}
+            className="shrink-0 text-graphite-400"
+          />
+        </span>
+      )}
+      {stage.elapsed_ms !== undefined && (
+        <span className="shrink-0 tabular-nums text-graphite-500 text-[11px]">
+          {duration(t, stage.elapsed_ms)}
+        </span>
+      )}
+    </>
+  );
+
+  return (
+    <li
+      className="text-[12px] transition-all duration-200 space-y-1"
+      title={failed ? stage.error : undefined}
+    >
+      {hasPlannedSteps ? (
+        <button
+          type="button"
+          aria-expanded={detailsOpen}
+          onClick={() => setDetailsOpen(!detailsOpen)}
+          className="group flex w-full items-center gap-2 text-left select-none rounded px-0.5 -mx-0.5 hover:bg-graphite-800/30"
+        >
+          {content}
+        </button>
+      ) : (
+        <div className="flex items-center gap-2">{content}</div>
+      )}
+
+      {/* Раскрытый список того, что именно спланировала модель */}
+      {hasPlannedSteps && detailsOpen && (
+        <div className="ml-4 pl-2.5 border-l border-graphite-800/80 space-y-1 my-1">
+          <div className="text-[11px] text-graphite-500 font-medium">
+            {t("progress.plannedSteps")}
+          </div>
+          <ul className="space-y-1">
+            {shownSteps.map((step, index) => {
+              const executed = steps.find((item) => item.step_id === step.step_id);
+              return (
+                <li
+                  key={step.step_id}
+                  className="flex items-center gap-1.5 text-[11px] text-graphite-400"
+                  title={executed?.error || undefined}
+                >
+                  <PlannedStepIcon step={executed} />
+                  {/* Порядок в плане: после replanning step_id начинается не с 0. */}
+                  <span className="text-graphite-300 font-medium">#{index + 1}</span>
+                  <span className={`truncate ${executed?.status === "failed" ? "text-bad" : ""}`}>
+                    {step.purpose || step.tool || ""}
+                  </span>
+                  {step.purpose && step.tool && step.purpose !== step.tool && (
+                    <span className="text-[10px] font-mono text-graphite-500">({step.tool})</span>
+                  )}
+                  {executed?.status === "failed" && (
+                    <span className="shrink-0 font-medium text-bad">{t("progress.failed")}</span>
+                  )}
+                  {executed?.status === "fixing" && (
+                    <span className="shrink-0 font-medium text-warn">
+                      {t("progress.fixing", { attempt: executed.attempt ?? 1 })}
+                    </span>
+                  )}
+                  {executed?.fixed && (
+                    <span className="shrink-0 font-medium text-warn">{t("progress.fixed")}</span>
+                  )}
+                  {executed?.elapsed_ms !== undefined && executed.status !== "fixing" && (
+                    <span className="ml-auto shrink-0 tabular-nums text-graphite-500 text-[10px]">
+                      {duration(t, executed.elapsed_ms)}
+                    </span>
+                  )}
+                </li>
+              );
+            })}
+          </ul>
+        </div>
+      )}
+    </li>
+  );
+}
+
 function StepRow({ step }: { step: StepState }) {
   const t = useT();
+  const isRunning = step.status === "started" || step.status === "fixing";
   const icon =
     step.status === "finished" ? (
-      <Icon name="check" size={13} className="text-good" />
+      <Icon name="database" size={13} className="text-good transition-transform duration-200 shrink-0" />
     ) : step.status === "failed" ? (
-      <Icon name="x" size={13} className="text-bad" />
+      <Icon name="x" size={13} className="text-bad shrink-0" />
     ) : (
-      <Icon name="refresh" size={13} className={`animate-spin ${step.status === "fixing" ? "text-warn" : "text-graphite-400"}`} />
+      <Icon
+        name="refresh"
+        size={13}
+        className={`animate-spin motion-reduce:animate-none shrink-0 ${
+          step.status === "fixing" ? "text-warn" : "text-good"
+        }`}
+      />
     );
   const note =
     step.status === "fixing"
@@ -47,13 +283,29 @@ function StepRow({ step }: { step: StepState }) {
       : step.fixed
       ? t("progress.fixed")
       : "";
+
   return (
-    <li className="flex items-center gap-2" title={step.error || undefined}>
+    <li
+      className="flex items-center gap-2 text-[12px] transition-all duration-200"
+      title={step.error || undefined}
+    >
       <span className="shrink-0">{icon}</span>
-      <span className="min-w-0 flex-1 truncate">{step.purpose || step.tool || `#${step.step_id}`}</span>
-      {note && <span className={`shrink-0 ${step.status === "failed" ? "text-bad" : "text-warn"}`}>{note}</span>}
+      <span className={`min-w-0 flex-1 truncate ${isRunning ? "text-graphite-200 font-medium" : "text-graphite-400"}`}>
+        {step.purpose || step.tool || `#${step.step_id}`}
+      </span>
+      {note && (
+        <span className={`shrink-0 text-[11px] font-medium ${step.status === "failed" ? "text-bad" : "text-warn"}`}>
+          {note}
+        </span>
+      )}
       {step.elapsed_ms !== undefined && step.status !== "fixing" && (
-        <span className="shrink-0 tabular-nums text-graphite-500">{duration(t, step.elapsed_ms)}</span>
+        <span
+          className="shrink-0 tabular-nums text-graphite-500 text-[11px] flex items-center gap-1"
+          title={t("progress.sqlDuckDbTooltip")}
+        >
+          <span className="text-[10px] text-graphite-600 font-mono">SQL</span>
+          <span>{duration(t, step.elapsed_ms)}</span>
+        </span>
       )}
     </li>
   );
@@ -65,21 +317,65 @@ export default function StepProgress({ progress }: { progress: TurnProgress }) {
   const [expanded, setExpanded] = useState(false);
   const finished = progress.finished_at !== undefined;
 
+  // Если есть timeline — отображаем всю хронологию; иначе только steps (fallback)
+  const timelineEntries = progress.timeline || [];
+  // Шаги, которые уже показаны в раскрытом плане, не дублируем отдельными
+  // строками: статус, время и ошибка живут внутри плана.
+  const plannedStepIds = new Set<number>();
+  for (const entry of timelineEntries) {
+    if (entry.kind === "stage" && entry.planned_steps) {
+      for (const step of entry.planned_steps) plannedStepIds.add(step.step_id);
+    }
+  }
+  const isPlannedStep = (step: StepState) => plannedStepIds.has(step.step_id);
+  const unplannedSteps = progress.steps.filter((step) => !isPlannedStep(step));
+  const completedEntries = (
+    finished
+      ? timelineEntries
+      : timelineEntries.filter((e) => e.kind === "step" || e.finished_at !== undefined)
+  ).filter((entry) => entry.kind !== "step" || !isPlannedStep(entry.step));
+
+  // Активная стадия: таймер нужен только пока она реально идёт.
+  const activeStageEntry = progress.timeline?.find(
+    (e): e is TimelineStage => e.kind === "stage" && e.finished_at === undefined
+  );
+  const activeStageId = activeStageEntry?.id;
+
+  // Живой секундомер, пока есть открытая стадия
+  const [now, setNow] = useState(Date.now());
+  useEffect(() => {
+    if (finished || !activeStageId) return;
+    setNow(Date.now());
+    const interval = setInterval(() => setNow(Date.now()), 250);
+    return () => clearInterval(interval);
+  }, [finished, activeStageId]);
+
+  const totalElapsed = Math.max(0, (progress.finished_at ?? now) - progress.started_at);
+  const totalSteps = Math.max(progress.total_steps ?? progress.steps.length, progress.steps.length);
+  const stepsText = stepsOf(locale, progress.steps.length, totalSteps);
+
   if (finished && !expanded) {
-    const total = (progress.finished_at ?? progress.started_at) - progress.started_at;
     return (
       <button
+        type="button"
         onClick={() => setExpanded(true)}
-        className="inline-flex items-center gap-1 text-[12px] text-graphite-500 hover:text-graphite-300"
+        className="inline-flex items-center gap-1.5 text-[12px] text-graphite-500 hover:text-graphite-300 hover:bg-graphite-800/40 px-1.5 py-0.5 -ml-1.5 rounded transition-all"
       >
-        <Icon name="chevronRight" size={12} />
-        {stepsLabel(locale, progress.steps.length)} · {t("progress.seconds", { s: seconds(total) })}
+        <Icon name="chevronRight" size={12} className="shrink-0" />
+        <span>{stepsText}</span>
+        <span>·</span>
+        <span className="tabular-nums">{t("progress.seconds", { s: seconds(totalElapsed) })}</span>
       </button>
     );
   }
 
-  const stageLabel =
-    progress.stage === "insight"
+  // Название текущего активного этапа
+  const activeLabel =
+    progress.planning
+      ? t("progress.planning")
+      : progress.stage === "replanning"
+      ? t("progress.replanning")
+      : progress.stage === "insight"
       ? t("progress.insight")
       : progress.stage === "chart"
       ? t("progress.chart")
@@ -87,26 +383,70 @@ export default function StepProgress({ progress }: { progress: TurnProgress }) {
       ? t("progress.dashboard")
       : null;
 
+  const activeStageStartedAt = activeStageEntry?.started_at ?? progress.started_at;
+  const activeStageElapsed = Math.max(0, now - activeStageStartedAt);
+
   return (
-    <div className="text-[12px] text-graphite-400">
+    <div className="text-[12px] text-graphite-400 space-y-1.5">
       {finished && (
         <button
+          type="button"
           onClick={() => setExpanded(false)}
-          className="mb-1 inline-flex items-center gap-1 text-graphite-500 hover:text-graphite-300"
+          className="mb-1 inline-flex items-center gap-1.5 text-graphite-500 hover:text-graphite-300 hover:bg-graphite-800/40 px-1.5 py-0.5 -ml-1.5 rounded transition-all"
         >
-          <Icon name="chevronDown" size={12} />
-          {stepsLabel(locale, progress.steps.length)}
+          <Icon name="chevronDown" size={12} className="shrink-0" />
+          <span>{stepsText}</span>
+          <span>·</span>
+          <span className="tabular-nums">{t("progress.seconds", { s: seconds(totalElapsed) })}</span>
         </button>
       )}
-      {progress.planning && <div className="animate-pulse">{t("progress.planning")}</div>}
-      {progress.steps.length > 0 && (
+
+      {/* Список выполненных этапов и шагов */}
+      {completedEntries.length > 0 ? (
         <ul className="space-y-1">
-          {progress.steps.map((step) => (
-            <StepRow key={step.step_id} step={step} />
-          ))}
+          {completedEntries.map((entry) =>
+            entry.kind === "step" ? (
+              <StepRow key={entry.id} step={entry.step} />
+            ) : (
+              <StageRow key={entry.id} stage={entry} steps={progress.steps} />
+            )
+          )}
         </ul>
+      ) : (
+        unplannedSteps.length > 0 && (
+          <ul className="space-y-1">
+            {unplannedSteps.map((step) => (
+              <StepRow key={step.step_id} step={step} />
+            ))}
+          </ul>
+        )
       )}
-      {!finished && stageLabel && <div className="mt-1 animate-pulse">{stageLabel}</div>}
+
+      {/* Активная стадия: спиннер и реальные фазы планирования */}
+      {!finished && activeLabel && (
+        <div className="space-y-1 transition-all duration-300 ease-out">
+          <div className="flex items-center gap-2 text-graphite-200">
+            <span className="relative flex h-2 w-2 shrink-0 items-center justify-center">
+              <span className="animate-ping motion-reduce:animate-none absolute inline-flex h-full w-full rounded-full bg-good/60 opacity-75" />
+              <span className="relative inline-flex rounded-full h-1.5 w-1.5 bg-good" />
+            </span>
+            <Icon
+              name="refresh"
+              size={13}
+              className="animate-spin motion-reduce:animate-none text-graphite-400 shrink-0"
+            />
+            <span className="text-[12px] font-medium text-graphite-200 tracking-wide">{activeLabel}</span>
+            <span className="shrink-0 tabular-nums text-[11px] text-graphite-400 bg-graphite-800/70 px-1.5 py-0.5 rounded border border-graphite-700/50 shadow-sm">
+              {t("progress.seconds", { s: seconds(activeStageElapsed) })}
+            </span>
+          </div>
+
+          {/* Только реальные фазы из StepPlanner.plan, без таймерных догадок */}
+          {(progress.planning || progress.stage === "replanning") && (
+            <ActiveSubstages substage={activeStageEntry?.substage} />
+          )}
+        </div>
+      )}
     </div>
   );
 }

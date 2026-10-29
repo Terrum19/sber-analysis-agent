@@ -1,3 +1,50 @@
+2026-10-29  matthew78  <abc@mail.com>
+
+	Надёжный прогресс хода и анимация печати ответа.
+	* backend/app/api/schemas/chat.py (PlannedStep): Новая типизированная
+	схема шага плана.  (ProgressPayload.planned_steps): list[PlannedStep]
+	вместо list[dict].  (ProgressPayload.substage): реальные фазы planning и
+	replanning, status="substage".
+	* backend/app/core/agent/planner.py (plan): Колбэк on_substage сообщает
+	реальные фазы semantic -> llm -> validation; без таймерных догадок.
+	* backend/app/core/agent/orchestrator.py (_planned_steps): Общий helper
+	вместо двух копий сборки; purpose без выдуманного «Шаг N».
+	planning/replanning шлют elapsed_ms и substage, а insight/chart/dashboard
+	— finished (или failed) с elapsed_ms.  (_finish): result_step на
+	inspect_temp_table в смешанном плане отдаёт вход осмотренной таблицы.
+	* backend/app/core/tools/inspect_temp_table.py (_sample_values): Примеры
+	значений всех колонок одним UNION ALL запросом вместо N+1.
+	(_replan_after_lookup): После inspect-шага планировщик дополнительно
+	видит строки входной таблицы — связь «регион ↔ категория ↔ сумма».
+	* frontend/src/types/chat.ts (TimelineStage): status/error; applyProgress
+	больше не мутирует объекты прошлого состояния, labelKey типизирован.
+	* frontend/src/components/chat/ChatPanel.tsx: Анимация печати пишет в
+	сообщение ответа по id; flushTextQueue на error; finishProgress(true)
+	на clarification_needed/refusal; курсор только на печатающемся
+	agent-сообщении своей сессии; автоскролл не дёргает smooth на каждый
+	чанк и не уводит ленту, если пользователь выше.
+	* frontend/src/components/chat/StepProgress.tsx: Упавшие этапы — x и
+	text-bad с tooltip; нумерация запланированных шагов по индексу;
+	раскрытие — button с aria-expanded; таймер останавливается без
+	активной стадии; реальные фазы planning/replanning semantic -> llm ->
+	validation под активной стадией; «N из M шагов» в свёрнутой строке.
+	Шаги из плана не дублируются отдельными step-строками: их статус,
+	время и ошибка показываются в раскрытом плане; план открыт по
+	умолчанию и шаги появляются по одному (план приходит одним
+	structured-ответом LLM).
+	* frontend/src/store/sessionStore.ts (appendToMessage): Дописывание
+	текста в сообщение по id.
+	* frontend/src/i18n/dictionary.ts: Удалены неиспользуемые
+	progress.stepItem и старые таймерные progress.*.substage*; добавлены
+	progress.substage.semantic/llm/validation.
+	* backend/tests/unit/test_orchestrator_unit.py,
+	test_plan_execution.py, test_planner.py: Тесты на finished/elapsed_ms
+	этапов, planned_steps, реальные фазы planning/replanning, replanning/failed
+	и смешанный inspect-план.
+	* docs/architecture.md, docs/visualization.md: Контракт progress и
+	поведение result_step на inspect_temp_table.
+
+
 2026-10-28  thebulkapro  <saitbatalovbulat200@gmail.com>
 
 	Подключение ClickHouse из сайдбара.

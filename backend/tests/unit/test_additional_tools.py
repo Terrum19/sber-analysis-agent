@@ -1,6 +1,5 @@
 """Tests for categorical search, intermediate inspection and the WASM bridge."""
 
-import json
 from pathlib import Path
 
 import pytest
@@ -49,14 +48,34 @@ def test_inspect_temp_table_defaults_to_the_input_table(db: DuckDBManager) -> No
     assert db.to_records(table)[0]["row_count"] == 3
 
 
-def test_inspect_temp_table_returns_json_passport(db: DuckDBManager) -> None:
+def test_inspect_temp_table_returns_a_flat_passport(db: DuckDBManager) -> None:
     table = tool_registry.get("inspect_temp_table").run(db, "raw", ["raw"])
-    row = db.to_records(table)[0]
-    assert json.loads(row["schema"]) == ["id", "product", "amount"]
-    assert json.loads(row["dtypes"])[0].startswith("INTEGER")
-    assert row["row_count"] == 3
-    assert json.loads(row["sample_rows"])[0]["product"] == "Apple iPhone 14 Pro"
-    assert float(json.loads(row["descriptive_stats"])["amount"]["mean"]) == pytest.approx(150)
+    rows = db.to_records(table)
+    assert [row["column_name"] for row in rows] == ["id", "product", "amount"]
+    assert rows[0]["dtype"].startswith("INTEGER")
+    assert all(row["row_count"] == 3 for row in rows)
+    amount = rows[2]
+    assert float(amount["mean"]) == pytest.approx(150)
+    assert float(amount["min"]) == pytest.approx(100)
+    assert float(amount["max"]) == pytest.approx(200)
+    assert "100.0" in amount["sample_values"]
+
+
+def test_inspect_temp_table_has_no_nested_values(db: DuckDBManager) -> None:
+    """Паспорт — обычная таблица: массивы в ячейках давали мусорную плитку."""
+    table = tool_registry.get("inspect_temp_table").run(db, "raw", [])
+    for row in db.to_records(table):
+        for value in row.values():
+            assert not isinstance(value, (list, dict))
+            if isinstance(value, str):
+                assert not value.startswith(("[", "{"))
+
+
+def test_inspect_temp_table_handles_an_empty_table(db: DuckDBManager) -> None:
+    db.execute("CREATE TABLE empty (id INTEGER, note VARCHAR)")
+    rows = db.to_records(tool_registry.get("inspect_temp_table").run(db, "empty", []))
+    assert [row["row_count"] for row in rows] == [0, 0]
+    assert all(row["sample_values"] is None for row in rows)
 
 
 def test_run_wasm_python_is_only_a_bridge(

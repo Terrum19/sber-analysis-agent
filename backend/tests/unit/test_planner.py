@@ -174,6 +174,21 @@ def test_plan_ending_with_lookup_drops_tiles_on_future_steps():
     assert [planned.step_id for planned in plan.dashboard_tiles] == [0]
 
 
+def test_plan_reports_real_substages() -> None:
+    import asyncio
+
+    llm = ScriptedLLM(ResearchPlan(steps=[total(0, "revenue")]))
+    substages: list[str] = []
+    asyncio.run(
+        StepPlanner(llm=llm).plan(
+            "Выручка по категориям",
+            {"columns": ["revenue"]},
+            on_substage=substages.append,
+        )
+    )
+    assert substages == ["semantic", "llm", "validation"]
+
+
 def test_question_without_dashboard_words_gets_no_dashboard_prompt():
     import asyncio
 

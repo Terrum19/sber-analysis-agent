@@ -2,7 +2,8 @@
 
 /**
  * Панель диалога (Chat):
- * - Стриминг ответов агента (текст, инсайты)
+ * - Анимация печати ответа агента (текст, инсайты): бэкенд присылает
+ *   инсайт одним событием, поэтому это клиентский эффект, не сетевой стриминг
  * - Графики и дашборды в ленту не выводятся: они уходят на правую панель,
  *   а в сообщении остаётся ссылка «Показать на панели» / «Открыть во вкладке»
  */
@@ -26,7 +27,7 @@ import LlmStatusBanner from "@/components/chat/LlmStatusBanner";
 import { useLlmStatus } from "@/hooks/useLlmStatus";
 import { useT } from "@/i18n/useT";
 import type { DashboardTile as DashboardTileType } from "@/types/dashboard";
-import { RECOVERY_SKIP_STEP, applyProgress, type DashboardEvent, type TurnProgress } from "@/types/chat";
+import { RECOVERY_SKIP_STEP, applyProgress, type DashboardEvent, type TimelineEntry, type TurnProgress } from "@/types/chat";
 
 /** Плитка панели из события «chart»; id хранится в самом событии. */
 function chartTile(chartData: any, fallbackTitle: string): DashboardTileType {
@@ -77,7 +78,13 @@ export default function ChatPanel({ sessionId }: Props) {
   const lastQuestionRef = useRef<string>("");
   // Сообщение с карточкой уточнения, на которую ещё можно ответить
   const [activeClarificationId, setActiveClarificationId] = useState<string | null>(null);
+  // Agent-сообщение, в которое прямо сейчас печатается инсайт: курсор и
+  // автоскролл привязаны к нему, а не к последнему сообщению ленты.
+  const [typingMessageId, setTypingMessageId] = useState<string | null>(null);
   const messagesEndRef = useRef<HTMLDivElement | null>(null);
+  const messagesListRef = useRef<HTMLDivElement | null>(null);
+  // Пользователь у нижней границы ленты — только тогда догоняем новый текст.
+  const stickToBottomRef = useRef(true);
   const inputRef = useRef<HTMLTextAreaElement | null>(null);
   // Ответ, на который пользователь отвечает: уходит в reply_to (F-12).
   const [replyTarget, setReplyTarget] = useState<{ turn_id: string; excerpt: string } | null>(null);
@@ -87,8 +94,7 @@ export default function ChatPanel({ sessionId }: Props) {
 
   const messages = useSessionStore((s) => s.messages);
   const addMessage = useSessionStore((s) => s.addMessage);
-  const appendToLastMessage = useSessionStore((s) => s.appendToLastMessage);
-  const updateLastMessage = useSessionStore((s) => s.updateLastMessage);
+  const appendToMessage = useSessionStore((s) => s.appendToMessage);
   const updateMessage = useSessionStore((s) => s.updateMessage);
   const removeMessage = useSessionStore((s) => s.removeMessage);
   const removeLastFailedMessage = useSessionStore((s) => s.removeLastFailedMessage);
@@ -207,9 +213,18 @@ export default function ChatPanel({ sessionId }: Props) {
     return () => window.removeEventListener("beforeunload", handleBeforeUnload);
   }, [streaming]);
 
+  // Автоскролл: не дёргаем smooth-анимацию на каждый чанк печати и не уводим
+  // ленту вниз, если пользователь читает историю выше.
   useEffect(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
+    if (!stickToBottomRef.current) return;
+    messagesEndRef.current?.scrollIntoView({ behavior: streaming ? "auto" : "smooth" });
   }, [messages, streaming]);
+
+  function handleMessagesScroll() {
+    const list = messagesListRef.current;
+    if (!list) return;
+    stickToBottomRef.current = list.scrollHeight - list.scrollTop - list.clientHeight < 80;
+  }
 
   // Цитата не должна «протечь» в другую сессию или таблицу.
   useEffect(() => {
@@ -330,8 +345,9 @@ export default function ChatPanel({ sessionId }: Props) {
     setReplyTarget(null);
     setStreaming(true);
     setStreamingSessionId(sessionId);
+    setTypingMessageId(null);
+    stickToBottomRef.current = true;
 
-    let answerStarted = false;
     let streamHadError = false;
     // Поток без done и без уточнения — оборван, это ошибка
     let streamFinished = false;
@@ -339,19 +355,74 @@ export default function ChatPanel({ sessionId }: Props) {
     // Прогресс хода живёт в отдельном сообщении над ответом
     let progress: TurnProgress | null = null;
     const progressId = `msg-progress-${Date.now().toString(36)}`;
-    const finishProgress = () => {
-      if (progress && progress.finished_at === undefined) {
-        progress = { ...progress, finished_at: Date.now() };
-        updateMessage(progressId, { progress });
+    /** Закрыть прогресс; failed — открытые стадии завершились ошибкой. */
+    const finishProgress = (failed = false) => {
+      if (!progress || progress.finished_at !== undefined) return;
+      const now = Date.now();
+      const timeline: TimelineEntry[] | undefined = progress.timeline?.map((item) => {
+        if (item.kind !== "stage" || item.finished_at !== undefined) return item;
+        return {
+          ...item,
+          finished_at: now,
+          elapsed_ms: Math.max(1, now - item.started_at),
+          status: failed ? "failed" : "finished",
+        };
+      });
+      progress = { ...progress, finished_at: now, timeline };
+      updateMessage(progressId, { progress });
+    };
+    // Анимация печати пишет в конкретное сообщение ответа: прогресс, график
+    // или ошибка, добавленные позже, не перехватывают очередь текста.
+    let answerMessageId: string | null = null;
+    const appendText = (text: string) => {
+      if (!answerMessageId) {
+        answerMessageId = `msg-answer-${Date.now().toString(36)}`;
+        addMessage({ id: answerMessageId, role: "agent", content: text });
+        setTypingMessageId(answerMessageId);
+      } else {
+        appendToMessage(answerMessageId, text);
       }
     };
-    const appendText = (text: string) => {
-      if (answerStarted) {
-        appendToLastMessage(text);
-      } else {
-        answerStarted = true;
-        addMessage({ role: "agent", content: text });
+
+    let textQueue = "";
+    let streamTimer: ReturnType<typeof setInterval> | null = null;
+
+    const processTextQueue = () => {
+      if (!textQueue) {
+        if (streamTimer) {
+          clearInterval(streamTimer);
+          streamTimer = null;
+        }
+        setTypingMessageId(null);
+        return;
       }
+      const chunkSize = Math.max(3, Math.min(12, Math.ceil(textQueue.length / 10)));
+      const chunk = textQueue.slice(0, chunkSize);
+      textQueue = textQueue.slice(chunkSize);
+      appendText(chunk);
+    };
+
+    const streamText = (text: string) => {
+      textQueue += text;
+      if (!streamTimer) {
+        processTextQueue();
+        // 40 мс: 25 обновлений в секунду вместо 50 — хватает для анимации,
+        // но не грузит Store и перерисовку ленты на длинной истории.
+        streamTimer = setInterval(processTextQueue, 40);
+      }
+    };
+
+    const flushTextQueue = () => {
+      if (streamTimer) {
+        clearInterval(streamTimer);
+        streamTimer = null;
+      }
+      if (textQueue) {
+        const remaining = textQueue;
+        textQueue = "";
+        appendText(remaining);
+      }
+      setTypingMessageId(null);
     };
 
     // Что показали пользователю: нужно для PDF/Excel ответа (F-10).
@@ -366,18 +437,20 @@ export default function ChatPanel({ sessionId }: Props) {
       if (!hasAnswer && !turnId) {
         return;
       }
+      // Метаданные — сообщению ответа, а не последнему в ленте: после него
+      // могли прийти график, дашборд или ошибка.
       const all = useSessionStore.getState().messages;
       const last = all[all.length - 1];
-      if (
-        !last ||
-        last.role !== "agent" ||
-        last.failed ||
-        last.clarification ||
-        last.refusal
-      ) {
-        return;
-      }
-      updateLastMessage({
+      const isAnswerMessage =
+        last &&
+        last.role === "agent" &&
+        !last.failed &&
+        !last.clarification &&
+        !last.refusal &&
+        !last.progress;
+      const targetId = answerMessageId ?? (isAnswerMessage ? last.id : undefined);
+      if (!targetId) return;
+      updateMessage(targetId, {
         ...(hasAnswer
           ? {
               answer: {
@@ -397,27 +470,30 @@ export default function ChatPanel({ sessionId }: Props) {
       q,
       (event) => {
         if (event.type === "done") {
+          flushTextQueue();
           streamFinished = true;
           finishProgress();
           saveAnswerMeta(event.data?.turn_id);
         } else if (event.type === "progress") {
           if (!progress) {
             progress = applyProgress({ planning: false, steps: [], started_at: Date.now() }, event.data);
-            answerStarted = false;
             addMessage({ id: progressId, role: "agent", content: "", progress });
           } else {
             progress = applyProgress(progress, event.data);
             updateMessage(progressId, { progress });
           }
         } else if (event.type === "clarification_needed") {
-          // Бэкенд закрывает поток без done: ждёт recovery_response
-          answerStarted = false;
+          flushTextQueue();
+          // Бэкенд закрывает поток без done: без finishProgress таймер
+          // активной стадии крутился бы вечно.
+          finishProgress(true);
           streamFinished = true;
           const id = `msg-clarify-${Date.now().toString(36)}`;
           addMessage({ id, role: "agent", content: "", clarification: event.data });
           setActiveClarificationId(id);
         } else if (event.type === "refusal") {
-          answerStarted = false;
+          flushTextQueue();
+          finishProgress(true);
           streamFinished = true;
           addMessage({ role: "agent", content: event.data.reason || t("chat.refusal"), refusal: event.data });
         } else if (event.type === "text") {
@@ -425,16 +501,17 @@ export default function ChatPanel({ sessionId }: Props) {
           const headline = event.data?.headline || raw.headline;
           if (typeof headline === "string" && headline) answerHeadline = headline;
           const content = event.data?.headline || event.data?.chunk || raw.headline || raw.chunk || "";
-          if (content) appendText(content);
           const details = event.data?.details || raw.details;
+          let textToAppend = content;
           if (details && Array.isArray(details)) {
             answerDetails = details.filter((d: unknown): d is string => typeof d === "string");
             if (answerDetails.length > 0) {
-              appendText("\n\n" + answerDetails.map((d: string) => `• ${d}`).join("\n"));
+              textToAppend += (textToAppend ? "\n\n" : "") + answerDetails.map((d: string) => `• ${d}`).join("\n");
             }
           }
+          if (textToAppend) streamText(textToAppend);
         } else if (event.type === "chart") {
-          answerStarted = false;
+          flushTextQueue();
           const chartData = { ...((event.data || (event as any)) as any), tile_id: `chart-${Date.now().toString(36)}` };
           if (typeof chartData.caption === "string" && chartData.caption) {
             answerHeadline = chartData.caption;
@@ -454,7 +531,6 @@ export default function ChatPanel({ sessionId }: Props) {
             chart: chartData,
           });
         } else if (event.type === "dashboard") {
-          answerStarted = false;
           const dashData = (event.data || (event as any)) as DashboardEvent["data"];
           addMessage({
             role: "agent",
@@ -467,7 +543,10 @@ export default function ChatPanel({ sessionId }: Props) {
             setCanvasDashboard(dashData.dashboard_id, dashData.title || t("chat.dashboardDefault"), dashData.tiles);
           }
         } else if (event.type === "error") {
-          answerStarted = false;
+          // Остаток очереди дописываем в сообщение ответа (по id), а не в
+          // сообщение ошибки, которое сейчас станет последним.
+          flushTextQueue();
+          finishProgress(true);
           streamHadError = true;
           setLastFailedQuestion(retryQuestion);
           const raw = event as any;
@@ -483,7 +562,8 @@ export default function ChatPanel({ sessionId }: Props) {
         }
       },
       (error) => {
-        finishProgress();
+        flushTextQueue();
+        finishProgress(true);
         if (error) {
           streamHadError = true;
           setLastFailedQuestion(retryQuestion);
@@ -501,6 +581,9 @@ export default function ChatPanel({ sessionId }: Props) {
       { recoveryResponse, replyTo: quote?.turn_id ?? null },
     );
     stopRef.current = () => {
+      flushTextQueue();
+      // Пользователь остановил ход: открытые стадии больше не идут.
+      finishProgress(true);
       cancelled = true;
       stop();
       setStreamingSessionId(null);
@@ -635,7 +718,11 @@ export default function ChatPanel({ sessionId }: Props) {
       </div>
 
       {/* Лента сообщений */}
-      <div className="flex-1 space-y-5 overflow-y-auto px-4 py-6 md:px-8">
+      <div
+        ref={messagesListRef}
+        onScroll={handleMessagesScroll}
+        className="flex-1 space-y-5 overflow-y-auto px-4 py-6 md:px-8"
+      >
         {messages.length === 0 ? (
           <div className="mx-auto flex h-full max-w-xl flex-col justify-center">
             <div className="flex items-center gap-2 text-[13px] text-graphite-400">
@@ -725,8 +812,18 @@ export default function ChatPanel({ sessionId }: Props) {
 
                 {/* Текст сообщения */}
                 {m.content && (
-                  <div className={`whitespace-pre-wrap ${m.refusal ? "border-l-2 border-warn/60 pl-3 text-graphite-300" : ""}`}>
+                  <div
+                    className={`whitespace-pre-wrap transition-opacity duration-200 ${m.progress ? "mt-2.5" : ""} ${
+                      m.refusal ? "border-l-2 border-warn/60 pl-3 text-graphite-300" : ""
+                    }`}
+                  >
                     {m.content}
+                    {m.role === "agent" &&
+                      typingMessageId === m.id &&
+                      streaming &&
+                      activeStreamingSessionId === sessionId && (
+                        <span className="inline-block w-1.5 h-4 ml-1 bg-good/80 animate-pulse motion-reduce:animate-none align-middle rounded-[1px]" />
+                      )}
                   </div>
                 )}
 
@@ -860,7 +957,8 @@ export default function ChatPanel({ sessionId }: Props) {
                   !m.progress &&
                   !m.clarification &&
                   !m.refusal &&
-                  !(streaming && i === messages.length - 1) &&
+                  typingMessageId !== m.id &&
+                  !(streaming && activeStreamingSessionId === sessionId && i === messages.length - 1) &&
                   (m.turn_id || m.answer || m.chart) && (
                     <AnswerActions
                       text={answerText(m)}

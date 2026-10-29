@@ -261,7 +261,17 @@ async def test_recovery_answers_the_original_question(db) -> None:
     events = [event async for event in agent.run(request)]
     assert [
         event["data"]["stage"] if event["type"] == "progress" else event["type"] for event in events
-    ] == ["step", "step", "insight", "text", "chart", "chart", "done"]
+    ] == [
+        "step",
+        "step",
+        "insight",
+        "insight",
+        "text",
+        "chart",
+        "chart",
+        "chart",
+        "done",
+    ]
     assert insight.question == "Сравни выручку по регионам"
     # Ответ на уточнение закрывает тот же ход, а не заводит новый.
     turns = SessionMemory("s1")._state["turns"]
@@ -366,8 +376,22 @@ async def test_no_chart_is_ignored_when_dashboard_is_requested(db) -> None:
         return plan.model_copy(update={"dashboard_requested": True})
 
     planner.plan = plan_with_dashboard
-    events = await collect(agent_with(db, planner), "Создай дашборд по регионам")
+    agent = agent_with(db, planner)
+    raw_events = [
+        event
+        async for event in agent.run(
+            ChatRequest(session_id="s1", question="Создай дашборд по регионам")
+        )
+    ]
+    events = [event for event in raw_events if event["type"] != "progress"]
     assert [event["type"] for event in events] == ["text", "chart", "dashboard", "done"]
+    dashboard_progress = [
+        event["data"]
+        for event in raw_events
+        if event["type"] == "progress" and event["data"]["stage"] == "dashboard"
+    ]
+    assert [event["status"] for event in dashboard_progress] == ["started", "finished"]
+    assert dashboard_progress[1]["elapsed_ms"] >= 1
     assert chart_of(events)["spec"]["mark"] == "bar"
 
 
