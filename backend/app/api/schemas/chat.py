@@ -167,6 +167,7 @@ class ChatEvent(BaseModel):
         "progress",
         "dashboard_outline",
         "dashboard_fallback",
+        "table",
     ]
     data: dict[str, Any] = Field(default_factory=dict)
 

@@ -577,6 +577,10 @@ def test_session_table_brings_its_related_tables(demo) -> None:
 def test_clear_winner_needs_no_catalog(demo) -> None:
     planner = SpyPlanner()
     events, executor = ask(demo, planner, "winner", "Сколько event по дням")
+    assert events[0] == {
+        "type": "table",
+        "data": {"table": "demo_events", "previous": None, "title": None},
+    }
     assert planning_tables(events) == ["demo_events", "demo_users"]
     assert executor.inputs == ["demo_events"]
     assert SessionMemory("winner").table == "demo_events"
@@ -615,6 +619,7 @@ def test_ambiguous_question_asks_which_data_to_use(two_sources) -> None:
     assert memory._state["turns"][0]["status"] == "clarification"
 
     events, executor = ask(two_sources, planner, "choice", "Что было в январе?", "Погода")
+    assert events[0]["data"] == {"table": "weather", "previous": None, "title": "Погода"}
     assert events[-1]["type"] == "done"
     assert planner.questions == ["Что было в январе?"]
     assert executor.inputs == ["weather"]
@@ -705,3 +710,88 @@ def test_broken_relation_store_leaves_the_plan_without_related(demo, monkeypatch
     events, _ = ask(demo, planner, "broken", "Сумма по region")
     assert planning_tables(events) == ["demo_events"]
     assert planner.contexts[0]["related"] == []
+
+
+def stock(db) -> None:
+    attach(db, {"stock": "CREATE TABLE stock AS SELECT 'w1' AS warehouse, 5 AS quantity"})
+
+
+def test_follow_up_stays_on_the_session_table(two_sources) -> None:
+    set_titles(two_sources, {"demo_events": "Покупки", "weather": "Погода"})
+    for question in ("А теперь только для VIP", "Покажи столбцами", "Сумма amount по region"):
+        assert relations.switch_table(two_sources, "demo_events", question) is None
+    # Вопрос совпал и с группой сессии — остаёмся, хоть погода и названа.
+    assert relations.switch_table(two_sources, "demo_users", "amount и погода") is None
+    assert relations.switch_table(DuckDBManager(":memory:"), "x", "погода") is None
+
+
+def test_question_about_other_data_switches_to_it(two_sources) -> None:
+    set_titles(two_sources, {"weather": "Погода"})
+    assert relations.switch_table(
+        two_sources, "demo_events", "А теперь погода по месяцам"
+    ) == TableChoice(table="weather")
+    # Без названия — по имени таблицы.
+    assert relations.switch_table(two_sources, "weather", "Сколько events по дням") == TableChoice(
+        table="demo_events"
+    )
+
+
+def test_one_column_word_is_not_enough_to_switch(two_sources) -> None:
+    """«По day» — слово колонки, оно есть во многих таблицах: это продолжение."""
+    stock(two_sources)
+    assert relations.switch_table(two_sources, "demo_events", "а по day?") is None
+    assert relations.switch_table(
+        two_sources, "demo_events", "quantity по warehouse"
+    ) == TableChoice(table="stock")
+
+
+def test_tied_other_data_is_asked_only_by_titles(two_sources) -> None:
+    stock(two_sources)
+    question = "Сравни weather и stock"
+    # Без названий технические имена не показываем и не гадаем — остаёмся.
+    assert relations.switch_table(two_sources, "demo_events", question) is None
+    set_titles(two_sources, {"weather": "Погода", "stock": "Склад"})
+    assert relations.switch_table(two_sources, "demo_events", question) == TableChoice(
+        options={"Погода": "weather", "Склад": "stock"}
+    )
+
+
+def test_agent_moves_to_other_data_and_back(two_sources) -> None:
+    set_titles(two_sources, {"demo_events": "Покупки", "weather": "Погода"})
+    SessionMemory("switch").set_table("demo_events")
+    planner = SpyPlanner()
+
+    events, executor = ask(two_sources, planner, "switch", "А теперь погода по дням")
+    assert events[0] == {
+        "type": "table",
+        "data": {"table": "weather", "previous": "demo_events", "title": "Погода"},
+    }
+    assert planning_tables(events) == ["weather"]
+    assert executor.inputs == ["weather"]
+
+    # Продолжение остаётся на погоде.
+    events, executor = ask(two_sources, planner, "switch", "А только за январь")
+    assert "table" not in [event["type"] for event in events]
+    assert executor.inputs == ["weather"]
+
+    events, executor = ask(two_sources, planner, "switch", "Покупки по дням")
+    assert events[0]["data"]["previous"] == "weather"
+    assert executor.inputs == ["demo_events"]
+    memory = SessionMemory("switch")
+    assert memory.table == "demo_events"
+    assert [turn["tables"] for turn in memory._state["turns"]] == [
+        ["weather"],
+        ["weather"],
+        ["demo_events"],
+    ]
+
+
+def test_switch_between_titled_data_asks_which(two_sources) -> None:
+    stock(two_sources)
+    set_titles(two_sources, {"weather": "Погода", "stock": "Склад"})
+    SessionMemory("which").set_table("demo_events")
+    events, _ = ask(two_sources, SpyPlanner(), "which", "Сравни погоду и склад")
+    assert [event["type"] for event in events] == ["clarification_needed"]
+    events, executor = ask(two_sources, SpyPlanner(), "which", "x", "Склад")
+    assert events[0]["data"] == {"table": "stock", "previous": "demo_events", "title": "Склад"}
+    assert executor.inputs == ["stock"]

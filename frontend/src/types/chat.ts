@@ -1,7 +1,8 @@
 /**
  * Типы стрима чата (синхронизировано с backend/app/api/schemas/chat.py).
  * Фронт получает события: text | chart | dashboard | error | done,
- * в режиме дашборда (#224) ещё dashboard_outline и dashboard_fallback.
+ * в режиме дашборда (#224) ещё dashboard_outline и dashboard_fallback,
+ * table — агент сам взял таблицу под вопрос.
  */
 import type { DashboardTile } from "./dashboard";
 
@@ -50,6 +51,16 @@ export interface DashboardFallbackEvent {
     message: string;
     idea: DashboardIdea;
     alternatives: DashboardIdea[];
+  };
+}
+
+/** Агент сам взял таблицу под вопрос (без таблицы сессии или переход к другим данным). */
+export interface TableEvent {
+  type: "table";
+  data: {
+    table: string;
+    previous: string | null;
+    title: string | null;
   };
 }
 
@@ -132,6 +143,7 @@ export type ChatStreamEvent =
   | DashboardEvent
   | DashboardOutlineEvent
   | DashboardFallbackEvent
+  | TableEvent
   | TextEvent
   | ErrorEvent
   | DoneEvent
