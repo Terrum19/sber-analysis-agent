@@ -47,6 +47,9 @@ from app.core.llm.prompts.dashboard_builder import (
     CHART_TILE,
     DASHBOARD_OUTLINE,
     OUTLINE_FORCED,
+    OUTLINE_NO_TILES,
+    OUTLINE_NOT_ENOUGH,
+    OUTLINE_RETRY,
 )
 from app.core.llm.prompts.system_analyst import SYSTEM_ANALYST
 from app.core.memory.session_memory import SessionMemory
@@ -271,8 +274,10 @@ class DashboardTurn:
         )
         outline = await self._ask_outline(prompt)
         if forced and len(outline.tiles) < MIN_BUILT_TILES:
-            logger.warning("дашборд: план по идее без плиток, переспрос")
-            outline = await self._ask_outline(prompt)
+            logger.warning("дашборд: план по идее без плиток, переспрос с ошибкой")
+            problem = OUTLINE_NO_TILES if outline.enough_info else OUTLINE_NOT_ENOUGH
+            retry = OUTLINE_RETRY.format(problem=problem, min_tiles=MIN_TILES, max_tiles=MAX_TILES)
+            outline = await self._ask_outline(prompt + retry)
             if len(outline.tiles) < MIN_BUILT_TILES:
                 raise ValueError("Модель не составила план дашборда")
         logger.info(
