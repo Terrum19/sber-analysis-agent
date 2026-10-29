@@ -321,7 +321,16 @@ export default function ChatPanel({ sessionId }: Props) {
     const progressId = `msg-progress-${Date.now().toString(36)}`;
     const finishProgress = () => {
       if (progress && progress.finished_at === undefined) {
-        progress = { ...progress, finished_at: Date.now() };
+        const now = Date.now();
+        const timeline = progress.timeline
+          ? progress.timeline.map((item) => {
+              if (item.kind === "stage" && item.finished_at === undefined) {
+                return { ...item, finished_at: now, elapsed_ms: Math.max(1, now - item.started_at) };
+              }
+              return item;
+            })
+          : undefined;
+        progress = { ...progress, finished_at: now, timeline };
         updateMessage(progressId, { progress });
       }
     };
@@ -331,6 +340,43 @@ export default function ChatPanel({ sessionId }: Props) {
       } else {
         answerStarted = true;
         addMessage({ role: "agent", content: text });
+      }
+    };
+
+    let textQueue = "";
+    let streamTimer: ReturnType<typeof setInterval> | null = null;
+
+    const processTextQueue = () => {
+      if (!textQueue) {
+        if (streamTimer) {
+          clearInterval(streamTimer);
+          streamTimer = null;
+        }
+        return;
+      }
+      const chunkSize = Math.max(3, Math.min(12, Math.ceil(textQueue.length / 10)));
+      const chunk = textQueue.slice(0, chunkSize);
+      textQueue = textQueue.slice(chunkSize);
+      appendText(chunk);
+    };
+
+    const streamText = (text: string) => {
+      textQueue += text;
+      if (!streamTimer) {
+        processTextQueue();
+        streamTimer = setInterval(processTextQueue, 20);
+      }
+    };
+
+    const flushTextQueue = () => {
+      if (streamTimer) {
+        clearInterval(streamTimer);
+        streamTimer = null;
+      }
+      if (textQueue) {
+        const remaining = textQueue;
+        textQueue = "";
+        appendText(remaining);
       }
     };
 
@@ -377,6 +423,7 @@ export default function ChatPanel({ sessionId }: Props) {
       q,
       (event) => {
         if (event.type === "done") {
+          flushTextQueue();
           streamFinished = true;
           finishProgress();
           saveAnswerMeta(event.data?.turn_id);
@@ -390,6 +437,7 @@ export default function ChatPanel({ sessionId }: Props) {
             updateMessage(progressId, { progress });
           }
         } else if (event.type === "clarification_needed") {
+          flushTextQueue();
           // Бэкенд закрывает поток без done: ждёт recovery_response
           answerStarted = false;
           streamFinished = true;
@@ -397,6 +445,7 @@ export default function ChatPanel({ sessionId }: Props) {
           addMessage({ id, role: "agent", content: "", clarification: event.data });
           setActiveClarificationId(id);
         } else if (event.type === "refusal") {
+          flushTextQueue();
           answerStarted = false;
           streamFinished = true;
           addMessage({ role: "agent", content: event.data.reason || t("chat.refusal"), refusal: event.data });
@@ -405,15 +454,17 @@ export default function ChatPanel({ sessionId }: Props) {
           const headline = event.data?.headline || raw.headline;
           if (typeof headline === "string" && headline) answerHeadline = headline;
           const content = event.data?.headline || event.data?.chunk || raw.headline || raw.chunk || "";
-          if (content) appendText(content);
           const details = event.data?.details || raw.details;
+          let textToAppend = content;
           if (details && Array.isArray(details)) {
             answerDetails = details.filter((d: unknown): d is string => typeof d === "string");
             if (answerDetails.length > 0) {
-              appendText("\n\n" + answerDetails.map((d: string) => `• ${d}`).join("\n"));
+              textToAppend += (textToAppend ? "\n\n" : "") + answerDetails.map((d: string) => `• ${d}`).join("\n");
             }
           }
+          if (textToAppend) streamText(textToAppend);
         } else if (event.type === "chart") {
+          flushTextQueue();
           answerStarted = false;
           const chartData = { ...((event.data || (event as any)) as any), tile_id: `chart-${Date.now().toString(36)}` };
           if (typeof chartData.caption === "string" && chartData.caption) {
@@ -463,6 +514,7 @@ export default function ChatPanel({ sessionId }: Props) {
         }
       },
       (error) => {
+        flushTextQueue();
         finishProgress();
         if (error) {
           streamHadError = true;
@@ -481,6 +533,7 @@ export default function ChatPanel({ sessionId }: Props) {
       { recoveryResponse, replyTo: quote?.turn_id ?? null },
     );
     stopRef.current = () => {
+      flushTextQueue();
       cancelled = true;
       stop();
       setStreamingSessionId(null);
@@ -673,8 +726,15 @@ export default function ChatPanel({ sessionId }: Props) {
 
                 {/* Текст сообщения */}
                 {m.content && (
-                  <div className={`whitespace-pre-wrap ${m.refusal ? "border-l-2 border-warn/60 pl-3 text-graphite-300" : ""}`}>
+                  <div
+                    className={`whitespace-pre-wrap transition-opacity duration-200 ${m.progress ? "mt-2.5" : ""} ${
+                      m.refusal ? "border-l-2 border-warn/60 pl-3 text-graphite-300" : ""
+                    }`}
+                  >
                     {m.content}
+                    {streaming && i === messages.length - 1 && (
+                      <span className="inline-block w-1.5 h-4 ml-1 bg-good/80 animate-pulse align-middle rounded-[1px]" />
+                    )}
                   </div>
                 )}
 

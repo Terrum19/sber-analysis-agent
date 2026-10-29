@@ -77,8 +77,14 @@ export interface RefusalEvent {
 }
 
 /** ProgressPayload бэкенда; пустые поля не приходят. */
+export interface PlannedStepSummary {
+  step_id: number;
+  purpose: string;
+  tool?: string;
+}
+
 export interface ProgressPayload {
-  stage: "planning" | "step" | "insight" | "chart" | "dashboard";
+  stage: "planning" | "replanning" | "step" | "insight" | "chart" | "dashboard";
   status: "started" | "finished" | "failed" | "fixing";
   step_id?: number;
   tool?: string;
@@ -87,6 +93,7 @@ export interface ProgressPayload {
   elapsed_ms?: number;
   attempt?: number;
   error?: string;
+  planned_steps?: PlannedStepSummary[];
 }
 
 export interface ProgressEvent {
@@ -117,24 +124,102 @@ export interface StepState {
   fixed?: boolean;
 }
 
+/** Стадия хода в хронологии выполнения (планирование, инсайт, график и т.д.). */
+export interface TimelineStage {
+  kind: "stage";
+  id: string;
+  stage: "planning" | "replanning" | "insight" | "chart" | "dashboard";
+  labelKey: string;
+  started_at: number;
+  finished_at?: number;
+  elapsed_ms?: number;
+  planned_steps?: PlannedStepSummary[];
+}
+
+/** Шаг плана в хронологии выполнения. */
+export interface TimelineStep {
+  kind: "step";
+  id: string;
+  step: StepState;
+}
+
+export type TimelineEntry = TimelineStage | TimelineStep;
+
 /** Прогресс одного хода, собранный из событий progress. */
 export interface TurnProgress {
   planning: boolean;
   total_steps?: number;
   steps: StepState[];
-  /** Текущий этап после шагов: insight | chart | dashboard. */
+  /** Полная хронология всех этапов и шагов для детального отчёта */
+  timeline?: TimelineEntry[];
+  /** Текущий этап после шагов: replanning | insight | chart | dashboard. */
   stage?: ProgressPayload["stage"];
   started_at: number;
   finished_at?: number;
+  /** Шаги, запланированные моделью (если есть) */
+  planned_steps?: PlannedStepSummary[];
 }
 
 /** Применить событие progress к прогрессу хода. */
 export function applyProgress(progress: TurnProgress, event: ProgressPayload): TurnProgress {
-  const next: TurnProgress = { ...progress, steps: [...progress.steps] };
+  const now = Date.now();
+  const next: TurnProgress = {
+    ...progress,
+    steps: [...progress.steps],
+    timeline: progress.timeline ? [...progress.timeline] : [],
+  };
+
+  const closeOpenStage = (targetStage?: string) => {
+    for (let i = next.timeline!.length - 1; i >= 0; i--) {
+      const entry = next.timeline![i];
+      if (entry.kind === "stage" && entry.finished_at === undefined) {
+        if (!targetStage || entry.stage === targetStage) {
+          entry.finished_at = now;
+          entry.elapsed_ms = event.elapsed_ms ?? Math.max(1, now - entry.started_at);
+          if (event.planned_steps) {
+            entry.planned_steps = event.planned_steps;
+          }
+        }
+      }
+    }
+  };
+
   if (event.stage === "planning") {
-    next.planning = event.status === "started";
-    if (event.total_steps !== undefined) next.total_steps = event.total_steps;
+    if (event.status === "started") {
+      next.planning = true;
+      next.stage = undefined;
+      next.timeline!.push({
+        kind: "stage",
+        id: `planning-${now}`,
+        stage: "planning",
+        labelKey: "progress.stage.planning",
+        started_at: now,
+      });
+    } else {
+      next.planning = false;
+      if (event.total_steps !== undefined) next.total_steps = event.total_steps;
+      if (event.planned_steps) next.planned_steps = event.planned_steps;
+      closeOpenStage("planning");
+    }
+  } else if (event.stage === "replanning") {
+    if (event.status === "started") {
+      next.planning = false;
+      next.stage = "replanning";
+      next.timeline!.push({
+        kind: "stage",
+        id: `replanning-${now}`,
+        stage: "replanning",
+        labelKey: "progress.stage.replanning",
+        started_at: now,
+      });
+    } else {
+      next.stage = undefined;
+      if (event.total_steps !== undefined) next.total_steps = event.total_steps;
+      if (event.planned_steps) next.planned_steps = event.planned_steps;
+      closeOpenStage("replanning");
+    }
   } else if (event.stage === "step" && event.step_id !== undefined) {
+    closeOpenStage();
     const index = next.steps.findIndex((step) => step.step_id === event.step_id);
     const prev = index >= 0 ? next.steps[index] : undefined;
     const step: StepState = {
@@ -150,10 +235,33 @@ export function applyProgress(progress: TurnProgress, event: ProgressPayload): T
     };
     if (index >= 0) next.steps[index] = step;
     else next.steps.push(step);
+
+    const tIndex = next.timeline!.findIndex(
+      (e) => e.kind === "step" && e.step.step_id === event.step_id
+    );
+    if (tIndex >= 0) {
+      next.timeline![tIndex] = { kind: "step", id: `step-${event.step_id}`, step };
+    } else {
+      next.timeline!.push({ kind: "step", id: `step-${event.step_id}`, step });
+    }
     next.planning = false;
-  } else {
-    next.planning = false;
-    next.stage = event.stage;
+  } else if (event.stage !== "step") {
+    // insight, chart, dashboard
+    if (event.status === "started") {
+      closeOpenStage();
+      next.planning = false;
+      next.stage = event.stage;
+      next.timeline!.push({
+        kind: "stage",
+        id: `${event.stage}-${now}`,
+        stage: event.stage,
+        labelKey: `progress.stage.${event.stage}`,
+        started_at: now,
+      });
+    } else if (event.status === "finished" || event.status === "failed") {
+      closeOpenStage(event.stage);
+      next.stage = undefined;
+    }
   }
   return next;
 }

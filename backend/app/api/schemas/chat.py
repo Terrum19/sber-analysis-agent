@@ -116,7 +116,7 @@ class ProgressPayload(BaseModel):
     (``attempt`` — номер попытки исправления, ``error`` — текст ошибки).
     """
 
-    stage: Literal["planning", "step", "insight", "chart", "dashboard"]
+    stage: Literal["planning", "replanning", "step", "insight", "chart", "dashboard"]
     status: Literal["started", "finished", "failed", "fixing"]
     step_id: int | None = None
     tool: str | None = None
@@ -125,6 +125,7 @@ class ProgressPayload(BaseModel):
     elapsed_ms: int | None = None
     attempt: int | None = None
     error: str | None = None
+    planned_steps: list[dict[str, Any]] | None = None
 
 
 class ChatEvent(BaseModel):

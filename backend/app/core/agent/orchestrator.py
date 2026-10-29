@@ -136,6 +136,8 @@ UNSUPPORTED_SUGGESTIONS = [
 ]
 
 DISTRIBUTION_TOOL = "describe_stats"
+# Осмотр таблицы — разведка: его паспорт не ответ пользователю.
+INSPECT_TOOL = "inspect_temp_table"
 
 # Сколько раз план можно достроить после lookup-шагов (защита от циклов).
 MAX_REPLANS = 2
@@ -440,6 +442,7 @@ class AgentOrchestrator:
             return
 
         if execution.dashboard_requested:
+            yield _progress_event("dashboard", "started")
             fallback = DashboardTile(
                 title=spec.get("title") or insight.headline,
                 spec=spec,
@@ -492,7 +495,22 @@ class AgentOrchestrator:
         except Exception as exc:
             emit(_progress_event("planning", "failed", error=str(exc)))
             raise
-        emit(_progress_event("planning", "finished", total_steps=len(plan.steps)))
+        planned_steps = [
+            {
+                "step_id": s.step_id,
+                "purpose": s.purpose or s.tool or f"Шаг {s.step_id}",
+                "tool": s.tool,
+            }
+            for s in plan.steps
+        ]
+        emit(
+            _progress_event(
+                "planning",
+                "finished",
+                total_steps=len(plan.steps),
+                planned_steps=planned_steps,
+            )
+        )
         logger.debug(
             "<<< run() план получен: шагов=%d final_viz=%s dashboard=%s",
             len(plan.steps),
@@ -639,8 +657,29 @@ class AgentOrchestrator:
             if kind == "lookup" and replans < MAX_REPLANS:
                 replans += 1
                 executed = steps[:index]
-                replanned = await self._replan_after_lookup(
-                    memory, question, executed, tables, observation=table
+                emit(_progress_event("replanning", "started"))
+                try:
+                    replanned = await self._replan_after_lookup(
+                        memory, question, executed, tables, observation=table
+                    )
+                except Exception as exc:
+                    emit(_progress_event("replanning", "failed", error=str(exc)))
+                    raise
+                planned_steps = [
+                    {
+                        "step_id": s.step_id,
+                        "purpose": s.purpose or s.tool or f"Шаг {s.step_id}",
+                        "tool": s.tool,
+                    }
+                    for s in replanned.steps
+                ]
+                emit(
+                    _progress_event(
+                        "replanning",
+                        "finished",
+                        total_steps=len(executed) + len(replanned.steps),
+                        planned_steps=planned_steps,
+                    )
                 )
                 steps = executed + replanned.steps
                 plan = ResearchPlan(
@@ -795,18 +834,30 @@ class AgentOrchestrator:
     ) -> Execution:
         """Выбрать таблицу ответа и сопутствующие результаты."""
         executed = [step for step in steps if step.step_id in tables]
-        if plan.result_step is not None and plan.result_step in tables:
-            result_table = tables[plan.result_step]
+        # Осмотр таблицы — разведка: его паспорт не ответ, ответ — сама таблица.
+        answer_steps = [step for step in executed if step.tool != INSPECT_TOOL]
+        chosen = next((step for step in answer_steps if step.step_id == plan.result_step), None)
+        if chosen is None and answer_steps:
+            chosen = answer_steps[-1]
+        passports = [
+            (step.purpose or step.tool or f"шаг {step.step_id}", tables[step.step_id])
+            for step in executed
+            if step.tool == INSPECT_TOOL
+        ]
+        if chosen is not None:
+            result_table = tables[chosen.step_id]
         elif executed:
-            result_table = tables[executed[-1].step_id]
+            # План кончился осмотром: показываем осмотренную таблицу, а паспорт
+            # уходит в инсайт — иначе «сколько строк» отвечало бы числом колонок.
+            result_table = inputs.get(executed[-1].step_id) or fallback
         else:
             result_table = fallback
-        shown = next((step for step in executed if tables[step.step_id] == result_table), None)
         supporting = [
             (step.purpose or step.tool or f"шаг {step.step_id}", tables[step.step_id])
             for step in executed
             if tool_kind(step) == "analysis" and tables[step.step_id] != result_table
         ]
+        supporting += [(purpose, table) for purpose, table in passports if table != result_table]
         execution = Execution(
             result_table=result_table,
             supporting=supporting,
@@ -815,26 +866,26 @@ class AgentOrchestrator:
             tables=dict(tables),
             plan=plan,
             steps=executed,
-            result_purpose=shown.purpose if shown else "",
-            result_kind=tool_kind(shown) if shown else "transform",
+            result_purpose=chosen.purpose if chosen else "",
+            result_kind=tool_kind(chosen) if chosen else "transform",
         )
         try:
-            values = self._distribution_values(question, shown, inputs or {})
+            values = self._distribution_values(question, chosen, inputs or {})
         except Exception:
             # Гистограмма — дополнение: без неё показываем статистики шага.
             logger.exception("<<< _finish выборка для гистограммы не собрана")
             values = None
-        if values is None:
+        if values is None or chosen is None:
             return execution
         return Execution(
             result_table=values,
-            supporting=[(shown.purpose or shown.tool, result_table), *supporting],
+            supporting=[(chosen.purpose or chosen.tool, result_table), *supporting],
             final_viz="histogram",
             dashboard_requested=plan.dashboard_requested,
             tables=dict(tables),
             plan=plan,
             steps=executed,
-            result_purpose=shown.purpose,
+            result_purpose=chosen.purpose,
         )
 
     def _distribution_values(

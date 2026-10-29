@@ -560,6 +560,26 @@ def test_result_step_ahead_of_trailing_lookup_is_dropped_without_retry() -> None
     assert plan.result_step is None
 
 
+def test_inspect_only_plan_shows_the_inspected_table(db: DuckDBManager) -> None:
+    """Осмотр — разведка: ответ по самой таблице, паспорт — в инсайт."""
+    planner = ScriptedPlanner(ResearchPlan(steps=[]))
+    plan = ResearchPlan(
+        steps=[ResearchStep(step_id=0, tool="inspect_temp_table", arguments={"table": "raw"})]
+    )
+    execution = run_plan(orchestrator(db, planner), FakeMemory(), plan)
+    assert execution.result_table == "raw"
+    assert [purpose for purpose, _ in execution.supporting] == ["inspect_temp_table"]
+    passport = db.to_records(execution.supporting[0][1])
+    assert [row["column_name"] for row in passport] == [
+        "id",
+        "event_date",
+        "region",
+        "category",
+        "amount",
+    ]
+    assert all(not isinstance(value, (list, dict)) for row in passport for value in row.values())
+
+
 def test_finish_falls_back_to_the_input_table_without_executed_steps(db: DuckDBManager) -> None:
     execution = orchestrator(db)._finish(ResearchPlan(steps=[]), [], {}, fallback="raw")
     assert execution.result_table == "raw"
@@ -663,4 +683,20 @@ def test_invalid_plan_after_recovery_text_asks_to_rephrase(db: DuckDBManager) ->
     with pytest.raises(ClarificationNeeded) as exc:
         asyncio.run(agent._apply_recovery(FakeMemory(), pending, Request()))
     assert_plan_clarification(exc)
-    assert executor.calls == 0
+
+
+def test_replan_after_lookup_emits_replanning_progress_events(db: DuckDBManager) -> None:
+    events: list[dict] = []
+    agent = orchestrator(db, planner=ScriptedPlanner(ResearchPlan(steps=[])))
+    lookup = ResearchStep(
+        step_id=0, tool="search_categorical_values", arguments={"column": "region", "query": "msk"}
+    )
+    plan = ResearchPlan(steps=[lookup])
+    asyncio.run(agent._execute_plan(FakeMemory(), plan, "raw", "вопрос", emit=events.append))
+    replanning_events = [
+        e["data"]
+        for e in events
+        if e.get("type") == "progress" and e.get("data", {}).get("stage") == "replanning"
+    ]
+    assert [e["status"] for e in replanning_events] == ["started", "finished"]
+

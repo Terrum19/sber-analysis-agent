@@ -153,7 +153,12 @@ def test_progress_events_precede_the_answer(orchestrator):
             ProgressPayload(**event["data"])
     progress = [event["data"] for event in events if event["type"] == "progress"]
     assert progress[0] == {"stage": "planning", "status": "started"}
-    assert progress[1] == {"stage": "planning", "status": "finished", "total_steps": 1}
+    assert progress[1] == {
+        "stage": "planning",
+        "status": "finished",
+        "total_steps": 1,
+        "planned_steps": [{"step_id": 0, "purpose": "Мок шаг", "tool": "aggregate"}],
+    }
     assert progress[2] == {
         "stage": "step",
         "status": "started",
@@ -244,7 +249,13 @@ def test_dashboard_failure_keeps_the_answer(orchestrator, monkeypatch):
     monkeypatch.setattr(DashboardGenerator, "generate", failing_generate)
     events = collect(orchestrator, "s1")
 
-    assert stages(events)[-4:] == ["chart:started", "chart", "dashboard:failed", "done"]
+    assert stages(events)[-5:] == [
+        "chart:started",
+        "chart",
+        "dashboard:started",
+        "dashboard:failed",
+        "done",
+    ]
     assert "error" not in stages(events)
     assert events[-2]["data"]["error"] == "SQLite недоступна"
 
