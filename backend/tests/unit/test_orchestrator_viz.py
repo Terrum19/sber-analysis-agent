@@ -157,7 +157,9 @@ async def test_view_change_is_served_from_cache(agent, db) -> None:
     assert agent.planner.calls == 1
     assert agent.executor.calls == 1
     assert agent.insight_gen.calls == 1
-    data_reads = [sql for sql in db.statements if "_meta." not in sql]
+    # Каталог (таблицы, колонки, паспорт) читает проверка перехода к другим данным.
+    catalog = ("_meta", "duckdb_tables()", "information_schema")
+    data_reads = [sql for sql in db.statements if not any(mark in sql for mark in catalog)]
     assert data_reads == ["SELECT * FROM temp_result_v1 LIMIT 500"]
     assert STEP_SQL not in db.statements
 

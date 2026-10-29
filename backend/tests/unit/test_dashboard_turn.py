@@ -276,7 +276,7 @@ async def test_dashboard_without_session_table_takes_the_table_by_question(db) -
     llm = ScriptedLLM(DashboardOutline=[OUTLINE], ChartChoices=[RuntimeError("timeout")])
     chat = ChatRequest(session_id="s2", question="Сделай дашборд по region и amount")
     events = [event async for event in agent(db, llm).run(chat)]
-    assert kinds(events) == ["dashboard_outline", "dashboard", "text", "done"]
+    assert kinds(events) == ["table", "dashboard_outline", "dashboard", "text", "done"]
     assert SessionMemory("s2").table == "raw"
 
 
