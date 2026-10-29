@@ -38,6 +38,8 @@ const ReactECharts = dynamic(() => import("echarts-for-react"), { ssr: false });
 interface Props {
   tile: DashboardTileType;
   isEditing?: boolean;
+  /** Плитка в сетке, которую можно тащить за шапку вне режима правки. */
+  draggable?: boolean;
   onRename?: (newTitle: string) => void;
   onDelete?: () => void;
   /** Открыть плитку на весь экран (клик по плитке вне режима редактирования). */
@@ -230,6 +232,7 @@ export default function DashboardTile({
   preview = false,
   dense = false,
   large = false,
+  draggable = false,
   actions,
 }: Props) {
   const t = useT();
@@ -338,8 +341,8 @@ export default function DashboardTile({
     <div
       onClick={(e) => {
         if (isEditing) return;
-        // Кнопки и поля внутри плитки работают как обычно
-        if ((e.target as HTMLElement).closest("button, input, a")) return;
+        // Кнопки и поля внутри плитки работают как обычно; шапка — ручка перетаскивания
+        if ((e.target as HTMLElement).closest("button, input, a, .tile-drag-handle")) return;
         if (canOpen) {
           onOpen?.();
         }
@@ -348,8 +351,12 @@ export default function DashboardTile({
         dense ? "p-3" : "p-4"
       } ${canOpen ? "cursor-zoom-in" : ""}`}
     >
-      {/* Верхняя строка плитки */}
-      <div className={`flex shrink-0 items-start justify-between gap-2 ${dense ? "mb-1.5" : "mb-2"}`}>
+      {/* Верхняя строка плитки; вне режима правки — ручка перетаскивания */}
+      <div
+        className={`flex shrink-0 items-start justify-between gap-2 ${dense ? "mb-1.5" : "mb-2"} ${
+          draggable && !isEditing ? "tile-drag-handle cursor-grab active:cursor-grabbing" : ""
+        }`}
+      >
         <div className="min-w-0 flex-1">
           {editingTitle ? (
             <div className="flex items-center gap-1.5">

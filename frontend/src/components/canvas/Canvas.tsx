@@ -109,9 +109,10 @@ export default function Canvas({ sessionId }: Props) {
     else useSessionStore.getState().setTiles(next);
   }
 
-  function handleLayoutChange(newLayout: Layout[]) {
+  /** committed — пользователь отпустил плитку (drag/resize): раскладка меняется и вне режима правки. */
+  function handleLayoutChange(newLayout: Layout[], committed = false) {
     // Одна колонка в узкой панели — только отображение, сохранённую раскладку не трогаем
-    if (!isEditing || stack || !layoutReadyRef.current) return;
+    if (stack || (!committed && (!isEditing || !layoutReadyRef.current))) return;
     const next = applyGridLayout(displayTiles, newLayout);
     const changed: Record<number, DashboardTileType["layout"]> = {};
     next.forEach((tile, i) => {
@@ -595,9 +596,14 @@ export default function Canvas({ sessionId }: Props) {
                   rowHeight={Math.round(60 * zoom)}
                   margin={[14, 14]}
                   containerPadding={[0, 0]}
-                  isDraggable={isEditing && !stack}
-                  isResizable={isEditing && !stack}
+                  isDraggable={!stack}
+                  isResizable={!stack}
+                  // Вне режима правки плитку тащат за шапку: клики по графику и кнопкам работают
+                  draggableHandle={isEditing ? undefined : ".tile-drag-handle"}
+                  draggableCancel="button, input, a, select"
                   onLayoutChange={handleLayoutChange}
+                  onDragStop={(layout: Layout[]) => handleLayoutChange(layout, true)}
+                  onResizeStop={(layout: Layout[]) => handleLayoutChange(layout, true)}
                   useCSSTransforms={true}
                 >
                   {displayTiles.map((tile, i) => {
@@ -608,6 +614,7 @@ export default function Canvas({ sessionId }: Props) {
                         <DashboardTile
                           tile={tile}
                           isEditing={isEditing}
+                          draggable={!stack}
                           dense={dense}
                           onRename={(newTitle) => updateTile(i, { title: newTitle })}
                           onDelete={() => removeTile(i)}
