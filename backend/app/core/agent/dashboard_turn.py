@@ -7,6 +7,14 @@
 выбор проверяется fits, неподошедший — один повтор, дальше вид по intent.
 
 Каждый этап шлёт событие: фронт показывает, что происходит, на каждом шаге.
+
+Сейчас сравниваем два варианта сборки плиток с одним контрактом событий:
+- plan_per_tile (эта ветка, feature/B-07-dashboard-buttons) — на каждую
+  плитку свой вызов планировщика;
+- quick_tiles (feature/B-07-dashboard-quick-tiles) — план дашборда сразу
+  отдаёт поля простых плиток (показатель, агрегат, разрез, период), шаги
+  собирает код, планировщик — только для сложных плиток.
+Вариант пишется в лог хода (DASHBOARD_VARIANT), чтобы сравнивать прогоны.
 """
 
 import asyncio
@@ -20,12 +28,14 @@ from app.core.agent.orchestrator import (
     AgentOrchestrator,
     ClarificationNeeded,
     Emit,
+    Execution,
     _arrange,
     _done,
     _elapsed_ms,
     _progress_event,
     _require_steps,
 )
+from app.core.dashboards.explain import explain_tile
 from app.core.dashboards.generator import DashboardGenerator
 from app.core.dashboards.ideas import describe_table, generate_ideas
 from app.core.dashboards.models import DashboardTile
@@ -58,6 +68,9 @@ from app.models.dashboard_plan import (
 )
 
 logger = logging.getLogger(__name__)
+
+# Какой вариант сборки плиток сравниваем (см. docstring модуля).
+DASHBOARD_VARIANT = "plan_per_tile"
 
 # Плитки строятся параллельно, но не все сразу: лимиты провайдера LLM.
 TILE_CONCURRENCY = 3
@@ -134,6 +147,7 @@ class DashboardTurn:
             }
         )
         described = describe_table(self.db, table)
+        logger.info("дашборд: вариант=%s", DASHBOARD_VARIANT)
 
         emit(_progress_event("outline", "started"))
         started_at = time.perf_counter()
@@ -162,13 +176,13 @@ class DashboardTurn:
         )
 
         limit = asyncio.Semaphore(TILE_CONCURRENCY)
-        tables = await asyncio.gather(
+        executions = await asyncio.gather(
             *(self._tile(memory, tile_id, tile, limit, emit) for tile_id, tile in enumerate(tiles))
         )
         built = {
-            tile_id: (tiles[tile_id], result)
-            for tile_id, result in enumerate(tables)
-            if result is not None
+            tile_id: (tiles[tile_id], execution.result_table)
+            for tile_id, execution in enumerate(executions)
+            if execution is not None
         }
         if len(built) < MIN_BUILT_TILES:
             message = TOO_FEW_TILES.format(built=len(built), total=len(tiles))
@@ -209,9 +223,10 @@ class DashboardTurn:
         emit({"type": "dashboard", "data": payload.model_dump(exclude_none=True)})
 
         failed = [tile.title for tile_id, tile in enumerate(tiles) if tile_id not in built]
-        headline = f"Дашборд «{title}» готов: плиток {len(built)}."
+        headline = f"Дашборд «{title}» готов: плиток {len(built)}. Что и как посчитано:"
         details = [
-            f"{tile.title} — {choices[tile_id].chart_type}" for tile_id, (tile, _) in built.items()
+            f"{tile.title}: {explain_tile(executions[tile_id].steps, titles, records[tile_id])}."
+            for tile_id, (tile, _) in built.items()
         ]
         if failed:
             details.append("Не удалось построить: " + ", ".join(failed) + ".")
@@ -273,8 +288,8 @@ class DashboardTurn:
         tile: OutlineTile,
         limit: asyncio.Semaphore,
         emit: Emit,
-    ) -> str | None:
-        """Шаги одной плитки; вернуть таблицу результата или None, если плитка упала."""
+    ) -> Execution | None:
+        """Шаги одной плитки; вернуть итог выполнения или None, если плитка упала."""
 
         def tile_emit(event: dict) -> None:
             if event["type"] == "progress":
@@ -321,7 +336,7 @@ class DashboardTurn:
                     elapsed_ms=_elapsed_ms(started_at),
                 )
             )
-            return execution.result_table
+            return execution
 
     async def _choose_charts(
         self, built: dict[int, tuple[OutlineTile, str]], records: dict[int, list[dict]]

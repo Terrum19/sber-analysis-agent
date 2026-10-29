@@ -8,6 +8,7 @@ from app.config import settings
 from app.core.agent import dashboard_turn
 from app.core.agent.orchestrator import AgentOrchestrator
 from app.core.dashboards import ideas
+from app.core.dashboards.explain import explain_tile
 from app.core.dashboards.store import DashboardStore
 from app.core.data.duckdb_manager import DuckDBManager
 from app.core.llm.fake_client import FakeLLM
@@ -343,3 +344,59 @@ def test_ideas_endpoint(db, monkeypatch) -> None:
         assert "timeout" in failed.json()["detail"]
     finally:
         app.dependency_overrides.clear()
+
+
+def step(tool: str, **arguments: object) -> ResearchStep:
+    return ResearchStep(tool=tool, arguments=arguments, purpose=f"цель {tool}")
+
+
+def test_explain_tile_says_what_and_how() -> None:
+    titles = {"amount": "Сумма", "day": "Дата", "region": "Регион", "revenue": "Выручка"}
+    steps = [
+        step("filter_rows", column="region", value="msk"),
+        step("create_column", new_column="revenue", expression="amount * 2"),
+        step(
+            "time_bucket",
+            date_column="day",
+            interval="month",
+            metric_column="revenue",
+            function="SUM",
+            by=["region"],
+        ),
+    ]
+    assert explain_tile(steps, titles, []) == (
+        "только строки, где «Регион» = msk; новый показатель «Выручка» = amount * 2; "
+        "сумма «Выручка» по месяцам («Дата») и «Регион»"
+    )
+    top = [
+        step(
+            "group_by",
+            by="region",
+            metrics=[{"function": "AVG", "column": "amount"}, {"function": "COUNT"}],
+        ),
+        step("sort_limit", order_by="avg_amount", limit=3),
+        step("sort_limit", order_by=["region"]),
+    ]
+    assert explain_tile(top, titles, []) == (
+        "среднее «Сумма», количество строк по «Регион»; топ-3 по «avg_amount»; "
+        "сортировка по «Регион»"
+    )
+    assert explain_tile([step("filter_rows", column="day", operator="IS NULL")], {}, []) == (
+        "только строки, где «day» IS NULL пусто"
+    )
+    assert explain_tile([step("pearson_corr", x="a", y="b")], {}, []) == "цель pearson_corr"
+    assert explain_tile([step("nope")], {}, []) == "цель nope"
+    assert explain_tile([], {}, []) == "расчёт по исходной таблице"
+
+
+def test_explain_tile_adds_the_kpi_value() -> None:
+    from decimal import Decimal
+
+    total = [step("group_by", by=[], column="amount", function="SUM")]
+    assert explain_tile(total, {}, [{"sum_amount": Decimal("1234567.50")}]) == (
+        "сумма «amount» = 1 234 567.5"
+    )
+    assert explain_tile(total, {}, [{"n": 1200}]).endswith("= 1 200")
+    assert explain_tile(total, {}, [{"n": float("nan")}]) == "сумма «amount»"
+    assert explain_tile(total, {}, [{"n": "x"}]) == "сумма «amount»"
+    assert explain_tile(total, {}, [{"n": 1, "m": 2}]) == "сумма «amount»"
