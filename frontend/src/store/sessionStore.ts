@@ -151,6 +151,8 @@ export interface SessionState {
   deleteDatabase: (databaseId: string) => string[];
   bindSession: (sessionId: string, databaseId: string, initialTable?: string) => void;
   switchSessionTable: (sessionId: string, nextTable: string) => void;
+  /** Агент сам перешёл к таблице: лента сессии остаётся той же, меняется только таблица. */
+  followAgentTable: (sessionId: string, nextTable: string) => void;
   /** Добавляет сессию в папку базы данных при первом вопросе. */
   registerSession: (sessionId: string, title: string) => void;
   renameSession: (sessionId: string, title: string) => void;
@@ -488,6 +490,20 @@ export const useSessionStore = create<SessionState>()(
           selectedTile: null,
         });
       },
+      followAgentTable: (sessionId, nextTable) =>
+        set((s) => {
+          const currentTable = s.sessionActiveTable[sessionId];
+          if (currentTable === nextTable) return {};
+          const feeds = { ...(s.sessionTableCache[sessionId] || {}) };
+          if (currentTable && feeds[currentTable]) {
+            feeds[nextTable] = feeds[currentTable];
+            delete feeds[currentTable];
+          }
+          return {
+            sessionActiveTable: { ...s.sessionActiveTable, [sessionId]: nextTable },
+            sessionTableCache: { ...s.sessionTableCache, [sessionId]: feeds },
+          };
+        }),
       registerSession: (sessionId, title) => {
         const databaseId = get().sessionDatabase[sessionId];
         if (!databaseId) return;

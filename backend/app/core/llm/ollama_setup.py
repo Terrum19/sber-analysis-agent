@@ -119,9 +119,10 @@ async def _models(http: httpx.AsyncClient, root: str) -> set[str]:
     return {_with_tag(model["name"]) for model in response.json().get("models", [])}
 
 
-async def _pull(http: httpx.AsyncClient, root: str, model: str) -> None:
-    """Скачать модель, обновляя прогресс; ошибка сервера — RuntimeError."""
-    _set("pulling", progress=0.0)
+async def _pull(http: httpx.AsyncClient, root: str, model: str, report: bool = True) -> None:
+    """Скачать модель, обновляя прогресс (report); ошибка сервера — RuntimeError."""
+    if report:
+        _set("pulling", progress=0.0)
     # Ollama шлёт прогресс по каждому слою: доля — по сумме слоёв.
     layers: dict[str, tuple[int, int]] = {}
     async with http.stream(
@@ -140,7 +141,8 @@ async def _pull(http: httpx.AsyncClient, root: str, model: str) -> None:
                 layers[event["digest"]] = (event.get("completed", 0), event["total"])
                 done = sum(completed for completed, _ in layers.values())
                 total = sum(size for _, size in layers.values())
-                _set("pulling", progress=round(done / total, 3))
+                if report:
+                    _set("pulling", progress=round(done / total, 3))
 
 
 def _error_text(response: httpx.Response) -> str:
@@ -243,6 +245,31 @@ async def prepare_once(http: httpx.AsyncClient) -> bool:
         return False
 
 
+async def prepare_embeddings(http: httpx.AsyncClient) -> None:
+    """Скачать EMBED_MODEL, если эмбеддинги идут через ту же Ollama, что и LLM.
+
+    Статус LLM не трогает: модель эмбеддингов нужна только для перехода к
+    другим данным по смыслу (table_vectors), без неё выбор идёт по словам.
+    """
+    root = server_root(settings.llm_base_url)
+    embed_root = server_root(settings.embed_base_url) if settings.embed_base_url else root
+    if not settings.embed_model or embed_root != root:
+        return
+    model = _with_tag(settings.embed_model)
+    try:
+        await _version(http, root)
+        if model in await _models(http, root):
+            return
+        logger.info("Ollama: скачиваю модель эмбеддингов %s", model)
+        await _pull(http, root, model, report=False)
+    except NotOllama:
+        return
+    except (httpx.HTTPError, RuntimeError):
+        logger.warning(
+            "Модель эмбеддингов %s не скачана: таблицы — по словам", model, exc_info=True
+        )
+
+
 async def prepare_forever() -> None:
     """Готовить модель, пока не получится, затем следить, что Ollama жива.
 
@@ -262,6 +289,7 @@ async def prepare_forever() -> None:
                 await LLMClient().warm_up()
             except Exception:
                 logger.warning("LLM: контекст сервера не узнали при старте", exc_info=True)
+            await prepare_embeddings(http)
             while True:
                 await asyncio.sleep(WATCH_S)
                 try:

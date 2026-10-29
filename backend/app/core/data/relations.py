@@ -39,6 +39,14 @@ MAX_HOPS = 3
 CATALOG_TABLES = 6
 # Слова вопроса короче этого не участвуют в выборе таблицы («в», «по»).
 MIN_WORD = 3
+# Сколько слов вопроса должно совпасть с другой группой данных, чтобы уйти к ней
+# посреди сессии, если она не названа в вопросе по имени или названию таблицы.
+SWITCH_WORDS = 2
+# На сколько вопрос по смыслу (косинус эмбеддингов) должен быть ближе к другой
+# группе данных, чем к текущей, чтобы перейти к ней. Калибровка bge-m3 на HK:
+# продолжения («в процентах», «что передо мной?») — до 0,07, смена темы
+# синонимами («курьеры» -> доставка, «таблетки» -> лекарства) — от 0,095.
+MEANING_MARGIN = 0.09
 # Колонка «id» есть почти в каждой таблице: id = id связью не считаем.
 SURROGATE_KEY = "id"
 KEY_KINDS = {"identifier", "text"}
@@ -579,7 +587,54 @@ class TableChoice:
     options: dict[str, str] = field(default_factory=dict)
 
 
-def choose_table(db, question: str) -> TableChoice:
+@dataclass
+class _Groups:
+    """Группы связанных таблиц и их совпадение со словами вопроса."""
+
+    words: set[str]
+    named: dict[str, set[str]]
+    links: list[Relation]
+    groups: list[list[str]]
+    scores: list[int]
+
+    def leader(self, group: list[str]) -> str:
+        """Самая подходящая таблица группы; при равенстве — факты (priority_order)."""
+        return max(
+            group, key=lambda name: (matches(self.words, self.named[name]), -group.index(name))
+        )
+
+
+def _groups(db, question: str) -> _Groups | None:
+    tables = db.user_tables()
+    if not tables:
+        return None
+    links = load(db)
+    words = question_words(question)
+    named = {table: table_words(db, table) for table in tables}
+    order = priority_order(db, tables, links)
+    groups: list[list[str]] = []
+    for table in order:
+        if not any(table in group for group in groups):
+            linked = component(links, table)
+            groups.append([name for name in order if name in linked])
+    scores = [matches(words, set().union(*(named[name] for name in group))) for group in groups]
+    return _Groups(words, named, links, groups, scores)
+
+
+def _pick(db, found: _Groups, tied: list[list[str]]) -> TableChoice:
+    """Одна группа — её таблица; несколько — уточнение по названиям или каталог."""
+    leaders = [found.leader(group) for group in tied]
+    if len(leaders) == 1:
+        return TableChoice(table=leaders[0])
+    leaders = leaders[:CATALOG_TABLES]
+    titles = {table: table_title(db, table) for table in leaders}
+    if all(titles.values()) and len(set(titles.values())) == len(leaders):
+        return TableChoice(options={titles[table]: table for table in leaders})
+    rest = [name for group in tied for name in group if name not in leaders]
+    return TableChoice(table=leaders[0], catalog=[*leaders, *rest][:CATALOG_TABLES])
+
+
+def choose_table(db, question: str, similarity: dict[str, float] | None = None) -> TableChoice:
     """Таблица под вопрос, когда в сессии таблица не выбрана.
 
     Без LLM. Вопрос сравнивается с группами таблиц, связанных ключами: «заказы
@@ -591,38 +646,82 @@ def choose_table(db, question: str) -> TableChoice:
     Неоднозначность — когда равны несвязанные группы. Тогда, если у главной
     таблицы каждой группы есть название (display_name), спрашиваем
     пользователя, какие данные взять; технические имена таблиц не показываем —
-    без названий таблицу выберет планировщик по каталогу.
+    без названий таблицу выберет планировщик по каталогу. Равенство по словам
+    сначала решает смысл (similarity — эмбеддинги, table_vectors): группа,
+    заметно ближе остальных по смыслу, берётся сразу.
     """
-    tables = db.user_tables()
-    if not tables:
+    found = _groups(db, question)
+    if found is None:
         return TableChoice()
-    links = load(db)
-    words = question_words(question)
-    named = {table: table_words(db, table) for table in tables}
-    order = priority_order(db, tables, links)
-    groups: list[list[str]] = []
-    for table in order:
-        if not any(table in group for group in groups):
-            linked = component(links, table)
-            groups.append([name for name in order if name in linked])
-    scores = {
-        tuple(group): matches(words, set().union(*(named[name] for name in group)))
-        for group in groups
-    }
-    best = max(scores.values())
-    tied = [group for group in groups if scores[tuple(group)] == best]
-    leaders = [
-        max(group, key=lambda name: (matches(words, named[name]), -group.index(name)))
-        for group in tied
-    ]
-    if len(leaders) == 1:
-        return TableChoice(table=leaders[0])
-    leaders = leaders[:CATALOG_TABLES]
-    titles = {table: table_title(db, table) for table in leaders}
-    if all(titles.values()) and len(set(titles.values())) == len(leaders):
-        return TableChoice(options={titles[table]: table for table in leaders})
-    rest = [name for group in tied for name in group if name not in leaders]
-    return TableChoice(table=leaders[0], catalog=[*leaders, *rest][:CATALOG_TABLES])
+    best = max(found.scores)
+    tied = [g for g, score in zip(found.groups, found.scores) if score == best]
+    closest = _closest(tied, similarity or {})
+    if len(tied) > 1 and closest is not None:
+        return TableChoice(table=closest)
+    return _pick(db, found, tied)
+
+
+def switch_table(
+    db, table: str, question: str, similarity: dict[str, float] | None = None
+) -> TableChoice | None:
+    """Вопрос посреди сессии явно про другие, несвязанные данные: куда перейти.
+
+    None — остаёмся на таблице сессии. По словам уходим к другой группе, только
+    если с группой сессии не совпало ни одно слово, а другая названа в вопросе
+    по имени или названию таблицы («а теперь погода») либо совпала SWITCH_WORDS
+    словами: одно слово колонки («по месяцам») есть во многих
+    таблицах, а ложный переход хуже, чем остаться. Несколько равных групп —
+    уточнение по названиям; без названий остаёмся. Иначе решает смысл
+    (similarity): таблица вне группы сессии ближе её на MEANING_MARGIN. Без
+    эмбеддингов остаёмся: это продолжение («а теперь только VIP»).
+    """
+    found = _groups(db, question)
+    if found is None:
+        return None
+    current = component(found.links, table)
+    here = next(score for group, score in zip(found.groups, found.scores) if current & set(group))
+    others = []
+    for group, score in zip(found.groups, found.scores):
+        if current & set(group):
+            continue
+        named = any(
+            matches(
+                found.words, tokenize(f"{name} {table_title(db, name) or ''}".replace("_", " "))
+            )
+            for name in group
+        )
+        if (named or score >= SWITCH_WORDS) and not here:
+            others.append((group, score))
+    if not others:
+        # Слова другие данные не назвали — решает смысл, даже если какое-то слово
+        # совпало с текущими: «сколько» есть в названии колонки, а вопрос про
+        # мобильное приложение.
+        return _closer_than(current, similarity or {})
+    best = max(score for _, score in others)
+    choice = _pick(db, found, [group for group, score in others if score == best])
+    return None if choice.catalog else choice
+
+
+def _closer_than(current: set[str], similarity: dict[str, float]) -> TableChoice | None:
+    """Таблица вне группы сессии, которая ближе её по смыслу на MEANING_MARGIN."""
+    others = [name for name in similarity if name not in current]
+    if not others:
+        return None
+    here = max((similarity[name] for name in current if name in similarity), default=0.0)
+    best = max(others, key=lambda name: similarity[name])
+    return TableChoice(table=best) if similarity[best] - here >= MEANING_MARGIN else None
+
+
+def _closest(groups: list[list[str]], similarity: dict[str, float]) -> str | None:
+    """Таблица группы, ближайшей по смыслу, если она ближе всех остальных на
+    MEANING_MARGIN; иначе (или без эмбеддингов) None."""
+    if not similarity or len(groups) < 2:
+        return None
+    ranked = sorted(groups, key=lambda group: -max(similarity.get(name, 0.0) for name in group))
+    first, second = (max(similarity.get(name, 0.0) for name in group) for group in ranked[:2])
+    if first - second < MEANING_MARGIN:
+        return None
+    return max(ranked[0], key=lambda name: similarity.get(name, 0.0))
 
 
 def describe_catalog(db, tables: list[str], question: str) -> str:

@@ -71,6 +71,7 @@ from app.core.dashboards.generator import DashboardGenerator
 from app.core.dashboards.models import DashboardTile
 from app.core.data import overview, relations
 from app.core.data.duckdb_manager import DuckDBManager
+from app.core.data.table_vectors import TableVectors
 from app.core.llm.budget import track_truncations
 from app.core.logging_setup import set_turn_id
 from app.core.memory.profile_memory import ProfileMemory
@@ -251,6 +252,7 @@ class AgentOrchestrator:
         self.insight_gen = insight_gen or InsightGenerator(db=self.db)
         self.cache = cache or StateCache(self.db)
         self.profiles = ProfileMemory(self.db)
+        self.vectors = TableVectors(self.db)
 
     async def run(self, request: ChatRequest) -> AsyncIterator[dict]:
         """Выполнить исследование и вернуть поток событий для фронта.
@@ -302,7 +304,10 @@ class AgentOrchestrator:
                 # Свободный текст вместо варианта — уточнение к вопросу, а таблицу
                 # выберет планировщик из предложенных.
                 catalog = list(pending["options"].values())
+            previous = memory.table
             memory.use_table(chosen or catalog[0])
+            # Варианты — всегда другие данные, чем таблица сессии.
+            yield _table_event(self.db, memory.table, previous)
             pending = None
 
         dashboard = request.mode == "dashboard" or (
@@ -322,9 +327,21 @@ class AgentOrchestrator:
 
         # Small talk выше: «привет» отвечается и без подключённой таблицы.
         table = memory.table
-        if table is None and pending is None:
+        choice = None
+        if pending is None and table is None:
             # Таблица не выбрана — подбираем по словам вопроса без вызова LLM (#165).
-            choice = relations.choose_table(self.db, request.question)
+            similarity = await self.vectors.similarity(request.question)
+            choice = relations.choose_table(self.db, request.question, similarity)
+        elif (
+            pending is None
+            and request.idea is None
+            and not overview.is_overview_question(request.question)
+        ):
+            # Вопрос явно про другие, несвязанные данные — переходим к ним. Идея
+            # дашборда предложена по таблице сессии, а «что передо мной?» — всегда
+            # про неё: их не перепроверяем.
+            choice = await self._switch(table, request.question)
+        if choice is not None:
             if choice.options:
                 # Вопрос подходит к разным несвязанным данным: спрашиваем, какие взять.
                 logger.info("маршрут: уточнение таблицы %s", choice.options)
@@ -349,7 +366,13 @@ class AgentOrchestrator:
                 }
                 return
             if choice.table is not None:
-                logger.info("таблица по вопросу: %s, каталог: %s", choice.table, choice.catalog)
+                logger.info(
+                    "таблица по вопросу: %s (была %s), каталог: %s",
+                    choice.table,
+                    table,
+                    choice.catalog,
+                )
+                yield _table_event(self.db, choice.table, table)
                 table, catalog = choice.table, choice.catalog
                 memory.use_table(table)
         if table is None:
@@ -598,6 +621,15 @@ class AgentOrchestrator:
         )
         execution.remembered = remembered
         return request.question, execution
+
+    async def _switch(self, table: str, question: str) -> relations.TableChoice | None:
+        """Переход к другим данным; сбой каталога — остаёмся, ход идёт как раньше."""
+        try:
+            similarity = await self.vectors.similarity(question)
+            return relations.switch_table(self.db, table, question, similarity)
+        except Exception:
+            logger.exception("переход от таблицы %s не проверен", table)
+            return None
 
     def _related(self, table: str, question: str) -> list[relations.Related]:
         """Связанные с таблицей хода таблицы; сбой каталога — план без них."""
@@ -1256,6 +1288,14 @@ def _confirmation(remembered: list[str]) -> str:
     return (
         REMEMBERED.format(notes="; ".join(f"«{text}»" for text in remembered)) if remembered else ""
     )
+
+
+def _table_event(db, table: str, previous: str | None) -> dict:
+    """Агент сам взял таблицу: фронт показывает её и переносит на неё ленту."""
+    return {
+        "type": "table",
+        "data": {"table": table, "previous": previous, "title": relations.table_title(db, table)},
+    }
 
 
 def _next_step_id(tables: dict[int, str]) -> int:
