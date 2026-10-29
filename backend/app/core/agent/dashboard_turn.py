@@ -1,19 +1,21 @@
 """Ход дашборда по кнопке (#224): план плиток -> шаги плиток -> выбор графика LLM.
 
 Запрос пользователя (или выбранная идея) превращается в план из 4–5 плиток.
-Каждая плитка — отдельный маленький вопрос: обычный планировщик и исполнитель
-шагов, плитки идут параллельно. Упавшая плитка пропускается. Вид графика
+Простая плитка приходит в плане с полями расчёта, и её шаги собирает код
+без LLM (core/dashboards/quick_tiles.py). Сложная плитка, или простая, чьи
+поля не подошли к таблице или чьи шаги упали, — обычный планировщик по её
+вопросу. Плитки идут параллельно, упавшая пропускается. Вид графика
 выбирает LLM одним вызовом на все плитки, когда их результаты готовы;
 выбор проверяется fits, неподошедший — один повтор, дальше вид по intent.
 
 Каждый этап шлёт событие: фронт показывает, что происходит, на каждом шаге.
 
 Сейчас сравниваем два варианта сборки плиток с одним контрактом событий:
-- plan_per_tile (эта ветка, feature/B-07-dashboard-buttons) — на каждую
-  плитку свой вызов планировщика;
-- quick_tiles (feature/B-07-dashboard-quick-tiles) — план дашборда сразу
-  отдаёт поля простых плиток (показатель, агрегат, разрез, период), шаги
-  собирает код, планировщик — только для сложных плиток.
+- plan_per_tile (feature/B-07-dashboard-buttons) — на каждую плитку свой
+  вызов планировщика;
+- quick_tiles (эта ветка, feature/B-07-dashboard-quick-tiles) — план
+  дашборда сразу отдаёт поля простых плиток (показатель, агрегат, разрез,
+  период), шаги собирает код, планировщик — только для сложных плиток.
 Вариант пишется в лог хода (DASHBOARD_VARIANT), чтобы сравнивать прогоны.
 """
 
@@ -37,6 +39,8 @@ from app.core.agent.orchestrator import (
 from app.core.dashboards.generator import DashboardGenerator
 from app.core.dashboards.ideas import describe_table, generate_ideas
 from app.core.dashboards.models import DashboardTile
+from app.core.dashboards.quick_tiles import quick_plan
+from app.core.data import overview
 from app.core.llm.client import LLMClient
 from app.core.llm.prompts.dashboard_builder import (
     CHART_CHOICE,
@@ -68,7 +72,7 @@ from app.models.dashboard_plan import (
 logger = logging.getLogger(__name__)
 
 # Какой вариант сборки плиток сравниваем (см. docstring модуля).
-DASHBOARD_VARIANT = "plan_per_tile"
+DASHBOARD_VARIANT = "quick_tiles"
 
 # Плитки строятся параллельно, но не все сразу: лимиты провайдера LLM.
 TILE_CONCURRENCY = 3
@@ -145,6 +149,7 @@ class DashboardTurn:
             }
         )
         described = describe_table(self.db, table)
+        kinds = {column.name: column.kind for column in overview.passport(self.db, table).columns}
         logger.info("дашборд: вариант=%s", DASHBOARD_VARIANT)
 
         emit(_progress_event("outline", "started"))
@@ -175,7 +180,10 @@ class DashboardTurn:
 
         limit = asyncio.Semaphore(TILE_CONCURRENCY)
         tables = await asyncio.gather(
-            *(self._tile(memory, tile_id, tile, limit, emit) for tile_id, tile in enumerate(tiles))
+            *(
+                self._tile(memory, tile_id, tile, kinds, limit, emit)
+                for tile_id, tile in enumerate(tiles)
+            )
         )
         built = {
             tile_id: (tiles[tile_id], result)
@@ -283,10 +291,15 @@ class DashboardTurn:
         memory: SessionMemory,
         tile_id: int,
         tile: OutlineTile,
+        kinds: dict[str, str],
         limit: asyncio.Semaphore,
         emit: Emit,
     ) -> str | None:
-        """Шаги одной плитки; вернуть таблицу результата или None, если плитка упала."""
+        """Шаги одной плитки; вернуть таблицу результата или None, если плитка упала.
+
+        Простая плитка — шаги из её полей без LLM; не собрались или упали —
+        плитку строит планировщик по её вопросу.
+        """
 
         def tile_emit(event: dict) -> None:
             if event["type"] == "progress":
@@ -296,15 +309,30 @@ class DashboardTurn:
         async with limit:
             emit(_progress_event("tile", "started", tile_id=tile_id, purpose=tile.title))
             started_at = time.perf_counter()
+            start = (tile_id + 1) * TILE_STEP_IDS
             try:
-                context = memory.build_context(tile.question)
-                context["next_step_id"] = (tile_id + 1) * TILE_STEP_IDS
-                context["tile"] = True
-                plan = await self.agent._plan(tile.question, context)
-                _require_steps(plan)
-                execution = await self.agent._execute_plan(
-                    memory, plan, memory.table, tile.question, emit=tile_emit
-                )
+                execution = None
+                quick = quick_plan(tile, kinds, start)
+                if quick is not None:
+                    logger.info("    плитка %d %r: шаги из полей плана", tile_id, tile.title)
+                    try:
+                        execution = await self.agent._execute_plan(
+                            memory, quick, memory.table, tile.question, emit=tile_emit
+                        )
+                    except Exception:
+                        logger.exception("    плитка %d: шаги из полей упали, планировщик", tile_id)
+                        memory.clear_pending_recovery()
+                        start += TILE_STEP_IDS // 2
+                if execution is None:
+                    logger.info("    плитка %d %r: планировщик", tile_id, tile.title)
+                    context = memory.build_context(tile.question)
+                    context["next_step_id"] = start
+                    context["tile"] = True
+                    plan = await self.agent._plan(tile.question, context)
+                    _require_steps(plan)
+                    execution = await self.agent._execute_plan(
+                        memory, plan, memory.table, tile.question, emit=tile_emit
+                    )
             except Exception as exc:
                 if isinstance(exc, ClarificationNeeded):
                     # Уточнять у пользователя нечего: плитка просто не строится.
