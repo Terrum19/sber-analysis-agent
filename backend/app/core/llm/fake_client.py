@@ -84,10 +84,13 @@ class FakeLLM:
 def _fake_dashboard(schema: str, user: str) -> dict:
     """Детерминированные идеи, план плиток и выбор графика для CI."""
     if schema == "DashboardIdeas":
+        # Прежние варианты перечислены строками «- название»: новые их не повторяют
+        taken = set(re.findall(r"^- (.+)$", user, re.MULTILINE))
+        numbers = [number for number in range(1, 100) if f"Вариант {number}" not in taken][:4]
         return {
             "ideas": [
                 {"title": f"Вариант {number}", "description": f"Описание варианта {number}"}
-                for number in range(1, 5)
+                for number in numbers
             ]
         }
     if schema == "DashboardOutline":

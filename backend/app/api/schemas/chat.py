@@ -133,6 +133,18 @@ class ProgressPayload(BaseModel):
     tile_id: int | None = None
 
 
+class DashboardIdeasRequest(BaseModel):
+    """Тело POST /sessions/{id}/dashboard-ideas (необязательное): прежние варианты.
+
+    Пусто — обычные варианты по таблице; названия в exclude — новые варианты,
+    которые их не повторяют (пользователь перебрал все прежние).
+    """
+
+    exclude: list[Annotated[str, StringConstraints(max_length=200)]] = Field(
+        default_factory=list, max_length=100
+    )
+
+
 class DashboardIdeasOut(BaseModel):
     """Ответ POST /sessions/{id}/dashboard-ideas: варианты дашборда для кнопок."""
 

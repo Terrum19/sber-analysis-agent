@@ -301,6 +301,27 @@ async def test_ideas_are_cached_per_table(db) -> None:
     assert "region" in llm.prompts["DashboardIdeas"][0]
 
 
+async def test_new_ideas_skip_the_ones_already_seen(db) -> None:
+    llm = ScriptedLLM(DashboardIdeas=[IDEAS, IDEAS])
+    first = await ideas.generate_ideas(db, "raw", llm)
+    # Модель повторила «Идея 0», хотя её просили не повторять: в ответ она не попадает.
+    fresh = await ideas.generate_ideas(db, "raw", llm, exclude=[" Идея 0", "идея 1"])
+    assert [idea.title for idea in fresh] == ["Идея 2", "Идея 3"]
+    assert [idea.id for idea in fresh] == ["1", "2"]
+    assert "уже видел" not in llm.prompts["DashboardIdeas"][0]
+    assert "- Идея 0\n- идея 1" in llm.prompts["DashboardIdeas"][1]
+    # У каждого набора исключений свой кэш; без исключений — прежняя пачка.
+    assert await ideas.generate_ideas(db, "raw", llm, exclude=["идея 1", "Идея 0"]) is fresh
+    assert await ideas.generate_ideas(db, "raw", llm) is first
+
+
+async def test_fake_llm_offers_new_ideas_after_all_were_seen(db) -> None:
+    seen = [idea.title for idea in await ideas.generate_ideas(db, "raw", FakeLLM())]
+    fresh = await ideas.generate_ideas(db, "raw", FakeLLM(), exclude=seen)
+    assert seen == ["Вариант 1", "Вариант 2", "Вариант 3", "Вариант 4"]
+    assert [idea.title for idea in fresh] == ["Вариант 5", "Вариант 6", "Вариант 7", "Вариант 8"]
+
+
 async def test_empty_ideas_are_an_error(db) -> None:
     llm = ScriptedLLM(DashboardIdeas=[DashboardIdeas(ideas=[DashboardIdea(title=" ")])])
     with pytest.raises(ValueError):
@@ -323,9 +344,12 @@ def test_ideas_endpoint(db, monkeypatch) -> None:
     from app.api.routes import sessions
     from app.main import app
 
-    async def fake_ideas(_db, table: str, llm=None) -> list[DashboardIdea]:
+    excluded: list[list[str]] = []
+
+    async def fake_ideas(_db, table: str, llm=None, exclude=()) -> list[DashboardIdea]:
         if table == "boom":
             raise RuntimeError("timeout")
+        excluded.append(list(exclude))
         return IDEAS.ideas
 
     monkeypatch.setattr(sessions, "generate_ideas", fake_ideas)
@@ -335,6 +359,9 @@ def test_ideas_endpoint(db, monkeypatch) -> None:
         ok = client.post("/api/sessions/s1/dashboard-ideas")
         assert ok.status_code == 200
         assert len(ok.json()["ideas"]) == 4
+        fresh = client.post("/api/sessions/s1/dashboard-ideas", json={"exclude": ["Идея 0"]})
+        assert fresh.status_code == 200
+        assert excluded == [[], ["Идея 0"]]
         assert client.post("/api/sessions/nope/dashboard-ideas").status_code == 404
         SessionMemory("s2").set_title("пусто")
         assert client.post("/api/sessions/s2/dashboard-ideas").status_code == 409
