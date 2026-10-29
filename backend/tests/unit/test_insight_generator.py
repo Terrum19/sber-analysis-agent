@@ -134,3 +134,47 @@ def test_numbers_from_plan_conditions_are_grounded(db):
         InsightGenerator(llm=llm, db=db).generate("Сколько?", "temp_result_v5", steps=steps)
     )
     assert llm.calls == 1
+
+
+@pytest.fixture(params=[True, False], ids=["quality_fixes", "plain"])
+def fixes(request, monkeypatch):
+    from app.config import settings
+
+    monkeypatch.setattr(settings, "agent_quality_fixes", request.param)
+
+
+def test_prompt_without_tests_has_no_significance_rule(db, fixes):
+    llm = PromptSpy()
+    asyncio.run(InsightGenerator(llm=llm, db=db).generate("Сколько вин?", "temp_result_v1"))
+    for text in ("стат-тест", "значим", "0.05", "Сопутствующие"):
+        assert text not in llm.prompt
+
+
+def test_p_value_in_result_keeps_threshold(db, fixes):
+    db.execute("CREATE TABLE temp_test AS SELECT 0.42 AS correlation, 1e-30 AS p_value, 7 AS n")
+    llm = PromptSpy()
+    asyncio.run(InsightGenerator(llm=llm, db=db).generate("Связаны ли?", "temp_test"))
+    assert "p_value < 0.05" in llm.prompt
+    assert "Сопутствующие" not in llm.prompt
+
+
+def test_supporting_test_brings_both_parts(db, fixes):
+    db.execute("CREATE TABLE temp_test AS SELECT 2.1 AS statistic, 0.03 AS P_VALUE")
+    llm = PromptSpy()
+    supporting = [("t-тест", "temp_test")]
+    asyncio.run(
+        InsightGenerator(llm=llm, db=db).generate("Различаются?", "temp_result_v1", supporting)
+    )
+    assert "Сопутствующие результаты" in llm.prompt
+    assert "p_value < 0.05" in llm.prompt
+
+
+def test_supporting_without_p_value_has_no_threshold(db, fixes):
+    db.execute("CREATE TABLE temp_stats AS SELECT 5.0 AS mean, 1.2 AS std")
+    llm = PromptSpy()
+    supporting = [("Статистики", "temp_stats")]
+    asyncio.run(
+        InsightGenerator(llm=llm, db=db).generate("Какие цены?", "temp_result_v1", supporting)
+    )
+    assert "Сопутствующие результаты" in llm.prompt
+    assert "0.05" not in llm.prompt

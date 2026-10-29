@@ -1,5 +1,17 @@
 2026-10-29  thebulkapro  <saitbatalovbulat200@gmail.com>
 
+	Блок о стат-тестах в инсайте — только когда тесты были (#216, п. 5).
+	* backend/app/core/llm/prompts/insight_summary.py (INSIGHT_SUMMARY):
+	Без блока «Сопутствующие результаты».  (INSIGHT_SUPPORTING)
+	(P_VALUE_RULE): Новые.
+	* backend/app/core/agent/insight.py (generate): Сопутствующие
+	результаты — при непустом supporting, порог p_value — при колонке
+	p_value в результате или сопутствующих таблицах; в обеих ветках
+	agent_quality_fixes.  (has_p_value, describe_supporting): Новые.
+	* backend/tests/unit/test_insight_generator.py: Промпт без тестов,
+	с p_value в результате и в сопутствующих таблицах.
+	* docs/prompts.md: То же.
+
 	Точность малых дробных чисел в промпте инсайта (#216, п. 4).
 	* backend/app/core/agent/quality_fixes.py (_round): При |x| < 1 —
 	3 значащие цифры вместо 2 знаков: доля 0,0259 больше не попадает

@@ -11,7 +11,13 @@ from app.config import settings
 from app.core.agent.quality_fixes import format_rows, insight_facts, ungrounded_numbers
 from app.core.data.duckdb_manager import DuckDBManager
 from app.core.llm.client import LLMClient
-from app.core.llm.prompts.insight_summary import INSIGHT_MEMORIES, INSIGHT_SUMMARY, TILE_INSIGHT
+from app.core.llm.prompts.insight_summary import (
+    INSIGHT_MEMORIES,
+    INSIGHT_SUMMARY,
+    INSIGHT_SUPPORTING,
+    P_VALUE_RULE,
+    TILE_INSIGHT,
+)
 from app.core.llm.prompts.quality_rules import (
     INSIGHT_RULES,
     MANY_ROWS,
@@ -64,16 +70,17 @@ class InsightGenerator:
             (purpose, db.to_records(table, limit=10)) for purpose, table in supporting or []
         ]
         notes = describe_memories(memories or [])
+        tested = has_p_value([result, *(rows for _, rows in supporting)])
         if not settings.agent_quality_fixes:
             extra = "\n".join(f"- {purpose}: {rows}" for purpose, rows in supporting)
-            prompt = INSIGHT_SUMMARY.format(
-                question=question, result=result, supporting=extra or "нет"
-            )
+            prompt = INSIGHT_SUMMARY.format(question=question, result=result)
+            prompt += describe_supporting(extra, tested)
             return await self.llm.complete_structured("Ты — аналитик.", prompt + notes, Insight)
         # Строки — компактной таблицей с ISO-датами: repr datetime мешает модели читать ряд.
         shown = format_rows(result)
         extra = "\n".join(f"- {purpose}:\n{format_rows(rows)}" for purpose, rows in supporting)
-        prompt = INSIGHT_SUMMARY.format(question=question, result=shown, supporting=extra or "нет")
+        prompt = INSIGHT_SUMMARY.format(question=question, result=shown)
+        prompt += describe_supporting(extra, tested)
         prompt += notes
         try:
             facts = insight_facts(db, result_table, shown=SHOWN_ROWS)
@@ -120,6 +127,17 @@ def describe_steps(steps: list[ResearchStep]) -> str:
         for number, step in enumerate(steps, 1)
     ]
     return "\n".join(lines) or "нет"
+
+
+def has_p_value(tables: list[list[dict]]) -> bool:
+    """Есть ли колонка p_value хотя бы в одной таблице: только тогда нужен порог 0.05."""
+    return any("p_value" in (key.lower() for key in rows[0]) for rows in tables if rows)
+
+
+def describe_supporting(extra: str, tested: bool) -> str:
+    """Сопутствующие результаты — когда они есть, порог p_value — когда есть тест."""
+    text = INSIGHT_SUPPORTING.format(supporting=extra) if extra else ""
+    return text + (P_VALUE_RULE if tested else "")
 
 
 def describe_memories(memories: list[str]) -> str:
