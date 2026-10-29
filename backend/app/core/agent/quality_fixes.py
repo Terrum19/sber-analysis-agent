@@ -29,23 +29,30 @@ from app.core.tools.registry import tool_registry
 
 # Число: «12345», «12 345» (разряды через пробел), «12,5», «12.5».
 _NUMBER = re.compile(r"\d{1,3}(?:[   ]\d{3})+(?:[.,]\d+)?|\d+(?:[.,]\d+)?")
+_SCALES = {"тыс": 10**3, "млн": 10**6, "млрд": 10**9}
 
 
 def ungrounded_numbers(headline: str, sources: str) -> list[str]:
-    """H-Q3: числа заголовка, которых нет в sources (вопрос, результат, факты).
+    """H-Q3: числа заголовка, которых нет в sources (текст промпта инсайта).
 
     Округление допускается до точности, с которой число написано в заголовке
     («12.3» опирается на 12.34). Проценты не проверяются: доли модель считает
-    сама, в фактах их нет.
+    сама, в фактах их нет. Число со словом «тыс», «млн» или «млрд» сверяется
+    и с опорными, делёнными на масштаб («726,9 млн» — 726930548.86), и с
+    самими опорными (выручка уже в миллионах).
     """
     known = [_value(m) for m in _NUMBER.findall(sources)]
     missing = []
     for match in _NUMBER.finditer(headline):
-        if headline[match.end() :].lstrip().startswith("%"):
+        rest = headline[match.end() :].lstrip()
+        if rest.startswith("%"):
             continue
+        scale = next((size for word, size in _SCALES.items() if rest.startswith(word)), 1)
         text = match.group()
         value, tolerance = _value(text), _tolerance(text)
-        if not any(abs(value - other) <= tolerance for other in known):
+        if not any(
+            abs(value - other / divisor) <= tolerance for other in known for divisor in {1, scale}
+        ):
             missing.append(text)
     return missing
 

@@ -178,3 +178,25 @@ def test_supporting_without_p_value_has_no_threshold(db, fixes):
     )
     assert "Сопутствующие результаты" in llm.prompt
     assert "0.05" not in llm.prompt
+
+
+class Headline(PromptSpy):
+    calls = 0
+
+    async def complete_structured(self, system, user, schema):
+        self.calls += 1
+        return Insight(headline="Цена и оценка связаны: 0,42, значимо (p < 0,05)", details=[])
+
+
+def test_threshold_from_prompt_is_grounded(db):
+    db.execute("CREATE TABLE temp_test AS SELECT 0.42 AS correlation, 1e-30 AS p_value, 7 AS n")
+    llm = Headline()
+    asyncio.run(InsightGenerator(llm=llm, db=db).generate("Связаны ли?", "temp_test"))
+    assert llm.calls == 1
+
+
+def test_threshold_without_test_is_not_grounded(db):
+    db.execute("CREATE TABLE temp_corr AS SELECT 0.42 AS correlation, 7 AS n")
+    llm = Headline()
+    asyncio.run(InsightGenerator(llm=llm, db=db).generate("Связаны ли?", "temp_corr"))
+    assert llm.calls == 2

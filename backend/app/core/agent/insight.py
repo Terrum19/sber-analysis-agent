@@ -53,6 +53,8 @@ class InsightGenerator:
         supporting: list[tuple[str, str]] | None = None,
         steps: list[ResearchStep] | None = None,
         memories: list[str] | None = None,
+        source: str | None = None,
+        inputs: dict[int, str] | None = None,
     ) -> Insight:
         """Сформировать Insight по финальной таблице.
 
@@ -61,6 +63,8 @@ class InsightGenerator:
         выполненные шаги плана: без них «41» в одной строке не знает, что
         это декабрь и сумма больше 150. memories — воспоминания сессии
         («выручка — без НДС»): все включённые, применимость решает модель.
+        source — исходная таблица сессии, inputs — шаг -> его входная
+        таблица: пропуски и отсечённое лимитом видны только в них.
         """
         from app.core.data.duckdb_manager import DuckDBManager
 
@@ -94,10 +98,8 @@ class InsightGenerator:
         shape = SINGLE_ROW if rows <= 1 else MANY_ROWS.format(rows=rows)
         plan = describe_steps(steps or [])
         prompt += INSIGHT_RULES.format(plan=plan, facts=facts, shape=shape)
-        # Числа условий из шагов плана («> 150», «2024») и воспоминаний — тоже опора.
-        return await self._grounded(
-            prompt, f"{question}\n{shown}\n{extra}\n{facts}\n{plan}\n{notes}"
-        )
+        # Опора — весь промпт: условия шагов плана («> 150», «2024»), воспоминания, порог 0.05.
+        return await self._grounded(prompt)
 
     async def generate_tile_insight(self, title: str, result_table: str, chart_type: str) -> str:
         from app.core.data.duckdb_manager import DuckDBManager
@@ -108,10 +110,10 @@ class InsightGenerator:
         text = await self.llm.complete("Ты — аналитик.", prompt)
         return text.strip()
 
-    async def _grounded(self, prompt: str, sources: str) -> Insight:
-        """H-Q3: число в headline, которого нет в sources, — один переспрос."""
+    async def _grounded(self, prompt: str) -> Insight:
+        """H-Q3: число в headline, которого нет в промпте, — один переспрос."""
         insight = await self.llm.complete_structured("Ты — аналитик.", prompt, Insight)
-        missing = ungrounded_numbers(insight.headline, sources)
+        missing = ungrounded_numbers(insight.headline, prompt)
         if not missing:
             return insight
         logger.warning("инсайт: числа без опоры в фактах %s, переспрос", missing)

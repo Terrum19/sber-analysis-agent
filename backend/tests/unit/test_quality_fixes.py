@@ -59,6 +59,17 @@ def test_ungrounded_numbers_allows_rounding_and_shares() -> None:
     assert ungrounded_numbers("Москва — 40% событий", "[{'n': 4}, {'n': 6}]") == []
 
 
+def test_ungrounded_numbers_reads_thousands_and_millions() -> None:
+    from app.core.agent.quality_fixes import ungrounded_numbers
+
+    assert ungrounded_numbers("Выручка 726,9 млн руб.", "726930548.86") == []
+    assert ungrounded_numbers("Наклон ≈ 22,6 тыс. ₽/мес.", "slope 22643.75") == []
+    assert ungrounded_numbers("Выручка 0,73 млрд", "726930548.86") == []
+    assert ungrounded_numbers("Выручка 726,9 млн", "выручка_млн 726.93") == []
+    assert ungrounded_numbers("Выручка 726,9", "726930548.86") == ["726,9"]
+    assert ungrounded_numbers("Выручка 730 млн", "726930548.86") == ["730"]
+
+
 def test_time_bucket_avg_without_metric_fails_validation() -> None:
     tool = tool_registry.get("time_bucket")
     with pytest.raises(ValueError):

@@ -1,5 +1,32 @@
 2026-10-29  thebulkapro  <saitbatalovbulat200@gmail.com>
 
+	Инсайт получает исходную таблицу и входы шагов (#216, A-25.4).
+	* backend/app/core/agent/orchestrator.py (Execution): Поле inputs —
+	шаг -> его входная таблица, без второй таблицы join_tables.
+	(_finish): Заполняет inputs, в том числе для гистограммы.
+	(_turn): generate получает source (таблица сессии) и inputs — и в
+	обычном ходе, и после ответа на уточнение.
+	* backend/app/core/agent/insight.py (generate): Параметры source и
+	inputs; пока не используются, поведение не меняется.
+	* backend/tests/unit/test_orchestrator_unit.py: source и inputs в
+	generate после хода и после recovery_response.
+
+	Проверка чисел инсайта: «тыс/млн/млрд» и числа из промпта (#216,
+	п. 3).
+	* backend/app/core/agent/quality_fixes.py (ungrounded_numbers):
+	Число со словом «тыс», «млн» или «млрд» сверяется и с опорными,
+	делёнными на 10³, 10⁶ или 10⁹, и с самими опорными; допуск прежний.
+	«726,9 млн» при 726930548.86 больше не вызывает переспроса.
+	(_SCALES): Новый.
+	* backend/app/core/agent/insight.py (_grounded): Опора — весь текст
+	промпта вместо строки sources: порог 0.05 из P_VALUE_RULE опорный,
+	только когда правило попало в промпт.  (generate): То же.
+	* backend/tests/unit/test_quality_fixes.py: Тысячи, миллионы,
+	миллиарды, число без слова масштаба.
+	* backend/tests/unit/test_insight_generator.py: «p < 0,05» с p_value
+	в результате — без переспроса, без p_value — с переспросом.
+	* docs/prompts.md: То же.
+
 	Блок о стат-тестах в инсайте — только когда тесты были (#216, п. 5).
 	* backend/app/core/llm/prompts/insight_summary.py (INSIGHT_SUMMARY):
 	Без блока «Сопутствующие результаты».  (INSIGHT_SUPPORTING)
