@@ -563,3 +563,11 @@ def test_explain_tile_adds_the_kpi_value() -> None:
     assert explain_tile(total, {}, [{"n": float("nan")}]) == "сумма «amount»"
     assert explain_tile(total, {}, [{"n": "x"}]) == "сумма «amount»"
     assert explain_tile(total, {}, [{"n": 1, "m": 2}]) == "сумма «amount»"
+
+
+async def test_dashboard_request_in_chat_mode_takes_the_new_route(db) -> None:
+    llm = ScriptedLLM(DashboardOutline=[OUTLINE], ChartChoices=[RuntimeError("timeout")])
+    chat = ChatRequest(session_id="s1", question="Создай дашборд по регионам и продажам")
+    events = [event async for event in agent(db, llm).run(chat)]
+    assert kinds(events) == ["dashboard_outline", "dashboard", "text", "done"]
+    assert "enough_info всегда true" not in llm.prompts["DashboardOutline"][0]

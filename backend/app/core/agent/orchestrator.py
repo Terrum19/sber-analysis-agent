@@ -62,7 +62,7 @@ import duckdb
 
 from app.api.schemas.chat import ChatRequest, DashboardPayload, ProgressPayload
 from app.core.agent.insight import InsightGenerator
-from app.core.agent.planner import PlanInvalid, StepPlanner
+from app.core.agent.planner import PlanInvalid, StepPlanner, is_dashboard_question
 from app.core.agent.recovery import STEP_FIX_ATTEMPTS, fixable
 from app.core.agent.step_executor import StepExecutor, resolve_input, tool_kind
 from app.core.agent.triage import small_talk_reply
@@ -295,8 +295,12 @@ class AgentOrchestrator:
         set_turn_id(turn_id)
         logger.info("ход начат: вопрос=%r", request.question)
 
-        if request.mode == "dashboard":
-            # Дашборд по кнопке (#224): свой маршрут, без small talk, обзора и плана хода.
+        # Дашборд по кнопке (#224) — свой маршрут, без small talk, обзора и плана
+        # хода. Просьба о дашборде текстом в обычном чате идёт туда же, а не в
+        # старую сборку плиток планировщиком с шаблонами.
+        if request.mode == "dashboard" or (
+            pending is None and is_dashboard_question(request.question)
+        ):
             from app.core.agent.dashboard_turn import DashboardTurn
 
             logger.info("маршрут: дашборд")
