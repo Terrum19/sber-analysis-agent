@@ -652,11 +652,96 @@ def test_build_dashboard_header_variations(tmp_path: Path) -> None:
     exporter.export_dashboard(
         dash,
         out_pdf,
-        session_title="Сессия 1",
+        database_name="Недвижимость Бангалора",
         source_name="baza.csv",
     )
     reader = pypdf.PdfReader(out_pdf)
     text = reader.pages[0].extract_text() or ""
-    assert "Сессия: Сессия 1" in text
+    assert "База данных: Недвижимость Бангалора" in text
+    assert "Сессия:" not in text
     assert "Источник: baza.csv" in text
     assert "Всего плиток: 1" in text
+
+
+def test_export_dashboard_pdf_resolves_database_from_profile_memory(tmp_path: Path) -> None:
+    """Тест автоматического разрешения человекочитаемого названия базы данных из ProfileMemory."""
+    db = DuckDBManager()
+    db.execute("CREATE OR REPLACE TABLE bangalore_test AS SELECT 1 AS id, 200 AS price")
+    from app.core.memory.profile_memory import ProfileMemory
+
+    ProfileMemory(db)
+    db.execute(
+        "INSERT OR REPLACE INTO _meta.table_passport "
+        "(table_name, row_count, column_count, empty_rows, profiled_at, display_name) "
+        "VALUES ('bangalore_test', 1, 2, 0, now(), 'Недвижимость Бангалора')"
+    )
+
+    from app.core.memory.session_memory import SessionMemory
+
+    memory = SessionMemory("sess-auto", db)
+    memory.set_table("bangalore_test")
+
+    dash = Dashboard(
+        id="d-auto-db",
+        session_id="sess-auto",
+        title="Дашборд дома Индии",
+        tiles=[DashboardTile(title="Цены", result_table="bangalore_test")],
+    )
+
+    out_pdf = str(tmp_path / "auto_db_test.pdf")
+    exporter = PdfExporter()
+    exporter.export_dashboard(dash, out_pdf, db=db)
+
+    reader = pypdf.PdfReader(out_pdf)
+    text = reader.pages[0].extract_text() or ""
+    assert "База данных: Недвижимость Бангалора" in text
+    assert "Сессия:" not in text
+    assert "Всего плиток: 1" in text
+
+
+def test_export_dashboard_pdf_resolves_database_from_tile_profile_memory(tmp_path: Path) -> None:
+    """Тест разрешения display_name базы данных из плиток, когда сессия не привязана к таблице."""
+    db = DuckDBManager()
+    db.execute("CREATE OR REPLACE TABLE houses AS SELECT 1 AS id, 100 AS price")
+    from app.core.memory.profile_memory import ProfileMemory
+
+    ProfileMemory(db)
+    db.execute(
+        "INSERT OR REPLACE INTO _meta.table_passport "
+        "(table_name, row_count, column_count, empty_rows, profiled_at, display_name) "
+        "VALUES ('houses', 1, 2, 0, now(), 'Жилая недвижимость')"
+    )
+
+    dash = Dashboard(
+        id="d-tiles-only",
+        session_id="no-sess",
+        title="Сводный дашборд",
+        tiles=[DashboardTile(title="Цены домов", result_table="houses")],
+    )
+
+    out_pdf = str(tmp_path / "tiles_only.pdf")
+    exporter = PdfExporter()
+    exporter.export_dashboard(dash, out_pdf, db=db)
+
+    reader = pypdf.PdfReader(out_pdf)
+    text = reader.pages[0].extract_text() or ""
+    assert "База данных: Жилая недвижимость" in text
+    assert "Всего плиток: 1" in text
+
+
+def test_export_dashboard_pdf_resolves_database_handles_exception(tmp_path: Path) -> None:
+    """Проверка устойчивости к ошибкам чтения display_name из плитки."""
+
+    class BrokenDb:
+        pass
+
+    dash = Dashboard(
+        id="d-broken-db",
+        session_id="no-sess",
+        title="Сводный дашборд",
+        tiles=[DashboardTile(title="Цены", result_table="houses")],
+    )
+    out_pdf = str(tmp_path / "broken_db.pdf")
+    exporter = PdfExporter()
+    exporter.export_dashboard(dash, out_pdf, db=BrokenDb())  # type: ignore
+    assert Path(out_pdf).exists()

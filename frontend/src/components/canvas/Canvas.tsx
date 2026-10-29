@@ -345,7 +345,11 @@ export default function Canvas({ sessionId }: Props) {
         .flatMap((d) => d.sessions)
         .find((s) => s.id === sessionId);
       const sessionTitle = sessionObj?.title;
-      const sourceName = sessionDatabase?.fileName || sessionDatabase?.title;
+      const databaseName = sessionDatabase?.title || sessionDatabase?.fileName;
+      const sourceName =
+        sessionDatabase?.fileName && sessionDatabase?.fileName !== databaseName
+          ? sessionDatabase.fileName
+          : undefined;
 
       const { blob, filename } = await exportArtifact(
         {
@@ -354,6 +358,7 @@ export default function Canvas({ sessionId }: Props) {
           dashboard_id: targetDashboardId,
           title: exportTitle,
           session_title: sessionTitle,
+          database_name: databaseName,
           source_name: sourceName,
         },
         safeFilename(exportTitle, format),

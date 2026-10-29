@@ -42,7 +42,7 @@ from reportlab.platypus import (
 from app.config import settings
 from app.core.dashboards.models import Dashboard, DashboardTile
 from app.core.data.duckdb_manager import DuckDBManager
-from app.core.export.charts import render_chart_png
+from app.core.export.charts import is_table_spec, render_chart_png
 
 logger = logging.getLogger(__name__)
 
@@ -374,6 +374,7 @@ class PdfExporter:
         details: list[str] | None = None,
         chart_png: bytes | None = None,
         title: str = "Аналитический отчёт",
+        is_table: bool = False,
     ) -> str:
         """Скомпилировать PDF-отчёт формата Business Memo.
 
@@ -385,6 +386,7 @@ class PdfExporter:
             details: Маркированный список деталей инсайта.
             chart_png: Байты растрового графика Vega-Lite в PNG.
             title: Заголовок отчёта в шапке.
+            is_table: Флаг табличного артефакта (режим одиночной таблицы без графика).
 
         Returns:
             Путь к сгенерированному файлу.
@@ -418,11 +420,14 @@ class PdfExporter:
             bottomMargin=36,
         )
         printable_width = A4[0] - doc.leftMargin - doc.rightMargin  # 523.27 pt
+        printable_height = A4[1] - doc.topMargin - doc.bottomMargin  # 769.89 pt
 
         styles = self._build_styles()
         elements: list[Any] = []
 
-        has_page1_content = bool(question or headline or details or chart_png)
+        has_page1_content = bool(
+            question or headline or details or chart_png or (is_table and records)
+        )
 
         if has_page1_content:
             elements.extend(self._build_header(title, printable_width, styles))
@@ -479,7 +484,31 @@ class PdfExporter:
                 elements.append(insight_table)
                 elements.append(Spacer(1, 10))
 
-            if chart_png:
+            if is_table and records:
+                elements.append(Paragraph("Данные таблицы", styles["SectionHeading"]))
+                elements.append(Spacer(1, 4))
+                used_height = 0.0
+                for elem in elements:
+                    if hasattr(elem, "wrap"):
+                        _w, h = elem.wrap(printable_width, printable_height)
+                        used_height += h
+                available_table_height = max(100.0, printable_height - used_height - 25.0)
+
+                candidate_rows = records[:50]
+                table_flowable = None
+                while candidate_rows:
+                    t = self._build_data_table(candidate_rows, printable_width, styles)
+                    if t is None:
+                        break
+                    _w, h = t.wrap(printable_width, 10000)
+                    if h <= available_table_height or len(candidate_rows) <= 3:
+                        table_flowable = t
+                        break
+                    candidate_rows = candidate_rows[: max(1, len(candidate_rows) - 2)]
+
+                if table_flowable:
+                    elements.append(table_flowable)
+            elif chart_png:
                 elements.append(Paragraph("Визуализация данных", styles["SectionHeading"]))
                 elements.append(Spacer(1, 4))
                 img_flowable = self._build_image(
@@ -489,14 +518,14 @@ class PdfExporter:
                     elements.append(img_flowable)
                     elements.append(Spacer(1, 6))
 
-            if records:
+            if not is_table and records:
                 elements.append(Spacer(1, 4))
                 hint_text = "<i>Таблица с детальными показателями приведена в приложении ниже.</i>"
                 elements.append(Paragraph(hint_text, styles["Footnote"]))
                 elements.append(PageBreak())
 
         # page 2
-        if records:
+        if not is_table and records:
             max_table_height = 715.0
             candidate_rows = records[:50]
             table_flowable = None
@@ -539,9 +568,12 @@ class PdfExporter:
         db: DuckDBManager | None = None,
         session_title: str | None = None,
         source_name: str | None = None,
+        database_name: str | None = None,
     ) -> tuple[str | None, str | None]:
-        """Определить человекочитаемое название сессии и имя источника данных."""
-        resolved_title = session_title.strip() if session_title and session_title.strip() else None
+        """Определить человекочитаемое название базы данных / сессии и имя источника данных."""
+        resolved_title = (
+            database_name.strip() if database_name and database_name.strip() else None
+        ) or (session_title.strip() if session_title and session_title.strip() else None)
         resolved_source = source_name.strip() if source_name and source_name.strip() else None
 
         if dashboard.session_id and (not resolved_title or not resolved_source):
@@ -550,8 +582,16 @@ class PdfExporter:
 
                 memory = SessionMemory(dashboard.session_id, db=db)
                 if memory.exists():
+                    if not resolved_title and memory.table and db is not None:
+                        from app.core.memory.profile_memory import ProfileMemory
+
+                        dname = ProfileMemory(db).load_display_name(memory.table)
+                        if dname and dname.strip():
+                            resolved_title = dname.strip()
+
                     if not resolved_title and memory.title:
                         resolved_title = memory.title.strip()
+
                     if not resolved_source:
                         ds_id = memory.datasource_id
                         if ds_id and ds_id.startswith("csv_"):
@@ -573,13 +613,25 @@ class PdfExporter:
                     "Не удалось извлечь метаданные сессии %s: %s", dashboard.session_id, exc
                 )
 
+        if not resolved_title and db is not None:
+            for tile in dashboard.tiles:
+                if tile.result_table and not tile.result_table.startswith("temp_result_"):
+                    try:
+                        from app.core.memory.profile_memory import ProfileMemory
+
+                        dname = ProfileMemory(db).load_display_name(tile.result_table)
+                        if dname and dname.strip():
+                            resolved_title = dname.strip()
+                            break
+                    except Exception as exc:  # noqa: BLE001
+                        logger.debug("Не удалось извлечь display_name из плитки: %s", exc)
+
         if not resolved_source:
             for tile in dashboard.tiles:
                 if tile.result_table and not tile.result_table.startswith("temp_result_"):
                     resolved_source = tile.result_table
                     break
 
-        # Если название сессии представляет собой UUID или хеш — не выводим его
         if resolved_title and re.fullmatch(r"^[0-9a-fA-F-]{20,}$", resolved_title):
             resolved_title = None
 
@@ -592,6 +644,7 @@ class PdfExporter:
         db: DuckDBManager | None = None,
         session_title: str | None = None,
         source_name: str | None = None,
+        database_name: str | None = None,
     ) -> str:
         """Скомпилировать представительский PDF-отчёт по дашборду.
 
@@ -601,6 +654,7 @@ class PdfExporter:
             db: Менеджер DuckDB для чтения связанных таблиц (при необходимости).
             session_title: Название сессии диалога (если известно).
             source_name: Название файла данных или базы данных (если известно).
+            database_name: Человекочитаемое название базы данных из интерфейса.
 
         Returns:
             Путь к сгенерированному файлу.
@@ -617,11 +671,12 @@ class PdfExporter:
         styles = self._build_styles()
         elements: list[Any] = []
 
-        resolved_stitle, resolved_source = self._resolve_dashboard_meta(
+        resolved_db, resolved_source = self._resolve_dashboard_meta(
             dashboard=dashboard,
             db=db,
             session_title=session_title,
             source_name=source_name,
+            database_name=database_name,
         )
 
         # Фирменная шапка дашборда
@@ -633,7 +688,7 @@ class PdfExporter:
                 tile_count=len(dashboard.tiles),
                 printable_width=printable_width,
                 styles=styles,
-                session_title=resolved_stitle,
+                database_name=resolved_db,
                 source_name=resolved_source,
             )
         )
@@ -694,6 +749,7 @@ class PdfExporter:
         styles: dict[str, ParagraphStyle] | None = None,
         session_title: str | None = None,
         source_name: str | None = None,
+        database_name: str | None = None,
     ) -> list[Any]:
         """Сформировать фирменную шапку дашборда с логотипом Сбера и метаданными."""
         if styles is None:
@@ -707,14 +763,19 @@ class PdfExporter:
         clean_title = sanitize_text(truncate_text(title, MAX_TITLE_LENGTH))
 
         meta_parts: list[str] = []
-        if session_title and session_title.strip():
-            clean_stitle = sanitize_text(truncate_text(session_title.strip(), 40))
-            if clean_stitle and clean_stitle.lower() != clean_title.lower():
-                meta_parts.append(f"Сессия: {clean_stitle}")
+        db_label = database_name or session_title
+        if db_label and db_label.strip():
+            clean_dbname = sanitize_text(truncate_text(db_label.strip(), 40))
+            if clean_dbname and clean_dbname.lower() != clean_title.lower():
+                meta_parts.append(f"База данных: {clean_dbname}")
 
         if source_name and source_name.strip():
             clean_source = sanitize_text(truncate_text(source_name.strip(), 40))
-            if clean_source:
+            if (
+                clean_source
+                and clean_source.lower() != clean_title.lower()
+                and (not db_label or clean_source.lower() != db_label.strip().lower())
+            ):
                 meta_parts.append(f"Источник: {clean_source}")
 
         meta_parts.append(f"Всего плиток: {tile_count}")
@@ -878,11 +939,7 @@ class PdfExporter:
 
         # Рендеринг графика (Vega-Lite)
         chart_png: bytes | None = None
-        is_table_type = bool(
-            tile.spec
-            and isinstance(tile.spec, dict)
-            and tile.spec.get("usermeta", {}).get("chart_type") == "table"
-        )
+        is_table_type = bool(tile.spec and isinstance(tile.spec, dict) and is_table_spec(tile.spec))
 
         if not is_table_type and tile.spec and isinstance(tile.spec, dict):
             spec_to_render = copy.deepcopy(tile.spec)

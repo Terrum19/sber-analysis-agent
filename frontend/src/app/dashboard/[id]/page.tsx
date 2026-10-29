@@ -342,7 +342,11 @@ export default function DashboardPage({ params }: { params: { id: string } }) {
         .flatMap((d) => d.sessions)
         .find((s) => s.id === targetSessionId);
       const sessionTitle = sessionObj?.title;
-      const sourceName = sessionDatabase?.fileName || sessionDatabase?.title;
+      const databaseName = sessionDatabase?.title || sessionDatabase?.fileName;
+      const sourceName =
+        sessionDatabase?.fileName && sessionDatabase?.fileName !== databaseName
+          ? sessionDatabase.fileName
+          : undefined;
 
       const { blob, filename } = await exportArtifact(
         {
@@ -351,6 +355,7 @@ export default function DashboardPage({ params }: { params: { id: string } }) {
           dashboard_id: params.id,
           title: exportTitle,
           session_title: sessionTitle,
+          database_name: databaseName,
           source_name: sourceName,
         },
         safeFilename(exportTitle, format),

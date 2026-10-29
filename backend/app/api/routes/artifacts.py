@@ -20,7 +20,7 @@ from app.api.schemas.chat import ExportRequest
 from app.config import settings
 from app.core.dashboards.store import DashboardStore
 from app.core.data.duckdb_manager import DuckDBManager
-from app.core.export.charts import render_chart_png
+from app.core.export.charts import is_table_spec, render_chart_png
 from app.core.export.excel import ExcelExporter
 from app.core.export.pdf import PdfExporter
 from app.core.memory.session_memory import SessionMemory
@@ -88,6 +88,7 @@ def export_artifact(
                     db=db,
                     session_title=payload.session_title,
                     source_name=payload.source_name,
+                    database_name=payload.database_name,
                 )
             except Exception as exc:
                 logger.error("Ошибка при генерации PDF дашборда: %s", exc)
@@ -178,12 +179,17 @@ def export_artifact(
         )
 
     # payload.format == "pdf"
+    is_table = is_table_spec(payload.spec)
     chart_spec = copy.deepcopy(payload.spec) if payload.spec else None
     if chart_spec and records:
         spec_data = chart_spec.get("data")
         if not isinstance(spec_data, dict) or not isinstance(spec_data.get("values"), list):
             chart_spec["data"] = {"values": records}
-    chart_png = render_chart_png(chart_spec) if chart_spec else None
+
+    chart_png = None
+    if not is_table and chart_spec:
+        chart_png = render_chart_png(chart_spec)
+
     filename = f"{safe_name}.pdf"
     path = export_dir / filename
     try:
@@ -195,6 +201,7 @@ def export_artifact(
             details=payload.details,
             chart_png=chart_png,
             title=export_title,
+            is_table=is_table,
         )
     except Exception as exc:
         logger.error("Ошибка при генерации PDF отчёта: %s", exc)

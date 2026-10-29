@@ -590,6 +590,8 @@ export interface ExportPayload {
   title?: string;
   /** Название сессии для шапки отчёта дашборда. */
   session_title?: string;
+  /** Название базы данных для шапки отчёта дашборда. */
+  database_name?: string;
   /** Название источника / базы данных / файла для шапки отчёта дашборда. */
   source_name?: string;
   /** Vega-Lite спека графика — для картинки в PDF (E-01). */
