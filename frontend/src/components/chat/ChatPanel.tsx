@@ -436,6 +436,7 @@ export default function ChatPanel({ sessionId }: Props) {
         .slice(0, index)
         .reverse()
         .find((x) => x.role === "user")?.content;
+      const exportTitle = (msg.chart.caption || t("chat.exportFallbackName")).trim();
       const { blob, filename } = await exportArtifact(
         {
           session_id: sessionId,
@@ -445,8 +446,9 @@ export default function ChatPanel({ sessionId }: Props) {
           headline: msg.chart.caption,
           details: msg.content ? [msg.content] : undefined,
           spec: msg.chart.spec,
+          title: exportTitle,
         },
-        safeFilename(msg.chart.caption || t("chat.exportFallbackName"), "pdf"),
+        safeFilename(exportTitle, "pdf"),
       );
       downloadBlob(blob, filename);
     } catch (err: any) {

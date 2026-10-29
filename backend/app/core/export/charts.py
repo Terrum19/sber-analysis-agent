@@ -102,8 +102,18 @@ def normalize_spec(spec: dict[str, Any], width: int = DEFAULT_WIDTH) -> dict[str
 
     Убирает динамические размеры браузерного контейнера ("container"),
     так как vl-convert работает вне DOM-окружения.
+    Также удаляет встроенный заголовок графика (spec["title"]),
+    поскольку заголовок графика/плитки выводится средствами документа (PDF).
     """
     normalized = copy.deepcopy(spec)
+    normalized.pop("title", None)
+    for concat_key in ("concat", "vconcat", "hconcat", "layer"):
+        if concat_key in normalized and isinstance(normalized[concat_key], list):
+            for subview in normalized[concat_key]:
+                if isinstance(subview, dict):
+                    subview.pop("title", None)
+    if "spec" in normalized and isinstance(normalized["spec"], dict):
+        normalized["spec"].pop("title", None)
 
     is_concat = any(k in normalized for k in ("concat", "vconcat", "hconcat"))
     if normalized.get("width") == "container" or ("width" not in normalized and not is_concat):

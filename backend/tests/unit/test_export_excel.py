@@ -467,12 +467,13 @@ def test_api_export_errors(client: TestClient) -> None:
     )
     store.create(dash)
 
-    # 501 на экспорт дашборда в PDF
+    # Экспорт дашборда в PDF теперь поддержан (200 OK)
     res_pdf = client.post(
         "/api/artifacts/export",
         json={"session_id": "s1", "format": "pdf", "dashboard_id": dash.id},
     )
-    assert res_pdf.status_code == 501
+    assert res_pdf.status_code == 200
+    assert res_pdf.headers["content-type"] == "application/pdf"
 
     # 400 без session_id
     res_no_sess = client.post(
@@ -534,9 +535,10 @@ def test_api_dashboard_export_get_endpoint(client: TestClient, test_db: DuckDBMa
         res_404 = client.get("/api/dashboards/no-such-dash/export?format=xlsx")
         assert res_404.status_code == 404
 
-        # 501 на PDF
-        res_501 = client.get(f"/api/dashboards/{dash.id}/export?format=pdf")
-        assert res_501.status_code == 501
+        # Успешный экспорт в PDF
+        res_pdf = client.get(f"/api/dashboards/{dash.id}/export?format=pdf")
+        assert res_pdf.status_code == 200
+        assert res_pdf.headers["content-type"] == "application/pdf"
     finally:
         app.dependency_overrides.pop(get_db, None)
 

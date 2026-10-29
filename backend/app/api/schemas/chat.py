@@ -178,5 +178,8 @@ class ExportRequest(BaseModel):
     dashboard_id: str | None = Field(default=None, max_length=64)
     question: str | None = Field(default=None, max_length=5000)
     headline: str | None = Field(default=None, max_length=3000)
+    title: str | None = Field(default=None, max_length=500)
+    session_title: str | None = Field(default=None, max_length=500)
+    source_name: str | None = Field(default=None, max_length=500)
     details: list[str] | None = Field(default=None, max_length=100)
     spec: dict[str, Any] | None = None

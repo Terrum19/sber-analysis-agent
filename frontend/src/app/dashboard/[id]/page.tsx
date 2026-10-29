@@ -30,7 +30,7 @@ import { useOpenArtifact } from "@/hooks/useOpenArtifact";
 import { useAskAgent } from "@/hooks/useAskAgent";
 import { useElementSize } from "@/hooks/useElementSize";
 import { drillQuestion, type ChartSelection } from "@/lib/chartSelection";
-import { downloadBlob } from "@/lib/download";
+import { downloadBlob, safeFilename } from "@/lib/download";
 import { useSessionStore } from "@/store/sessionStore";
 import { useUiStore } from "@/store/uiStore";
 import { useDateLocale, useT } from "@/i18n/useT";
@@ -323,37 +323,37 @@ export default function DashboardPage({ params }: { params: { id: string } }) {
     setIsExporting(format);
     setExportMenuOpen(false);
     try {
-      const source = [...config.tiles].reverse().find((tile) => tile.result_table);
-      const target = source ?? config.tiles[0];
-
-      // Готовим спецификацию с данными (из spec или snapshot_data)
-      let spec = target?.spec as Record<string, any> | undefined;
-      const specData = spec?.data as Record<string, any> | undefined;
-      if (
-        spec &&
-        Array.isArray(target?.snapshot_data) &&
-        (!specData || !Array.isArray(specData.values))
-      ) {
-        spec = { ...spec, data: { values: target.snapshot_data } };
-      } else if (!spec && Array.isArray(target?.snapshot_data)) {
-        spec = { data: { values: target.snapshot_data } };
+      const exportTitle = (config.title || t("tabs.dashboard")).trim();
+      try {
+        await updateDashboard(params.id, {
+          title: exportTitle,
+          tiles: config.tiles,
+        });
+      } catch {
+        // Continue with export even if background save fails
       }
+
+      const targetSessionId = config.session_id || params.id;
+      const sState = useSessionStore.getState();
+      const sessionDatabase = sState.databases.find(
+        (d) => d.id === sState.sessionDatabase[targetSessionId]
+      );
+      const sessionObj = sState.databases
+        .flatMap((d) => d.sessions)
+        .find((s) => s.id === targetSessionId);
+      const sessionTitle = sessionObj?.title;
+      const sourceName = sessionDatabase?.fileName || sessionDatabase?.title;
 
       const { blob, filename } = await exportArtifact(
         {
-          session_id: config.session_id || params.id,
+          session_id: targetSessionId,
           format,
-          result_ref: source?.result_table,
           dashboard_id: params.id,
-          ...(target
-            ? {
-                headline: target.title || target.insight,
-                details: target.insight ? [target.insight] : undefined,
-                spec,
-              }
-            : {}),
+          title: exportTitle,
+          session_title: sessionTitle,
+          source_name: sourceName,
         },
-        `${config.title || "dashboard"}.${format}`,
+        safeFilename(exportTitle, format),
       );
       downloadBlob(blob, filename);
       flash(format === "pdf" ? t("canvas.pdfDone") : t("canvas.xlsxDone"), 3500);
@@ -546,18 +546,20 @@ export default function DashboardPage({ params }: { params: { id: string } }) {
                   <div className="absolute right-0 top-full z-50 mt-1 w-40 rounded-lg border border-graphite-700 bg-graphite-850 p-1 shadow-2xl">
                     <button
                       onClick={() => handleExport("xlsx")}
-                      disabled={!hasResultTable}
+                      disabled={!hasResultTable || isExporting !== null}
                       title={!hasResultTable ? t("canvas.exportNoTable") : undefined}
-                      className="flex w-full rounded-md px-2.5 py-1.5 text-left text-[12px] text-graphite-200 hover:bg-graphite-700 disabled:cursor-not-allowed disabled:opacity-50"
+                      className="flex w-full items-center justify-between rounded-md px-2.5 py-1.5 text-left text-[12px] text-graphite-200 hover:bg-graphite-700 disabled:cursor-not-allowed disabled:opacity-50"
                     >
-                      {t("canvas.exportXlsx")}
+                      <span>{t("canvas.exportXlsx")}</span>
+                      {isExporting === "xlsx" && <Icon name="refresh" size={12} className="animate-spin text-graphite-400" />}
                     </button>
                     <button
-                      disabled
-                      title={t("chat.exportPdfSoon")}
-                      className="flex w-full rounded-md px-2.5 py-1.5 text-left text-[12px] text-graphite-400 opacity-50 cursor-not-allowed"
+                      onClick={() => handleExport("pdf")}
+                      disabled={isExporting !== null || config.tiles.length === 0}
+                      className="flex w-full items-center justify-between rounded-md px-2.5 py-1.5 text-left text-[12px] text-graphite-200 hover:bg-graphite-700 disabled:cursor-not-allowed disabled:opacity-50"
                     >
-                      {t("canvas.exportPdf")}
+                      <span>{t("canvas.exportPdf")}</span>
+                      {isExporting === "pdf" && <Icon name="refresh" size={12} className="animate-spin text-graphite-400" />}
                     </button>
                   </div>
                 )}

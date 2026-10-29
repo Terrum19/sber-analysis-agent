@@ -586,6 +586,12 @@ export interface ExportPayload {
   headline?: string;
   /** Детали инсайта — для PDF-отчёта (E-01). */
   details?: string[];
+  /** Заголовок отчёта / дашборда из интерфейса. */
+  title?: string;
+  /** Название сессии для шапки отчёта дашборда. */
+  session_title?: string;
+  /** Название источника / базы данных / файла для шапки отчёта дашборда. */
+  source_name?: string;
   /** Vega-Lite спека графика — для картинки в PDF (E-01). */
   spec?: Record<string, unknown>;
 }

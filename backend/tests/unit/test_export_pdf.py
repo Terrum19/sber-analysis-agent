@@ -173,7 +173,8 @@ def test_5_api_export_pdf_endpoint(client: TestClient, tmp_path: Path) -> None:
     response = client.post("/api/artifacts/export", json=payload)
     assert response.status_code == 200
     assert response.headers["content-type"] == "application/pdf"
-    assert response.headers["content-disposition"].startswith('attachment; filename="agent_export_')
+    assert "attachment;" in response.headers["content-disposition"]
+    assert ".pdf" in response.headers["content-disposition"]
     assert response.content.startswith(b"%PDF")
 
     # Проверяем, что полученный PDF валиден
@@ -232,7 +233,8 @@ def test_api_export_xlsx_endpoint(client: TestClient, tmp_path: Path) -> None:
     )
     assert resp.status_code == 200
     assert "spreadsheetml" in resp.headers["content-type"]
-    assert resp.headers["content-disposition"].startswith('attachment; filename="agent_export_')
+    assert "attachment;" in resp.headers["content-disposition"]
+    assert ".xlsx" in resp.headers["content-disposition"]
 
 
 def test_xml_escaping_in_pdf_report(tmp_path: Path) -> None:
@@ -368,6 +370,7 @@ def test_charts_edge_cases(monkeypatch) -> None:
             raise ImportError("no vl_convert")
         return real_import(name, *args, **kwargs)
 
+    assert fake_import("math") is not None
     monkeypatch.setattr(builtins, "__import__", fake_import)
     assert render_chart_png(SAMPLE_SPEC) is None
 

@@ -24,6 +24,8 @@ interface Props {
   compact?: boolean;
   /** Встроить в шапку плитки: без внешнего отступа и служебных подписей. */
   inline?: boolean;
+  /** Заголовок для экспорта. */
+  title?: string;
 }
 
 export default function AnswerExport({
@@ -35,6 +37,7 @@ export default function AnswerExport({
   resultTable,
   compact = false,
   inline = false,
+  title,
 }: Props) {
   const t = useT();
   const [busy, setBusy] = useState<"xlsx" | "pdf" | null>(null);
@@ -49,7 +52,8 @@ export default function AnswerExport({
     setBusy(format);
     setError(null);
     try {
-      const fallback = safeFilename(headline || t("chat.exportFallbackName"), format);
+      const exportTitle = (title || headline || t("chat.exportFallbackName")).trim();
+      const fallback = safeFilename(exportTitle, format);
       const { blob, filename } = await exportArtifact(
         {
           session_id: sessionId,
@@ -59,6 +63,7 @@ export default function AnswerExport({
           headline,
           details,
           spec,
+          title: exportTitle,
         },
         fallback,
       );
@@ -101,13 +106,15 @@ export default function AnswerExport({
       </button>
       <button
         type="button"
-        disabled
+        onClick={() => handleExport("pdf")}
+        disabled={!canPdf || busy !== null}
         className={buttonClass}
-        title={t("chat.exportPdfSoon")}
+        title={canPdf ? t("chat.exportPdf") : t("chat.exportNoTable")}
       >
         <Icon
-          name="download"
+          name={busy === "pdf" ? "refresh" : "download"}
           size={compact ? 11 : 12}
+          className={busy === "pdf" ? "animate-spin" : ""}
         />
         <span>{t("chat.exportPdf")}</span>
       </button>
