@@ -404,3 +404,22 @@ export function mockStreamChat(
     onClose?.();
   };
 }
+
+/** Варианты дашборда для мок-режима (#224). */
+export async function mockDashboardIdeas(exclude: string[] = []) {
+  await new Promise((resolve) => setTimeout(resolve, 1200));
+  const base = [
+    { title: "Выручка по регионам", description: "Какие регионы приносят больше всего и как меняется их доля" },
+    { title: "Динамика продаж", description: "Как выручка и число заказов меняются по месяцам" },
+    { title: "Товарные категории", description: "Какие категории самые прибыльные и где больше возвратов" },
+    { title: "Сегменты покупателей", description: "Кто покупает чаще и на какие суммы" },
+  ];
+  if (exclude.length === 0) return base.map((idea, i) => ({ ...idea, id: String(i + 1) }));
+  // Новая пачка: варианты, которых ещё не было
+  const fresh: { id: string; title: string; description: string }[] = [];
+  for (let n = 1; fresh.length < 4; n += 1) {
+    const title = `Дополнительный срез ${n}`;
+    if (!exclude.includes(title)) fresh.push({ id: String(fresh.length + 1), title, description: "Ещё один взгляд на данные" });
+  }
+  return fresh;
+}
