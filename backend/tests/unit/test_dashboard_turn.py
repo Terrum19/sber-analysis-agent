@@ -452,3 +452,51 @@ async def test_outline_raw_answer_may_be_unavailable(db, caplog) -> None:
     )
     await collect(agent(db, llm), question="Сделай дашборд")
     assert any("(? симв.): недоступен" in record.getMessage() for record in caplog.records)
+
+
+def test_outline_schema_requires_all_keys() -> None:
+    schema = DashboardOutline.model_json_schema()
+    assert schema["required"] == ["enough_info", "title", "tiles"]
+    assert DashboardOutline.model_validate({"title": "x"}).tiles == []
+
+
+def test_tiles_swallowed_by_title_are_recovered() -> None:
+    # Ответ qwen из лога: title закрыт одинарной кавычкой, плитки ушли в его текст.
+    title = (
+        'Товары с наибольшей выручкой\',\n  "tiles": [\n    {"title": "Общая выручка", '
+        '"question": "Сколько выручки", "intent": "kpi"},\n    {"title": "Топ", '
+        '"question": "Выручка по товарам"}\n  ]\n}'
+    )
+    outline = DashboardOutline.model_validate({"enough_info": True, "title": title})
+    assert outline.title == "Товары с наибольшей выручкой"
+    assert [tile.title for tile in outline.tiles] == ["Общая выручка", "Топ"]
+
+
+@pytest.mark.parametrize(
+    "title",
+    ["Просто название", '"tiles" без массива', '"tiles": [{"title": "битый"', '"tiles": [1, 2]'],
+)
+def test_title_without_recoverable_tiles_is_kept(title) -> None:
+    if title == '"tiles": [1, 2]':
+        with pytest.raises(ValueError):
+            DashboardOutline.model_validate({"title": title})
+        return
+    assert DashboardOutline.model_validate({"title": title}).title == title
+
+
+async def test_retry_tells_the_model_what_was_wrong(db) -> None:
+    llm = ScriptedLLM(
+        DashboardOutline=[DashboardOutline(enough_info=False), DashboardOutline(), OUTLINE],
+        ChartChoices=[RuntimeError("timeout")],
+    )
+    idea = DashboardIdea(title="Продажи")
+    await collect(agent(db, llm), question="Продажи", idea=idea)
+    first, second = llm.prompts["DashboardOutline"][:2]
+    assert "Прошлый ответ не подошёл" not in first
+    assert "enough_info=false, но запрос — готовый вариант" in second
+    llm = ScriptedLLM(
+        DashboardOutline=[DashboardOutline(), OUTLINE], ChartChoices=[RuntimeError("t")]
+    )
+    events = await collect(agent(db, llm), question="Продажи", idea=idea)
+    assert "ключ tiles пропущен или пуст" in llm.prompts["DashboardOutline"][1]
+    assert "dashboard" in kinds(events)
