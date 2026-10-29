@@ -121,6 +121,9 @@ class ResearchPlan(BaseModel):
     remember: list[Annotated[str, Field(max_length=NOTE_LIMIT)]] = Field(
         default_factory=list, max_length=NOTES_PER_PLAN
     )
+    # answer — вопрос о прошлых ответах агента («как ты посчитал?»), а не к
+    # данным: ход отвечается по журналу ходов, без шагов (agent/explainer.py).
+    route: Literal["data", "answer"] = "data"
 
     @field_validator(
         "final_viz", "dashboard_requested", "dashboard_tiles", "remember", mode="before"
@@ -153,6 +156,13 @@ class ResearchPlan(BaseModel):
         if self.dashboard_tiles:
             self.dashboard_requested = True
         return self
+
+    @field_validator("route", mode="before")
+    @classmethod
+    def _unknown_route_is_data(cls, value: Any) -> Any:
+        """null и незнакомый маршрут — вопрос к данным: из-за поля нельзя терять план."""
+        value = value.strip().lower() if isinstance(value, str) else value
+        return value if value in ("data", "answer") else "data"
 
     @field_validator("final_viz", mode="before")
     @classmethod

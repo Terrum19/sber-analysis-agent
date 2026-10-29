@@ -1,5 +1,29 @@
 2026-10-29  Alexander Yurits  <143354682+Terrum19@users.noreply.github.com>
 
+	Вопрос о прошлых ответах агента — ответ словами, без плана.
+	* backend/app/models/research_step.py (ResearchPlan.route): Новое
+	поле: data или answer; null и незнакомое значение — data.
+	* backend/app/core/llm/prompts/step_planner.py (STEP_PLANNER): Правило
+	и пример маршрута answer; вопросы к данным со словами «почему», «как»,
+	«объясни» — data.
+	* backend/app/core/agent/explainer.py: Новый.  Ответ по журналу ходов:
+	шаги с аргументами, строки после шага, ответ и начало результата;
+	число без опоры в журнале — один переспрос.
+	* backend/app/core/llm/prompts/explainer.py: Новый.  Промпт пояснения.
+	* backend/app/core/memory/session_memory.py (finish_turn): Хранит
+	details ответа.  (explained_turns): Новая.  Последние ходы и ход из
+	reply_to.
+	* backend/app/core/agent/orchestrator.py (_research): Маршрут answer
+	без шагов — пояснение; план с шагами выполняется.  (_turn): Ответ
+	пояснения без инсайта и графика; details ответа — в ход.
+	* scripts/eval.py (check_route): Новая.  Ключ expect.route.
+	* data/eval/explain/questions.yaml: Новый.  Набор-ловушки пояснений.
+	* docs/eval.md: Набор explain и ключ route.
+	* backend/tests/unit/test_explain_turn.py: Новый.
+	* backend/tests/unit/test_eval_runner.py: Тесты route.
+
+2026-10-29  Alexander Yurits  <143354682+Terrum19@users.noreply.github.com>
+
 	Дашборд по связанным таблицам (#165 + #224).
 	* backend/app/core/data/relations.py (describe_linked): Новая.
 	Связанные таблицы и их колонки для промпта идей и плана дашборда.

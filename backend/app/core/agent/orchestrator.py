@@ -45,6 +45,10 @@ SessionMemory состояние ожидания уточнения (``pending_
 подтверждает их в ответе; просьба без вопроса к данным отвечается одним
 подтверждением, без шагов и инсайта. Воспоминания сессии идут в инсайт.
 Шаги получают память сессии: по ней read_history ищет прошлые ходы.
+
+Вопрос о прошлых ответах агента («как ты это посчитал?», «что значит
+p-value в ответе?») планировщик помечает маршрутом ``answer``: шагов нет,
+ответ строит agent/explainer.py по журналу ходов сессии.
 """
 
 import asyncio
@@ -61,6 +65,7 @@ logger = logging.getLogger(__name__)
 import duckdb
 
 from app.api.schemas.chat import ChatRequest, DashboardPayload, ProgressPayload
+from app.core.agent.explainer import Explainer
 from app.core.agent.insight import InsightGenerator
 from app.core.agent.planner import PlanInvalid, StepPlanner, is_dashboard_question
 from app.core.agent.recovery import STEP_FIX_ATTEMPTS, fixable
@@ -96,6 +101,7 @@ from app.core.viz.vega_spec_builder import (
     column_aliases,
     infer_field_types,
 )
+from app.models.insight import Insight
 from app.models.research_step import DashboardTilePlan, ResearchPlan, ResearchStep
 
 NO_TABLE_MESSAGE = "Сначала подключите данные"
@@ -162,6 +168,8 @@ class Execution:
     result_kind: str = "transform"
     # Что записано в воспоминания по просьбе этого хода.
     remembered: list[str] = field(default_factory=list)
+    # Ответ по журналу ходов (маршрут answer): шагов нет.
+    reply: Insight | None = None
 
 
 class ClarificationNeeded(Exception):
@@ -241,6 +249,7 @@ class AgentOrchestrator:
         insight_gen: InsightGenerator | None = None,
         cache: StateCache | None = None,
         db: DuckDBManager | None = None,
+        explainer: Explainer | None = None,
     ) -> None:
         # Один DuckDB на весь ход: temp_result_vN, созданные исполнителем,
         # должны читаться графиком, инсайтом и кешем из той же базы.
@@ -249,6 +258,9 @@ class AgentOrchestrator:
         self.db = shared or getattr(self.executor, "db", None) or DuckDBManager()
         self.planner = planner or StepPlanner()
         self.insight_gen = insight_gen or InsightGenerator(db=self.db)
+        # Пояснение — тем же клиентом LLM, что и вывод (у моков вывода клиента нет).
+        llm = getattr(self.insight_gen, "llm", None)
+        self.explainer = explainer or Explainer(llm=llm, db=self.db)
         self.cache = cache or StateCache(self.db)
         self.profiles = ProfileMemory(self.db)
 
@@ -430,6 +442,16 @@ class AgentOrchestrator:
         result_table = execution.result_table
         confirmation = _confirmation(execution.remembered)
 
+        if execution.reply is not None:
+            # Вопрос о прошлых ответах: ответ по журналу, без инсайта и графика.
+            reply = execution.reply
+            if confirmation:
+                reply.details.append(confirmation)
+            memory.finish_turn("ok", headline=reply.headline, details=reply.details)
+            yield {"type": "text", "data": {"headline": reply.headline, "details": reply.details}}
+            yield _done(turn_id)
+            return
+
         if confirmation and not execution.steps:
             # Только просьба запомнить: вопроса к данным нет.
             memory.finish_turn("ok", headline=confirmation)
@@ -470,6 +492,7 @@ class AgentOrchestrator:
                     headline=insight.headline,
                     result_table=result_table,
                     result_columns=self._result_columns(result_table),
+                    details=insight.details,
                 )
                 yield _done(turn_id)
                 return
@@ -525,6 +548,7 @@ class AgentOrchestrator:
             headline=insight.headline,
             result_table=result_table,
             result_columns=self._result_columns(result_table),
+            details=insight.details,
         )
         yield _done(turn_id)
 
@@ -580,8 +604,15 @@ class AgentOrchestrator:
         remembered = [item["text"] for text in plan.remember if (item := memory.remember(text))]
         if remembered:
             logger.info("<<< run() запомнено: %s", remembered)
-            if not plan.steps:
-                return request.question, Execution(result_table="", remembered=remembered)
+        if plan.route == "answer" and not plan.steps:
+            # Вопрос о прошлых ответах. План с шагами при route=answer выполняется:
+            # в сомнении лучше посчитать, чем ответить словами без расчёта.
+            logger.info("маршрут: пояснение по журналу ходов")
+            emit(_progress_event("insight", "started"))
+            reply = await self.explainer.answer(request.question, memory)
+            return request.question, Execution(result_table="", remembered=remembered, reply=reply)
+        if remembered and not plan.steps:
+            return request.question, Execution(result_table="", remembered=remembered)
         for s in plan.steps:
             logger.info(
                 "    шаг %d: tool=%s input=%s args=%s columns=%s purpose=%r",
