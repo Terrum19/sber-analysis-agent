@@ -121,6 +121,7 @@ def export_dashboard(
     title: str | None = None,
     session_title: str | None = None,
     source_name: str | None = None,
+    database_name: str | None = None,
 ) -> FileResponse:
     """Экспорт дашборда в .xlsx или .pdf."""
     dashboard = DashboardStore().get(dashboard_id)
@@ -133,12 +134,13 @@ def export_dashboard(
     dash_title = (title or dashboard.title or "dashboard").strip()
     safe_name = re.sub(r'[\\/*?:"<>|]+', "_", dash_title).strip() or "dashboard"
     filename = f"{safe_name}.{format}"
+    unique_filename = f"{safe_name}_{uuid4().hex[:8]}.{format}"
 
     export_dir = Path(settings.storage_dir) / "exports"
     export_dir.mkdir(parents=True, exist_ok=True)
 
     if format == "pdf":
-        path = export_dir / filename
+        path = export_dir / unique_filename
         try:
             PdfExporter().export_dashboard(
                 dashboard,
@@ -146,6 +148,7 @@ def export_dashboard(
                 db=db,
                 session_title=session_title,
                 source_name=source_name,
+                database_name=database_name,
             )
         except Exception as exc:
             raise HTTPException(
@@ -158,7 +161,7 @@ def export_dashboard(
             filename=filename,
         )
 
-    path = export_dir / filename
+    path = export_dir / unique_filename
     ExcelExporter().export_dashboard(dashboard, str(path), db=db)
     return FileResponse(
         path,

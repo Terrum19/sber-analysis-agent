@@ -351,8 +351,8 @@ def test_export_substantive_insight_when_title_duplicated(tmp_path: Path) -> Non
     )
     reader = pypdf.PdfReader(out)
     text = "".join(p.extract_text() or "" for p in reader.pages)
-    assert "Лидирующая позиция" in text
-    assert "25-34" in text
+    assert "Выборка содержит 3 записей" in text
+    assert "Показатели в выборке: age_bucket, n" in text
     assert "Для выгрузки полного массива данных используйте экспорт в Excel" not in text
     assert "Таблица с детальными показателями приведена в приложении ниже" in text
 
@@ -745,3 +745,99 @@ def test_export_dashboard_pdf_resolves_database_handles_exception(tmp_path: Path
     exporter = PdfExporter()
     exporter.export_dashboard(dash, out_pdf, db=BrokenDb())  # type: ignore
     assert Path(out_pdf).exists()
+
+
+def test_tile_card_chart_failure_and_table_truncation(tmp_path: Path, monkeypatch) -> None:
+    """Проверка плитки при сбое рендеринга графика, усечении таблицы до 12 строк и пустой плитке."""
+    monkeypatch.setattr("app.core.export.pdf.render_chart_png", lambda *args, **kwargs: None)
+
+    fifteen_rows = [{"id": i, "val": i * 10} for i in range(1, 16)]
+    table_tile = DashboardTile(
+        title="Табличная плитка",
+        spec={"usermeta": {"chart_type": "table"}},
+        snapshot_data=fifteen_rows,
+    )
+    chart_tile = DashboardTile(
+        title="Графическая плитка с ошибкой",
+        spec={"mark": "bar"},
+        snapshot_data=fifteen_rows,
+    )
+    empty_tile = DashboardTile(
+        title="Пустая плитка",
+        snapshot_data=None,
+    )
+
+    dash = Dashboard(
+        id="d-trunc-test",
+        session_id="sess-trunc",
+        title="Дашборд с усечением",
+        tiles=[table_tile, chart_tile, empty_tile],
+    )
+
+    out_pdf = str(tmp_path / "trunc_test.pdf")
+    exporter = PdfExporter()
+    exporter.export_dashboard(dash, out_pdf)
+
+    reader = pypdf.PdfReader(out_pdf)
+    text = "".join(p.extract_text() or "" for p in reader.pages)
+
+    # 1. Проверяем уведомление о сбое графика
+    assert "График не удалось отобразить в PDF; ниже представлены табличные данные" in text
+    # 2. Проверяем сноску об ограничении строк таблицы до 12
+    assert "Показаны первые 12 строк из 15" in text
+    # 3. Проверяем уведомление об отсутствии данных
+    assert "Данные для отображения плитки отсутствуют" in text
+
+
+def test_export_dashboard_api_database_name_and_unique_filename(
+    client: TestClient, monkeypatch
+) -> None:
+    """Проверка параметра database_name, custom title, обработки ошибок и генерации уникальных файлов на диске."""
+    dash = Dashboard(
+        id="d-unique-file-test",
+        session_id="sess-file-test",
+        title="Аналитический Срез",
+        tiles=[
+            DashboardTile(title="KPI Метрика", is_kpi=True, snapshot_data={"value": 100}),
+        ],
+    )
+    store = DashboardStore()
+    store.create(dash)
+
+    # 1. Экспорт в PDF с database_name
+    resp1 = client.get(
+        "/api/dashboards/d-unique-file-test/export?format=pdf&database_name=Продажи2026"
+    )
+    assert resp1.status_code == 200
+    assert resp1.headers["content-type"] == "application/pdf"
+    # Клиент получает чистое имя файла
+    assert "attachment" in resp1.headers["content-disposition"]
+    assert ".pdf" in resp1.headers["content-disposition"]
+
+    reader1 = pypdf.PdfReader(io.BytesIO(resp1.content))
+    text1 = "".join(p.extract_text() or "" for p in reader1.pages)
+    assert "База данных: Продажи2026" in text1
+
+    # 2. Повторный экспорт того же дашборда с переопределением title
+    resp2 = client.get("/api/dashboards/d-unique-file-test/export?format=pdf&title=НовыйЗаголовок")
+    assert resp2.status_code == 200
+
+    # 3. Экспорт несуществующего дашборда -> 404
+    resp_404 = client.get("/api/dashboards/non-existent-dash/export")
+    assert resp_404.status_code == 404
+
+    # 4. Ошибка генерации PDF -> 500
+    def broken_export(*args, **kwargs):
+        raise RuntimeError("PDF generation failed")
+
+    monkeypatch.setattr("app.api.routes.dashboards.PdfExporter.export_dashboard", broken_export)
+    resp_500 = client.get("/api/dashboards/d-unique-file-test/export?format=pdf")
+    assert resp_500.status_code == 500
+
+    # 5. Экспорт в Excel
+    resp_xlsx = client.get("/api/dashboards/d-unique-file-test/export?format=xlsx")
+    assert resp_xlsx.status_code == 200
+    assert (
+        resp_xlsx.headers["content-type"]
+        == "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    )

@@ -7,6 +7,7 @@
 import copy
 import logging
 import re
+import uuid
 from collections.abc import Callable
 from pathlib import Path
 from typing import Annotated
@@ -78,9 +79,10 @@ def export_artifact(
         dash_title = (payload.title or dashboard.title or "dashboard").strip()
         safe_name = re.sub(r'[\\/*?:"<>|]+', "_", dash_title).strip() or "dashboard"
         filename = f"{safe_name}.{payload.format}"
+        unique_filename = f"{safe_name}_{uuid.uuid4().hex[:8]}.{payload.format}"
 
         if payload.format == "pdf":
-            path = export_dir / filename
+            path = export_dir / unique_filename
             try:
                 PdfExporter().export_dashboard(
                     dashboard,
@@ -101,7 +103,7 @@ def export_artifact(
                 media_type="application/pdf",
                 filename=filename,
             )
-        path = export_dir / filename
+        path = export_dir / unique_filename
         ExcelExporter().export_dashboard(dashboard, str(path), db=db)
         return FileResponse(
             path,
@@ -159,10 +161,11 @@ def export_artifact(
 
     export_title = (payload.title or payload.headline or "Аналитический отчёт").strip()
     safe_name = re.sub(r'[\\/*?:"<>|]+', "_", export_title).strip() or "agent_export"
+    filename = f"{safe_name}.{payload.format}"
+    unique_filename = f"{safe_name}_{uuid.uuid4().hex[:8]}.{payload.format}"
 
     if payload.format == "xlsx":
-        filename = f"{safe_name}.xlsx"
-        path = export_dir / filename
+        path = export_dir / unique_filename
         ExcelExporter().export(
             records,
             str(path),
@@ -182,16 +185,14 @@ def export_artifact(
     is_table = is_table_spec(payload.spec)
     chart_spec = copy.deepcopy(payload.spec) if payload.spec else None
     if chart_spec and records:
-        spec_data = chart_spec.get("data")
-        if not isinstance(spec_data, dict) or not isinstance(spec_data.get("values"), list):
-            chart_spec["data"] = {"values": records}
+        chart_spec["data"] = {"values": records}
 
     chart_png = None
     if not is_table and chart_spec:
         chart_png = render_chart_png(chart_spec)
+    chart_render_failed = bool(chart_spec and not is_table and chart_png is None)
 
-    filename = f"{safe_name}.pdf"
-    path = export_dir / filename
+    path = export_dir / unique_filename
     try:
         PdfExporter().export_answer(
             path=str(path),
@@ -202,6 +203,7 @@ def export_artifact(
             chart_png=chart_png,
             title=export_title,
             is_table=is_table,
+            chart_render_failed=chart_render_failed,
         )
     except Exception as exc:
         logger.error("Ошибка при генерации PDF отчёта: %s", exc)

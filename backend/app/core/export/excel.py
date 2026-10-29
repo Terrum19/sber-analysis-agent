@@ -18,15 +18,19 @@ from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
-import duckdb
 import openpyxl
 from openpyxl.chart import AreaChart, BarChart, LineChart, PieChart, Reference
 from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.utils import get_column_letter
 from openpyxl.worksheet.worksheet import Worksheet
 
-from app.core.dashboards.models import Dashboard, DashboardTile
+from app.core.dashboards.models import Dashboard
 from app.core.data.duckdb_manager import DuckDBManager
+from app.core.export.common import (
+    extract_kpi_value,
+    format_kpi_number,
+    resolve_tile_records,
+)
 
 # Фирменная палитра Сбера
 SBER_GREEN = "088434"
@@ -101,45 +105,8 @@ def _safe_sheet_title(title: str, existing_titles: set[str]) -> str:
     return candidate
 
 
-def _format_kpi_number(val: Any) -> str:
-    """Форматировать числовое значение KPI в компактный человекочитаемый вид."""
-    if isinstance(val, (int, float, Decimal)) and not isinstance(val, bool):
-        v = float(val)
-        abs_v = abs(v)
-        if abs_v >= 1_000_000_000:
-            return f"{v / 1_000_000_000:,.1f} млрд".replace(",", " ")
-        if abs_v >= 1_000_000:
-            return f"{v / 1_000_000:,.1f} млн".replace(",", " ")
-        if abs_v >= 10_000:
-            return f"{v:,.0f}".replace(",", " ")
-        if isinstance(val, float):
-            return f"{v:,.2f}".replace(",", " ")
-        return f"{v:,.0f}".replace(",", " ")
-    return str(val) if val is not None else "—"
-
-
-def _extract_kpi_value(tile: DashboardTile) -> tuple[str, str]:
-    """Извлечь отображаемое значение и подпись для KPI-плитки."""
-    label = tile.title
-    data = tile.snapshot_data
-    if isinstance(data, list) and data:
-        row = data[0]
-        if isinstance(row, dict) and row:
-            val = next(iter(row.values()))
-            return _format_kpi_number(val), label
-    elif isinstance(data, dict):
-        val = data.get("value")
-        if val is None:
-            val = next(iter(data.values()), "—")
-        lbl = data.get("label") or label
-        return _format_kpi_number(val), lbl
-
-    spec_values = tile.spec.get("data", {}).get("values")
-    if isinstance(spec_values, list) and spec_values and isinstance(spec_values[0], dict):
-        val = next(iter(spec_values[0].values()))
-        return _format_kpi_number(val), label
-
-    return "—", label
+_format_kpi_number = format_kpi_number
+_extract_kpi_value = extract_kpi_value
 
 
 def _is_number(v: Any) -> bool:
@@ -533,16 +500,7 @@ class ExcelExporter:
         tile_sheet_map: dict[str, str | None] = {}
         tile_data_map: dict[str, list[dict] | None] = {}
         for tile in dashboard.tiles:
-            records = tile.snapshot_data
-            if not isinstance(records, list) and tile.result_table and db is not None:
-                try:
-                    records = db.to_records(tile.result_table, limit=5000)
-                except (duckdb.Error, OSError, ValueError):
-                    records = None
-            if not isinstance(records, list) and isinstance(tile.spec, dict):
-                spec_data = tile.spec.get("data")
-                if isinstance(spec_data, dict) and isinstance(spec_data.get("values"), list):
-                    records = spec_data["values"]
+            records = resolve_tile_records(tile, db=db, limit=5000)
 
             if isinstance(records, list) and records:
                 s_name = _safe_sheet_title(tile.title, used_sheet_names)

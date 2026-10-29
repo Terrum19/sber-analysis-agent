@@ -954,3 +954,91 @@ def test_api_export_pdf_of_table_spec_single_page(client: TestClient) -> None:
     assert "Таблица исследования" in text
     assert "Данные таблицы" in text
     assert "Визуализация данных" not in text
+
+
+def test_export_answer_chart_render_failed_notice(tmp_path: Path) -> None:
+    """Проверка вывода предупреждения, когда chart_render_failed=True."""
+    pdf_path = str(tmp_path / "chart_failed.pdf")
+    exporter = PdfExporter()
+    out = exporter.export_answer(
+        path=pdf_path,
+        records=[{"x": 1, "y": 2}],
+        chart_render_failed=True,
+    )
+    assert out == pdf_path
+    reader = pypdf.PdfReader(pdf_path)
+    text = "".join(p.extract_text() or "" for p in reader.pages)
+    assert "График не удалось отобразить в PDF (ошибка рендеринга визуализации)" in text
+
+
+def test_api_export_overwrites_stale_spec_values(client: TestClient, monkeypatch) -> None:
+    """Проверка безусловной синхронизации данных: свежие records из result_ref перезаписывают stale spec.data.values."""
+    db: DuckDBManager = client.app.dependency_overrides[get_db]()
+    db.execute("CREATE TABLE temp_result_v99 AS SELECT 'Свежие_данные' AS title, 999 AS val")
+    memory = SessionMemory("sync_spec_session", db)
+    memory.set_table("raw")
+    memory.start_turn("Какая выручка?")
+    memory.finish_turn(
+        "ok",
+        result_table="temp_result_v99",
+        result_columns=["title", "val"],
+    )
+
+    rendered_specs: list[dict] = []
+
+    def mock_render(spec, **kwargs):
+        rendered_specs.append(spec)
+        return b"fake_png"
+
+    monkeypatch.setattr("app.api.routes.artifacts.render_chart_png", mock_render)
+
+    stale_spec = {
+        "mark": "bar",
+        "data": {"values": [{"title": "Устаревшие_данные", "val": 1}]},
+    }
+
+    resp = client.post(
+        "/api/artifacts/export",
+        json={
+            "session_id": "sync_spec_session",
+            "format": "pdf",
+            "result_ref": "temp_result_v99",
+            "spec": stale_spec,
+        },
+    )
+    assert resp.status_code == 200
+    assert len(rendered_specs) == 1
+    # Проверяем, что в рендеринг ушли свежие данные, а не старые
+    assert rendered_specs[0]["data"]["values"] == [{"title": "Свежие_данные", "val": 999}]
+
+
+def test_api_export_chart_render_failure_adds_warning_in_pdf(
+    client: TestClient, monkeypatch
+) -> None:
+    """Если render_chart_png возвращает None, экспорт в PDF включает уведомление о сбое графика."""
+    db: DuckDBManager = client.app.dependency_overrides[get_db]()
+    db.execute("CREATE TABLE temp_result_v88 AS SELECT 'Данные' AS col, 123 AS num")
+    memory = SessionMemory("render_fail_session", db)
+    memory.set_table("raw")
+    memory.start_turn("Покажи данные")
+    memory.finish_turn(
+        "ok",
+        result_table="temp_result_v88",
+        result_columns=["col", "num"],
+    )
+
+    monkeypatch.setattr("app.api.routes.artifacts.render_chart_png", lambda *args, **kwargs: None)
+
+    resp = client.post(
+        "/api/artifacts/export",
+        json={
+            "session_id": "render_fail_session",
+            "format": "pdf",
+            "result_ref": "temp_result_v88",
+            "spec": {"mark": "line"},
+        },
+    )
+    assert resp.status_code == 200
+    reader = pypdf.PdfReader(io.BytesIO(resp.content))
+    text = "".join(p.extract_text() or "" for p in reader.pages)
+    assert "График не удалось отобразить в PDF (ошибка рендеринга визуализации)" in text

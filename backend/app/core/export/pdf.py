@@ -14,7 +14,6 @@ import logging
 import os
 import re
 import xml.sax.saxutils
-from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
@@ -43,6 +42,12 @@ from app.config import settings
 from app.core.dashboards.models import Dashboard, DashboardTile
 from app.core.data.duckdb_manager import DuckDBManager
 from app.core.export.charts import is_table_spec, render_chart_png
+from app.core.export.common import (
+    extract_kpi_value,
+    format_cell_value,
+    format_kpi_number,
+    resolve_tile_records,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -143,6 +148,7 @@ MAX_CELL_LENGTH = 50
 MAX_TITLE_LENGTH = 150
 MAX_COLUMN_NAME_LENGTH = 80
 MAX_TABLE_COLUMNS = 10
+MAX_DASHBOARD_TABLE_ROWS = 12
 
 
 def truncate_text(text: Any, max_length: int) -> str:
@@ -169,6 +175,7 @@ class NumberedCanvas(canvas.Canvas):
     """Канвас с двухпроходным расчётом общего числа страниц для футера 'Страница X из Y'."""
 
     report_title: str = "Sber AI BI Platform • Аналитический отчёт"
+    report_date: str = ""
 
     def __init__(self, *args: Any, **kwargs: Any) -> None:
         super().__init__(*args, **kwargs)
@@ -194,6 +201,7 @@ class NumberedCanvas(canvas.Canvas):
 
         page_w, page_h = getattr(self, "_pagesize", A4)
         doc_title = getattr(self, "report_title", "Sber AI BI Platform • Аналитический отчёт")
+        doc_date = getattr(self, "report_date", "") or datetime.datetime.now().strftime("%d.%m.%Y")
 
         self.drawString(36, 22, doc_title)
         page_str = f"Страница {self._pageNumber} из {total_pages}"
@@ -205,53 +213,14 @@ class NumberedCanvas(canvas.Canvas):
 
         if self._pageNumber > 1:
             self.drawString(36, page_h - 25, doc_title)
-            self.drawRightString(
-                page_w - 36, page_h - 25, datetime.datetime.now().strftime("%d.%m.%Y")
-            )
+            self.drawRightString(page_w - 36, page_h - 25, doc_date)
             self.line(36, page_h - 28, page_w - 36, page_h - 28)
 
         self.restoreState()
 
 
-def _format_kpi_number(val: Any) -> str:
-    """Форматировать числовое значение KPI в компактный человекочитаемый вид."""
-    if isinstance(val, (int, float, Decimal)) and not isinstance(val, bool):
-        v = float(val)
-        abs_v = abs(v)
-        if abs_v >= 1_000_000_000:
-            return f"{v / 1_000_000_000:,.1f} млрд".replace(",", " ")
-        if abs_v >= 1_000_000:
-            return f"{v / 1_000_000:,.1f} млн".replace(",", " ")
-        if abs_v >= 10_000:
-            return f"{v:,.0f}".replace(",", " ")
-        if isinstance(val, float):
-            return f"{v:,.2f}".replace(",", " ")
-        return f"{v:,.0f}".replace(",", " ")
-    return str(val) if val is not None else "—"
-
-
-def _extract_kpi_value(tile: DashboardTile) -> tuple[str, str]:
-    """Извлечь отображаемое значение и подпись для KPI-плитки."""
-    label = tile.title
-    data = tile.snapshot_data
-    if isinstance(data, list) and data:
-        row = data[0]
-        if isinstance(row, dict) and row:
-            val = next(iter(row.values()))
-            return _format_kpi_number(val), label
-    elif isinstance(data, dict):
-        val = data.get("value")
-        if val is None:
-            val = next(iter(data.values()), "—")
-        lbl = data.get("label") or label
-        return _format_kpi_number(val), lbl
-
-    spec_values = tile.spec.get("data", {}).get("values")
-    if isinstance(spec_values, list) and spec_values and isinstance(spec_values[0], dict):
-        val = next(iter(spec_values[0].values()))
-        return _format_kpi_number(val), label
-
-    return "—", label
+_format_kpi_number = format_kpi_number
+_extract_kpi_value = extract_kpi_value
 
 
 class PdfExporter:
@@ -305,63 +274,12 @@ class PdfExporter:
         if clean_h:
             return clean_h, clean_d
 
-        # Если инсайта нет, автоматически извлекаем аналитические показатели из данных выборки
+        # Если инсайта нет, формируем нейтральную фактическую сводку по выборке
         if records:
             sample = records[0]
-            num_cols: list[str] = []
-            lbl_cols: list[str] = []
-            for k in sample:
-                if any(
-                    isinstance(r.get(k), (int, float)) and not isinstance(r.get(k), bool)
-                    for r in records[:10]
-                ):
-                    num_cols.append(k)
-                else:
-                    lbl_cols.append(k)
-
-            if num_cols:
-                # Берём ключевую числовую метрику (последняя числовая колонка, например, выручка или count/n)
-                num_col = num_cols[-1]
-                lbl_col = lbl_cols[0] if lbl_cols else None
-                valid_rows = [r for r in records if isinstance(r.get(num_col), (int, float))]
-                if valid_rows:
-                    total_val = sum(r[num_col] for r in valid_rows)
-                    max_row = max(valid_rows, key=lambda r: r[num_col])
-                    min_row = min(valid_rows, key=lambda r: r[num_col])
-                    max_val_str = _format_kpi_number(max_row[num_col])
-                    min_val_str = _format_kpi_number(min_row[num_col])
-
-                    max_lbl = (
-                        str(max_row.get(lbl_col, ""))
-                        if lbl_col
-                        else f"Строка {records.index(max_row) + 1}"
-                    )
-                    min_lbl = (
-                        str(min_row.get(lbl_col, ""))
-                        if lbl_col
-                        else f"Строка {records.index(min_row) + 1}"
-                    )
-
-                    share_str = (
-                        f" ({max_row[num_col] / total_val * 100:.1f}% от общего объёма)"
-                        if total_val > 0 and len(valid_rows) > 1
-                        else ""
-                    )
-                    derived_headline = (
-                        f"Лидирующая позиция — «{max_lbl}»: {max_val_str}{share_str}."
-                    )
-                    derived_details: list[str] = [
-                        f"Суммарное значение показателя «{num_col}»: {_format_kpi_number(total_val)} по {len(records)} строкам выборки."
-                    ]
-                    if len(valid_rows) > 1 and max_lbl != min_lbl:
-                        derived_details.append(
-                            f"Минимальное значение отмечено у «{min_lbl}»: {min_val_str}."
-                        )
-                    return derived_headline, derived_details
-
             derived_headline = f"Выборка содержит {len(records)} записей для детального анализа."
             metric_names = ", ".join(list(sample.keys())[:5])
-            return derived_headline, [f"Анализируемые показатели: {metric_names}."]
+            return derived_headline, [f"Показатели в выборке: {metric_names}."]
 
         return None, []
 
@@ -375,6 +293,7 @@ class PdfExporter:
         chart_png: bytes | None = None,
         title: str = "Аналитический отчёт",
         is_table: bool = False,
+        chart_render_failed: bool = False,
     ) -> str:
         """Скомпилировать PDF-отчёт формата Business Memo.
 
@@ -387,6 +306,7 @@ class PdfExporter:
             chart_png: Байты растрового графика Vega-Lite в PNG.
             title: Заголовок отчёта в шапке.
             is_table: Флаг табличного артефакта (режим одиночной таблицы без графика).
+            chart_render_failed: Флаг сбоя рендеринга диаграммы для отображения уведомления.
 
         Returns:
             Путь к сгенерированному файлу.
@@ -407,7 +327,7 @@ class PdfExporter:
         )
         details = [
             sanitize_text(truncate_text(d, MAX_DETAIL_ITEM_LENGTH))
-            for d in (d_details or [])[:5]
+            for d in (d_details or [])[:MAX_DETAILS_COUNT]
             if d and str(d).strip()
         ]
 
@@ -426,7 +346,12 @@ class PdfExporter:
         elements: list[Any] = []
 
         has_page1_content = bool(
-            question or headline or details or chart_png or (is_table and records)
+            question
+            or headline
+            or details
+            or chart_png
+            or chart_render_failed
+            or (is_table and records)
         )
 
         if has_page1_content:
@@ -517,6 +442,15 @@ class PdfExporter:
                 if img_flowable:
                     elements.append(img_flowable)
                     elements.append(Spacer(1, 6))
+            elif chart_render_failed:
+                elements.append(Paragraph("Визуализация данных", styles["SectionHeading"]))
+                elements.append(Spacer(1, 4))
+                warn_text = (
+                    "<i>График не удалось отобразить в PDF (ошибка рендеринга визуализации); "
+                    "детальные данные представлены в таблице.</i>"
+                )
+                elements.append(Paragraph(warn_text, styles["Footnote"]))
+                elements.append(Spacer(1, 6))
 
             if not is_table and records:
                 elements.append(Spacer(1, 4))
@@ -557,7 +491,10 @@ class PdfExporter:
         canvas_class = type(
             "AnswerCanvas",
             (NumberedCanvas,),
-            {"report_title": f"Sber AI BI Platform • {title_trunc}"},
+            {
+                "report_title": f"Sber AI BI Platform • {title_trunc}",
+                "report_date": datetime.datetime.now().strftime("%d.%m.%Y"),
+            },
         )
         doc.build(elements, canvasmaker=canvas_class)
         return path
@@ -720,7 +657,7 @@ class PdfExporter:
                     db=db,
                 )
                 if card_elements:
-                    elements.append(KeepTogether(card_elements))
+                    elements.extend(card_elements)
                     elements.append(Spacer(1, 8))
 
         if not kpi_tiles and not other_tiles:
@@ -729,10 +666,18 @@ class PdfExporter:
             )
 
         title_trunc = truncate_text(dashboard.title, 40)
+        dash_date_str = (
+            datetime.datetime.fromtimestamp(dashboard.created_at).strftime("%d.%m.%Y")
+            if dashboard.created_at
+            else datetime.datetime.now().strftime("%d.%m.%Y")
+        )
         canvas_class = type(
             "DashboardCanvas",
             (NumberedCanvas,),
-            {"report_title": f"Sber AI BI Platform • {title_trunc}"},
+            {
+                "report_title": f"Sber AI BI Platform • {title_trunc}",
+                "report_date": dash_date_str,
+            },
         )
 
         Path(path).parent.mkdir(parents=True, exist_ok=True)
@@ -895,11 +840,12 @@ class PdfExporter:
     ) -> list[Any]:
         """Сформировать блок одной аналитической плитки (заголовок, инсайт, график/таблица)."""
         card: list[Any] = []
+        header_block: list[Any] = []
 
         # Заголовок плитки
         clean_title = sanitize_text(truncate_text(tile.title, MAX_TITLE_LENGTH))
-        card.append(Paragraph(clean_title, styles["SectionHeading"]))
-        card.append(Spacer(1, 4))
+        header_block.append(Paragraph(clean_title, styles["SectionHeading"]))
+        header_block.append(Spacer(1, 4))
 
         # Ключевой вывод (инсайт), если есть
         if tile.insight and str(tile.insight).strip():
@@ -921,21 +867,13 @@ class PdfExporter:
                     ]
                 )
             )
-            card.append(ins_table)
-            card.append(Spacer(1, 6))
+            header_block.append(ins_table)
+            header_block.append(Spacer(1, 6))
 
-        # Извлекаем строки данных
-        records = tile.snapshot_data
-        if not isinstance(records, list) and tile.result_table and db is not None:
-            try:
-                records = db.to_records(tile.result_table, limit=500)
-            except Exception as err:  # noqa: BLE001
-                logger.debug("Не удалось прочитать таблицу %s: %s", tile.result_table, err)
-                records = None
-        if not isinstance(records, list) and isinstance(tile.spec, dict):
-            spec_data = tile.spec.get("data")
-            if isinstance(spec_data, dict) and isinstance(spec_data.get("values"), list):
-                records = spec_data["values"]
+        card.append(KeepTogether(header_block))
+
+        # Извлекаем строки данных с единым приоритетом разрешения
+        records = resolve_tile_records(tile, db=db, limit=500)
 
         # Рендеринг графика (Vega-Lite)
         chart_png: bytes | None = None
@@ -944,9 +882,7 @@ class PdfExporter:
         if not is_table_type and tile.spec and isinstance(tile.spec, dict):
             spec_to_render = copy.deepcopy(tile.spec)
             if isinstance(records, list) and records:
-                s_data = spec_to_render.get("data")
-                if not isinstance(s_data, dict) or not isinstance(s_data.get("values"), list):
-                    spec_to_render["data"] = {"values": records[:500]}
+                spec_to_render["data"] = {"values": records[:500]}
             chart_png = render_chart_png(spec_to_render, width=640, scale=2.0)
 
         if chart_png:
@@ -954,12 +890,52 @@ class PdfExporter:
             if img_flowable:
                 card.append(img_flowable)
                 card.append(Spacer(1, 6))
-        elif isinstance(records, list) and records:
-            # Табличное представление
-            table_flowable = self._build_data_table(records[:20], printable_width, styles)
+        elif not is_table_type and tile.spec and isinstance(records, list) and records:
+            card.append(
+                Paragraph(
+                    "<i>График не удалось отобразить в PDF; ниже представлены табличные данные.</i>",
+                    styles["Footnote"],
+                )
+            )
+            card.append(Spacer(1, 4))
+            table_flowable = self._build_data_table(
+                records[:MAX_DASHBOARD_TABLE_ROWS], printable_width, styles
+            )
             if table_flowable:
                 card.append(table_flowable)
+                if len(records) > MAX_DASHBOARD_TABLE_ROWS:
+                    card.append(Spacer(1, 2))
+                    card.append(
+                        Paragraph(
+                            f"<i>Показаны первые {MAX_DASHBOARD_TABLE_ROWS} строк из {len(records)}.</i>",
+                            styles["Footnote"],
+                        )
+                    )
                 card.append(Spacer(1, 6))
+        elif isinstance(records, list) and records:
+            # Табличное представление
+            table_flowable = self._build_data_table(
+                records[:MAX_DASHBOARD_TABLE_ROWS], printable_width, styles
+            )
+            if table_flowable:
+                card.append(table_flowable)
+                if len(records) > MAX_DASHBOARD_TABLE_ROWS:
+                    card.append(Spacer(1, 2))
+                    card.append(
+                        Paragraph(
+                            f"<i>Показаны первые {MAX_DASHBOARD_TABLE_ROWS} строк из {len(records)}.</i>",
+                            styles["Footnote"],
+                        )
+                    )
+                card.append(Spacer(1, 6))
+        else:
+            card.append(
+                Paragraph(
+                    "<i>Данные для отображения плитки отсутствуют.</i>",
+                    styles["Footnote"],
+                )
+            )
+            card.append(Spacer(1, 6))
 
         return card
 
@@ -1098,14 +1074,7 @@ class PdfExporter:
 
     def _format_cell_value(self, val: Any) -> str:
         """Форматирование значений ячеек для деловой презентации."""
-        if val is None:
-            return "—"
-        if isinstance(val, float):
-            return f"{val:,.2f}".replace(",", " ")
-        if isinstance(val, int):
-            return f"{val:,}".replace(",", " ")
-        s = truncate_text(val, MAX_CELL_LENGTH)
-        return sanitize_text(s)
+        return sanitize_text(format_cell_value(val, max_len=MAX_CELL_LENGTH))
 
     def _build_styles(self) -> dict[str, ParagraphStyle]:
         """Подготовка типографических стилей документа."""
