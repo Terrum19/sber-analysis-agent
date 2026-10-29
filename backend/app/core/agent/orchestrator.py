@@ -295,6 +295,15 @@ class AgentOrchestrator:
         set_turn_id(turn_id)
         logger.info("ход начат: вопрос=%r", request.question)
 
+        if request.mode == "dashboard":
+            # Дашборд по кнопке (#224): свой маршрут, без small talk, обзора и плана хода.
+            from app.core.agent.dashboard_turn import DashboardTurn
+
+            logger.info("маршрут: дашборд")
+            async for event in DashboardTurn(self).run(memory, request):
+                yield event
+            return
+
         if pending is None and (reply := small_talk_reply(request.question)) is not None:
             # «Привет», «спасибо», «что ты умеешь» — без плана, LLM и графика.
             logger.info("маршрут: small talk")

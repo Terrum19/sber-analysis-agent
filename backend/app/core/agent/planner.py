@@ -103,7 +103,8 @@ class StepPlanner:
         if settings.agent_quality_fixes:
             prompt += PLANNER_RULES
         template = None
-        if is_dashboard_question(question):
+        # Плитка дашборда по кнопке (#224) — обычный вопрос, без шаблонов и плиток.
+        if not context.get("tile") and is_dashboard_question(question):
             template = templates.match(all_columns, context.get("titles"))
             prompt += dashboard_prompt(template, all_columns, context.get("titles"))
             logger.info("    дашборд: шаблон=%s", template.id if template else None)

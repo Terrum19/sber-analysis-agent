@@ -7,6 +7,7 @@ from pydantic import BaseModel, Field, StringConstraints, model_validator
 
 from app.api.schemas.dashboard import DashboardTileOut
 from app.core.dashboards.models import Dashboard
+from app.models.dashboard_plan import DashboardIdea
 from app.models.research_step import NOTE_LIMIT
 
 
@@ -83,6 +84,9 @@ class ChatRequest(BaseModel):
     recovery_response: str | None = None
     # turn_id прошлого хода из события done: вопрос продолжает именно его.
     reply_to: str | None = None
+    # dashboard — ход строит дашборд по кнопке (#224); idea — выбранный вариант.
+    mode: Literal["chat", "dashboard"] = "chat"
+    idea: DashboardIdea | None = None
 
 
 class ChartPayload(BaseModel):
@@ -116,7 +120,7 @@ class ProgressPayload(BaseModel):
     (``attempt`` — номер попытки исправления, ``error`` — текст ошибки).
     """
 
-    stage: Literal["planning", "step", "insight", "chart", "dashboard"]
+    stage: Literal["planning", "step", "insight", "chart", "dashboard", "outline", "tile"]
     status: Literal["started", "finished", "failed", "fixing"]
     step_id: int | None = None
     tool: str | None = None
@@ -125,12 +129,30 @@ class ProgressPayload(BaseModel):
     elapsed_ms: int | None = None
     attempt: int | None = None
     error: str | None = None
+    # Плитка дашборда по кнопке (#224), к которой относится этап или шаг.
+    tile_id: int | None = None
+
+
+class DashboardIdeasOut(BaseModel):
+    """Ответ POST /sessions/{id}/dashboard-ideas: варианты дашборда для кнопок."""
+
+    ideas: list[DashboardIdea]
 
 
 class ChatEvent(BaseModel):
     """Событие стрима для фронтенда."""
 
-    type: Literal["text", "chart", "dashboard", "error", "done", "clarification_needed", "progress"]
+    type: Literal[
+        "text",
+        "chart",
+        "dashboard",
+        "error",
+        "done",
+        "clarification_needed",
+        "progress",
+        "dashboard_outline",
+        "dashboard_fallback",
+    ]
     data: dict[str, Any] = Field(default_factory=dict)
 
 
