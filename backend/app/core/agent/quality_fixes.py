@@ -89,6 +89,9 @@ def select_tools(question: str) -> str:
     return "\n".join(lines)
 
 
+# Номер периода сезонности — подпись строки, хотя и число.
+_PERIOD_NUMBER = re.compile(r"month|quarter|dayofweek|hour")
+
 # Типы DuckDB, у которых осмысленны сумма и среднее (INTERVAL сюда не входит).
 _NUMERIC = {
     "TINYINT",
@@ -112,8 +115,9 @@ def insight_facts(db: DuckDBManager, table: str, shown: int) -> str:
     """Число строк и итоги числовых колонок результата — посчитанные SQL, а не LLM.
 
     У минимума и максимума подписана строка, где они достигаются (первая
-    нечисловая колонка: период, регион, id): «лучший месяц» читается из
-    фактов, а не поиском по строкам.
+    нечисловая колонка: период, регион, id; у сезонности — номер месяца):
+    «лучший месяц» читается из фактов, а не поиском по строкам. Колонка с
+    одним значением во всех строках (p_value тренда) — само значение.
     """
     columns = db.query(f"DESCRIBE {identifier(table)}")
     numeric = [
@@ -122,6 +126,8 @@ def insight_facts(db: DuckDBManager, table: str, shown: int) -> str:
         if str(col["column_type"]).upper().split("(")[0] in _NUMERIC
     ]
     label = next((c["column_name"] for c in columns if c["column_name"] not in numeric), None)
+    if label is None and len(numeric) > 1 and _PERIOD_NUMBER.fullmatch(numeric[0]):
+        label = numeric.pop(0)
     metrics = ["COUNT(*) AS n"]
     for i, name in enumerate(numeric):
         column = identifier(name)
@@ -139,6 +145,9 @@ def insight_facts(db: DuckDBManager, table: str, shown: int) -> str:
     row = db.query(f"SELECT {', '.join(metrics)} FROM {identifier(table)}")[0]
     lines = [f"- строк в результате: {row['n']} (показано модели: {min(row['n'], shown)})"]
     for i, name in enumerate(numeric):
+        if row["n"] > 1 and row[f"lo{i}"] is not None and row[f"lo{i}"] == row[f"hi{i}"]:
+            lines.append(f"- {name}: {float(row[f'lo{i}']):.4g} (одно значение во всех строках)")
+            continue
         low, high = f"мин {row[f'lo{i}']}", f"макс {row[f'hi{i}']}"
         if label is not None and row["n"] > 1:
             low += f" ({label} = {format_value(row[f'at_lo{i}'])})"

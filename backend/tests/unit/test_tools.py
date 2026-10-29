@@ -129,7 +129,138 @@ def test_time_series_and_seasonality_are_aggregations(db: DuckDBManager) -> None
 
     _, seasonality = run_tool(db, "seasonality", ["event_date", "amount"])
     assert seasonality[0]["month"] == 1
-    assert seasonality[0]["avg_level"] == 10.0
+    assert seasonality[0]["level"] == 10.0
+    assert seasonality[-1]["incomplete"] == 1
+
+
+@pytest.fixture
+def sales() -> DuckDBManager:
+    """Два года продаж по две строки в день: декабрь втрое выше, второй год вдвое выше первого."""
+    manager = DuckDBManager(":memory:")
+    manager.execute(
+        """
+        CREATE TABLE sales AS
+        SELECT day::TIMESTAMP + INTERVAL 10 HOUR AS sold_at, 'north' AS region,
+               (CASE WHEN month(day) = 12 THEN 3 ELSE 1 END) * (year(day) - 2022) AS amount
+        FROM range(DATE '2023-01-01', DATE '2025-01-01', INTERVAL 1 DAY) AS days(day),
+             range(2) AS copies(copy)
+        """
+    )
+    yield manager
+    manager.close()
+
+
+def run_sales(db: DuckDBManager, name: str, table: str = "sales", **arguments) -> list[dict]:
+    return db.to_records(tool_registry.get(name).run(db, table, [], **arguments), limit=1000)
+
+
+def test_seasonality_sums_each_month_then_averages_years(sales: DuckDBManager) -> None:
+    rows = run_sales(sales, "seasonality", date_column="sold_at", metric_column="amount")
+    assert len(rows) == 12
+    assert rows[0] == {"month": 1, "level": 93.0, "periods": 2, "incomplete": 0, "skipped": 0}
+    assert rows[11]["level"] == 279.0
+
+
+def test_seasonality_counts_rows_and_keeps_average_for_per_record_metrics(
+    sales: DuckDBManager,
+) -> None:
+    counted = run_sales(sales, "seasonality", date_column="sold_at", function="COUNT")
+    assert counted[0]["level"] == 62.0
+    averaged = run_sales(
+        sales, "seasonality", date_column="sold_at", metric_column="amount", function="avg"
+    )
+    assert averaged[11]["level"] == 4.5
+    with pytest.raises(ValueError, match="requires metric_column"):
+        run_sales(sales, "seasonality", date_column="sold_at")
+
+
+def test_seasonality_skips_partial_and_extra_periods(sales: DuckDBManager) -> None:
+    sales.execute(
+        "CREATE TABLE uneven AS SELECT * FROM sales "
+        "WHERE sold_at >= TIMESTAMP '2023-06-01' AND sold_at < TIMESTAMP '2024-12-15'"
+    )
+    rows = run_sales(sales, "seasonality", "uneven", date_column="sold_at", metric_column="amount")
+    by_month = {row["month"]: row for row in rows}
+    assert by_month[12]["incomplete"] == 1
+    assert by_month[12]["periods"] == 1 and by_month[12]["skipped"] == 0
+    assert by_month[6]["skipped"] == 1 and by_month[6]["periods"] == 1
+    assert by_month[6]["level"] == 120.0
+
+
+@pytest.mark.parametrize("name", ["trend_analysis", "seasonal_decompose"])
+def test_series_tools_reject_row_level_data(sales: DuckDBManager, name: str) -> None:
+    with pytest.raises(ValueError, match='interval="month", function="SUM"'):
+        run_sales(sales, name, date_column="sold_at", value_column="amount")
+
+
+def test_trend_reports_growth_year_over_year_and_its_significance(sales: DuckDBManager) -> None:
+    rows = run_sales(
+        sales, "trend_analysis", date_column="sold_at", value_column="amount", interval="month"
+    )
+    assert len(rows) == 24
+    assert rows[0]["yoy_change"] is None
+    assert rows[12]["yoy_change"] == pytest.approx(1.0)
+    assert rows[0]["yoy_change_avg"] == pytest.approx(1.0, abs=0.01)
+    assert rows[0]["slope_per_period"] > 0
+    assert rows[0]["p_value"] < 0.05
+
+
+def test_trend_compares_with_the_same_calendar_month(sales: DuckDBManager) -> None:
+    sales.execute(
+        "CREATE TABLE holes AS SELECT * FROM sales WHERE month(sold_at) != 3 OR year(sold_at) != 2023"
+    )
+    rows = run_sales(
+        sales,
+        "trend_analysis",
+        "holes",
+        date_column="sold_at",
+        value_column="amount",
+        interval="month",
+    )
+    april = next(row for row in rows if str(row["period"]).startswith("2024-04"))
+    assert april["yoy_change"] == pytest.approx(1.0)
+
+
+def test_trend_by_region_keeps_one_series_per_region(sales: DuckDBManager) -> None:
+    sales.execute(
+        "CREATE TABLE regions AS SELECT * FROM sales "
+        "UNION ALL SELECT sold_at, 'south' AS region, amount * 2 AS amount FROM sales"
+    )
+    bucketed = tool_registry.get("time_bucket").run(
+        sales,
+        "regions",
+        [],
+        date_column="sold_at",
+        interval="month",
+        metric_column="amount",
+        function="SUM",
+        by=["region"],
+    )
+    with pytest.raises(ValueError, match=r"by"):
+        run_sales(sales, "trend_analysis", bucketed, date_column="period", value_column="amount")
+    rows = run_sales(
+        sales,
+        "trend_analysis",
+        bucketed,
+        date_column="period",
+        value_column="amount",
+        by=["region"],
+    )
+    assert {row["region"] for row in rows} == {"north", "south"}
+    assert all(row["yoy_change_avg"] == pytest.approx(1.0, abs=0.01) for row in rows)
+
+
+def test_series_tools_aggregate_by_hour_with_a_daily_season(sales: DuckDBManager) -> None:
+    rows = run_sales(
+        sales,
+        "seasonal_decompose",
+        date_column="sold_at",
+        value_column="amount",
+        interval="hour",
+        function="COUNT",
+    )
+    assert len(rows) == 731
+    assert all(row["value"] == 2 for row in rows)
 
 
 def test_forecast_returns_requested_number_of_periods(db: DuckDBManager) -> None:

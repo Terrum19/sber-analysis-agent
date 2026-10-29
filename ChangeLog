@@ -1,3 +1,51 @@
+2026-10-29  thebulkapro  <saitbatalovbulat200@gmail.com>
+
+	Временные ряды: сезонность по сумме за период, тренд и разложение по
+	ряду, рост год к году и p-value (#215).
+	* backend/app/core/tools/timeseries/seasonality.py (SeasonalityArgs):
+	function SUM | COUNT | AVG, по умолчанию SUM; metric_column не нужен
+	для COUNT.  (SeasonalityTool): Сначала итог за каждый конкретный
+	период (месяц, квартал, день, час), потом среднее по номеру периода.
+	Неполные крайние периоды и периоды сверх целого числа лет в расчёт
+	не входят.  Колонки <period>, level, periods, incomplete, skipped.
+	* backend/app/core/tools/domain/_common.py (series): Новая.  Ряды по
+	разрезам by; с interval строки сворачиваются function по периодам,
+	неполный крайний период помечается; без interval повтор дат — ошибка
+	с подсказкой.  Имена после time_bucket (period, sum_<колонка>)
+	узнаются.  (step_index): Новая.  Номер шага по календарю вместо дней
+	и позиции строки.  (SEASONS): Длина сезона по шагу ряда.  (trend):
+	p-value.  (time_axis, period_index, observations): Удалены.
+	* backend/app/core/tools/domain/trend_analysis.py (TrendArgs):
+	interval, function, by; seasonality_period по умолчанию по шагу
+	ряда.  (TrendAnalysisTool): slope_per_period вместо slope за день;
+	p_value по ряду без сезонных отклонений; yoy_change, yoy_change_avg,
+	yoy_p_value; incomplete.  Описание со словами «растёт», «рост».
+	* backend/app/core/tools/domain/seasonal_decompose.py (DecomposeArgs):
+	interval, function, by; seasonality_period по шагу ряда.
+	(SeasonalDecomposeTool): Неполные периоды не считаются, колонка
+	incomplete.
+	* backend/app/core/tools/sql/atomic.py (Interval): hour.
+	* backend/app/core/tools/timeseries/forecast.py (shift): Шаг в час.
+	* backend/app/core/llm/prompts/quality_rules.py (PLANNER_RULES):
+	Сезонность — seasonality с SUM/COUNT/AVG по смыслу метрики; «растёт
+	ли» — trend_analysis с interval и function, разрезы — by.
+	(RESULT_SHAPES): Новый.  Правило headline для тренда, сезонности и
+	разложения.
+	* backend/app/core/agent/insight.py (InsightGenerator.generate):
+	Аргумент result_tool.
+	* backend/app/core/agent/orchestrator.py (Execution.result_tool):
+	Новое поле.
+	* backend/app/core/agent/quality_fixes.py (insight_facts): Колонка с
+	одним значением во всех строках — само значение; номер периода
+	сезонности подписывает минимум и максимум.
+	* backend/tests/unit/test_tools.py, backend/tests/unit/test_advanced_tools.py,
+	backend/tests/unit/test_quality_fixes.py,
+	backend/tests/unit/test_insight_generator.py: Тесты того же.
+	* data/eval/questions.yaml (pharma-03),
+	data/eval/hk/questions.yaml (sales-s3-july): Эталоны — среднее по
+	годам.
+	* docs/repo_structure.md, docs/visualization.md, docs/prompts.md: То же.
+
 2026-10-29  Alexander Yurits  <143354682+Terrum19@users.noreply.github.com>
 
 	Дашборд по связанным таблицам (#165 + #224).
