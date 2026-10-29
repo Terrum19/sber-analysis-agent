@@ -95,9 +95,12 @@ function kpiFromTile(
   let value = "—";
   let label = fallbackLabel;
   let exact: string | undefined;
-  // Снимок бэкенда — строки результата (snapshot_records): KPI — первая строка
-  if (Array.isArray(snapshot)) {
-    const row = snapshot[0];
+  // Строки результата: снимок бэкенда (snapshot_records) или данные спеки —
+  // в плитках из SSE-события снимка нет. KPI — первая строка.
+  const specRows = (tile.spec?.data as { values?: unknown } | undefined)?.values;
+  const rows = Array.isArray(snapshot) ? snapshot : !snapshot && Array.isArray(specRows) ? specRows : null;
+  if (rows) {
+    const row = rows[0];
     const field = row && typeof row === "object" ? kpiField(tile, row) : undefined;
     if (field !== undefined && row[field] !== null && row[field] !== undefined) {
       value = formatKpi(row[field], locale);
@@ -112,18 +115,6 @@ function kpiFromTile(
     else if (snapshot.val !== undefined && snapshot.val !== null) value = String(snapshot.val);
     if (snapshot.label) label = String(snapshot.label);
     else if (snapshot.desc) label = String(snapshot.desc);
-  } else if (tile.spec?.data && typeof tile.spec.data === "object" && "values" in tile.spec.data) {
-    const vals = (tile.spec.data as { values?: any[] }).values;
-    if (Array.isArray(vals) && vals.length > 0) {
-      const first = vals[0];
-      for (const k in first) {
-        if (typeof first[k] === "number" || typeof first[k] === "string") {
-          value = String(first[k]);
-          label = k;
-          break;
-        }
-      }
-    }
   }
   return { value, label, exact };
 }

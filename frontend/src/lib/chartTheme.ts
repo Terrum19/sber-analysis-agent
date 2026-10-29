@@ -241,6 +241,7 @@ function looksOrdered(values: unknown[]): boolean {
 
 const MAX_BAR = 24;
 const MAX_LABELLED_BARS = 12;
+const MIN_LABELLED_STEP = 18;
 // Высота на категорию у горизонтальных столбцов не больше MAX_STEP px; доля зазора между полосами
 const MAX_STEP = 48;
 const BAND_PADDING = 0.3;
@@ -286,7 +287,8 @@ export function presentVegaSpec(spec: VegaSpec, options: PresentOptions): VegaSp
   if (categorical && rows.length > 0) {
     const categories = Array.from(new Set(rows.map((row) => row[x.field])));
     const count = categories.length;
-    const labelled = labels && count <= MAX_LABELLED_BARS;
+    // Подписи значений — только когда на категорию хватает места по высоте
+    const labelled = labels && count <= MAX_LABELLED_BARS && height / count >= MIN_LABELLED_STEP;
     const thickness = Math.max(4, Math.min(MAX_BAR, Math.floor((height / count) * 0.62)));
     const transform: any[] = [...(spec.transform ?? [])];
     if (y.aggregate) {
@@ -311,7 +313,8 @@ export function presentVegaSpec(spec: VegaSpec, options: PresentOptions): VegaSp
           title: null,
           sort: looksOrdered(categories) ? null : "-x",
           scale: { ...x.scale, paddingInner: BAND_PADDING, paddingOuter: BAND_PADDING / 2 },
-          axis: { ...x.axis, labelLimit: Math.round(width * 0.4), domain: false },
+          // Не влезающие подписи категорий скрываются, а не наезжают друг на друга
+          axis: { ...x.axis, labelLimit: Math.round(width * 0.4), domain: false, labelOverlap: "greedy" },
         },
         // Каждое значение подписано у конца столбца — ось значений не нужна
         x: labelled
