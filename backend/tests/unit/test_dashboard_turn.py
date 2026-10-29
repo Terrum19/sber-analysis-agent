@@ -571,3 +571,89 @@ async def test_dashboard_request_in_chat_mode_takes_the_new_route(db) -> None:
     events = [event async for event in agent(db, llm).run(chat)]
     assert kinds(events) == ["dashboard_outline", "dashboard", "text", "done"]
     assert "enough_info всегда true" not in llm.prompts["DashboardOutline"][0]
+
+
+# --- Вариант rich_tiles: формула показателя и дополнительные показатели.
+
+
+async def test_formula_and_extra_metrics_skip_the_planner(db) -> None:
+    revenue = {"metric": "revenue", "expression": "amount * 2"}
+    outline = DashboardOutline(
+        title="Продажи",
+        tiles=[
+            simple("Выручка", agg="SUM", **revenue),
+            simple(
+                "Регионы",
+                agg="SUM",
+                by="region",
+                top=2,
+                **revenue,
+                extra_metrics=[{"agg": "COUNT"}],
+            ),
+            simple(
+                "По дням",
+                agg="SUM",
+                period="day",
+                date_column="day",
+                **revenue,
+                extra_metrics=[{"metric": "amount", "agg": "AVG"}],
+            ),
+            simple(
+                "Средняя выручка",
+                agg="AVG",
+                **revenue,
+                extra_metrics=[{"metric": "revenue", "agg": "MAX"}],
+            ),
+        ],
+    )
+    llm = ScriptedLLM(DashboardOutline=[outline], ChartChoices=[RuntimeError("timeout")])
+    orchestrator, planner = quick_agent(db, llm)
+    events = await collect(orchestrator, question="Продажи по регионам и дням")
+
+    assert planner.contexts == []
+    tiles = {tile.title: tile for tile in saved(events).tiles}
+    assert db.query(f"SELECT * FROM {tiles['Выручка'].result_table}") == [{"sum_revenue": 47.0}]
+    assert db.query(f"SELECT * FROM {tiles['Регионы'].result_table}") == [
+        {"region": "msk", "sum_revenue": 25.0, "n": 2},
+        {"region": "ekb", "sum_revenue": 14.0, "n": 1},
+    ]
+    by_day = db.query(f"SELECT * FROM {tiles['По дням'].result_table}")
+    assert list(by_day[0]) == ["period", "sum_revenue", "avg_amount"]
+    assert len(by_day) == 4
+    text = next(event["data"] for event in events if event["type"] == "text")
+    assert any(
+        "новый показатель «revenue» = amount * 2; разбивка по дням («day»); "
+        "сумма «revenue», среднее «amount» по «период»" in line
+        for line in text["details"]
+    )
+
+
+@pytest.mark.parametrize(
+    "fields",
+    [
+        {"agg": "SUM", "expression": "amount * 2"},
+        {"agg": "SUM", "metric": "amount", "expression": "amount * 2"},
+        {"agg": "SUM", "metric": "amount", "extra_metrics": [{"metric": "nope"}]},
+        {"agg": "SUM", "metric": "amount", "extra_metrics": [{"agg": "AVG"}]},
+        {"agg": "SUM", "metric": "amount", "extra_metrics": [{"metric": "region", "agg": "AVG"}]},
+    ],
+)
+def test_rich_fields_that_do_not_fit_go_to_the_planner(fields) -> None:
+    assert (
+        quick_plan(OutlineTile(title="t", question="q", kind="simple", **fields), KINDS, 0) is None
+    )
+
+
+def test_period_column_clash_goes_to_the_planner() -> None:
+    tile = simple(
+        "t", agg="COUNT", period="month", date_column="day", extra_metrics=[{"metric": "amount"}]
+    )
+    assert quick_plan(tile, {**KINDS, "period": "text"}, 0) is None
+    assert quick_plan(tile, KINDS, 0) is not None
+
+
+def test_tile_metric_fields_are_normalized() -> None:
+    tile = OutlineTile(title="t", question="q", extra_metrics=None, expression=" ")
+    assert (tile.extra_metrics, tile.expression) == ([], None)
+    odd = OutlineTile(title="t", question="q", extra_metrics=[{"agg": "mode", "metric": ""}])
+    assert (odd.extra_metrics[0].agg, odd.extra_metrics[0].metric) == ("SUM", None)

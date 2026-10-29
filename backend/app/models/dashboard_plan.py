@@ -28,12 +28,38 @@ class DashboardIdeas(BaseModel):
     ideas: list[DashboardIdea] = Field(default_factory=list)
 
 
+# Дополнительных показателей у простой плитки (вариант rich_tiles).
+MAX_EXTRA_METRICS = 2
+
+
+class TileMetric(BaseModel):
+    """Ещё один показатель простой плитки: колонка или формула и агрегат."""
+
+    metric: str | None = None
+    agg: TileAgg = "SUM"
+    expression: str | None = None
+
+    @field_validator("agg", mode="before")
+    @classmethod
+    def _upper(cls, value: Any) -> Any:
+        text = value.strip().upper() if isinstance(value, str) else value
+        return text if text in TileAgg.__args__ else "SUM"
+
+    @field_validator("metric", "expression", mode="before")
+    @classmethod
+    def _empty_is_none(cls, value: Any) -> Any:
+        return None if isinstance(value, str) and not value.strip() else value
+
+
 class OutlineTile(BaseModel):
     """Плитка плана: вопрос, на который отвечает её шаг, и что она показывает.
 
     Вариант quick_tiles: у простой плитки (kind=simple) план сразу отдаёт поля
     расчёта — шаги собирает код (core/dashboards/quick_tiles.py). Сложная
     плитка или неподходящие поля — обычный планировщик по question.
+
+    Вариант rich_tiles добавляет expression — формулу показателя (metric —
+    тогда имя новой колонки) и extra_metrics — ещё 1–2 показателя рядом.
     """
 
     title: str
@@ -48,6 +74,8 @@ class OutlineTile(BaseModel):
     top: int | None = Field(default=None, ge=1, le=100)
     filter_column: str | None = None
     filter_value: str | int | float | bool | None = None
+    expression: str | None = None
+    extra_metrics: list[TileMetric] = Field(default_factory=list)
 
     @field_validator("kind", "agg", "period", mode="before")
     @classmethod
@@ -64,7 +92,12 @@ class OutlineTile(BaseModel):
             return text if text in TileKind.__args__ else "complex"
         return text if text in TilePeriod.__args__ else None
 
-    @field_validator("metric", "by", "date_column", "filter_column", mode="before")
+    @field_validator("extra_metrics", mode="before")
+    @classmethod
+    def _null_metrics(cls, value: Any) -> Any:
+        return [] if value is None else value
+
+    @field_validator("metric", "by", "date_column", "filter_column", "expression", mode="before")
     @classmethod
     def _empty_is_none(cls, value: Any) -> Any:
         return None if isinstance(value, str) and not value.strip() else value
