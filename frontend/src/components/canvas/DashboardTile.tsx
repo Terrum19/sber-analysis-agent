@@ -17,7 +17,16 @@ import dynamic from "next/dynamic";
 import { VegaLite, type VisualizationSpec } from "react-vega";
 import type { EChartsOption } from "echarts";
 import type { DashboardTile as DashboardTileType } from "@/types/dashboard";
-import { deltaSign, echartsBase, themeVegaSpec, useChartColors, type ChartColors } from "@/lib/chartTheme";
+import {
+  VEGA_LOCALE,
+  deltaSign,
+  echartsBase,
+  presentVegaSpec,
+  themeVegaSpec,
+  useChartColors,
+  type ChartColors,
+} from "@/lib/chartTheme";
+import { useUiStore, type Locale } from "@/store/uiStore";
 import {
   selectionFromECharts,
   selectionFromVega,
@@ -60,10 +69,14 @@ interface Props {
   actions?: React.ReactNode;
 }
 
-/** Число KPI с разрядами; строки и прочее — как есть. */
-function formatKpi(raw: unknown): string {
-  if (typeof raw === "number") return raw.toLocaleString("ru-RU", { maximumFractionDigits: 2 });
-  return String(raw);
+/** Число KPI: от миллиона — компактно («38,6 млн»), меньше — с разрядами; строки — как есть. */
+function formatKpi(raw: unknown, locale: Locale): string {
+  if (typeof raw !== "number") return String(raw);
+  const tag = locale === "ru" ? "ru-RU" : "en-US";
+  if (Math.abs(raw) >= 1e6) {
+    return raw.toLocaleString(tag, { notation: "compact", maximumFractionDigits: 1 });
+  }
+  return raw.toLocaleString(tag, { maximumFractionDigits: 2 });
 }
 
 /** Поле значения KPI: encoding.text спеки, иначе первая числовая колонка строки. */
@@ -73,16 +86,23 @@ function kpiField(tile: DashboardTileType, row: Record<string, unknown>): string
   return Object.keys(row).find((key) => typeof row[key] === "number");
 }
 
-function kpiFromTile(tile: DashboardTileType, fallbackLabel: string): { value: string; label: string } {
+function kpiFromTile(
+  tile: DashboardTileType,
+  fallbackLabel: string,
+  locale: Locale,
+): { value: string; label: string; exact?: string } {
   const snapshot = tile.snapshot_data;
   let value = "—";
   let label = fallbackLabel;
+  let exact: string | undefined;
   // Снимок бэкенда — строки результата (snapshot_records): KPI — первая строка
   if (Array.isArray(snapshot)) {
     const row = snapshot[0];
     const field = row && typeof row === "object" ? kpiField(tile, row) : undefined;
     if (field !== undefined && row[field] !== null && row[field] !== undefined) {
-      value = formatKpi(row[field]);
+      value = formatKpi(row[field], locale);
+      const raw = row[field];
+      if (typeof raw === "number") exact = raw.toLocaleString(locale === "ru" ? "ru-RU" : "en-US", { maximumFractionDigits: 2 });
       const text = (tile.spec?.encoding as { text?: { title?: string } } | undefined)?.text;
       // Сырое имя колонки (sum_revenue) подписью не показываем: заголовок плитки уже есть
       label = text?.title && text.title !== field ? text.title : "";
@@ -105,7 +125,7 @@ function kpiFromTile(tile: DashboardTileType, fallbackLabel: string): { value: s
       }
     }
   }
-  return { value, label };
+  return { value, label, exact };
 }
 
 export function isEChartsTile(tile: DashboardTileType): boolean {
@@ -154,6 +174,7 @@ function FittedChart({
   onSelect?: (selection: ChartSelection) => void;
 }) {
   const { ref, width, height } = useElementSize<HTMLDivElement>();
+  const locale = useUiStore((s) => s.locale);
   const ready = width > 20 && height > 20;
   // Обработчик держим в ref: Vega-вью переиспользуется при изменении размера,
   // а колбэк из родителя меняется на каждом рендере.
@@ -186,17 +207,27 @@ function FittedChart({
       />
     );
   } else if (ready && tile.spec && Object.keys(tile.spec).length > 0) {
-    let spec: Record<string, any> = {
-      ...themeVegaSpec(tile.spec as Record<string, any>, colors),
-      autosize: { type: "fit", contains: "padding" },
+    // Название графика — в шапке плитки, внутри спеки его не повторяем
+    const presented = presentVegaSpec(themeVegaSpec(tile.spec as Record<string, any>, colors), {
       width,
       height,
+      locale,
+      colors,
+      labels: !bare,
+    });
+    let spec: Record<string, any> = {
+      ...presented,
+      autosize: { type: "fit", contains: "padding" },
+      width,
+      height: typeof presented.height === "number" ? Math.min(height, presented.height) : height,
     };
     if (bare) spec = withoutAxes(spec);
     content = (
       <VegaLite
         spec={spec as VisualizationSpec}
         actions={false}
+        formatLocale={VEGA_LOCALE[locale].formatLocale as unknown as Record<string, unknown>}
+        timeFormatLocale={VEGA_LOCALE[locale].timeFormatLocale as unknown as Record<string, unknown>}
         onError={(err) => console.warn("VegaLite specification error:", err)}
         onNewView={(view: any) => {
           if (listeningViews.current.has(view)) return;
@@ -215,7 +246,7 @@ function FittedChart({
 
   return (
     <div ref={ref} className="relative min-h-0 flex-1 overflow-hidden">
-      <div className="absolute inset-0">{content}</div>
+      <div className="absolute inset-0 flex flex-col justify-center">{content}</div>
     </div>
   );
 }
@@ -242,7 +273,8 @@ export default function DashboardTile({
 
   const isKpi = isKpiTile(tile);
   const hasChart = !isKpi && tile.spec && Object.keys(tile.spec).length > 0;
-  const kpi = isKpi ? kpiFromTile(tile, t("tile.kpiDefault")) : null;
+  const locale = useUiStore((s) => s.locale);
+  const kpi = isKpi ? kpiFromTile(tile, t("tile.kpiDefault"), locale) : null;
   const sign = kpi ? deltaSign(kpi.label) : 0;
   const canOpen = Boolean(onOpen) && !isEditing;
   const canDrill = Boolean(onElaborate) && !isEditing;
@@ -404,7 +436,7 @@ export default function DashboardTile({
                 className={`truncate font-semibold uppercase tracking-wider text-graphite-300 ${
                   large ? "text-sm" : dense ? "text-[11px]" : "text-xs"
                 }`}
-                title={tile.title}
+                title={tile.result_table ? `${tile.title} · ${t("tile.source")}: ${tile.result_table}` : tile.title}
               >
                 {tile.title}
               </h3>
@@ -418,11 +450,6 @@ export default function DashboardTile({
                 </button>
               )}
             </div>
-          )}
-          {tile.result_table && !dense && (
-            <span className="mt-0.5 block truncate font-mono text-[10px] text-graphite-500">
-              {t("tile.source")}: {tile.result_table}
-            </span>
           )}
         </div>
 
@@ -470,25 +497,28 @@ export default function DashboardTile({
 
       {/* Основной контент: KPI или график по размеру оставшегося места */}
       {isKpi && kpi ? (
-        <div className="flex min-h-0 flex-1 flex-col justify-start overflow-hidden pt-1">
+        // Число — главное в плитке: по центру, размер от места в плитке (container query)
+        <div
+          className="flex min-h-0 flex-1 flex-col items-center justify-center overflow-hidden text-center"
+          style={{ containerType: "size" }}
+        >
           <div
-            className={`truncate font-extrabold tracking-tight text-graphite-50 ${
-              large ? "text-6xl" : dense ? "text-2xl" : "text-3xl"
-            }`}
+            className="max-w-full truncate font-semibold leading-none tracking-tight text-graphite-50"
+            style={{ fontSize: large ? "clamp(48px, min(45cqh, 14cqw), 112px)" : "clamp(22px, min(55cqh, 16cqw), 64px)" }}
+            title={kpi.exact}
           >
             {kpi.value}
           </div>
-          <div className="mt-1 flex flex-wrap items-center gap-x-2 text-xs text-graphite-400">
-            <span
-              className={`inline-flex items-center gap-1 font-medium ${
-                sign > 0 ? "text-good" : sign < 0 ? "text-bad" : "text-graphite-300"
+          {kpi.label && (
+            <div
+              className={`mt-2 inline-flex max-w-full items-center gap-1 truncate text-xs font-medium ${
+                sign > 0 ? "text-good" : sign < 0 ? "text-bad" : "text-graphite-400"
               }`}
             >
               {sign !== 0 && <span aria-hidden="true">{sign > 0 ? "▲" : "▼"}</span>}
               {kpi.label}
-            </span>
-            {!dense && <span className="text-[11px] text-graphite-500">{t("tile.kpiSlice")}</span>}
-          </div>
+            </div>
+          )}
         </div>
       ) : hasChart ? (
         <FittedChart
