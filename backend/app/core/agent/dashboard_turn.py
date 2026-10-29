@@ -90,6 +90,9 @@ INTENT_CHARTS = {
     "share": "bar",
 }
 
+# Сколько символов сырого ответа модели писать в лог при плане без плиток.
+RAW_LOG_CHARS = 6000
+
 DASHBOARD_TITLE = "Дашборд"
 FALLBACK_MESSAGE = (
     "Запрос общий — собрал дашборд по варианту «{title}». Можно выбрать другой вариант."
@@ -266,10 +269,10 @@ class DashboardTurn:
             table=described,
             forced=OUTLINE_FORCED if forced else "",
         )
-        outline = await self.llm.complete_structured(SYSTEM_ANALYST, prompt, DashboardOutline)
+        outline = await self._ask_outline(prompt)
         if forced and len(outline.tiles) < MIN_BUILT_TILES:
             logger.warning("дашборд: план по идее без плиток, переспрос")
-            outline = await self.llm.complete_structured(SYSTEM_ANALYST, prompt, DashboardOutline)
+            outline = await self._ask_outline(prompt)
             if len(outline.tiles) < MIN_BUILT_TILES:
                 raise ValueError("Модель не составила план дашборда")
         logger.info(
@@ -278,6 +281,20 @@ class DashboardTurn:
             outline.enough_info,
             [(tile.title, tile.intent) for tile in outline.tiles],
         )
+        return outline
+
+    async def _ask_outline(self, prompt: str) -> DashboardOutline:
+        """Вызов плана; без плиток — сырой ответ модели в лог, чтобы видеть причину."""
+        outline = await self.llm.complete_structured(SYSTEM_ANALYST, prompt, DashboardOutline)
+        if len(outline.tiles) < MIN_BUILT_TILES:
+            raw = getattr(self.llm, "last_raw", None)
+            logger.warning(
+                "дашборд: в плане плиток %d, enough_info=%s, сырой ответ модели (%s симв.): %s",
+                len(outline.tiles),
+                outline.enough_info,
+                len(raw) if raw is not None else "?",
+                raw[:RAW_LOG_CHARS] if raw is not None else "недоступен",
+            )
         return outline
 
     async def _tile(
