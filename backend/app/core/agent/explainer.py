@@ -47,7 +47,13 @@ class Explainer:
         tools = "\n".join(
             f"- {tool.name}: {tool.description}" for tool in tool_registry.planner_tools()
         )
-        prompt = EXPLAINER.format(journal=journal, memories=notes, tools=tools, question=question)
+        prompt = EXPLAINER.format(
+            journal=journal,
+            columns=_columns(self.db, memory.table),
+            memories=notes,
+            tools=tools,
+            question=question,
+        )
         logger.debug("    промпт пояснения=%r", prompt)
         reply = await self.llm.complete_structured("Ты — аналитик.", prompt, Insight)
         missing = ungrounded_numbers(_text(reply), prompt)
@@ -56,6 +62,17 @@ class Explainer:
         logger.warning("пояснение: числа без опоры в журнале %s, переспрос", missing)
         fix = NUMBER_FIX.format(numbers=", ".join(missing))
         return await self.llm.complete_structured("Ты — аналитик.", prompt + fix, Insight)
+
+
+def _columns(db: DuckDBManager | None, table: str | None) -> str:
+    """Колонки таблицы сессии: «из каких полей», «в каких единицах» — по их именам."""
+    if db is None or table is None:
+        return "нет"
+    try:
+        names = db.columns(table)
+    except duckdb.Error:
+        names = []
+    return f"{table}: {', '.join(names)}" if names else "нет"
 
 
 def _text(reply: Insight) -> str:
@@ -92,6 +109,8 @@ def _describe_turn(turn: dict, db: DuckDBManager | None, preview: bool) -> str:
         lines += [f"     - {detail}" for detail in turn.get("details") or []]
     elif turn.get("status") in NO_ANSWER:
         lines.append(f"   Ответ: {NO_ANSWER[turn['status']]}")
+    if turn.get("reason"):
+        lines.append(f"   Причина: {turn['reason']}")
     if preview and turn.get("result_table"):
         lines.append(_preview(db, turn["result_table"]))
     return "\n".join(lines)

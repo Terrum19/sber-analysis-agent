@@ -1,5 +1,21 @@
 2026-10-29  Alexander Yurits  <143354682+Terrum19@users.noreply.github.com>
 
+	Пустой план — ответ словами; причина неудачного хода — в журнале.
+	* backend/app/core/agent/orchestrator.py (_research): Пустой план без
+	просьбы запомнить идёт в пояснение, а не в отказ «не удалось подобрать
+	инструменты».  (_turn): Причина уточнения и сбоя — в ход.
+	* backend/app/core/memory/session_memory.py (finish_turn): Хранит
+	reason.
+	* backend/app/core/agent/explainer.py (_columns): Новая.  Колонки
+	таблицы сессии.  (_describe_turn): Причина неудачного хода.
+	* backend/app/core/llm/prompts/explainer.py (EXPLAINER): Колонки,
+	причина неудачи, вопросы с новым расчётом.
+	* backend/tests/unit/test_orchestrator_unit.py: Пустой план отвечается
+	пояснением.
+	* backend/tests/unit/test_explain_turn.py: Тесты того же.
+
+2026-10-29  Alexander Yurits  <143354682+Terrum19@users.noreply.github.com>
+
 	Вопрос о прошлых ответах агента — ответ словами, без плана.
 	* backend/app/models/research_step.py (ResearchPlan.route): Новое
 	поле: data или answer; null и незнакомое значение — data.

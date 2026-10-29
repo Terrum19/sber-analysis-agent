@@ -48,7 +48,8 @@ SessionMemory состояние ожидания уточнения (``pending_
 
 Вопрос о прошлых ответах агента («как ты это посчитал?», «что значит
 p-value в ответе?») планировщик помечает маршрутом ``answer``: шагов нет,
-ответ строит agent/explainer.py по журналу ходов сессии.
+ответ строит agent/explainer.py по журналу ходов сессии. Туда же идёт любой
+пустой план (кроме просьбы только запомнить): ответ словами вместо отказа.
 """
 
 import asyncio
@@ -417,7 +418,7 @@ class AgentOrchestrator:
                 yield event
             question, execution = await task
         except ClarificationNeeded as exc:
-            memory.finish_turn("clarification")
+            memory.finish_turn("clarification", reason=exc.error)
             yield {
                 "type": "clarification_needed",
                 "data": {
@@ -428,11 +429,11 @@ class AgentOrchestrator:
                 },
             }
             return
-        except Exception:
+        except Exception as exc:
             # Сбой вне шагов (планировщик, LLM недоступна): без error и done
             # фронт так и показывал бы «идёт планирование».
             logger.exception("<<< run() ход прерван")
-            memory.finish_turn("failed")
+            memory.finish_turn("failed", reason=str(exc))
             yield _failure_event()
             yield _done(turn_id)
             return
@@ -518,7 +519,7 @@ class AgentOrchestrator:
             yield _chart_event(spec, insight.headline, result_table)
         except Exception as exc:
             logger.exception("<<< run() этап %s упал", stage)
-            memory.finish_turn("failed")
+            memory.finish_turn("failed", reason=f"{stage}: {exc}")
             yield _progress_event(stage, "failed", error=str(exc))
             yield _failure_event()
             yield _done(turn_id)
@@ -604,10 +605,12 @@ class AgentOrchestrator:
         remembered = [item["text"] for text in plan.remember if (item := memory.remember(text))]
         if remembered:
             logger.info("<<< run() запомнено: %s", remembered)
-        if plan.route == "answer" and not plan.steps:
-            # Вопрос о прошлых ответах. План с шагами при route=answer выполняется:
-            # в сомнении лучше посчитать, чем ответить словами без расчёта.
-            logger.info("маршрут: пояснение по журналу ходов")
+        if not plan.steps and (plan.route == "answer" or not remembered):
+            # Вопрос о прошлых ответах. Модель часто возвращает пустой план, не
+            # сменив route: пустой план — тоже ответ словами, а не отказ «не
+            # удалось подобрать инструменты». План с шагами при route=answer
+            # выполняется: в сомнении лучше посчитать, чем ответить без расчёта.
+            logger.info("маршрут: пояснение по журналу ходов (route=%s)", plan.route)
             emit(_progress_event("insight", "started"))
             reply = await self.explainer.answer(request.question, memory)
             return request.question, Execution(result_table="", remembered=remembered, reply=reply)

@@ -339,3 +339,45 @@ def test_planner_prompt_asks_for_route():
     assert plan.route == "answer"
     assert '"route": "data"' in PromptLLM.prompt
     assert 'Если сомневаешься — "data"' in PromptLLM.prompt
+
+
+def test_empty_plan_without_route_is_explained_not_refused(db):
+    # Модель вернула пустой план, не сменив route: это ответ словами, а не отказ.
+    llm = ScriptedLLM(Insight(headline="Время в часах: колонка «revenue» — рубли"))
+    agent = agent_with(db, ScriptedPlanner({"В каких единицах?": ResearchPlan()}), llm)
+    ask(agent, "Выручка по регионам")
+
+    events = ask(agent, "В каких единицах?")
+
+    assert kinds(events) == ["text", "done"]
+    assert "Колонки подключённой таблицы:\nsales: region, revenue" in llm.prompts[0]
+
+
+def test_remember_only_plan_is_still_a_confirmation(db):
+    llm = ScriptedLLM()
+    plan = ResearchPlan(remember=["выручка без НДС"])
+    agent = agent_with(db, ScriptedPlanner({"Запомни: без НДС": plan}), llm)
+
+    events = ask(agent, "Запомни: без НДС")
+
+    assert events[-2]["data"]["headline"] == "Запомнено: «выручка без НДС»"
+    assert llm.prompts == []
+
+
+def test_why_it_failed_is_answered_from_the_recorded_reason(db):
+    from app.core.agent.planner import PlanInvalid
+
+    class FailingThenScripted(ScriptedPlanner):
+        async def plan(self, question, context):
+            if question == "Маржа по сотрудникам":
+                raise PlanInvalid(["колонки «сотрудник» нет"])
+            return await super().plan(question, context)
+
+    llm = ScriptedLLM(Insight(headline="В данных нет колонки сотрудника"))
+    agent = agent_with(db, FailingThenScripted({"Почему не получилось?": ANSWER}), llm)
+    assert kinds(ask(agent, "Маржа по сотрудникам")) == ["clarification_needed"]
+
+    ask(agent, "Почему не получилось?")
+
+    assert turns()[0]["reason"].endswith("колонки «сотрудник» нет")
+    assert "Ответ: не получен (ход ждал уточнения)\n   Причина: Не удалось" in llm.prompts[0]

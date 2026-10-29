@@ -379,15 +379,18 @@ class SessionMemory:
         result_table: str | None = None,
         result_columns: list[str] | None = None,
         details: list[str] | None = None,
+        reason: str | None = None,
     ) -> None:
         """Закрыть текущий ход ответом и статусом: ok, failed или clarification.
 
-        details — пункты ответа под headline: по ним агент потом объясняет вывод.
+        details — пункты ответа под headline, reason — почему ход не дал ответа:
+        по ним агент потом объясняет вывод или неудачу.
         """
         self._turn.update(
             status=status,
             headline=headline,
             details=list(details or []),
+            reason=reason,
             result_table=result_table,
             result_columns=list(result_columns or []),
         )
