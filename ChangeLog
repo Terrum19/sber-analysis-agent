@@ -1,3 +1,20 @@
+2026-10-30  thebulkapro  <saitbatalovbulat200@gmail.com>
+
+	Временные ряды: исправления по ревью #233.
+	* backend/app/core/tools/domain/trend_analysis.py (_fit): Тренд и
+	сезонные отклонения — одной регрессией: рост не уходит в сезонность.
+	(_seasonal_trend): Новая.  МНК по шагу ряда и номеру сезона; p_value —
+	t-тест коэффициента при шаге.
+	* backend/app/core/tools/domain/_common.py (moving_average): По
+	календарным шагам; окно с пропуском — None.  (_unit): Текстовая дата
+	«2024-01-15» — не месяц.  (_partial_edges): Метки в полночь покрывают
+	весь день, на начало часа — весь час: последний период не неполный.
+	* backend/app/core/tools/domain/seasonal_decompose.py (_decompose):
+	Пропуск в ряду — дырка, а не сдвиг соседей; без целого окна — ошибка.
+	* backend/app/core/tools/timeseries/seasonality.py (SeasonalityTool):
+	Период без данных не считается нулевым и не входит в periods.
+	* backend/tests/unit/test_tools.py: Тесты того же.
+
 2026-10-29  thebulkapro  <saitbatalovbulat200@gmail.com>
 
 	Временные ряды: сезонность по сумме за период, тренд и разложение по

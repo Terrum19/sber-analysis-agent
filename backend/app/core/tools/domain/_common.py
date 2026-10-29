@@ -14,7 +14,7 @@ from app.core.tools.base import Ident, ToolArgs, identifier
 from app.core.tools.sql.atomic import aggregate_sql
 from app.core.tools.stats._common import rows_result
 
-_YEAR_MONTH = re.compile(r"^\d{4}-\d{2}")
+_YEAR_MONTH = re.compile(r"\d{4}-\d{2}")
 _MONDAY = date(1970, 1, 5)
 
 SeriesFunction = Literal["SUM", "COUNT", "AVG"]
@@ -23,6 +23,7 @@ SEASONS = {"hour": 24, "day": 7, "week": 52, "month": 12, "quarter": 4}
 """Длина сезона по шагу ряда: сутки по часам, неделя по дням, год по неделям, месяцам, кварталам."""
 
 _TOLERANCE = {"hour": "1 MINUTE", "day": "1 HOUR"}
+_GRAINS = ("year", "quarter", "month", "week", "day", "hour")
 
 
 class SeriesArgs(ToolArgs):
@@ -97,7 +98,7 @@ def series(db, table: str, args, tool: str) -> tuple[str | None, list[tuple[tupl
         raise ValueError(f"{tool} requires observations")
     if not args.interval:
         _reject_raw_rows(groups, columns, [date_column, value_column, *args.by], tool)
-    partial = _partial_edges(db, table, when, columns.get(date_column, ""), args.interval)
+    partial = _partial_edges(db, table, when, args.interval)
     unit = args.interval or _unit([moment for points in groups.values() for moment, _ in points])
     result = []
     for key, points in groups.items():
@@ -149,18 +150,27 @@ def _reject_raw_rows(
     )
 
 
-def _partial_edges(db, table: str, when: str, kind: str, interval: str | None) -> set[object]:
-    """Первый и последний периоды, которые данные покрывают не целиком."""
+def _partial_edges(db, table: str, when: str, interval: str | None) -> set[object]:
+    """Первый и последний периоды, которые данные покрывают не целиком.
+
+    Данные кончаются там, где кончается их собственная точность: даты
+    «2010-07-01» у помесячных данных покрывают весь июль, а не одно 1 июля.
+    """
     if not interval:
         return set()
     tolerance = f"INTERVAL {_TOLERANCE.get(interval, '1 DAY')}"
-    last_moment = f"max({when}) + INTERVAL 1 DAY" if kind.upper() == "DATE" else f"max({when})"
+    grains = "".join(
+        f"WHEN bool_and({when} = date_trunc('{grain}', {when})) "
+        f"THEN max({when}) + INTERVAL 1 {grain} "
+        for grain in _GRAINS
+    )
     row = db.query(
         f"SELECT date_trunc('{interval}', min({when})) AS first, "
         f"min({when}) > date_trunc('{interval}', min({when})) + {tolerance} AS first_partial, "
         f"date_trunc('{interval}', max({when})) AS last, "
-        f"{last_moment} < date_trunc('{interval}', max({when})) + INTERVAL 1 {interval} "
-        f"- {tolerance} AS last_partial FROM {identifier(table)}"
+        f"CASE {grains}ELSE max({when}) END "
+        f"< date_trunc('{interval}', max({when})) + INTERVAL 1 {interval} "
+        f"- {tolerance} AS last_partial FROM {identifier(table)} WHERE {when} IS NOT NULL"
     )[0]
     partial = set()
     if row["first_partial"]:
@@ -172,7 +182,9 @@ def _partial_edges(db, table: str, when: str, kind: str, interval: str | None) -
 
 def _unit(moments: list[object]) -> str | None:
     """Шаг ряда по самим датам: начала лет, кварталов, месяцев, недель, дней или часов."""
-    if moments and all(isinstance(moment, str) and _YEAR_MONTH.match(moment) for moment in moments):
+    if moments and all(
+        isinstance(moment, str) and _YEAR_MONTH.fullmatch(moment) for moment in moments
+    ):
         return "month"
     if not moments or not all(isinstance(moment, date) for moment in moments):
         return None
@@ -237,14 +249,19 @@ def trend(axis: list[float], values: list[float]) -> tuple[float, float, float, 
     return float(fitted.slope), float(fitted.intercept), float(fitted.rvalue**2), p_value
 
 
-def moving_average(values: list[float], window: int) -> list[float | None]:
-    """Centred moving average; an even window uses half weights at both ends."""
-    if window == 1:
-        return list(values)
+def moving_average(values: dict[int, float], window: int) -> dict[int, float | None]:
+    """Centred moving average over calendar steps; an even window uses half weights at both ends.
+
+    A window with a missing step gives None: a gap stays a gap.
+    """
     half = window // 2
-    averages: list[float | None] = [None] * len(values)
-    for center in range(half, len(values) - half):
-        span = values[center - half : center + half + 1]
+    averages: dict[int, float | None] = {}
+    for center in values:
+        steps = range(center - half, center + half + 1)
+        if any(step not in values for step in steps):
+            averages[center] = None
+            continue
+        span = [values[step] for step in steps]
         if window % 2:
             averages[center] = sum(span) / window
         else:

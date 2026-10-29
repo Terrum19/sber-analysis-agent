@@ -1,5 +1,6 @@
 """Linear trend, year-over-year change and seasonal indices."""
 
+import numpy as np
 from pydantic import Field
 from scipy import stats
 
@@ -65,24 +66,29 @@ def _fit(points: list[Point], season: int | None) -> list[tuple]:
     """Колонки COLUMNS после value для каждой точки ряда.
 
     Неполные периоды показываются, но в тренд, сезонность и рост год к году
-    не входят. При двух полных сезонах тренд ищется по ряду без сезонных
-    отклонений: декабрьские пики не прячут рост.
+    не входят. При двух полных сезонах тренд и сезонные отклонения ищутся
+    одной регрессией: рост не уходит в сезонность, декабрьские пики не прячут
+    рост.
     """
     complete = [point for point in points if not point.incomplete]
     if not complete:
         raise ValueError("trend_analysis requires complete periods")
     origin = complete[0].step
+    axis = [float(point.step - origin) for point in complete]
     overall = sum(point.value for point in complete) / len(complete)
     by_season: dict[int, list[float]] = {}
     for point in complete:
         by_season.setdefault(_season(point, season), []).append(point.value)
     means = {key: sum(values) / len(values) for key, values in by_season.items()}
-    deseasonalize = season is not None and len(complete) >= 2 * season
-    effects = {key: mean - overall for key, mean in means.items()} if deseasonalize else {}
-    slope, intercept, r_squared, p_value = trend(
-        [float(point.step - origin) for point in complete],
-        [point.value - effects.get(_season(point, season), 0.0) for point in complete],
-    )
+    if season is not None and len(complete) >= 2 * season:
+        slope, intercept, r_squared, p_value, effects = _seasonal_trend(
+            axis,
+            [point.value for point in complete],
+            [_season(point, season) for point in complete],
+        )
+    else:
+        slope, intercept, r_squared, p_value = trend(axis, [point.value for point in complete])
+        effects = {}
     values = {point.step: point.value for point in complete}
     changes = {
         point.step: point.value / values[point.step - season] - 1
@@ -96,7 +102,8 @@ def _fit(points: list[Point], season: int | None) -> list[tuple]:
     for point in points:
         key = _season(point, season)
         fitted = intercept + slope * (point.step - origin)
-        index = means.get(key, overall) / overall if season and overall else 1.0
+        level = overall + effects[key] if key in effects else means.get(key, overall)
+        index = level / overall if season and overall else 1.0
         residual = None if point.incomplete else point.value - fitted - effects.get(key, 0.0)
         rows.append(
             (
@@ -118,3 +125,39 @@ def _fit(points: list[Point], season: int | None) -> list[tuple]:
 
 def _season(point: Point, season: int | None) -> int:
     return point.step % season if season else 0
+
+
+def _seasonal_trend(
+    axis: list[float], values: list[float], seasons: list[int]
+) -> tuple[float, float, float, float | None, dict[int, float]]:
+    """МНК value = intercept + slope * axis + effect[season] — тренд и сезон вместе.
+
+    Сезонные отклонения в сумме дают ноль; r_squared — по ряду без них,
+    p_value — t-тест коэффициента при axis.
+    """
+    keys = sorted(set(seasons))
+    design = np.array(
+        [
+            [1.0, step, *(float(season == key) for key in keys[1:])]
+            for step, season in zip(axis, seasons)
+        ]
+    )
+    target = np.asarray(values)
+    coefficients = np.linalg.lstsq(design, target, rcond=None)[0]
+    raw = dict(zip(keys, [0.0, *map(float, coefficients[2:])]))
+    shift = sum(raw.values()) / len(raw)
+    effects = {key: value - shift for key, value in raw.items()}
+    slope, intercept = float(coefficients[1]), float(coefficients[0]) + shift
+    error = float(np.sum((target - design @ coefficients) ** 2))
+    deseasonalized = target - np.array([effects[season] for season in seasons])
+    spread = float(np.sum((deseasonalized - deseasonalized.mean()) ** 2))
+    r_squared = 1 - error / spread if spread else 0.0
+    freedom = len(values) - design.shape[1]
+    p_value = None
+    if freedom > 0:
+        variance = error / freedom * float(np.linalg.pinv(design.T @ design)[1, 1])
+        if variance > 0:
+            p_value = float(2 * stats.t.sf(abs(slope) / np.sqrt(variance), freedom))
+        elif slope:
+            p_value = 0.0
+    return slope, intercept, r_squared, p_value, effects

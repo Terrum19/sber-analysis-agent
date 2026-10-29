@@ -130,7 +130,7 @@ def test_time_series_and_seasonality_are_aggregations(db: DuckDBManager) -> None
     _, seasonality = run_tool(db, "seasonality", ["event_date", "amount"])
     assert seasonality[0]["month"] == 1
     assert seasonality[0]["level"] == 10.0
-    assert seasonality[-1]["incomplete"] == 1
+    assert seasonality[-1]["incomplete"] == 0
 
 
 @pytest.fixture
@@ -253,7 +253,7 @@ def test_trend_by_region_keeps_one_series_per_region(sales: DuckDBManager) -> No
 def test_series_tools_aggregate_by_hour_with_a_daily_season(sales: DuckDBManager) -> None:
     rows = run_sales(
         sales,
-        "seasonal_decompose",
+        "trend_analysis",
         date_column="sold_at",
         value_column="amount",
         interval="hour",
@@ -261,6 +261,102 @@ def test_series_tools_aggregate_by_hour_with_a_daily_season(sales: DuckDBManager
     )
     assert len(rows) == 731
     assert all(row["value"] == 2 for row in rows)
+    with pytest.raises(ValueError, match="без пропусков"):
+        run_sales(
+            sales,
+            "seasonal_decompose",
+            date_column="sold_at",
+            value_column="amount",
+            interval="hour",
+            function="COUNT",
+        )
+
+
+@pytest.fixture
+def months() -> DuckDBManager:
+    """Три года по месяцам, значение растёт на 1 каждый месяц."""
+    manager = DuckDBManager(":memory:")
+    manager.execute(
+        "CREATE TABLE months AS SELECT (DATE '2023-01-01' + INTERVAL (i) MONTH)::DATE AS month, "
+        "(i + 1)::DOUBLE AS amount FROM range(36) AS steps(i)"
+    )
+    yield manager
+    manager.close()
+
+
+def test_trend_keeps_growth_out_of_the_seasonal_effects(months: DuckDBManager) -> None:
+    months.execute("CREATE TABLE two_years AS SELECT * FROM months WHERE month < DATE '2025-01-01'")
+    for table in ("months", "two_years"):
+        rows = run_sales(
+            months, "trend_analysis", table, date_column="month", value_column="amount"
+        )
+        assert rows[0]["slope_per_period"] == pytest.approx(1.0)
+        assert rows[0]["p_value"] < 0.001
+        assert all(row["seasonal_index"] == pytest.approx(1.0) for row in rows)
+
+
+def test_decompose_leaves_a_missing_month_as_a_gap(months: DuckDBManager) -> None:
+    months.execute("CREATE TABLE holes AS SELECT * FROM months WHERE month != DATE '2023-03-01'")
+    rows = run_sales(
+        months, "seasonal_decompose", "holes", date_column="month", value_column="amount"
+    )
+    trend = {str(row["period"])[:7]: row["trend"] for row in rows}
+    assert trend["2023-08"] is None
+    assert trend["2024-06"] == pytest.approx(18.0)
+
+
+def test_seasonality_skips_a_month_without_data() -> None:
+    manager = DuckDBManager(":memory:")
+    manager.execute(
+        "CREATE TABLE days AS SELECT day::DATE AS day, 10.0 AS amount "
+        "FROM range(DATE '2021-01-01', DATE '2024-01-01', INTERVAL 1 DAY) AS days(day) "
+        "WHERE year(day) != 2022 OR month(day) != 7"
+    )
+    rows = run_sales(manager, "seasonality", "days", date_column="day", metric_column="amount")
+    by_month = {row["month"]: row for row in rows}
+    assert (by_month[6]["level"], by_month[6]["periods"]) == (300.0, 3)
+    assert (by_month[7]["level"], by_month[7]["periods"]) == (310.0, 2)
+    manager.close()
+
+
+def test_trend_reads_text_days_as_days_not_months() -> None:
+    manager = DuckDBManager(":memory:")
+    manager.execute(
+        "CREATE TABLE days AS SELECT strftime(DATE '2024-01-01' + INTERVAL (i) DAY, '%Y-%m-%d') "
+        "AS day, i::DOUBLE AS amount FROM range(30) AS steps(i)"
+    )
+    rows = run_sales(manager, "trend_analysis", "days", date_column="day", value_column="amount")
+    assert rows[0]["slope_per_period"] == pytest.approx(1.0)
+    manager.close()
+
+
+@pytest.mark.parametrize(
+    ("interval", "end", "step", "last_incomplete"),
+    [
+        ("day", "2024-02-01", "1 DAY", 0),
+        ("hour", "2024-01-03", "1 HOUR", 0),
+        ("month", "2024-03-15 12:00", "7 HOUR", 1),
+    ],
+)
+def test_midnight_timestamps_cover_the_whole_last_period(
+    interval: str, end: str, step: str, last_incomplete: int
+) -> None:
+    manager = DuckDBManager(":memory:")
+    manager.execute(
+        f"CREATE TABLE events AS SELECT moment AS moment, 1.0 AS amount FROM range("
+        f"TIMESTAMP '2024-01-01', TIMESTAMP '{end}', INTERVAL {step}) AS moments(moment)"
+    )
+    rows = run_sales(
+        manager,
+        "trend_analysis",
+        "events",
+        date_column="moment",
+        value_column="amount",
+        interval=interval,
+    )
+    assert rows[0]["incomplete"] == 0
+    assert rows[-1]["incomplete"] == last_incomplete
+    manager.close()
 
 
 def test_forecast_returns_requested_number_of_periods(db: DuckDBManager) -> None:

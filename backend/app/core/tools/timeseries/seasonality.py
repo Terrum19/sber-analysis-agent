@@ -57,7 +57,8 @@ class SeasonalityTool(BaseTool):
         "вместе; function=SUM — итог за конкретный период (выручка, штуки, объёмы), COUNT — "
         "число строк (событий, заказов), AVG — средняя величина одной записи (средний чек, "
         "цена, длительность); сначала итог за каждый месяц/день/час, потом среднее по годам "
-        "(дням) — level; periods — сколько периодов усреднено; неполные крайние периоды "
+        "(дням) — level; periods — сколько периодов с данными усреднено (пропущенные не "
+        "считаются нулём); неполные крайние периоды "
         "(incomplete) и лишние сверх целых лет (skipped) в расчёт не входят"
     )
     Args = SeasonalityArgs
@@ -75,7 +76,9 @@ class SeasonalityTool(BaseTool):
         for step in range(first, last + 1):
             number = _number(step, args.period)
             level = levels.setdefault(number, [0.0, 0, 0, 0])
-            total, count, _ = totals.get(step, (0.0, 0, False))
+            if step not in totals:
+                continue
+            total, count, _ = totals[step]
             if step < start:
                 level[3] += 1
                 continue

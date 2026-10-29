@@ -54,7 +54,11 @@ class SeasonalDecomposeTool(BaseTool):
 
 
 def _decompose(points: list[Point], season: int, mode: str) -> list[tuple]:
-    """trend, seasonal, residual и incomplete для каждой точки; неполные периоды не считаются."""
+    """trend, seasonal, residual и incomplete для каждой точки; неполные периоды не считаются.
+
+    Скользящее среднее идёт по календарным шагам: у точки, в окне которой
+    есть пропуск, тренда нет.
+    """
     complete = [point for point in points if not point.incomplete]
     if len(complete) < 2 * season:
         raise ValueError(
@@ -65,13 +69,17 @@ def _decompose(points: list[Point], season: int, mode: str) -> list[tuple]:
     multiplicative = mode == "multiplicative"
     if multiplicative and any(value <= 0 for value in values):
         raise ValueError("multiplicative decomposition requires positive values")
-    trend_values = dict(zip((point.step for point in complete), moving_average(values, season)))
+    trend_values = moving_average({point.step: point.value for point in complete}, season)
     detrended: dict[int, list[float]] = {}
     for point in complete:
         trend_value = trend_values[point.step]
         if trend_value is not None:
             deviation = point.value / trend_value if multiplicative else point.value - trend_value
             detrended.setdefault(point.step % season, []).append(deviation)
+    if not detrended:
+        raise ValueError(
+            f"seasonal_decompose: в ряду нет ни одного окна из {season} шагов подряд без пропусков"
+        )
     raw_seasonal = {key: sum(items) / len(items) for key, items in detrended.items()}
     center = sum(raw_seasonal.values()) / len(raw_seasonal)
     seasonal = {
