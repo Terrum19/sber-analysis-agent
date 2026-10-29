@@ -218,6 +218,8 @@ export function startRun(
         }
       } else if (event.type === "dashboard_fallback") {
         answerStarted = false;
+        // Дашборд строится по первой идее: в следующий раз её не предлагаем
+        store.markIdeaUsed(sessionId, event.data.idea.title);
         addMessage({ role: "agent", content: event.data.message, dashboardFallback: event.data });
         if (progress) {
           // Баннер встал под прогрессом: переносим прогресс ниже, чтобы он оставался последним

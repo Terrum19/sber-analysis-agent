@@ -37,6 +37,9 @@ import { useLlmStatus } from "@/hooks/useLlmStatus";
 import { useT } from "@/i18n/useT";
 import { RECOVERY_SKIP_STEP, type DashboardEvent, type DashboardIdea } from "@/types/chat";
 
+/** Сколько раз подряд просить новые варианты дашборда, если все прежние уже использованы. */
+const MAX_IDEA_ROUNDS = 3;
+
 /** Текст ответа для буфера обмена: инсайт и детали, иначе — реплика из ленты. */
 function answerText(m: ChatMessage): string {
   const lines: string[] = [];
@@ -93,6 +96,8 @@ export default function ChatPanel({ sessionId }: Props) {
   const registerSession = useSessionStore((s) => s.registerSession);
   const pendingQuestion = useSessionStore((s) => s.pendingQuestions[sessionId]);
   const consumeQuestion = useSessionStore((s) => s.consumeQuestion);
+  const markIdeaUsed = useSessionStore((s) => s.markIdeaUsed);
+  const usedIdeas = useSessionStore((s) => s.usedIdeas[sessionId]);
   const database = useSessionDatabase(sessionId);
   const sessionTitle = database?.sessions.find((x) => x.id === sessionId)?.title;
 
@@ -180,10 +185,28 @@ export default function ChatPanel({ sessionId }: Props) {
   }, [sessionId, activeTable]);
 
   /** «Автоматическая генерация»: варианты дашборда по таблице сессии. */
+  /**
+   * Варианты без уже использованных: обычная пачка из кэша бэкенда; если по всем
+   * уже строили — новая пачка, не повторяющая ни одного прежнего варианта.
+   */
+  async function fetchFreshIdeas(): Promise<DashboardIdea[]> {
+    const used = useSessionStore.getState().usedIdeas[sessionId] ?? [];
+    const seen = new Set(used);
+    let list = await fetchDashboardIdeas(sessionId);
+    // Кэш бэкенда отдаёт одну и ту же пачку на один набор исключений: несколько кругов — предел
+    for (let round = 0; round < MAX_IDEA_ROUNDS; round += 1) {
+      const fresh = list.filter((idea) => !seen.has(idea.title));
+      if (fresh.length > 0) return fresh;
+      list.forEach((idea) => seen.add(idea.title));
+      list = await fetchDashboardIdeas(sessionId, Array.from(seen));
+    }
+    return list.filter((idea) => !seen.has(idea.title));
+  }
+
   function loadIdeas() {
     const request = ++ideasRequestRef.current;
     setIdeas({ status: "loading", started_at: Date.now() });
-    fetchDashboardIdeas(sessionId)
+    fetchFreshIdeas()
       .then((list) => {
         if (ideasRequestRef.current === request) setIdeas({ status: "ready", ideas: list });
       })
@@ -202,6 +225,7 @@ export default function ChatPanel({ sessionId }: Props) {
   function sendIdea(idea: DashboardIdea) {
     closeIdeas();
     setDashboardMode(false);
+    markIdeaUsed(sessionId, idea.title);
     sendQuestion(idea.title, { dashboard: { idea }, replyTo: null });
   }
 
@@ -561,11 +585,14 @@ export default function ChatPanel({ sessionId }: Props) {
                 )}
 
                 {/* Запроса не хватило: остальные варианты — новый ход с этой идеей */}
-                {m.dashboardFallback && m.dashboardFallback.alternatives.length > 0 && (
+                {m.dashboardFallback &&
+                  m.dashboardFallback.alternatives.some((alt) => !usedIdeas?.includes(alt.title)) && (
                   <div className="mt-2">
                     <div className="mb-1.5 text-[11.5px] text-graphite-500">{t("dashboard.otherIdeas")}</div>
                     <div className="flex flex-wrap gap-2">
-                      {m.dashboardFallback.alternatives.map((alt) => (
+                      {m.dashboardFallback.alternatives
+                        .filter((alt) => !usedIdeas?.includes(alt.title))
+                        .map((alt) => (
                         <button
                           key={alt.id || alt.title}
                           onClick={() => sendIdea(alt)}
@@ -735,7 +762,12 @@ export default function ChatPanel({ sessionId }: Props) {
         )}
         {dashboardMode && ideas && (
           <DashboardIdeas
-            state={ideas}
+            // Варианты, по которым дашборд уже строили, не предлагаем снова
+            state={
+              ideas.status === "ready"
+                ? { ...ideas, ideas: ideas.ideas.filter((idea) => !usedIdeas?.includes(idea.title)) }
+                : ideas
+            }
             disabled={streaming || !activeTable || !llmReady}
             onPick={sendIdea}
             onOwn={() => {

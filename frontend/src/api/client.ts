@@ -259,15 +259,19 @@ export async function listTables(): Promise<string[]> {
 
 /**
  * POST /api/sessions/{id}/dashboard-ideas: 4 варианта дашборда по таблице сессии (#224).
+ * exclude — названия прежних вариантов: тогда приходят новые, их не повторяющие.
  * 404 — нет сессии, 409 — нет таблицы, 502 — модель не ответила.
  */
-export async function fetchDashboardIdeas(sessionId: string): Promise<DashboardIdea[]> {
+export async function fetchDashboardIdeas(sessionId: string, exclude: string[] = []): Promise<DashboardIdea[]> {
   if (isMockMode()) {
-    return mockDashboardIdeas();
+    return mockDashboardIdeas(exclude);
   }
   try {
     const res = await fetch(`${API}/sessions/${encodeURIComponent(sessionId)}/dashboard-ideas`, {
       method: "POST",
+      ...(exclude.length > 0
+        ? { headers: { "Content-Type": "application/json" }, body: JSON.stringify({ exclude }) }
+        : {}),
     });
     if (!res.ok) throw await parseApiError(res);
     const body: { ideas: DashboardIdea[] } = await res.json();

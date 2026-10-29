@@ -115,6 +115,9 @@ export interface SessionState {
   queueQuestion: (sessionId: string, text: string) => void;
   /** Убрать вопрос из очереди после отправки. */
   consumeQuestion: (sessionId: string, id: string) => void;
+  /** Названия вариантов дашборда, по которым в сессии уже строили (#224): их не предлагаем снова. */
+  usedIdeas: Record<string, string[]>;
+  markIdeaUsed: (sessionId: string, title: string) => void;
 
   setSession: (id: string) => void;
   /*
@@ -203,6 +206,14 @@ export const useSessionStore = create<SessionState>()(
       sessionCache: {},
       sessionTableCache: {},
       pendingQuestions: {},
+      usedIdeas: {},
+
+      markIdeaUsed: (sessionId, title) =>
+        set((s) => {
+          const used = s.usedIdeas[sessionId] ?? [];
+          if (used.includes(title)) return {};
+          return { usedIdeas: { ...s.usedIdeas, [sessionId]: [...used, title] } };
+        }),
 
       queueQuestion: (sessionId, text) =>
         set((s) => ({
@@ -494,6 +505,8 @@ export const useSessionStore = create<SessionState>()(
           delete nextTableCache[sessionId];
           const nextPending = { ...s.pendingQuestions };
           delete nextPending[sessionId];
+          const nextUsedIdeas = { ...s.usedIdeas };
+          delete nextUsedIdeas[sessionId];
           const isActiveDeleted = s.sessionId === sessionId;
           return {
             databases: nextDatabases,
@@ -502,6 +515,7 @@ export const useSessionStore = create<SessionState>()(
             sessionActiveTable: nextActiveTable,
             sessionTableCache: nextTableCache,
             pendingQuestions: nextPending,
+            usedIdeas: nextUsedIdeas,
             ...(isActiveDeleted ? { sessionId: null, messages: [], tiles: [], selectedTile: null } : {}),
           };
         }),
@@ -577,6 +591,7 @@ export const useSessionStore = create<SessionState>()(
         sessionDatabase: state.sessionDatabase,
         sessionActiveTable: state.sessionActiveTable,
         sessionTableCache: state.sessionTableCache,
+        usedIdeas: state.usedIdeas,
       }),
       onRehydrateStorage: () => (state) => {
         if (state) {
