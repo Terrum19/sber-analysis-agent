@@ -149,7 +149,11 @@ def insight_facts(db: DuckDBManager, table: str, shown: int) -> str:
 
 
 def format_value(value: object) -> str:
-    """Значение для промпта: даты в ISO, полночь без времени, дробные — до сотых."""
+    """Значение для промпта: даты в ISO, полночь без времени, дробные — до сотых.
+
+    Дробные меньше 1 по модулю — 3 значащие цифры: доля 0.0259 не становится
+    «0.03», p-value 1e-30 — «0.0».
+    """
     if isinstance(value, datetime):
         return (
             value.date().isoformat()
@@ -171,4 +175,6 @@ def format_rows(records: list[dict]) -> str:
 
 
 def _round(value):
-    return round(value, 2) if isinstance(value, float) else value
+    if not isinstance(value, float):
+        return value
+    return float(f"{value:.3g}") if abs(value) < 1 else round(value, 2)

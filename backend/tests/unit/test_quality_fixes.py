@@ -153,3 +153,29 @@ def test_rows_are_shown_as_compact_table() -> None:
         "period | avg | day\n2024-01-01 | 542.17 | 2024-03-05\n2024-02-01 12:30:00 | 7 | 2024-03-06"
     )
     assert format_rows([]) == "пусто"
+
+
+@pytest.mark.parametrize(
+    ("value", "text"),
+    [
+        (3366 / 129971, "0.0259"),
+        (0.00413, "0.00413"),
+        (542.1666, "542.17"),
+        (1e-30, "1e-30"),
+        (7, "7"),
+    ],
+)
+def test_small_fractions_keep_three_significant_digits(value: object, text: str) -> None:
+    from app.core.agent.quality_fixes import format_value
+
+    assert format_value(value) == text
+
+
+async def test_insight_prompt_keeps_small_share(db, monkeypatch) -> None:
+    from app.core.agent.insight import InsightGenerator
+
+    monkeypatch.setattr(settings, "agent_quality_fixes", True)
+    db.query("CREATE TABLE share AS SELECT 3366 / 129971 AS share")
+    llm = _ScriptedLLM("Доля — 0.0259")
+    await InsightGenerator(llm=llm, db=db).generate("Какая доля вин дороже $100?", "share")
+    assert "share\n0.0259" in llm.prompts[0]
