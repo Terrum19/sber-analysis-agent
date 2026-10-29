@@ -58,11 +58,34 @@ interface Props {
   actions?: React.ReactNode;
 }
 
+/** Число KPI с разрядами; строки и прочее — как есть. */
+function formatKpi(raw: unknown): string {
+  if (typeof raw === "number") return raw.toLocaleString("ru-RU", { maximumFractionDigits: 2 });
+  return String(raw);
+}
+
+/** Поле значения KPI: encoding.text спеки, иначе первая числовая колонка строки. */
+function kpiField(tile: DashboardTileType, row: Record<string, unknown>): string | undefined {
+  const text = (tile.spec?.encoding as { text?: { field?: string } } | undefined)?.text;
+  if (text?.field && text.field in row) return text.field;
+  return Object.keys(row).find((key) => typeof row[key] === "number");
+}
+
 function kpiFromTile(tile: DashboardTileType, fallbackLabel: string): { value: string; label: string } {
   const snapshot = tile.snapshot_data;
   let value = "—";
   let label = fallbackLabel;
-  if (snapshot && typeof snapshot === "object") {
+  // Снимок бэкенда — строки результата (snapshot_records): KPI — первая строка
+  if (Array.isArray(snapshot)) {
+    const row = snapshot[0];
+    const field = row && typeof row === "object" ? kpiField(tile, row) : undefined;
+    if (field !== undefined && row[field] !== null && row[field] !== undefined) {
+      value = formatKpi(row[field]);
+      const text = (tile.spec?.encoding as { text?: { title?: string } } | undefined)?.text;
+      // Сырое имя колонки (sum_revenue) подписью не показываем: заголовок плитки уже есть
+      label = text?.title && text.title !== field ? text.title : "";
+    }
+  } else if (snapshot && typeof snapshot === "object") {
     if (snapshot.value !== undefined && snapshot.value !== null) value = String(snapshot.value);
     else if (snapshot.val !== undefined && snapshot.val !== null) value = String(snapshot.val);
     if (snapshot.label) label = String(snapshot.label);
