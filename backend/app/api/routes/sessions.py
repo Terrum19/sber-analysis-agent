@@ -20,6 +20,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from app.api.deps import get_db
 from app.api.schemas.chat import (
     DashboardIdeasOut,
+    DashboardIdeasRequest,
     MemoryCreate,
     MemoryOut,
     MemoryUpdate,
@@ -133,9 +134,13 @@ def update_memory(session_id: str, memory_id: str, payload: MemoryUpdate) -> Mem
 
 @router.post("/{session_id}/dashboard-ideas", response_model=DashboardIdeasOut)
 def dashboard_ideas(
-    session_id: str, db: Annotated[DuckDBManager, Depends(get_db)]
+    session_id: str,
+    db: Annotated[DuckDBManager, Depends(get_db)],
+    body: DashboardIdeasRequest | None = None,
 ) -> DashboardIdeasOut:
     """4 варианта дашборда по таблице сессии; генерируются только по этому запросу.
+
+    Тело с exclude — новые варианты, не повторяющие перечисленные.
 
     Синхронный обработчик идёт в пуле потоков: DuckDB и LLM не держат цикл сервера.
     """
@@ -143,7 +148,7 @@ def dashboard_ideas(
     if table is None:
         raise HTTPException(status_code=409, detail="К сессии не подключена таблица.")
     try:
-        ideas = asyncio.run(generate_ideas(db, table))
+        ideas = asyncio.run(generate_ideas(db, table, exclude=body.exclude if body else ()))
     except Exception as exc:
         logger.exception("идеи дашборда для %s не построены", table)
         raise HTTPException(status_code=502, detail=f"Модель не ответила: {exc}") from exc

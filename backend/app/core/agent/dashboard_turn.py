@@ -4,7 +4,8 @@
 Простая плитка приходит в плане с полями расчёта, и её шаги собирает код
 без LLM (core/dashboards/quick_tiles.py). Сложная плитка, или простая, чьи
 поля не подошли к таблице или чьи шаги упали, — обычный планировщик по её
-вопросу. Плитки идут параллельно, упавшая пропускается. Вид графика
+вопросу. Плитки идут по очереди (локальная модель держит один запрос за
+раз), упавшая пропускается. Вид графика
 выбирает LLM одним вызовом на все плитки, когда их результаты готовы;
 выбор проверяется fits, неподошедший — один повтор, дальше вид по intent.
 
@@ -76,8 +77,6 @@ logger = logging.getLogger(__name__)
 # Какой вариант сборки плиток сравниваем (см. docstring модуля).
 DASHBOARD_VARIANT = "quick_tiles"
 
-# Плитки строятся параллельно, но не все сразу: лимиты провайдера LLM.
-TILE_CONCURRENCY = 3
 # Шаги плитки N нумеруются с (N + 1) * TILE_STEP_IDS: номера плиток не пересекаются.
 TILE_STEP_IDS = 100
 # Меньше плиток — это уже не дашборд.
@@ -180,13 +179,11 @@ class DashboardTurn:
             }
         )
 
-        limit = asyncio.Semaphore(TILE_CONCURRENCY)
-        executions = await asyncio.gather(
-            *(
-                self._tile(memory, tile_id, tile, kinds, limit, emit)
-                for tile_id, tile in enumerate(tiles)
-            )
-        )
+        # По одной: локальная модель всё равно обрабатывает запросы последовательно
+        executions = [
+            await self._tile(memory, tile_id, tile, kinds, emit)
+            for tile_id, tile in enumerate(tiles)
+        ]
         built = {
             tile_id: (tiles[tile_id], execution.result_table)
             for tile_id, execution in enumerate(executions)
@@ -295,7 +292,6 @@ class DashboardTurn:
         tile_id: int,
         tile: OutlineTile,
         kinds: dict[str, str],
-        limit: asyncio.Semaphore,
         emit: Emit,
     ) -> Execution | None:
         """Шаги одной плитки; вернуть итог выполнения или None, если плитка упала.
@@ -309,62 +305,61 @@ class DashboardTurn:
                 event["data"]["tile_id"] = tile_id
             emit(event)
 
-        async with limit:
-            emit(_progress_event("tile", "started", tile_id=tile_id, purpose=tile.title))
-            started_at = time.perf_counter()
-            start = (tile_id + 1) * TILE_STEP_IDS
-            try:
-                execution = None
-                quick = quick_plan(tile, kinds, start)
-                if quick is not None:
-                    logger.info("    плитка %d %r: шаги из полей плана", tile_id, tile.title)
-                    try:
-                        execution = await self.agent._execute_plan(
-                            memory, quick, memory.table, tile.question, emit=tile_emit
-                        )
-                    except Exception:
-                        logger.exception("    плитка %d: шаги из полей упали, планировщик", tile_id)
-                        memory.clear_pending_recovery()
-                        start += TILE_STEP_IDS // 2
-                if execution is None:
-                    logger.info("    плитка %d %r: планировщик", tile_id, tile.title)
-                    context = memory.build_context(tile.question)
-                    context["next_step_id"] = start
-                    context["tile"] = True
-                    plan = await self.agent._plan(tile.question, context)
-                    _require_steps(plan)
+        emit(_progress_event("tile", "started", tile_id=tile_id, purpose=tile.title))
+        started_at = time.perf_counter()
+        start = (tile_id + 1) * TILE_STEP_IDS
+        try:
+            execution = None
+            quick = quick_plan(tile, kinds, start)
+            if quick is not None:
+                logger.info("    плитка %d %r: шаги из полей плана", tile_id, tile.title)
+                try:
                     execution = await self.agent._execute_plan(
-                        memory, plan, memory.table, tile.question, emit=tile_emit
+                        memory, quick, memory.table, tile.question, emit=tile_emit
                     )
-            except Exception as exc:
-                if isinstance(exc, ClarificationNeeded):
-                    # Уточнять у пользователя нечего: плитка просто не строится.
+                except Exception:
+                    logger.exception("    плитка %d: шаги из полей упали, планировщик", tile_id)
                     memory.clear_pending_recovery()
-                    error = exc.error
-                else:
-                    logger.exception("    плитка %d %r упала", tile_id, tile.title)
-                    error = str(exc)
-                emit(
-                    _progress_event(
-                        "tile",
-                        "failed",
-                        tile_id=tile_id,
-                        purpose=tile.title,
-                        elapsed_ms=_elapsed_ms(started_at),
-                        error=error,
-                    )
+                    start += TILE_STEP_IDS // 2
+            if execution is None:
+                logger.info("    плитка %d %r: планировщик", tile_id, tile.title)
+                context = memory.build_context(tile.question)
+                context["next_step_id"] = start
+                context["tile"] = True
+                plan = await self.agent._plan(tile.question, context)
+                _require_steps(plan)
+                execution = await self.agent._execute_plan(
+                    memory, plan, memory.table, tile.question, emit=tile_emit
                 )
-                return None
+        except Exception as exc:
+            if isinstance(exc, ClarificationNeeded):
+                # Уточнять у пользователя нечего: плитка просто не строится.
+                memory.clear_pending_recovery()
+                error = exc.error
+            else:
+                logger.exception("    плитка %d %r упала", tile_id, tile.title)
+                error = str(exc)
             emit(
                 _progress_event(
                     "tile",
-                    "finished",
+                    "failed",
                     tile_id=tile_id,
                     purpose=tile.title,
                     elapsed_ms=_elapsed_ms(started_at),
+                    error=error,
                 )
             )
-            return execution
+            return None
+        emit(
+            _progress_event(
+                "tile",
+                "finished",
+                tile_id=tile_id,
+                purpose=tile.title,
+                elapsed_ms=_elapsed_ms(started_at),
+            )
+        )
+        return execution
 
     async def _choose_charts(
         self, built: dict[int, tuple[OutlineTile, str]], records: dict[int, list[dict]]
