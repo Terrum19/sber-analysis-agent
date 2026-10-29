@@ -43,8 +43,12 @@ export default function AnswerExport({
   const [busy, setBusy] = useState<"xlsx" | "pdf" | null>(null);
   const [error, setError] = useState<string | null>(null);
 
-  const canExcel = Boolean(sessionId && resultTable);
-  const canPdf = Boolean(sessionId && (resultTable || headline || details?.length || spec));
+  const specData = (spec?.data as any)?.values ?? spec?.data ?? (spec as any)?.values;
+  const hasData = Boolean(
+    resultTable || (Array.isArray(specData) && specData.length > 0),
+  );
+  const canExcel = Boolean(sessionId && hasData);
+  const canPdf = Boolean(sessionId && (hasData || headline || details?.length || spec));
   if (!sessionId) return null;
 
   async function handleExport(format: "xlsx" | "pdf") {

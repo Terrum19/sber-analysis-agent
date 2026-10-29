@@ -996,7 +996,7 @@ class PdfExporter:
             HRFlowable(
                 width="100%",
                 thickness=1.5,
-                color=colors.HexColor("#0F172A"),
+                color=colors.HexColor("#088434"),
                 spaceBefore=2,
                 spaceAfter=10,
             ),

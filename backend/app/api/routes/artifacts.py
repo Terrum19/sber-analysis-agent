@@ -172,6 +172,10 @@ def export_artifact(
         spec_data = payload.spec.get("data")
         if isinstance(spec_data, dict) and isinstance(spec_data.get("values"), list):
             records = [r for r in spec_data["values"] if isinstance(r, dict)]
+        elif isinstance(spec_data, list):
+            records = [r for r in spec_data if isinstance(r, dict)]
+        elif isinstance(payload.spec.get("values"), list):
+            records = [r for r in payload.spec["values"] if isinstance(r, dict)]
 
     export_title = (payload.title or payload.headline or "Аналитический отчёт").strip()
     safe_name = re.sub(r'[\\/*?:"<>|]+', "_", export_title).strip() or "agent_export"

@@ -1,3 +1,26 @@
+2026-10-30  Dmitriy Yakushonok  <dmitriyyakushonok@yandex.ru>
+
+	Улучшение экспорта в Excel и PDF, устранение замечаний ревьюера.
+	* frontend/src/components/chat/AnswerExport.tsx: Разрешает экспорт
+	в Excel для плиток с данными в spec.data.values или snapshot_data
+	без явного resultTable (исправлена блокировка кнопки первой плитки).
+	* backend/app/api/routes/artifacts.py: Поддерживает spec.data как list,
+	spec.data.values и spec.values при экспорте без result_ref. Ошибки
+	генерации Excel обёрнуты в HTTPException(500).
+	* backend/app/api/routes/dashboards.py: Передаёт session_title,
+	source_name, database_name в ExcelExporter.export_dashboard.
+	Ошибки генерации Excel возвращают HTTPException(500).
+	* backend/app/core/export/excel.py: Детерминированный подбор диаграмм
+	по Vega-Lite spec.encoding (Bar/Line/Pie/Area). Защита от Formula
+	Injection (CWE-1236) во всех текстах и ячейках. Корректная обработка
+	timezone-aware datetime, NaN, Infinity и Schema Drift. Подавление
+	графиков для table spec. Лимит строк (5000) и категорий диаграмм (50).
+	Единая функция _write_data_table.
+	* backend/app/core/export/pdf.py: Зелёная фирменная линия (#088434)
+	в шапке одиночного отчета (унифицирована с дашбордом).
+	* docs/architecture.md: Документирован конвейер ExcelExporter и
+	актуализирован регламент экспорта PDF дашбордов.
+
 2026-10-29  Alexander Yurits  <143354682+Terrum19@users.noreply.github.com>
 
 	Дашборд по связанным таблицам (#165 + #224).

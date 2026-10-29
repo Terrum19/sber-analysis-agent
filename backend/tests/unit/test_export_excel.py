@@ -768,6 +768,30 @@ def test_api_export_xlsx_with_spec_data_values_and_branches(
     )
     assert res_bad_data.status_code == 200
 
+    # 3b. spec.data как список словарей напрямую
+    res_data_list = client.post(
+        "/api/artifacts/export",
+        json={
+            "session_id": "s_spec_test",
+            "format": "xlsx",
+            "headline": "Спека со списком",
+            "spec": {"data": [{"x": 10}]},
+        },
+    )
+    assert res_data_list.status_code == 200
+
+    # 3c. spec.values как список словарей
+    res_values_list = client.post(
+        "/api/artifacts/export",
+        json={
+            "session_id": "s_spec_test",
+            "format": "xlsx",
+            "headline": "Спека с values",
+            "spec": {"values": [{"y": 20}]},
+        },
+    )
+    assert res_values_list.status_code == 200
+
     # 4. export_dashboard с плиткой, данные которой находятся в spec.data.values
     dash = Dashboard(
         session_id="s_dash_spec",
