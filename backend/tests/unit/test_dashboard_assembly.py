@@ -97,7 +97,7 @@ def orchestrator(db, planner, insight=None, failing=None) -> AgentOrchestrator:
 
 
 async def collect(agent: AgentOrchestrator, **request: str) -> list[dict]:
-    chat = ChatRequest(session_id="s1", question="Сделай дашборд по регионам", **request)
+    chat = ChatRequest(session_id="s1", question="Выручка по регионам", **request)
     return [event async for event in agent.run(chat) if event["type"] != "progress"]
 
 

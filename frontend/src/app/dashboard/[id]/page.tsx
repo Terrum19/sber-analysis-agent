@@ -270,8 +270,9 @@ export default function DashboardPage({ params }: { params: { id: string } }) {
 
   const gridLayout: Layout[] = tileGridLayout(config?.tiles || [], isKpiTile, { stack });
 
-  function handleLayoutChange(newLayout: Layout[]) {
-    if (!isEditing || !config || stack) return;
+  /** committed — пользователь отпустил плитку (drag/resize): раскладка меняется и вне режима правки. */
+  function handleLayoutChange(newLayout: Layout[], committed = false) {
+    if ((!isEditing && !committed) || !config || stack) return;
     const tiles = applyGridLayout(config.tiles, newLayout);
     const changed = tiles.some((tile, i) => {
       const before = config.tiles[i]?.layout;
@@ -619,9 +620,14 @@ export default function DashboardPage({ params }: { params: { id: string } }) {
                   rowHeight={Math.round(60 * zoom)}
                   margin={[16, 16]}
                   containerPadding={[0, 0]}
-                  isDraggable={isEditing && !stack}
-                  isResizable={isEditing && !stack}
+                  isDraggable={!stack}
+                  isResizable={!stack}
+                  // Вне режима правки плитку тащат за шапку: клики по графику и кнопкам работают
+                  draggableHandle={isEditing ? undefined : ".tile-drag-handle"}
+                  draggableCancel="button, input, a, select"
                   onLayoutChange={handleLayoutChange}
+                  onDragStop={(layout: Layout[]) => handleLayoutChange(layout, true)}
+                  onResizeStop={(layout: Layout[]) => handleLayoutChange(layout, true)}
                   useCSSTransforms
                 >
                   {config.tiles.map((tile, i) => {
@@ -631,6 +637,7 @@ export default function DashboardPage({ params }: { params: { id: string } }) {
                         <DashboardTile
                           tile={tile}
                           isEditing={isEditing}
+                          draggable={!stack}
                           dense={dense}
                           onRename={(newTitle) => handleRenameTile(i, newTitle)}
                           onDelete={() => handleDeleteTile(i)}

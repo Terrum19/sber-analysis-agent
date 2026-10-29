@@ -62,7 +62,7 @@ import duckdb
 
 from app.api.schemas.chat import ChatRequest, DashboardPayload, ProgressPayload
 from app.core.agent.insight import InsightGenerator
-from app.core.agent.planner import PlanInvalid, StepPlanner
+from app.core.agent.planner import PlanInvalid, StepPlanner, is_dashboard_question
 from app.core.agent.recovery import STEP_FIX_ATTEMPTS, fixable
 from app.core.agent.step_executor import StepExecutor, resolve_input, tool_kind
 from app.core.agent.triage import small_talk_reply
@@ -304,6 +304,19 @@ class AgentOrchestrator:
                 catalog = list(pending["options"].values())
             memory.use_table(chosen or catalog[0])
             pending = None
+
+        # Дашборд по кнопке (#224) — свой маршрут, без small talk, обзора и плана
+        # хода. Просьба о дашборде текстом в обычном чате идёт туда же, а не в
+        # старую сборку плиток планировщиком с шаблонами.
+        if request.mode == "dashboard" or (
+            pending is None and is_dashboard_question(request.question)
+        ):
+            from app.core.agent.dashboard_turn import DashboardTurn
+
+            logger.info("маршрут: дашборд")
+            async for event in DashboardTurn(self).run(memory, request):
+                yield event
+            return
 
         if pending is None and (reply := small_talk_reply(request.question)) is not None:
             # «Привет», «спасибо», «что ты умеешь» — без плана, LLM и графика.

@@ -44,6 +44,7 @@ from app.core.tools.stats.bootstrap_corr import BootstrapCorrelationTool
 from app.core.tools.stats.chi_square import ChiSquareTool
 from app.core.tools.stats.correlation import CorrelationTool
 from app.core.tools.stats.describe_stats import DescribeStatsTool
+from app.core.tools.stats.detect_anomalies import DetectAnomaliesTool
 from app.core.tools.stats.ks_test import KSTestTool
 from app.core.tools.stats.linear_regression import LinearRegressionTool
 from app.core.tools.stats.mann_whitney_u import MannWhitneyUTool
@@ -54,6 +55,8 @@ from app.core.tools.stats.spearman_corr import SpearmanCorrelationTool
 from app.core.tools.stats.t_test_dep import PairedTTestTool
 from app.core.tools.stats.t_test_ind import IndependentTTestTool
 from app.core.tools.timeseries.forecast import ForecastTool
+from app.core.tools.timeseries.lag_correlation import LagCorrelationTool
+from app.core.tools.timeseries.period_compare import PeriodCompareTool
 from app.core.tools.timeseries.seasonality import SeasonalityTool
 
 
@@ -144,6 +147,9 @@ for _tool in (
     ShapiroWilkTool(),
     ForecastTool(),
     SeasonalityTool(),
+    PeriodCompareTool(),
+    LagCorrelationTool(),
+    DetectAnomaliesTool(),
     FunnelStepsTool(),
     FunnelDropOffTool(),
     CohortAnalysisTool(),

@@ -80,6 +80,7 @@
   dataset: t_01_prodazhi
   question: "Что происходит с выручкой каждый июль?"
   expect:
+    tools_any: [period_compare, seasonality, time_bucket, group_by]
     columns_all: ["Дата операции (МСК)", "Количество, шт.", "Цена до скидки за единицу, руб."]
   judge: [july_not_special, numbers_grounded]
   notes: >-

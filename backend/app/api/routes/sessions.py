@@ -4,11 +4,14 @@
 (см. core/memory/session_memory.py). Таблица при создании необязательна;
 PATCH меняет таблицу по умолчанию и/или название, ходы при этом остаются.
 Воспоминания сессии (#197) — ``/{id}/memories``: список, добавление,
-включение и выключение записи.
+включение и выключение записи. ``/{id}/dashboard-ideas`` — варианты
+дашборда по таблице сессии для кнопок в чате (#224).
 Источник правды — SQLite SessionMemory: сессии и их метаданные переживают
 перезапуск.
 """
 
+import asyncio
+import logging
 import uuid
 from typing import Annotated
 
@@ -16,6 +19,8 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 
 from app.api.deps import get_db
 from app.api.schemas.chat import (
+    DashboardIdeasOut,
+    DashboardIdeasRequest,
     MemoryCreate,
     MemoryOut,
     MemoryUpdate,
@@ -23,8 +28,11 @@ from app.api.schemas.chat import (
     SessionOut,
     SessionUpdate,
 )
+from app.core.dashboards.ideas import generate_ideas
 from app.core.data.duckdb_manager import DuckDBManager
 from app.core.memory.session_memory import SessionMemory
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
@@ -122,6 +130,29 @@ def update_memory(session_id: str, memory_id: str, payload: MemoryUpdate) -> Mem
     if item is None:
         raise HTTPException(status_code=404, detail="Воспоминание не найдено.")
     return MemoryOut(**item)
+
+
+@router.post("/{session_id}/dashboard-ideas", response_model=DashboardIdeasOut)
+def dashboard_ideas(
+    session_id: str,
+    db: Annotated[DuckDBManager, Depends(get_db)],
+    body: DashboardIdeasRequest | None = None,
+) -> DashboardIdeasOut:
+    """4 варианта дашборда по таблице сессии; генерируются только по этому запросу.
+
+    Тело с exclude — новые варианты, не повторяющие перечисленные.
+
+    Синхронный обработчик идёт в пуле потоков: DuckDB и LLM не держат цикл сервера.
+    """
+    table = existing(session_id).table
+    if table is None:
+        raise HTTPException(status_code=409, detail="К сессии не подключена таблица.")
+    try:
+        ideas = asyncio.run(generate_ideas(db, table, exclude=body.exclude if body else ()))
+    except Exception as exc:
+        logger.exception("идеи дашборда для %s не построены", table)
+        raise HTTPException(status_code=502, detail=f"Модель не ответила: {exc}") from exc
+    return DashboardIdeasOut(ideas=ideas)
 
 
 @router.delete("/{session_id}")

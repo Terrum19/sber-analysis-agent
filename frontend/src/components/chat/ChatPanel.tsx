@@ -5,12 +5,23 @@
  * - Стриминг ответов агента (текст, инсайты)
  * - Графики и дашборды в ленту не выводятся: они уходят на правую панель,
  *   а в сообщении остаётся ссылка «Показать на панели» / «Открыть во вкладке»
+ * - Режим дашборда (#224): переключатель под строкой ввода, варианты по кнопке
+ *   «Автоматическая генерация», ход с mode: "dashboard" открывает /dashboard/{id}
  */
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
-import { getSession, setSessionTable, listTables, streamChat, exportArtifact, renameTableApi } from "@/api/client";
+import {
+  getSession,
+  setSessionTable,
+  listTables,
+  exportArtifact,
+  renameTableApi,
+  fetchDashboardIdeas,
+  type DashboardRequest,
+} from "@/api/client";
 import { useSessionStore, useSessionDatabase, tableTitle, type ChatMessage } from "@/store/sessionStore";
 import { useCanvasStore } from "@/store/canvasStore";
+import { chartTile, startRun, stopRun, useChatRunStore } from "@/store/chatRunStore";
 import { useUiStore } from "@/store/uiStore";
 import { useOpenArtifact } from "@/hooks/useOpenArtifact";
 import { useTableBrief } from "@/hooks/useTableBrief";
@@ -23,23 +34,13 @@ import DashboardPreviewCard from "@/components/chat/DashboardPreviewCard";
 import AnswerActions from "@/components/chat/AnswerActions";
 import ReplyQuote from "@/components/chat/ReplyQuote";
 import LlmStatusBanner from "@/components/chat/LlmStatusBanner";
+import DashboardIdeas, { type IdeasState } from "@/components/chat/DashboardIdeas";
 import { useLlmStatus } from "@/hooks/useLlmStatus";
 import { useT } from "@/i18n/useT";
-import type { DashboardTile as DashboardTileType } from "@/types/dashboard";
-import { RECOVERY_SKIP_STEP, applyProgress, type DashboardEvent, type TurnProgress } from "@/types/chat";
+import { RECOVERY_SKIP_STEP, type DashboardEvent, type DashboardIdea } from "@/types/chat";
 
-/** Плитка панели из события «chart»; id хранится в самом событии. */
-function chartTile(chartData: any, fallbackTitle: string): DashboardTileType {
-  return {
-    id: chartData.tile_id,
-    title: chartData.caption || fallbackTitle,
-    spec: chartData.spec,
-    result_table: chartData.result_table,
-    insight: chartData.insight,
-    // Новый график встаёт под существующими: сетка сама поднимет его вверх
-    layout: { x: 0, y: 1000, w: 12, h: 5 },
-  };
-}
+/** Сколько раз подряд просить новые варианты дашборда, если все прежние уже использованы. */
+const MAX_IDEA_ROUNDS = 3;
 
 /** Текст ответа для буфера обмена: инсайт и детали, иначе — реплика из ленты. */
 function answerText(m: ChatMessage): string {
@@ -72,11 +73,16 @@ export default function ChatPanel({ sessionId }: Props) {
   const setCanvasOpen = useUiStore((s) => s.setCanvasOpen);
   const openArtifact = useOpenArtifact();
   const [input, setInput] = useState("");
-  const [streaming, setStreaming] = useState(false);
-  const [lastFailedQuestion, setLastFailedQuestion] = useState<string | null>(null);
-  const lastQuestionRef = useRef<string>("");
+  // Ход агента живёт в chatRunStore: уход из чата его не обрывает
+  const run = useChatRunStore((s) => s.runs[sessionId]);
+  const markSeen = useChatRunStore((s) => s.markSeen);
+  const streaming = run?.status === "running";
+  const lastFailedQuestion = run?.failedQuestion ?? null;
+  const [dashboardMode, setDashboardMode] = useState(false);
+  const [ideas, setIdeas] = useState<IdeasState | null>(null);
+  const ideasRequestRef = useRef(0);
   // Сообщение с карточкой уточнения, на которую ещё можно ответить
-  const [activeClarificationId, setActiveClarificationId] = useState<string | null>(null);
+  const activeClarificationId = run?.clarificationId ?? null;
   const messagesEndRef = useRef<HTMLDivElement | null>(null);
   const inputRef = useRef<HTMLTextAreaElement | null>(null);
   // Ответ, на который пользователь отвечает: уходит в reply_to (F-12).
@@ -87,17 +93,13 @@ export default function ChatPanel({ sessionId }: Props) {
 
   const messages = useSessionStore((s) => s.messages);
   const addMessage = useSessionStore((s) => s.addMessage);
-  const appendToLastMessage = useSessionStore((s) => s.appendToLastMessage);
-  const updateLastMessage = useSessionStore((s) => s.updateLastMessage);
-  const updateMessage = useSessionStore((s) => s.updateMessage);
   const removeMessage = useSessionStore((s) => s.removeMessage);
   const removeLastFailedMessage = useSessionStore((s) => s.removeLastFailedMessage);
-  const addTile = useSessionStore((s) => s.addTile);
   const registerSession = useSessionStore((s) => s.registerSession);
-  const setStreamingSessionId = useSessionStore((s) => s.setStreamingSessionId);
   const pendingQuestion = useSessionStore((s) => s.pendingQuestions[sessionId]);
   const consumeQuestion = useSessionStore((s) => s.consumeQuestion);
-  const activeStreamingSessionId = useSessionStore((s) => s.activeStreamingSessionId);
+  const markIdeaUsed = useSessionStore((s) => s.markIdeaUsed);
+  const usedIdeas = useSessionStore((s) => s.usedIdeas[sessionId]);
   const database = useSessionDatabase(sessionId);
   const sessionTitle = database?.sessions.find((x) => x.id === sessionId)?.title;
 
@@ -187,34 +189,66 @@ export default function ChatPanel({ sessionId }: Props) {
     }
   }
 
-  // Отмена стрима
-  const stopRef = useRef<(() => void) | null>(null);
-
+  // Открытый чат — ответ увиден: точка «готово» / «ошибка» в сайдбаре гаснет
   useEffect(() => {
-    return () => {
-      stopRef.current?.();
-      setStreamingSessionId(null);
-    };
-  }, [setStreamingSessionId]);
-
-  useEffect(() => {
-    if (!streaming) return;
-    const handleBeforeUnload = (e: BeforeUnloadEvent) => {
-      e.preventDefault();
-      e.returnValue = "";
-    };
-    window.addEventListener("beforeunload", handleBeforeUnload);
-    return () => window.removeEventListener("beforeunload", handleBeforeUnload);
-  }, [streaming]);
+    if (run?.unseen) markSeen(sessionId);
+  }, [run?.unseen, sessionId, markSeen]);
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages, streaming]);
 
-  // Цитата не должна «протечь» в другую сессию или таблицу.
+  // Цитата и варианты дашборда не должны «протечь» в другую сессию или таблицу.
   useEffect(() => {
     setReplyTarget(null);
+    setIdeas(null);
+    ideasRequestRef.current += 1;
   }, [sessionId, activeTable]);
+
+  /** «Автоматическая генерация»: варианты дашборда по таблице сессии. */
+  /**
+   * Варианты без уже использованных: обычная пачка из кэша бэкенда; если по всем
+   * уже строили — новая пачка, не повторяющая ни одного прежнего варианта.
+   */
+  async function fetchFreshIdeas(): Promise<DashboardIdea[]> {
+    const used = useSessionStore.getState().usedIdeas[sessionId] ?? [];
+    const seen = new Set(used);
+    let list = await fetchDashboardIdeas(sessionId);
+    // Кэш бэкенда отдаёт одну и ту же пачку на один набор исключений: несколько кругов — предел
+    for (let round = 0; round < MAX_IDEA_ROUNDS; round += 1) {
+      const fresh = list.filter((idea) => !seen.has(idea.title));
+      if (fresh.length > 0) return fresh;
+      list.forEach((idea) => seen.add(idea.title));
+      list = await fetchDashboardIdeas(sessionId, Array.from(seen));
+    }
+    return list.filter((idea) => !seen.has(idea.title));
+  }
+
+  function loadIdeas() {
+    const request = ++ideasRequestRef.current;
+    setIdeas({ status: "loading", started_at: Date.now() });
+    fetchFreshIdeas()
+      .then((list) => {
+        if (ideasRequestRef.current === request) setIdeas({ status: "ready", ideas: list });
+      })
+      .catch((err: any) => {
+        if (ideasRequestRef.current !== request) return;
+        setIdeas({ status: "error", message: err?.detail || err?.message || "", noModel: err?.status === 502 });
+      });
+  }
+
+  function closeIdeas() {
+    ideasRequestRef.current += 1;
+    setIdeas(null);
+  }
+
+  /** Ход дашборда по выбранному варианту: в ленте — название варианта; режим дашборда выбором исчерпан. */
+  function sendIdea(idea: DashboardIdea) {
+    closeIdeas();
+    setDashboardMode(false);
+    markIdeaUsed(sessionId, idea.title);
+    sendQuestion(idea.title, { dashboard: { idea }, replyTo: null });
+  }
 
   // После «Спросить об этом» сразу ставим курсор в поле ввода.
   useEffect(() => {
@@ -253,6 +287,8 @@ export default function ChatPanel({ sessionId }: Props) {
           recoveryResponse?: string;
           /** Явный turn_id для reply_to; по умолчанию — выбранная цитата. */
           replyTo?: string | null;
+          /** Ход строит дашборд; по умолчанию — если включён режим и вопрос из строки ввода. */
+          dashboard?: DashboardRequest;
         },
   ) {
     if (!activeTable) {
@@ -266,12 +302,12 @@ export default function ChatPanel({ sessionId }: Props) {
     const recoveryResponse = options?.recoveryResponse;
     const q = textToSend || input;
     if (!q.trim() || streaming) return;
+    const dashboard: DashboardRequest | undefined =
+      options?.dashboard ?? (dashboardMode && !textToSend && !recoveryResponse ? { idea: null } : undefined);
+    if (dashboard) closeIdeas();
 
-    setActiveClarificationId(null);
-    if (!recoveryResponse) lastQuestionRef.current = q;
     // Повтор после сбоя ответа на уточнение — исходный вопрос, а не текст ответа
-    const retryQuestion = recoveryResponse ? lastQuestionRef.current : q;
-    setLastFailedQuestion(null);
+    const retryQuestion = recoveryResponse ? run?.question || q : q;
 
     // Цитата для reply_to: новый вопрос ссылается на выбранный ответ, повтор —
     // на цитату повторяемого вопроса. Уточнению reply_to не нужен: бэкенд сам
@@ -328,183 +364,13 @@ export default function ChatPanel({ sessionId }: Props) {
     registerSession(sessionId, q.length > 48 ? `${q.slice(0, 47)}…` : q);
     if (!textToSend) setInput("");
     setReplyTarget(null);
-    setStreaming(true);
-    setStreamingSessionId(sessionId);
-
-    let answerStarted = false;
-    let streamHadError = false;
-    // Поток без done и без уточнения — оборван, это ошибка
-    let streamFinished = false;
-    let cancelled = false;
-    // Прогресс хода живёт в отдельном сообщении над ответом
-    let progress: TurnProgress | null = null;
-    const progressId = `msg-progress-${Date.now().toString(36)}`;
-    const finishProgress = () => {
-      if (progress && progress.finished_at === undefined) {
-        progress = { ...progress, finished_at: Date.now() };
-        updateMessage(progressId, { progress });
-      }
-    };
-    const appendText = (text: string) => {
-      if (answerStarted) {
-        appendToLastMessage(text);
-      } else {
-        answerStarted = true;
-        addMessage({ role: "agent", content: text });
-      }
-    };
-
-    // Что показали пользователю: нужно для PDF/Excel ответа (F-10).
-    let answerHeadline = "";
-    let answerDetails: string[] = [];
-    let answerSpec: Record<string, unknown> | undefined;
-    let answerResultTable: string | undefined;
-    // turnId приходит в done: по нему работают «Спросить об этом» и reply_to (F-12).
-    const saveAnswerMeta = (turnId?: string) => {
-      const hasAnswer =
-        Boolean(answerHeadline) || answerDetails.length > 0 || Boolean(answerSpec) || Boolean(answerResultTable);
-      if (!hasAnswer && !turnId) {
-        return;
-      }
-      const all = useSessionStore.getState().messages;
-      const last = all[all.length - 1];
-      if (
-        !last ||
-        last.role !== "agent" ||
-        last.failed ||
-        last.clarification ||
-        last.refusal
-      ) {
-        return;
-      }
-      updateLastMessage({
-        ...(hasAnswer
-          ? {
-              answer: {
-                headline: answerHeadline || undefined,
-                details: answerDetails.length > 0 ? answerDetails : undefined,
-                spec: answerSpec,
-                result_table: answerResultTable,
-              },
-            }
-          : {}),
-        ...(turnId ? { turn_id: turnId } : {}),
-      });
-    };
-
-    const stop = streamChat(
-      sessionId,
-      q,
-      (event) => {
-        if (event.type === "done") {
-          streamFinished = true;
-          finishProgress();
-          saveAnswerMeta(event.data?.turn_id);
-        } else if (event.type === "progress") {
-          if (!progress) {
-            progress = applyProgress({ planning: false, steps: [], started_at: Date.now() }, event.data);
-            answerStarted = false;
-            addMessage({ id: progressId, role: "agent", content: "", progress });
-          } else {
-            progress = applyProgress(progress, event.data);
-            updateMessage(progressId, { progress });
-          }
-        } else if (event.type === "clarification_needed") {
-          // Бэкенд закрывает поток без done: ждёт recovery_response
-          answerStarted = false;
-          streamFinished = true;
-          const id = `msg-clarify-${Date.now().toString(36)}`;
-          addMessage({ id, role: "agent", content: "", clarification: event.data });
-          setActiveClarificationId(id);
-        } else if (event.type === "refusal") {
-          answerStarted = false;
-          streamFinished = true;
-          addMessage({ role: "agent", content: event.data.reason || t("chat.refusal"), refusal: event.data });
-        } else if (event.type === "text") {
-          const raw = event as any;
-          const headline = event.data?.headline || raw.headline;
-          if (typeof headline === "string" && headline) answerHeadline = headline;
-          const content = event.data?.headline || event.data?.chunk || raw.headline || raw.chunk || "";
-          if (content) appendText(content);
-          const details = event.data?.details || raw.details;
-          if (details && Array.isArray(details)) {
-            answerDetails = details.filter((d: unknown): d is string => typeof d === "string");
-            if (answerDetails.length > 0) {
-              appendText("\n\n" + answerDetails.map((d: string) => `• ${d}`).join("\n"));
-            }
-          }
-        } else if (event.type === "chart") {
-          answerStarted = false;
-          const chartData = { ...((event.data || (event as any)) as any), tile_id: `chart-${Date.now().toString(36)}` };
-          if (typeof chartData.caption === "string" && chartData.caption) {
-            answerHeadline = chartData.caption;
-          }
-          if (chartData.spec && typeof chartData.spec === "object") {
-            answerSpec = chartData.spec as Record<string, unknown>;
-          }
-          if (typeof chartData.result_table === "string") {
-            answerResultTable = chartData.result_table;
-          }
-          // График — на правую панель, в ленте только ссылка на него
-          addTile(chartTile(chartData, t("chat.chartDefault")));
-          setCanvasOpen(true);
-          addMessage({
-            role: "agent",
-            content: chartData.caption ? t("chat.chartDoneNamed", { name: chartData.caption }) : t("chat.chartDone"),
-            chart: chartData,
-          });
-        } else if (event.type === "dashboard") {
-          answerStarted = false;
-          const dashData = (event.data || (event as any)) as DashboardEvent["data"];
-          addMessage({
-            role: "agent",
-            content: t("chat.dashboardDone", { name: dashData.title || t("chat.dashboardDefault") }),
-            dashboard: dashData,
-          });
-          // Превью уже в ленте: панель не открываем автоматически, чтобы не
-          // перекрывать чат. Пустые tiles не затирают текущий канвас.
-          if (dashData.tiles && dashData.tiles.length > 0) {
-            setCanvasDashboard(dashData.dashboard_id, dashData.title || t("chat.dashboardDefault"), dashData.tiles);
-          }
-        } else if (event.type === "error") {
-          answerStarted = false;
-          streamHadError = true;
-          setLastFailedQuestion(retryQuestion);
-          const raw = event as any;
-          const msg =
-            event.data?.message ||
-            raw.message ||
-            (typeof event.data?.detail === "string"
-              ? event.data.detail
-              : typeof raw.detail === "string"
-              ? raw.detail
-              : t("chat.genericError"));
-          addMessage({ role: "agent", content: t("chat.error", { msg }), failed: true, failedQuestion: q });
-        }
-      },
-      (error) => {
-        finishProgress();
-        if (error) {
-          streamHadError = true;
-          setLastFailedQuestion(retryQuestion);
-          addMessage({ role: "agent", content: t("chat.connectionLost", { msg: error }), failed: true, failedQuestion: retryQuestion });
-        } else if (!streamFinished && !streamHadError && !cancelled) {
-          setLastFailedQuestion(retryQuestion);
-          addMessage({ role: "agent", content: t("chat.streamIncomplete"), failed: true, failedQuestion: retryQuestion });
-        } else if (!streamHadError) {
-          setLastFailedQuestion(null);
-        }
-        stopRef.current = null;
-        setStreaming(false);
-        setStreamingSessionId(null);
-      },
-      { recoveryResponse, replyTo: quote?.turn_id ?? null },
-    );
-    stopRef.current = () => {
-      cancelled = true;
-      stop();
-      setStreamingSessionId(null);
-    };
+    startRun(sessionId, q, {
+      retryQuestion,
+      recoveryResponse,
+      replyTo: quote?.turn_id ?? null,
+      dashboard,
+      onDashboardBuilt: (dashboardId) => router.push(`/dashboard/${dashboardId}`),
+    });
   }
 
   // Вопрос извне (клик по графику / «Дообследовать», F-09): отправляем, когда
@@ -520,18 +386,24 @@ export default function ChatPanel({ sessionId }: Props) {
       return;
     }
     if (handledQuestionRef.current === pendingQuestion.id) return;
-    if (!activeTable || streaming || activeStreamingSessionId) return;
-    handledQuestionRef.current = pendingQuestion.id;
-    consumeQuestion(sessionId, pendingQuestion.id);
-    // Внешний вопрос не продолжает выбранную цитату: replyTo: null перекрывает
-    // значение из замыкания sendQuestion (setReplyTarget ещё не применился).
-    setReplyTarget(null);
-    sendQuestionRef.current(pendingQuestion.text, { replyTo: null });
+    if (!activeTable || streaming) return;
+    // Отправка — на следующем тике, с отменой в cleanup: StrictMode сразу
+    // размонтирует и снова монтирует панель, и вопрос уходит один раз —
+    // после повторного монтирования.
+    const question = pendingQuestion;
+    const timer = window.setTimeout(() => {
+      handledQuestionRef.current = question.id;
+      consumeQuestion(sessionId, question.id);
+      // Внешний вопрос не продолжает выбранную цитату: replyTo: null перекрывает
+      // значение из замыкания sendQuestion (setReplyTarget ещё не применился).
+      setReplyTarget(null);
+      sendQuestionRef.current(question.text, { replyTo: null });
+    }, 0);
+    return () => window.clearTimeout(timer);
   }, [
     pendingQuestion,
     activeTable,
     streaming,
-    activeStreamingSessionId,
     consumeQuestion,
     sessionId,
   ]);
@@ -725,7 +597,15 @@ export default function ChatPanel({ sessionId }: Props) {
 
                 {/* Текст сообщения */}
                 {m.content && (
-                  <div className={`whitespace-pre-wrap ${m.refusal ? "border-l-2 border-warn/60 pl-3 text-graphite-300" : ""}`}>
+                  <div
+                    className={`whitespace-pre-wrap ${
+                      m.refusal
+                        ? "border-l-2 border-warn/60 pl-3 text-graphite-300"
+                        : m.dashboardFallback
+                        ? "rounded-lg border border-warn/30 bg-warn/10 px-3 py-2 text-graphite-200"
+                        : ""
+                    }`}
+                  >
                     {m.content}
                   </div>
                 )}
@@ -757,6 +637,29 @@ export default function ChatPanel({ sessionId }: Props) {
                   </div>
                 )}
 
+                {/* Запроса не хватило: остальные варианты — новый ход с этой идеей */}
+                {m.dashboardFallback &&
+                  m.dashboardFallback.alternatives.some((alt) => !usedIdeas?.includes(alt.title)) && (
+                  <div className="mt-2">
+                    <div className="mb-1.5 text-[11.5px] text-graphite-500">{t("dashboard.otherIdeas")}</div>
+                    <div className="flex flex-wrap gap-2">
+                      {m.dashboardFallback.alternatives
+                        .filter((alt) => !usedIdeas?.includes(alt.title))
+                        .map((alt) => (
+                        <button
+                          key={alt.id || alt.title}
+                          onClick={() => sendIdea(alt)}
+                          disabled={streaming || !activeTable}
+                          title={alt.description}
+                          className="rounded-full border border-graphite-600 px-3 py-1 text-xs text-graphite-200 hover:bg-graphite-800 disabled:opacity-50 transition"
+                        >
+                          {alt.title}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
                 {/* Кнопка повтора при ошибке или обрыве */}
                 {m.failed && !streaming && (
                   <div className="mt-3 pt-2 border-t border-bad/30 flex flex-col gap-2">
@@ -768,8 +671,12 @@ export default function ChatPanel({ sessionId }: Props) {
                             m.failedQuestion ||
                             messages.slice(0, i).reverse().find((x) => x.role === "user")?.content ||
                             lastFailedQuestion ||
-                            lastQuestionRef.current;
-                          sendQuestion(questionToRetry, { isRetry: true, messageIdToReplace: m.id });
+                            run?.question;
+                          sendQuestion(questionToRetry, {
+                            isRetry: true,
+                            messageIdToReplace: m.id,
+                            dashboard: m.failedDashboard,
+                          });
                         }}
                         className="inline-flex items-center gap-1.5 rounded-lg bg-danger hover:bg-danger/90 px-3 py-1.5 text-xs font-semibold text-white shadow-sm transition cursor-pointer"
                       >
@@ -787,7 +694,7 @@ export default function ChatPanel({ sessionId }: Props) {
                                 m.failedQuestion ||
                                 messages.slice(0, i).reverse().find((x) => x.role === "user")?.content ||
                                 lastFailedQuestion ||
-                                lastQuestionRef.current;
+                                run?.question;
                               const recoveryText = JSON.stringify({
                                 action: sug === "Пропустить этот шаг и продолжить" ? "skip_step" : "clarify",
                                 text: sug,
@@ -897,7 +804,7 @@ export default function ChatPanel({ sessionId }: Props) {
               <span className="truncate">{t("chat.failedBanner", { q: lastFailedQuestion })}</span>
             </div>
             <button
-              onClick={() => sendQuestion(lastFailedQuestion, { isRetry: true })}
+              onClick={() => sendQuestion(lastFailedQuestion, { isRetry: true, dashboard: run?.failedDashboard })}
               disabled={!activeTable}
               className="inline-flex items-center gap-1.5 rounded-lg bg-danger hover:bg-danger/90 px-3 py-1.5 text-xs font-semibold text-white shadow transition whitespace-nowrap disabled:opacity-50 cursor-pointer"
             >
@@ -906,7 +813,41 @@ export default function ChatPanel({ sessionId }: Props) {
             </button>
           </div>
         )}
+        {dashboardMode && ideas && (
+          <DashboardIdeas
+            // Варианты, по которым дашборд уже строили, не предлагаем снова
+            state={
+              ideas.status === "ready"
+                ? { ...ideas, ideas: ideas.ideas.filter((idea) => !usedIdeas?.includes(idea.title)) }
+                : ideas
+            }
+            disabled={streaming || !activeTable || !llmReady}
+            onPick={sendIdea}
+            onOwn={() => {
+              closeIdeas();
+              inputRef.current?.focus();
+            }}
+            onRetry={loadIdeas}
+            onClose={closeIdeas}
+          />
+        )}
         <div className="rounded-2xl border border-graphite-700 bg-graphite-850 p-2 pl-4 shadow-sm transition focus-within:border-graphite-500">
+          {/* Чип режима дашборда: × выключает режим */}
+          {dashboardMode && (
+            <span className="mt-1 mb-1 inline-flex items-center gap-1 rounded-full border border-graphite-600 bg-graphite-800 py-0.5 pl-2 pr-1 text-[12px] text-graphite-100">
+              📊 {t("dashboard.chip")}
+              <button
+                onClick={() => {
+                  setDashboardMode(false);
+                  closeIdeas();
+                }}
+                className="flex h-4 w-4 items-center justify-center rounded-full text-graphite-400 hover:bg-graphite-700 hover:text-graphite-100"
+                title={t("dashboard.chipOff")}
+              >
+                <Icon name="x" size={10} />
+              </button>
+            </span>
+          )}
           {/* Чип-цитата: вопрос уйдёт с reply_to выбранного ответа */}
           {replyTarget && (
             <ReplyQuote
@@ -948,6 +889,8 @@ export default function ChatPanel({ sessionId }: Props) {
                   ? t("chat.replyPlaceholder")
                   : activeClarificationId
                   ? t("chat.clarifyPlaceholder")
+                  : dashboardMode
+                  ? t("dashboard.placeholder")
                   : t("chat.placeholder")
               }
               className="max-h-40 min-h-[36px] flex-1 resize-none overflow-y-hidden bg-transparent py-2 text-sm leading-5 text-graphite-100 placeholder-graphite-500 outline-none disabled:cursor-not-allowed disabled:opacity-60"
@@ -955,7 +898,7 @@ export default function ChatPanel({ sessionId }: Props) {
             />
             {streaming ? (
               <button
-                onClick={() => stopRef.current?.()}
+                onClick={() => stopRun(sessionId)}
                 className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-graphite-700 text-graphite-100 hover:bg-graphite-600 transition"
                 title={t("chat.stop")}
               >
@@ -972,6 +915,39 @@ export default function ChatPanel({ sessionId }: Props) {
               </button>
             )}
           </div>
+        </div>
+        {/* Режим дашборда (#224): переключатель и генерация вариантов */}
+        <div className="mt-2 flex flex-wrap items-center gap-2">
+          <button
+            onClick={() => {
+              if (dashboardMode) closeIdeas();
+              setDashboardMode(!dashboardMode);
+            }}
+            aria-pressed={dashboardMode}
+            title={t("dashboard.toggleHint")}
+            className={`inline-flex items-center gap-1.5 rounded-full border px-3 py-1 text-xs transition ${
+              dashboardMode
+                ? "border-graphite-400 bg-graphite-700 text-graphite-50"
+                : "border-graphite-700 text-graphite-400 hover:bg-graphite-800 hover:text-graphite-200"
+            }`}
+          >
+            <Icon name="layout" size={13} />
+            {t("dashboard.toggle")}
+          </button>
+          {dashboardMode && (
+            <button
+              onClick={loadIdeas}
+              disabled={ideas?.status === "loading" || streaming || !activeTable}
+              className="inline-flex items-center gap-1.5 rounded-full border border-graphite-700 px-3 py-1 text-xs text-graphite-200 hover:bg-graphite-800 disabled:opacity-50 disabled:cursor-not-allowed transition"
+            >
+              <Icon
+                name={ideas?.status === "loading" ? "refresh" : "sparkle"}
+                size={13}
+                className={ideas?.status === "loading" ? "animate-spin" : ""}
+              />
+              {t("dashboard.autoGenerate")}
+            </button>
+          )}
         </div>
       </div>
     </div>

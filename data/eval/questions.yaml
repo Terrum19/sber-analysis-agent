@@ -253,7 +253,8 @@
   question: "Что происходит с продажами каждый декабрь? Сравни число проданных штук по месяцам года, все годы вместе."
   follow_up_of: null
   expect:
-    tools_any: [seasonality, time_bucket, group_by, seasonal_decompose, trend_analysis]
+    tools_any: [seasonality, time_bucket, group_by, seasonal_decompose, trend_analysis,
+                period_compare]
     columns_all: ["Дата операции (МСК)", "Количество, шт."]
     answer_contains: ["декабр"]
     value:
@@ -339,7 +340,7 @@
   question: "Есть ли аномальные значения возраста респондентов?"
   follow_up_of: null
   expect:
-    tools_any: [describe_stats, filter_rows, sort_limit, aggregate]
+    tools_any: [describe_stats, filter_rows, sort_limit, aggregate, detect_anomalies]
     columns_all: [age]
     answer_contains: []
     value:
