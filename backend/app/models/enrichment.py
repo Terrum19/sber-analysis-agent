@@ -20,3 +20,12 @@ class EnrichmentBatch(BaseModel):
     """Ответ LLM на пачку колонок."""
 
     columns: list[ColumnEnrichment] = Field(default_factory=list)
+
+
+class DatasetDescription(BaseModel):
+    """Ответ LLM на SCHEMA_DESCRIBE: название набора данных и описание «что передо мной»."""
+
+    display_name: str = Field(
+        description="Название набора данных для пользователя: 2-5 слов по-русски, до 40 символов"
+    )
+    summary: str = Field(description="Описание набора данных, 3-6 предложений")

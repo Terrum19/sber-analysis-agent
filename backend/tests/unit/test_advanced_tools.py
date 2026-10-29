@@ -227,3 +227,150 @@ def test_funnel_follows_the_planned_step_order(advanced_db: DuckDBManager) -> No
     )
     rows = advanced_db.to_records(result)
     assert [(row["step"], row["count"]) for row in rows] == [("signup", 3), ("purchase", 1)]
+
+
+SCENARIO_THREE_TOOLS = ("detect_anomalies", "lag_correlation", "period_compare")
+LAG_PATTERN = (5, 17, 3, 11, 19, 2, 13, 7, 23, 1, 29, 8)
+
+
+@pytest.fixture
+def scenario_db() -> DuckDBManager:
+    db = DuckDBManager(":memory:")
+    db.execute(
+        f"""
+        CREATE TABLE monthly AS
+        SELECT
+            DATE '2021-01-01' + to_months(CAST(step AS INTEGER)) AS month_start,
+            CASE WHEN step % 2 = 0 THEN 'north' ELSE 'south' END AS region,
+            100 + step % 7
+                + CASE WHEN step % 12 = 6 THEN 200 ELSE 0 END
+                + CASE WHEN step = 20 THEN 500 ELSE 0 END AS revenue,
+            list_extract({list(LAG_PATTERN)}, CAST(step % 12 + 1 AS INTEGER)) AS spend,
+            list_extract({list(LAG_PATTERN)}, CAST((step + 9) % 12 + 1 AS INTEGER)) AS sales
+        FROM range(36) AS steps(step)
+        """
+    )
+    yield db
+    db.close()
+
+
+def test_scenario_three_tools_are_registered_for_the_planner() -> None:
+    description = tool_registry.describe()
+    for name in SCENARIO_THREE_TOOLS:
+        assert f"- {name} [" in description
+    assert tool_registry.get("detect_anomalies").kind == "analysis"
+    assert tool_registry.get("lag_correlation").kind == "analysis"
+    assert tool_registry.get("period_compare").kind == "transform"
+
+
+def test_detect_anomalies_finds_the_planted_outlier(scenario_db: DuckDBManager) -> None:
+    rows = run(scenario_db, "detect_anomalies", ["revenue"], "monthly")
+    assert rows[0]["month_start"].month == 9
+    assert rows[0]["month_start"].year == 2022
+    assert rows[0]["direction"] == "high"
+    assert rows[0]["score"] > 1.5
+    assert {row["revenue"] for row in rows} >= {606}
+
+
+def test_detect_anomalies_zscore_by_group(scenario_db: DuckDBManager) -> None:
+    result = tool_registry.get("detect_anomalies").run(
+        scenario_db, "monthly", [], value="revenue", by="region", method="ZSCORE", threshold=3
+    )
+    rows = scenario_db.to_records(result)
+    assert [(row["region"], row["revenue"]) for row in rows] == [("north", 606)]
+
+
+def test_detect_anomalies_by_period_sums_first(scenario_db: DuckDBManager) -> None:
+    result = tool_registry.get("detect_anomalies").run(
+        scenario_db, "monthly", [], value="revenue", period="month_start"
+    )
+    rows = scenario_db.to_records(result)
+    assert set(rows[0]) == {"month_start", "value", "score", "direction"}
+    assert max(rows, key=lambda row: row["score"])["value"] == 606
+
+
+def test_detect_anomalies_falls_back_when_iqr_is_zero(advanced_db: DuckDBManager) -> None:
+    advanced_db.execute(
+        "CREATE TABLE flat AS SELECT CASE WHEN step = 9 THEN 1000 ELSE 100 END AS amount "
+        "FROM range(30) AS steps(step)"
+    )
+    rows = run(advanced_db, "detect_anomalies", ["amount"], "flat")
+    assert [row["amount"] for row in rows] == [1000]
+
+
+def test_lag_correlation_peaks_at_the_planted_lag(scenario_db: DuckDBManager) -> None:
+    rows = run(scenario_db, "lag_correlation", ["month_start", "sales", "spend"], "monthly")
+    assert [row["lag"] for row in rows] == list(range(13))
+    best = max(rows, key=lambda row: row["corr"])
+    assert best["lag"] == 3
+    assert best["corr"] == pytest.approx(1.0)
+    assert rows[3]["n"] == 33
+
+
+def test_lag_correlation_respects_interval_and_max_lag(scenario_db: DuckDBManager) -> None:
+    result = tool_registry.get("lag_correlation").run(
+        scenario_db,
+        "monthly",
+        [],
+        date="month_start",
+        x="sales",
+        y="spend",
+        max_lag=2,
+        interval="WEEK",
+    )
+    rows = scenario_db.to_records(result)
+    assert [row["lag"] for row in rows] == [0, 1, 2]
+    assert all(row["n"] == 0 for row in rows[1:])
+
+
+def test_period_compare_shows_the_july_spike(scenario_db: DuckDBManager) -> None:
+    rows = run(scenario_db, "period_compare", ["month_start", "revenue", "month"], "monthly")
+    assert len(rows) == 36
+    july = [row for row in rows if row["part"] == 7]
+    assert [row["year"] for row in july] == [2021, 2022, 2023]
+    assert all(row["vs_year_mean_pct"] > 30 for row in july)
+    others = [row for row in rows if row["part"] not in (7, 9)]
+    assert all(row["vs_year_mean_pct"] < 10 for row in others)
+    assert sum(row["deviation"] for row in july) == pytest.approx(0)
+
+
+def test_period_compare_quarter_and_weekday(scenario_db: DuckDBManager) -> None:
+    quarters = run(
+        scenario_db, "period_compare", ["month_start", "revenue", "QUARTER", "count"], "monthly"
+    )
+    assert {row["part"] for row in quarters} == {1, 2, 3, 4}
+    assert {row["value"] for row in quarters} == {3}
+    weekdays = run(
+        scenario_db, "period_compare", ["month_start", "revenue", "weekday", "max"], "monthly"
+    )
+    assert {row["part"] for row in weekdays} <= set(range(1, 8))
+
+
+@pytest.mark.parametrize(
+    ("name", "arguments", "message"),
+    [
+        ("detect_anomalies", {"value": "revenue", "method": "mad"}, "invalid arguments"),
+        ("detect_anomalies", {"value": "revenue", "threshold": 0}, "invalid arguments"),
+        ("detect_anomalies", {}, "invalid arguments"),
+        ("lag_correlation", {"date": "month_start", "x": "sales"}, "invalid arguments"),
+        (
+            "lag_correlation",
+            {"date": "month_start", "x": "sales", "y": "spend", "max_lag": -1},
+            "invalid arguments",
+        ),
+        (
+            "lag_correlation",
+            {"date": "month_start", "x": "sales", "y": "spend", "interval": "year"},
+            "invalid arguments",
+        ),
+        ("period_compare", {"date": "month_start", "value": "revenue"}, "invalid arguments"),
+        (
+            "period_compare",
+            {"date": "month_start", "value": "revenue", "part": "month", "agg": "median"},
+            "invalid arguments",
+        ),
+    ],
+)
+def test_scenario_three_tools_validate_arguments(name: str, arguments: dict, message: str) -> None:
+    with pytest.raises(ValueError, match=message):
+        tool_registry.get(name).parse_args(arguments=arguments)

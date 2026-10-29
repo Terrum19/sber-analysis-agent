@@ -69,6 +69,9 @@ def test_identifier_quotes_names_and_embedded_quotes() -> None:
         ("trend_analysis", ["Дата продажи", "Цена, руб"], {"seasonality_period": 4}),
         ("forecast", ["Дата продажи", "Цена, руб", "2"], {}),
         ("seasonality", ["Дата продажи", "Цена, руб"], {}),
+        ("period_compare", ["Дата продажи", "Цена, руб", "month"], {}),
+        ("lag_correlation", ["Дата продажи", "Сколько купили", "Цена, руб", "1"], {}),
+        ("detect_anomalies", ["Цена, руб", "Код аптеки", "Дата продажи"], {"threshold": 0.1}),
     ],
 )
 def test_tools_accept_source_names(
