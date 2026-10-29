@@ -4,6 +4,7 @@
  * Карточка уточнения (clarification_needed): текст сбоя и кнопки из suggestions.
  * «Пропустить…» отправляет {action: "skip_step"}, остальные варианты открывают
  * поле ввода — ответ уходит свободным текстом в recovery_response.
+ * Выбор данных (kind "table") — кнопка сразу отправляет название таблицы.
  */
 import { useState } from "react";
 import Icon from "@/components/ui/Icon";
@@ -48,7 +49,13 @@ export default function ClarificationCard({ data, active, onSkip, onAnswer }: Pr
           {(data.suggestions || []).map((suggestion) => (
             <button
               key={suggestion}
-              onClick={() => (isSkip(suggestion) ? onSkip() : setMode(suggestion))}
+              onClick={() =>
+                data.kind === "table"
+                  ? onAnswer(suggestion)
+                  : isSkip(suggestion)
+                    ? onSkip()
+                    : setMode(suggestion)
+              }
               className={`rounded-lg border px-2.5 py-1 text-xs transition ${
                 mode === suggestion
                   ? "border-graphite-300 bg-graphite-700 text-graphite-50"

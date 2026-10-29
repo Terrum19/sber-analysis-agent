@@ -74,7 +74,7 @@ def _same_word(left: str, right: str) -> bool:
     return min(len(left), len(right)) >= STEM_LENGTH and left[:STEM_LENGTH] == right[:STEM_LENGTH]
 
 
-def _matches(question_tokens: set[str], column_tokens: set[str]) -> int:
+def matches(question_tokens: set[str], column_tokens: set[str]) -> int:
     """Сколько слов вопроса встречается среди слов колонки (с учётом словоформ)."""
     return sum(any(_same_word(q, c) for c in column_tokens) for q in question_tokens)
 
@@ -126,9 +126,9 @@ def rank_columns(
         words = " ".join(
             [column.replace("_", " "), (titles or {}).get(column, ""), values.get(column, "")]
         )
-        matches = _matches(question_tokens, tokenize(words))
+        hits = matches(question_tokens, tokenize(words))
         bonus = KIND_WEIGHT if kinds.get(column) in wanted else 0
-        return TOKEN_WEIGHT * matches + bonus
+        return TOKEN_WEIGHT * hits + bonus
 
     return sorted(columns, key=lambda column: -score(column))
 

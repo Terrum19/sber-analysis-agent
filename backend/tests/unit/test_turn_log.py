@@ -144,6 +144,7 @@ async def test_failed_turn_names_stage_and_reason(orchestrator, turn_records) ->
 
 
 async def test_failed_turn_without_table(orchestrator, turn_records) -> None:
+    orchestrator.db.execute("DROP TABLE raw")
     stream = orchestrator.run(ChatRequest(session_id="no-table", question="Сумма"))
     events = [event async for event in stream]
     assert [event["type"] for event in events] == ["error", "done"]

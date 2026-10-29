@@ -118,6 +118,8 @@ class ProgressPayload(BaseModel):
 
     ``fixing`` — шаг упал, планировщик исправляет его по тексту ошибки
     (``attempt`` — номер попытки исправления, ``error`` — текст ошибки).
+    ``tables`` — на этапе planning: таблица хода и связанные с ней таблицы,
+    которые видит планировщик (первая — $source).
     """
 
     stage: Literal["planning", "step", "insight", "chart", "dashboard", "outline", "tile"]
@@ -129,6 +131,7 @@ class ProgressPayload(BaseModel):
     elapsed_ms: int | None = None
     attempt: int | None = None
     error: str | None = None
+    tables: list[str] | None = None
     # Плитка дашборда по кнопке (#224), к которой относится этап или шаг.
     tile_id: int | None = None
 

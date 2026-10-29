@@ -284,6 +284,18 @@ class SessionMemory:
         self._persist()
         return self._turn["turn_id"]
 
+    def use_table(self, table: str) -> None:
+        """Агент сам выбрал таблицу под вопрос: она становится таблицей сессии и хода.
+
+        Вызывается в начатом ходе. Таблица, выбранная раньше в этом же ходе,
+        из таблиц хода убирается.
+        """
+        previous = self.table
+        self.set_table(table)
+        others = [name for name in self._turn["tables"] if name not in (table, previous)]
+        self._turn["tables"] = [table, *others]
+        self._persist()
+
     def resume_turn(self, turn_id: str | None) -> bool:
         """Продолжить ход после уточнения; False — такого хода нет."""
         turn = self._find(turn_id)
@@ -317,9 +329,23 @@ class SessionMemory:
         return chain[::-1]
 
     def record_step(self, step, result_table: str | None = None) -> None:
-        """Записать выполненный шаг в текущий ход (сохраняется в finish_turn)."""
+        """Записать выполненный шаг в текущий ход (сохраняется в finish_turn).
+
+        Таблицы, присоединённые шагом (right_table, tables у join_related),
+        добавляются к таблицам хода.
+        """
         if result_table:
             self._turn.setdefault("results", []).append(result_table)
+        arguments = step.arguments or {}
+        joined = arguments.get("tables")
+        joined = [*(joined if isinstance(joined, list) else []), arguments.get("right_table")]
+        for table in joined:
+            if (
+                isinstance(table, str)
+                and not table.startswith("$")
+                and table not in self._turn["tables"]
+            ):
+                self._turn["tables"].append(table)
         self._turn["steps"].append(
             {
                 "step_id": step.step_id,

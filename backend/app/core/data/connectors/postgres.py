@@ -1,4 +1,5 @@
 import hashlib
+import json
 import logging
 import secrets
 import time
@@ -9,6 +10,7 @@ import duckdb
 from app.config import settings
 from app.core.data.connectors.base import BaseConnector
 from app.core.data.connectors.pg_dsn import parse_dsn
+from app.core.data.relations import Relation
 
 logger = logging.getLogger(__name__)
 
@@ -254,6 +256,56 @@ class PostgresConnector(BaseConnector):
             )
             return {}
         return {row["column_name"]: row["comment"] for row in rows}
+
+    def foreign_keys(self, db) -> list[Relation]:
+        """FOREIGN KEY схемы из pg_constraint: TEMP VIEW ограничений не переносит.
+
+        Колонки ключа приходят JSON-массивом в порядке ключа (составные ключи).
+        Таблицы под другими именами (имя было занято) переводятся в имена
+        представлений; ключи на неподключённые таблицы пропускаются.
+        """
+        views = {source: view for view, source in self.sources.items()}
+        if not views:
+            return []
+        schema = quote_literal(self.schema)
+        sql = (
+            "SELECT src.relname::text AS table_name, dst.relname::text AS ref_table, "
+            "array_to_json(ARRAY(SELECT a.attname FROM unnest(c.conkey) WITH ORDINALITY "
+            "AS k(num, ord) JOIN pg_catalog.pg_attribute a ON a.attrelid = c.conrelid "
+            "AND a.attnum = k.num ORDER BY k.ord))::text AS columns, "
+            "array_to_json(ARRAY(SELECT a.attname FROM unnest(c.confkey) WITH ORDINALITY "
+            "AS k(num, ord) JOIN pg_catalog.pg_attribute a ON a.attrelid = c.confrelid "
+            "AND a.attnum = k.num ORDER BY k.ord))::text AS ref_columns "
+            "FROM pg_catalog.pg_constraint c "
+            "JOIN pg_catalog.pg_class src ON src.oid = c.conrelid "
+            "JOIN pg_catalog.pg_namespace sn ON sn.oid = src.relnamespace "
+            "JOIN pg_catalog.pg_class dst ON dst.oid = c.confrelid "
+            "JOIN pg_catalog.pg_namespace dn ON dn.oid = dst.relnamespace "
+            f"WHERE c.contype = 'f' AND sn.nspname = {schema} AND dn.nspname = {schema} "
+            "ORDER BY 1, 2, 3"
+        )
+        try:
+            # Только SELECT *: см. column_comments.
+            rows = db.query(
+                f"SELECT * FROM postgres_query({quote_literal(self.alias)}, {quote_literal(sql)})"
+            )
+        except duckdb.Error as error:
+            logger.warning(
+                "PostgreSQL %s: не удалось прочитать внешние ключи: %s",
+                self.source,
+                self.dsn.scrub(str(error)),
+            )
+            return []
+        return [
+            Relation(
+                table=views[row["table_name"]],
+                columns=tuple(json.loads(row["columns"])),
+                ref_table=views[row["ref_table"]],
+                ref_columns=tuple(json.loads(row["ref_columns"])),
+            )
+            for row in rows
+            if row["table_name"] in views and row["ref_table"] in views
+        ]
 
     def skip(self, db, table: str, error: Exception) -> bool:
         """Таблицу без прав на SELECT пропустить, остальные ошибки — нет."""

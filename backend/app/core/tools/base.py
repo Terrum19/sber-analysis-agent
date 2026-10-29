@@ -34,12 +34,15 @@ ToolKind = Literal["transform", "analysis", "lookup"]
 class ToolContext:
     """Что исполнитель даёт тулу помимо таблицы: LLM, песочница, память сессии.
 
-    None — по умолчанию; ``history`` есть только у шагов хода (read_history).
+    None — по умолчанию; ``history`` есть только у шагов хода (read_history),
+    ``source`` — у шагов, выполняемых исполнителем.
     """
 
     llm: "LLMClient | None" = None
     sandbox: "WASMSandbox | None" = None
     history: "SessionMemory | None" = None
+    # Исходная таблица хода ($source): от неё join_related ищет путь по ключам.
+    source: str | None = None
 
 
 _FORBIDDEN_FUNCTIONS = frozenset({"current_setting", "getenv", "getvariable"})

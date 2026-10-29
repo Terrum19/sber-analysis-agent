@@ -151,7 +151,7 @@ class DashboardTurn:
                 },
             }
         )
-        described = describe_table(self.db, table)
+        described = describe_table(self.db, table, request.question)
         logger.info("дашборд: вариант=%s", DASHBOARD_VARIANT)
 
         emit(_progress_event("outline", "started"))
@@ -322,6 +322,8 @@ class DashboardTurn:
             context = memory.build_context(tile.question)
             context["next_step_id"] = (tile_id + 1) * TILE_STEP_IDS
             context["tile"] = True
+            # Плитка «по регионам» на таблице заказов — через join_related (#165).
+            context["related"] = self.agent._related(memory.table, tile.question)
             plan = await self.agent._plan(tile.question, context)
             _require_steps(plan)
             execution = await self.agent._execute_plan(

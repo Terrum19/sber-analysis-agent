@@ -4,7 +4,9 @@
 1. attach() — коннектор создаёт таблицы, сразу за ним каждая таблица
    профилируется и профиль сохраняется в паспорт. Синхронно: без профиля
    планировщик не отберёт колонки к первому вопросу. Таблицу, которую
-   нельзя прочитать (нет прав), коннектор может пропустить (skip).
+   нельзя прочитать (нет прав), коннектор может пропустить (skip). Затем
+   ищутся связи с остальными таблицами (core/data/relations.py): внешние
+   ключи из схемы источника, у CSV — проверенные по данным.
 2. describe() — если у таблицы есть описание (комментарии колонок в
    источнике или документ-описание), SchemaEnricher переносит из него в
    паспорт названия и описания колонок. Описания нет — ничего не делается,
@@ -21,7 +23,7 @@ import duckdb
 import openai
 
 from app.config import settings
-from app.core.data import overview
+from app.core.data import overview, relations
 from app.core.data.connectors.base import BaseConnector
 from app.core.data.profiling import TableProfile, profile_table
 from app.core.data.schema_enrichment import SchemaEnricher, Superseded
@@ -57,6 +59,7 @@ def attach(connector: BaseConnector, db) -> dict[str, TableProfile]:
             memory.delete(table)
         connector.rollback(db)
         raise
+    relations.discover(db, connector, list(profiles))
     return profiles
 
 
@@ -89,6 +92,7 @@ def restore(connector: BaseConnector, db) -> list[str]:
     except BaseException:
         connector.rollback(db)
         raise
+    relations.discover(db, connector, restored)
     return restored
 
 

@@ -13,6 +13,7 @@ from app.core.data.connectors.postgres import (
     PostgresExtensionUnavailableError,
     describe_failure,
 )
+from app.core.data.relations import Relation
 
 
 def test_uri_dsn_is_parsed_and_password_kept_apart() -> None:
@@ -94,9 +95,17 @@ def test_password_is_masked_in_repr_and_str() -> None:
 
 class FakeDuckDB:
     def __init__(
-        self, tables=(), existing=(), failing=(), previous=(), stale_views=(), comments=()
+        self,
+        tables=(),
+        existing=(),
+        failing=(),
+        previous=(),
+        stale_views=(),
+        comments=(),
+        keys=(),
     ) -> None:
         self.tables = list(tables)
+        self.keys = list(keys)
         self.comments = list(comments)
         self.existing = list(existing)
         self.failing = failing
@@ -118,6 +127,11 @@ class FakeDuckDB:
         for prefix, error in self.failing:
             if sql.startswith(prefix):
                 raise error
+        if "pg_constraint" in sql:
+            return [
+                {"table_name": table, "ref_table": ref, "columns": cols, "ref_columns": refs}
+                for table, ref, cols, refs in self.keys
+            ]
         if "postgres_query(" in sql:
             return [{"column_name": name, "comment": text} for name, text in self.comments]
         if "information_schema.tables" in sql:
@@ -471,3 +485,47 @@ def test_rollback_releases_views_and_attachment() -> None:
     assert f"DROP TEMPORARY SECRET IF EXISTS {connector.alias}_secret" in db.statements
     assert connector.sources == {}
     assert connector.scrub("auth TopSecret") == "auth ***"
+
+
+def test_foreign_keys_are_read_from_the_schema_under_view_names() -> None:
+    db = FakeDuckDB(
+        tables=["orders", "clients", "events"],
+        existing=["events"],
+        keys=[
+            ("orders", "clients", '["buyer"]', '["code"]'),
+            ("events", "orders", '["city", "num"]', '["shop_city", "shop_num"]'),
+            ("orders", "archived", '["old"]', '["id"]'),
+        ],
+    )
+    connector = PostgresConnector(DSN, schema="O'Hara")
+    connector.connect(db)
+    assert connector.foreign_keys(db) == [
+        Relation("orders", ("buyer",), "clients", ("code",)),
+        Relation("shop_events", ("city", "num"), "orders", ("shop_city", "shop_num")),
+    ]
+    sql = db.statements[-1]
+    assert sql.startswith(f"SELECT * FROM postgres_query('{connector.alias}', ")
+    assert "sn.nspname = ''O''''Hara'' AND dn.nspname = ''O''''Hara''" in sql
+
+
+def test_foreign_keys_need_attached_tables() -> None:
+    db = FakeDuckDB()
+    assert PostgresConnector(DSN).foreign_keys(db) == []
+    assert db.statements == []
+
+
+def test_foreign_keys_failure_is_logged_without_secrets(caplog: pytest.LogCaptureFixture) -> None:
+    error = duckdb.IOException("permission denied for TopSecret")
+    db = FakeDuckDB(tables=["orders"], failing=[("SELECT * FROM postgres_query(", error)])
+    connector = PostgresConnector(DSN)
+    connector.connect(db)
+    with caplog.at_level(logging.WARNING):
+        assert connector.foreign_keys(db) == []
+    assert "внешние ключи" in caplog.text
+    assert "TopSecret" not in caplog.text
+
+
+def test_connectors_without_schema_keys_return_empty_list() -> None:
+    db = FakeDuckDB()
+    assert ClickHouseConnector("clickhouse://localhost").foreign_keys(db) == []
+    assert db.statements == []

@@ -8,12 +8,14 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app.api.deps import get_db
-from app.core.data import ingest, restore
+from app.core.data import ingest, relations, restore
 from app.core.data.connectors.pg_dsn import parse_dsn
 from app.core.data.connectors.postgres import PostgresConnectionError, PostgresConnector
 from app.core.data.duckdb_manager import DuckDBManager
+from app.core.data.relations import Relation
 from app.core.memory.datasource_store import DatasourceStore
 from app.core.memory.profile_memory import ProfileMemory
+from app.core.tools.registry import tool_registry
 from app.main import app
 
 DSN = os.environ.get("TEST_POSTGRES_DSN", "postgresql://sber:sber@localhost:5432/sber_demo")
@@ -305,3 +307,41 @@ async def test_column_comments_drive_enrichment(
         assert again.calls == []
     finally:
         run_admin(admin, f"DROP SCHEMA IF EXISTS {name} CASCADE")
+
+
+def test_foreign_keys_come_from_the_schema(admin: duckdb.DuckDBPyConnection, db) -> None:
+    name = f"it_{secrets.token_hex(4)}"
+    statements = [
+        f"CREATE SCHEMA {name}",
+        f"CREATE TABLE {name}.clients (code text PRIMARY KEY, region text)",
+        f"CREATE TABLE {name}.shops (city text, num int, PRIMARY KEY (city, num))",
+        (
+            f"CREATE TABLE {name}.orders (id int PRIMARY KEY, buyer text REFERENCES "
+            f"{name}.clients (code), shop_city text, shop_num int, amount numeric, "
+            f"FOREIGN KEY (shop_city, shop_num) REFERENCES {name}.shops (city, num))"
+        ),
+        f"INSERT INTO {name}.clients VALUES ('a', 'msk'), ('b', 'spb')",
+        f"INSERT INTO {name}.shops VALUES ('msk', 1), ('spb', 1)",
+        f"INSERT INTO {name}.orders VALUES (1, 'a', 'msk', 1, 10), (2, 'b', 'spb', 1, 5)",
+    ]
+    try:
+        for sql in statements:
+            run_admin(admin, sql)
+        connector = PostgresConnector(DSN, schema=name)
+        with db.lock:
+            ingest.attach(connector, db)
+        assert relations.load(db) == [
+            Relation("orders", ("buyer",), "clients", ("code",)),
+            Relation("orders", ("shop_city", "shop_num"), "shops", ("city", "num")),
+        ]
+        joined = relations.related_tables(db, "orders", "сумма по region")
+        assert [item.table for item in joined] == ["clients", "shops"]
+        tool = tool_registry.get("join_related")
+        args = tool.Args.model_validate({"tables": ["clients", "shops"]})
+        table = tool.execute(db, "orders", args)
+        assert db.query(f"SELECT region, sum(amount) AS s FROM {table} GROUP BY 1 ORDER BY 1") == [
+            {"region": "msk", "s": 10},
+            {"region": "spb", "s": 5},
+        ]
+    finally:
+        run_admin(admin, f"DROP SCHEMA {name} CASCADE")

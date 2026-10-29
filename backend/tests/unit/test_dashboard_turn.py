@@ -1,16 +1,19 @@
 """Дашборд по кнопке (#224): план плиток, шаги плиток, выбор графика LLM, идеи."""
 
+import duckdb
 import pytest
 from fastapi.testclient import TestClient
 
 from app.api.schemas.chat import ChatRequest
 from app.config import settings
 from app.core.agent import dashboard_turn
-from app.core.agent.orchestrator import AgentOrchestrator
+from app.core.agent.orchestrator import NO_TABLE_MESSAGE, AgentOrchestrator
 from app.core.dashboards import ideas
 from app.core.dashboards.explain import explain_tile
 from app.core.dashboards.store import DashboardStore
+from app.core.data import relations
 from app.core.data.duckdb_manager import DuckDBManager
+from app.core.data.relations import Relation
 from app.core.llm.fake_client import FakeLLM
 from app.core.memory.session_memory import SessionMemory
 from app.models.dashboard_plan import (
@@ -258,11 +261,78 @@ async def test_outline_without_tiles_for_an_idea_is_asked_again_then_fails(db) -
     assert stages(events, "dashboard")[-1]["status"] == "failed"
 
 
-async def test_dashboard_needs_a_table(db) -> None:
+async def test_dashboard_needs_a_table() -> None:
+    empty = DuckDBManager(":memory:")
     SessionMemory("s2")
     chat = ChatRequest(session_id="s2", question="дашборд", mode="dashboard")
-    events = [event async for event in agent(db, ScriptedLLM()).run(chat)]
+    events = [event async for event in agent(empty, ScriptedLLM()).run(chat)]
     assert kinds(events) == ["error", "done"]
+    assert events[0]["data"]["message"] == NO_TABLE_MESSAGE
+    empty.close()
+
+
+async def test_dashboard_without_session_table_takes_the_table_by_question(db) -> None:
+    # Как обычный вопрос (#165): таблица по словам вопроса, а не «подключите данные».
+    llm = ScriptedLLM(DashboardOutline=[OUTLINE], ChartChoices=[RuntimeError("timeout")])
+    chat = ChatRequest(session_id="s2", question="Сделай дашборд по region и amount")
+    events = [event async for event in agent(db, llm).run(chat)]
+    assert kinds(events) == ["dashboard_outline", "dashboard", "text", "done"]
+    assert SessionMemory("s2").table == "raw"
+
+
+async def test_small_talk_does_not_take_the_dashboard_button(db) -> None:
+    llm = ScriptedLLM(DashboardOutline=[OUTLINE], ChartChoices=[RuntimeError("timeout")])
+    events = await collect(agent(db, llm), question="привет")
+    assert kinds(events) == ["dashboard_outline", "dashboard", "text", "done"]
+
+
+async def test_outline_and_tiles_see_related_tables(db) -> None:
+    db.execute(
+        "CREATE TABLE areas AS SELECT * FROM (VALUES ('msk', 'Центр'), ('spb', 'Северо-Запад'), "
+        "('ekb', 'Урал')) AS rows(region, area_name)"
+    )
+    relations.save(db, ["raw", "areas"], [Relation("raw", ("region",), "areas", ("region",))])
+    llm = ScriptedLLM(DashboardOutline=[OUTLINE], ChartChoices=[RuntimeError("timeout")])
+    orchestrator = agent(db, llm)
+    await collect(orchestrator, question="Продажи по area_name")
+
+    prompt = llm.prompts["DashboardOutline"][0]
+    assert "Связанные таблицы — соединяются с raw по ключам" in prompt
+    assert "- areas: колонки area_name" in prompt
+    tiles = orchestrator.planner.contexts
+    assert len(tiles) == len(OUTLINE.tiles)
+    assert all([item.table for item in context["related"]] == ["areas"] for context in tiles)
+
+
+def test_describe_linked_names_the_path_and_title(db) -> None:
+    hop = relations.Hop
+    item = relations.Related(
+        "regions",
+        [
+            hop(Relation("raw", ("city",), "cities", ("id",)), "raw", ("city",), "cities", ("id",)),
+            hop(
+                Relation("cities", ("region",), "regions", ("id",)),
+                "cities",
+                ("region",),
+                "regions",
+                ("id",),
+            ),
+        ],
+        ["name"],
+        0,
+    )
+    assert relations.describe_linked(db, "raw", []) == ""
+    assert relations.describe_linked(db, "raw", [item]).endswith(
+        "- regions (через cities): колонки name"
+    )
+
+
+async def test_ideas_survive_a_broken_relations_catalog(db, monkeypatch) -> None:
+    def broken(*_: object) -> list:
+        raise duckdb.Error("catalog")
+
+    monkeypatch.setattr(relations, "related_tables", broken)
+    assert "Связанные таблицы" not in ideas.describe_table(db, "raw")
 
 
 async def test_disconnect_cancels_the_build(db) -> None:

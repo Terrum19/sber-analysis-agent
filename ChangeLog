@@ -1,5 +1,64 @@
 2026-10-29  Alexander Yurits  <143354682+Terrum19@users.noreply.github.com>
 
+	Дашборд по связанным таблицам (#165 + #224).
+	* backend/app/core/data/relations.py (describe_linked): Новая.
+	Связанные таблицы и их колонки для промпта идей и плана дашборда.
+	* backend/app/core/dashboards/ideas.py (describe_table): Дописывает
+	связанные таблицы.  (_related): Новая.  (generate_ideas): Ключ кэша
+	учитывает связанные таблицы.
+	* backend/app/core/llm/prompts/dashboard_builder.py (DASHBOARD_IDEAS)
+	(DASHBOARD_OUTLINE): Колонки связанных таблиц тоже можно брать.
+	* backend/app/core/agent/dashboard_turn.py (_build): План по запросу
+	и связанным таблицам.  (_tile): Планировщик плитки получает related —
+	join_related доступен.
+	* backend/app/core/agent/orchestrator.py (_turn): Маршрут дашборда —
+	после выбора таблицы: без таблицы сессии она берётся по вопросу.
+	Small talk не перехватывает кнопку дашборда.
+	* backend/tests/unit/test_dashboard_turn.py: Тесты того же.
+
+2026-10-29  Alexander Yurits  <143354682+Terrum19@users.noreply.github.com>
+
+	Выбор таблицы по группам связанных таблиц; join_related — только при
+	связях (#165, полный прогон).
+	* backend/app/core/data/relations.py (choose_table): Вопрос сравнивается
+	с группой связанных таблиц целиком; в группе — самая подходящая таблица.
+	(question_words, table_words): Новые.  Без слов короче MIN_WORD и без
+	описания таблицы.  (candidate_tables, table_score): Удалены.
+	* backend/app/core/agent/planner.py (plan): Без связанных таблиц и
+	каталога join_related в промпт не попадает.
+	* backend/tests/unit/test_relations.py: Тесты того же.
+
+2026-10-29  Alexander Yurits  <143354682+Terrum19@users.noreply.github.com>
+
+	Цепочки соединений, обзор связанных таблиц и вопрос «какие данные
+	взять?» (#165).
+	* backend/app/core/tools/sql/join_related.py: Новый.  join_related —
+	связанные таблицы по ключам одним шагом, путь через промежуточные.
+	* backend/app/core/data/relations.py (paths, component, join_hops)
+	(output_names): Новые.  Пути до MAX_HOPS переходов, группа связанных
+	таблиц, имена колонок после соединения.  (priority_order, role)
+	(references, is_reference, table_title, choose_table, TableChoice):
+	Новые.  Справочник — таблица, на которую ссылаются.
+	(related_tables, describe_related): Таблицы через промежуточные, пример
+	join_related.  (Relation.condition): Удалена.
+	* backend/app/core/agent/orchestrator.py (_turn): Уточнение таблицы
+	(TABLE_CHOICE) и ответ на него.  (_table_answer): Новая.
+	(_overview): Группа связанных таблиц — _schema_overview.
+	(_schema_overview): Новая.
+	* backend/app/core/tools/base.py (ToolContext.source): Новое.
+	* backend/app/core/agent/step_executor.py (execute): Передаёт source.
+	* backend/app/core/memory/session_memory.py (record_step): Таблицы
+	join_related — в таблицы хода.
+	* backend/app/core/tools/registry.py, backend/app/core/agent/quality_fixes.py:
+	join_related в реестре и в ядре тулов.
+	* frontend/src/types/chat.ts (ClarificationEvent.kind): Новое.
+	* frontend/src/components/chat/ClarificationCard.tsx: Выбор таблицы
+	одной кнопкой.
+	* backend/tests/unit/test_relations.py
+	* backend/tests/integration/test_postgres_connector.py: Тесты того же.
+
+2026-10-29  Alexander Yurits  <143354682+Terrum19@users.noreply.github.com>
+
 	Ответ агента не обрывается при уходе из чата; статус хода точкой у сессии.
 	* frontend/src/store/chatRunStore.ts: Новый.  Ход агента (стрим
 	/chat, в том числе в режиме дашборда) живёт вне ChatPanel и пишет в
@@ -113,6 +172,42 @@
 	очистка канваса и оповещение dashboards:changed.
 	* frontend/src/components/layout/RecentDashboards.tsx,
 	frontend/src/app/dashboards/page.tsx: Фильтрация дашбордов удалённых баз.
+
+2026-10-28  Alexander Yurits  <143354682+Terrum19@users.noreply.github.com>
+
+	Связанные таблицы: внешние ключи из схемы источника и JOIN в плане (#165).
+	* backend/app/core/data/relations.py: Новый.  Связи таблиц в
+	_meta.table_relation: объявленные (коннектор, duckdb_constraints) и
+	проверенные по данным у CSV (имя колонки, уникальный ключ справа,
+	90% значений).  (related_tables, describe_related): Связанные таблицы
+	и готовое условие join_tables для промпта.  (candidate_tables)
+	(describe_catalog): Таблица под вопрос без выбранной таблицы сессии;
+	при ничьей — каталог для планировщика.
+	* backend/app/core/data/connectors/base.py (foreign_keys): Новая.
+	* backend/app/core/data/connectors/postgres.py (foreign_keys): Новая.
+	FOREIGN KEY из pg_constraint, составные ключи, имена представлений.
+	* backend/app/core/data/ingest.py (attach, restore): Ищут связи.
+	* backend/app/api/routes/datasources.py: Удаление CSV удаляет связи.
+	* backend/app/core/agent/orchestrator.py (_turn): Без таблицы сессии
+	выбирает таблицу по вопросу.  (_research): Связанные таблицы или
+	каталог в контексте; tables в прогрессе planning; таблица из input
+	первого шага при каталоге.  (_related): Новая.
+	* backend/app/core/agent/planner.py (plan): Блоки связанных таблиц и
+	каталога после колонок.
+	* backend/app/core/memory/session_memory.py (use_table): Новая.
+	(record_step): Присоединённая таблица — в таблицы хода.
+	* backend/app/core/tools/sql/atomic.py (JoinTablesTool.execute): Одна
+	копия ключа t.k = t_right.k.  (_same_name_keys): Новая.
+	* backend/app/core/data/semantic_select.py (matches): Публичная.
+	* backend/app/api/schemas/chat.py (ProgressPayload.tables): Новое.
+	* backend/tests/unit/test_relations.py: Новый.
+	* backend/tests/unit/test_connectors_postgres.py
+	* backend/tests/integration/test_postgres_connector.py: Ключи из схемы.
+	* backend/tests/integration/test_memory_integration.py
+	* backend/tests/unit/test_orchestrator_unit.py
+	* backend/tests/unit/test_turn_log.py
+	* backend/tests/contract/test_sse_serialization.py: Таблицы в прогрессе
+	и выбор таблицы по вопросу.
 
 2026-10-28  Alexander Yurits  <143354682+Terrum19@users.noreply.github.com>
 

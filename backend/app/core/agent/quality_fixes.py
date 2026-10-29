@@ -72,6 +72,7 @@ CORE_TOOLS = (
     "describe_stats",
     "search_categorical_values",
     "read_history",
+    "join_related",
 )
 STEM_LENGTH = 5
 

@@ -29,7 +29,7 @@ from app.api.deps import get_db
 from app.api.schemas.datasource import DatasourceCreate, DatasourceOut, TableBrief, TableRename
 from app.config import settings
 from app.core.dashboards.store import DashboardStore
-from app.core.data import ingest, overview, restore
+from app.core.data import ingest, overview, relations, restore
 from app.core.data.connectors.base import BaseConnector
 from app.core.data.connectors.clickhouse import (
     ClickHouseConnectionError,
@@ -299,6 +299,7 @@ def forget_csv(db: DuckDBManager, datasource_id: str) -> list[str] | None:
         for table in tables:
             db.execute(f"DROP TABLE IF EXISTS {quote_identifier(table)}")
             memory.delete(table)
+            relations.delete(db, table)
     shutil.rmtree(folder, ignore_errors=True)
     return tables
 

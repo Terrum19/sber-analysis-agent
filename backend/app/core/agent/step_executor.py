@@ -93,7 +93,7 @@ class StepExecutor:
             logger.error(msg)
             raise ValueError(msg)
 
-        context = self.context if history is None else replace(self.context, history=history)
+        context = replace(self.context, history=history, source=resolve.refs[SOURCE])
         result = await tool.arun(
             context,
             self.db,

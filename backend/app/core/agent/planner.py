@@ -16,6 +16,7 @@ logger = logging.getLogger(__name__)
 from app.core.agent.step_executor import tool_kind
 from app.core.dashboards import templates
 from app.core.dashboards.templates import DashboardTemplate
+from app.core.data.relations import describe_related
 from app.core.data.semantic_select import (
     describe_columns,
     describe_other_columns,
@@ -81,6 +82,11 @@ class StepPlanner:
         start = int(context.get("next_step_id", 0))
         if settings.agent_tool_topk:
             tools = select_tools(question)
+        if not context.get("related") and not context.get("catalog"):
+            # Связанных таблиц нет — join_related не нужен, промпт как без связей (#165).
+            tools = "\n".join(
+                line for line in tools.split("\n") if not line.startswith("- join_related ")
+            )
         described = describe_columns(
             columns, profile, context.get("descriptions"), context.get("titles")
         )
@@ -90,9 +96,12 @@ class StepPlanner:
             context.get("titles"),
             question=question,
         )
+        described = f"{described}\n{others}" if others else described
+        related = describe_related(context.get("datasource"), context.get("related", []))
+        tables = [block for block in (related, context.get("catalog")) if block]
         prompt = STEP_PLANNER.format(
             tools=tools,
-            columns=f"{described}\n{others}" if others else described,
+            columns="\n\n".join([described, *tables]),
             memories=describe_memories(context.get("memories", [])),
             history=describe_history(context),
             executed=context.get("executed", "нет"),
