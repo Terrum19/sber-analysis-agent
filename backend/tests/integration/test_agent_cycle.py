@@ -94,7 +94,9 @@ def test_agent_cycle_with_dashboard_request(db):
     events = []
 
     async def _collect():
-        async for event in orch.run(ChatRequest(session_id="dashboard-test", question="Дашборд")):
+        async for event in orch.run(
+            ChatRequest(session_id="dashboard-test", question="Выручка по категориям")
+        ):
             events.append(event)
 
     asyncio.run(_collect())
@@ -187,6 +189,10 @@ def revenue_step(step_id, by, purpose):
     )
 
 
+@pytest.mark.skip(
+    reason="старая сборка дашборда планировщиком: «сделай дашборд» теперь идёт в ход "
+    "дашборда по кнопке (#224); тест уйдёт вместе со старым кодом"
+)
 def test_agent_cycle_builds_dashboard_from_plan_tiles(db):
     from fastapi.testclient import TestClient
 
