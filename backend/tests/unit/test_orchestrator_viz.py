@@ -210,7 +210,7 @@ async def test_dashboard_request_saves_spec(db) -> None:
         return plan.model_copy(update={"dashboard_requested": True})
 
     agent.planner.plan = plan_with_dashboard
-    events = await collect(agent, "Создай дашборд по регионам")
+    events = await collect(agent, "Выручка по регионам")
     dashboard = next(event for event in events if event["type"] == "dashboard")
     # B-06: событие содержит плитки для превью в чате, но не снимок данных
     assert dashboard["data"]["title"] == "Дашборд"
@@ -366,7 +366,7 @@ async def test_no_chart_is_ignored_when_dashboard_is_requested(db) -> None:
         return plan.model_copy(update={"dashboard_requested": True})
 
     planner.plan = plan_with_dashboard
-    events = await collect(agent_with(db, planner), "Создай дашборд по регионам")
+    events = await collect(agent_with(db, planner), "Выручка по регионам")
     assert [event["type"] for event in events] == ["text", "chart", "dashboard", "done"]
     assert chart_of(events)["spec"]["mark"] == "bar"
 
