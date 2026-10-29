@@ -198,9 +198,10 @@ export default function ChatPanel({ sessionId }: Props) {
     setIdeas(null);
   }
 
-  /** Ход дашборда по выбранному варианту: в ленте — название варианта. */
+  /** Ход дашборда по выбранному варианту: в ленте — название варианта; режим дашборда выбором исчерпан. */
   function sendIdea(idea: DashboardIdea) {
     closeIdeas();
+    setDashboardMode(false);
     sendQuestion(idea.title, { dashboard: { idea }, replyTo: null });
   }
 
