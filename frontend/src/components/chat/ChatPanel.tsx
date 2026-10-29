@@ -5,10 +5,20 @@
  * - Стриминг ответов агента (текст, инсайты)
  * - Графики и дашборды в ленту не выводятся: они уходят на правую панель,
  *   а в сообщении остаётся ссылка «Показать на панели» / «Открыть во вкладке»
+ * - Режим дашборда (#224): переключатель под строкой ввода, варианты по кнопке
+ *   «Автоматическая генерация», ход с mode: "dashboard" открывает /dashboard/{id}
  */
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
-import { getSession, setSessionTable, listTables, streamChat, exportArtifact } from "@/api/client";
+import {
+  getSession,
+  setSessionTable,
+  listTables,
+  streamChat,
+  exportArtifact,
+  fetchDashboardIdeas,
+  type DashboardRequest,
+} from "@/api/client";
 import { useSessionStore, useSessionDatabase, type ChatMessage } from "@/store/sessionStore";
 import { useCanvasStore } from "@/store/canvasStore";
 import { useUiStore } from "@/store/uiStore";
@@ -22,10 +32,18 @@ import DashboardPreviewCard from "@/components/chat/DashboardPreviewCard";
 import AnswerActions from "@/components/chat/AnswerActions";
 import ReplyQuote from "@/components/chat/ReplyQuote";
 import LlmStatusBanner from "@/components/chat/LlmStatusBanner";
+import DashboardIdeas, { type IdeasState } from "@/components/chat/DashboardIdeas";
 import { useLlmStatus } from "@/hooks/useLlmStatus";
 import { useT } from "@/i18n/useT";
 import type { DashboardTile as DashboardTileType } from "@/types/dashboard";
-import { RECOVERY_SKIP_STEP, applyProgress, type DashboardEvent, type TurnProgress } from "@/types/chat";
+import {
+  RECOVERY_SKIP_STEP,
+  applyOutline,
+  applyProgress,
+  type DashboardEvent,
+  type DashboardIdea,
+  type TurnProgress,
+} from "@/types/chat";
 
 /** Плитка панели из события «chart»; id хранится в самом событии. */
 function chartTile(chartData: any, fallbackTitle: string): DashboardTileType {
@@ -74,6 +92,11 @@ export default function ChatPanel({ sessionId }: Props) {
   const [streaming, setStreaming] = useState(false);
   const [lastFailedQuestion, setLastFailedQuestion] = useState<string | null>(null);
   const lastQuestionRef = useRef<string>("");
+  // Режим дашборда упавшего хода: повтор из баннера идёт с ним же
+  const lastFailedDashboardRef = useRef<DashboardRequest | undefined>(undefined);
+  const [dashboardMode, setDashboardMode] = useState(false);
+  const [ideas, setIdeas] = useState<IdeasState | null>(null);
+  const ideasRequestRef = useRef(0);
   // Сообщение с карточкой уточнения, на которую ещё можно ответить
   const [activeClarificationId, setActiveClarificationId] = useState<string | null>(null);
   const messagesEndRef = useRef<HTMLDivElement | null>(null);
@@ -191,10 +214,37 @@ export default function ChatPanel({ sessionId }: Props) {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages, streaming]);
 
-  // Цитата не должна «протечь» в другую сессию или таблицу.
+  // Цитата и варианты дашборда не должны «протечь» в другую сессию или таблицу.
   useEffect(() => {
     setReplyTarget(null);
+    setIdeas(null);
+    ideasRequestRef.current += 1;
   }, [sessionId, activeTable]);
+
+  /** «Автоматическая генерация»: варианты дашборда по таблице сессии. */
+  function loadIdeas() {
+    const request = ++ideasRequestRef.current;
+    setIdeas({ status: "loading", started_at: Date.now() });
+    fetchDashboardIdeas(sessionId)
+      .then((list) => {
+        if (ideasRequestRef.current === request) setIdeas({ status: "ready", ideas: list });
+      })
+      .catch((err: any) => {
+        if (ideasRequestRef.current !== request) return;
+        setIdeas({ status: "error", message: err?.detail || err?.message || "", noModel: err?.status === 502 });
+      });
+  }
+
+  function closeIdeas() {
+    ideasRequestRef.current += 1;
+    setIdeas(null);
+  }
+
+  /** Ход дашборда по выбранному варианту: в ленте — название варианта. */
+  function sendIdea(idea: DashboardIdea) {
+    closeIdeas();
+    sendQuestion(idea.title, { dashboard: { idea }, replyTo: null });
+  }
 
   // После «Спросить об этом» сразу ставим курсор в поле ввода.
   useEffect(() => {
@@ -233,6 +283,8 @@ export default function ChatPanel({ sessionId }: Props) {
           recoveryResponse?: string;
           /** Явный turn_id для reply_to; по умолчанию — выбранная цитата. */
           replyTo?: string | null;
+          /** Ход строит дашборд; по умолчанию — если включён режим и вопрос из строки ввода. */
+          dashboard?: DashboardRequest;
         },
   ) {
     if (!activeTable) {
@@ -246,6 +298,9 @@ export default function ChatPanel({ sessionId }: Props) {
     const recoveryResponse = options?.recoveryResponse;
     const q = textToSend || input;
     if (!q.trim() || streaming) return;
+    const dashboard: DashboardRequest | undefined =
+      options?.dashboard ?? (dashboardMode && !textToSend && !recoveryResponse ? { idea: null } : undefined);
+    if (dashboard) closeIdeas();
 
     setActiveClarificationId(null);
     if (!recoveryResponse) lastQuestionRef.current = q;
@@ -334,6 +389,14 @@ export default function ChatPanel({ sessionId }: Props) {
       }
     };
 
+    // Дашборд хода в режиме дашборда: после done открываем его вкладку
+    let builtDashboardId: string | null = null;
+    const failDashboard = dashboard ? { failedDashboard: dashboard } : {};
+    const rememberFailure = () => {
+      setLastFailedQuestion(retryQuestion);
+      lastFailedDashboardRef.current = dashboard;
+    };
+
     // Что показали пользователю: нужно для PDF/Excel ответа (F-10).
     let answerHeadline = "";
     let answerDetails: string[] = [];
@@ -380,6 +443,24 @@ export default function ChatPanel({ sessionId }: Props) {
           streamFinished = true;
           finishProgress();
           saveAnswerMeta(event.data?.turn_id);
+          if (builtDashboardId) router.push(`/dashboard/${builtDashboardId}`);
+        } else if (event.type === "dashboard_outline") {
+          if (progress) {
+            progress = applyOutline(progress, event.data);
+            updateMessage(progressId, { progress });
+          } else {
+            progress = applyOutline({ planning: false, steps: [], started_at: Date.now() }, event.data);
+            answerStarted = false;
+            addMessage({ id: progressId, role: "agent", content: "", progress });
+          }
+        } else if (event.type === "dashboard_fallback") {
+          answerStarted = false;
+          addMessage({ role: "agent", content: event.data.message, dashboardFallback: event.data });
+          if (progress) {
+            // Баннер встал под прогрессом: переносим прогресс ниже, чтобы он оставался последним
+            removeMessage(progressId);
+            addMessage({ id: progressId, role: "agent", content: "", progress });
+          }
         } else if (event.type === "progress") {
           if (!progress) {
             progress = applyProgress({ planning: false, steps: [], started_at: Date.now() }, event.data);
@@ -436,6 +517,7 @@ export default function ChatPanel({ sessionId }: Props) {
         } else if (event.type === "dashboard") {
           answerStarted = false;
           const dashData = (event.data || (event as any)) as DashboardEvent["data"];
+          if (dashboard && dashData.dashboard_id) builtDashboardId = dashData.dashboard_id;
           addMessage({
             role: "agent",
             content: t("chat.dashboardDone", { name: dashData.title || t("chat.dashboardDefault") }),
@@ -449,7 +531,7 @@ export default function ChatPanel({ sessionId }: Props) {
         } else if (event.type === "error") {
           answerStarted = false;
           streamHadError = true;
-          setLastFailedQuestion(retryQuestion);
+          rememberFailure();
           const raw = event as any;
           const msg =
             event.data?.message ||
@@ -459,18 +541,24 @@ export default function ChatPanel({ sessionId }: Props) {
               : typeof raw.detail === "string"
               ? raw.detail
               : t("chat.genericError"));
-          addMessage({ role: "agent", content: t("chat.error", { msg }), failed: true, failedQuestion: q });
+          addMessage({ role: "agent", content: t("chat.error", { msg }), failed: true, failedQuestion: q, ...failDashboard });
         }
       },
       (error) => {
         finishProgress();
         if (error) {
           streamHadError = true;
-          setLastFailedQuestion(retryQuestion);
-          addMessage({ role: "agent", content: t("chat.connectionLost", { msg: error }), failed: true, failedQuestion: retryQuestion });
+          rememberFailure();
+          addMessage({
+            role: "agent",
+            content: t("chat.connectionLost", { msg: error }),
+            failed: true,
+            failedQuestion: retryQuestion,
+            ...failDashboard,
+          });
         } else if (!streamFinished && !streamHadError && !cancelled) {
-          setLastFailedQuestion(retryQuestion);
-          addMessage({ role: "agent", content: t("chat.streamIncomplete"), failed: true, failedQuestion: retryQuestion });
+          rememberFailure();
+          addMessage({ role: "agent", content: t("chat.streamIncomplete"), failed: true, failedQuestion: retryQuestion, ...failDashboard });
         } else if (!streamHadError) {
           setLastFailedQuestion(null);
         }
@@ -478,7 +566,7 @@ export default function ChatPanel({ sessionId }: Props) {
         setStreaming(false);
         setStreamingSessionId(null);
       },
-      { recoveryResponse, replyTo: quote?.turn_id ?? null },
+      { recoveryResponse, replyTo: quote?.turn_id ?? null, dashboard },
     );
     stopRef.current = () => {
       cancelled = true;
@@ -673,7 +761,15 @@ export default function ChatPanel({ sessionId }: Props) {
 
                 {/* Текст сообщения */}
                 {m.content && (
-                  <div className={`whitespace-pre-wrap ${m.refusal ? "border-l-2 border-warn/60 pl-3 text-graphite-300" : ""}`}>
+                  <div
+                    className={`whitespace-pre-wrap ${
+                      m.refusal
+                        ? "border-l-2 border-warn/60 pl-3 text-graphite-300"
+                        : m.dashboardFallback
+                        ? "rounded-lg border border-warn/30 bg-warn/10 px-3 py-2 text-graphite-200"
+                        : ""
+                    }`}
+                  >
                     {m.content}
                   </div>
                 )}
@@ -705,6 +801,26 @@ export default function ChatPanel({ sessionId }: Props) {
                   </div>
                 )}
 
+                {/* Запроса не хватило: остальные варианты — новый ход с этой идеей */}
+                {m.dashboardFallback && m.dashboardFallback.alternatives.length > 0 && (
+                  <div className="mt-2">
+                    <div className="mb-1.5 text-[11.5px] text-graphite-500">{t("dashboard.otherIdeas")}</div>
+                    <div className="flex flex-wrap gap-2">
+                      {m.dashboardFallback.alternatives.map((alt) => (
+                        <button
+                          key={alt.id || alt.title}
+                          onClick={() => sendIdea(alt)}
+                          disabled={streaming || !activeTable}
+                          title={alt.description}
+                          className="rounded-full border border-graphite-600 px-3 py-1 text-xs text-graphite-200 hover:bg-graphite-800 disabled:opacity-50 transition"
+                        >
+                          {alt.title}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
                 {/* Кнопка повтора при ошибке или обрыве */}
                 {m.failed && !streaming && (
                   <div className="mt-3 pt-2 border-t border-bad/30 flex flex-col gap-2">
@@ -717,7 +833,11 @@ export default function ChatPanel({ sessionId }: Props) {
                             messages.slice(0, i).reverse().find((x) => x.role === "user")?.content ||
                             lastFailedQuestion ||
                             lastQuestionRef.current;
-                          sendQuestion(questionToRetry, { isRetry: true, messageIdToReplace: m.id });
+                          sendQuestion(questionToRetry, {
+                            isRetry: true,
+                            messageIdToReplace: m.id,
+                            dashboard: m.failedDashboard,
+                          });
                         }}
                         className="inline-flex items-center gap-1.5 rounded-lg bg-danger hover:bg-danger/90 px-3 py-1.5 text-xs font-semibold text-white shadow-sm transition cursor-pointer"
                       >
@@ -845,7 +965,7 @@ export default function ChatPanel({ sessionId }: Props) {
               <span className="truncate">{t("chat.failedBanner", { q: lastFailedQuestion })}</span>
             </div>
             <button
-              onClick={() => sendQuestion(lastFailedQuestion, { isRetry: true })}
+              onClick={() => sendQuestion(lastFailedQuestion, { isRetry: true, dashboard: lastFailedDashboardRef.current })}
               disabled={!activeTable}
               className="inline-flex items-center gap-1.5 rounded-lg bg-danger hover:bg-danger/90 px-3 py-1.5 text-xs font-semibold text-white shadow transition whitespace-nowrap disabled:opacity-50 cursor-pointer"
             >
@@ -854,7 +974,36 @@ export default function ChatPanel({ sessionId }: Props) {
             </button>
           </div>
         )}
+        {dashboardMode && ideas && (
+          <DashboardIdeas
+            state={ideas}
+            disabled={streaming || !activeTable || !llmReady}
+            onPick={sendIdea}
+            onOwn={() => {
+              closeIdeas();
+              inputRef.current?.focus();
+            }}
+            onRetry={loadIdeas}
+            onClose={closeIdeas}
+          />
+        )}
         <div className="rounded-2xl border border-graphite-700 bg-graphite-850 p-2 pl-4 shadow-sm transition focus-within:border-graphite-500">
+          {/* Чип режима дашборда: × выключает режим */}
+          {dashboardMode && (
+            <span className="mt-1 mb-1 inline-flex items-center gap-1 rounded-full border border-graphite-600 bg-graphite-800 py-0.5 pl-2 pr-1 text-[12px] text-graphite-100">
+              📊 {t("dashboard.chip")}
+              <button
+                onClick={() => {
+                  setDashboardMode(false);
+                  closeIdeas();
+                }}
+                className="flex h-4 w-4 items-center justify-center rounded-full text-graphite-400 hover:bg-graphite-700 hover:text-graphite-100"
+                title={t("dashboard.chipOff")}
+              >
+                <Icon name="x" size={10} />
+              </button>
+            </span>
+          )}
           {/* Чип-цитата: вопрос уйдёт с reply_to выбранного ответа */}
           {replyTarget && (
             <ReplyQuote
@@ -896,6 +1045,8 @@ export default function ChatPanel({ sessionId }: Props) {
                   ? t("chat.replyPlaceholder")
                   : activeClarificationId
                   ? t("chat.clarifyPlaceholder")
+                  : dashboardMode
+                  ? t("dashboard.placeholder")
                   : t("chat.placeholder")
               }
               className="max-h-40 min-h-[36px] flex-1 resize-none overflow-y-hidden bg-transparent py-2 text-sm leading-5 text-graphite-100 placeholder-graphite-500 outline-none disabled:cursor-not-allowed disabled:opacity-60"
@@ -920,6 +1071,39 @@ export default function ChatPanel({ sessionId }: Props) {
               </button>
             )}
           </div>
+        </div>
+        {/* Режим дашборда (#224): переключатель и генерация вариантов */}
+        <div className="mt-2 flex flex-wrap items-center gap-2">
+          <button
+            onClick={() => {
+              if (dashboardMode) closeIdeas();
+              setDashboardMode(!dashboardMode);
+            }}
+            aria-pressed={dashboardMode}
+            title={t("dashboard.toggleHint")}
+            className={`inline-flex items-center gap-1.5 rounded-full border px-3 py-1 text-xs transition ${
+              dashboardMode
+                ? "border-graphite-400 bg-graphite-700 text-graphite-50"
+                : "border-graphite-700 text-graphite-400 hover:bg-graphite-800 hover:text-graphite-200"
+            }`}
+          >
+            <Icon name="layout" size={13} />
+            {t("dashboard.toggle")}
+          </button>
+          {dashboardMode && (
+            <button
+              onClick={loadIdeas}
+              disabled={ideas?.status === "loading" || streaming || !activeTable}
+              className="inline-flex items-center gap-1.5 rounded-full border border-graphite-700 px-3 py-1 text-xs text-graphite-200 hover:bg-graphite-800 disabled:opacity-50 disabled:cursor-not-allowed transition"
+            >
+              <Icon
+                name={ideas?.status === "loading" ? "refresh" : "sparkle"}
+                size={13}
+                className={ideas?.status === "loading" ? "animate-spin" : ""}
+              />
+              {t("dashboard.autoGenerate")}
+            </button>
+          )}
         </div>
       </div>
     </div>

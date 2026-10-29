@@ -12,6 +12,8 @@ import type {
   ChartEvent,
   ClarificationEvent,
   DashboardEvent,
+  DashboardFallbackEvent,
+  DashboardIdea,
   RefusalEvent,
   TurnProgress,
 } from "@/types/chat";
@@ -39,6 +41,10 @@ export interface ChatMessage {
   progress?: TurnProgress;
   /** Исходный текст вопроса, вызвавший ошибку (для кнопки повтора). */
   failedQuestion?: string;
+  /** Упавший ход был в режиме дашборда: повтор идёт с тем же idea (#224). */
+  failedDashboard?: { idea: DashboardIdea | null };
+  /** Своего запроса не хватило: баннер и кнопки остальных идей (#224). */
+  dashboardFallback?: DashboardFallbackEvent["data"];
   /** Подсказки для уточнения/повтора (если backend прислал clarification_needed). */
   suggestions?: string[];
   /** Что показали пользователю — для экспорта ответа (F-10). */

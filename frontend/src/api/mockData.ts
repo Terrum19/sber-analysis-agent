@@ -404,3 +404,14 @@ export function mockStreamChat(
     onClose?.();
   };
 }
+
+/** Варианты дашборда для мок-режима (#224). */
+export async function mockDashboardIdeas() {
+  await new Promise((resolve) => setTimeout(resolve, 1200));
+  return [
+    { id: "1", title: "Выручка по регионам", description: "Какие регионы приносят больше всего и как меняется их доля" },
+    { id: "2", title: "Динамика продаж", description: "Как выручка и число заказов меняются по месяцам" },
+    { id: "3", title: "Товарные категории", description: "Какие категории самые прибыльные и где больше возвратов" },
+    { id: "4", title: "Сегменты покупателей", description: "Кто покупает чаще и на какие суммы" },
+  ];
+}

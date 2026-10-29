@@ -4,7 +4,7 @@
  * или установлен ключ localStorage.sber_force_mock="true".
  * При ошибках сети или бэкенда выбрасывается ApiError.
  */
-import type { ChatStreamEvent } from "@/types/chat";
+import type { ChatStreamEvent, DashboardIdea } from "@/types/chat";
 import type { LlmStatus } from "@/types/llm";
 import type { Datasource, DatasourceDbRequest, SessionResponse } from "@/types/datasource";
 import type {
@@ -18,6 +18,7 @@ import {
   mockAttachDb,
   mockCreateDashboard,
   mockCreateSession,
+  mockDashboardIdeas,
   mockDeleteDashboard,
   mockFetchDashboard,
   mockFetchDashboards,
@@ -257,16 +258,44 @@ export async function listTables(): Promise<string[]> {
 }
 
 /**
+ * POST /api/sessions/{id}/dashboard-ideas: 4 варианта дашборда по таблице сессии (#224).
+ * 404 — нет сессии, 409 — нет таблицы, 502 — модель не ответила.
+ */
+export async function fetchDashboardIdeas(sessionId: string): Promise<DashboardIdea[]> {
+  if (isMockMode()) {
+    return mockDashboardIdeas();
+  }
+  try {
+    const res = await fetch(`${API}/sessions/${encodeURIComponent(sessionId)}/dashboard-ideas`, {
+      method: "POST",
+    });
+    if (!res.ok) throw await parseApiError(res);
+    const body: { ideas: DashboardIdea[] } = await res.json();
+    return body.ideas;
+  } catch (err) {
+    throw toApiError(err);
+  }
+}
+
+/** Запрос хода в режиме дашборда; idea — выбранный вариант или null. */
+export interface DashboardRequest {
+  idea: DashboardIdea | null;
+}
+
+/**
  * Подписка на SSE-поток диалога; onEvent вызывается на каждое событие,
  * onClose — один раз, когда поток закончился, оборвался или был отменён.
  * replyTo — turn_id из события done: вопрос продолжает конкретный прошлый ход (#166).
+ * dashboard — ход строит дашборд (mode: "dashboard", #224).
  */
 export function streamChat(
   sessionId: string,
   question: string,
   onEvent: (event: ChatStreamEvent) => void,
   onClose?: (error?: string) => void,
-  optionsOrRecoveryResponse?: { recoveryResponse?: string; replyTo?: string | null } | string,
+  optionsOrRecoveryResponse?:
+    | { recoveryResponse?: string; replyTo?: string | null; dashboard?: DashboardRequest }
+    | string,
 ): () => void {
   const options =
     typeof optionsOrRecoveryResponse === "string"
@@ -289,6 +318,8 @@ export function streamChat(
           question,
           recovery_response: options?.recoveryResponse ?? null,
           reply_to: options?.replyTo ?? null,
+          mode: options?.dashboard ? "dashboard" : "chat",
+          idea: options?.dashboard?.idea ?? null,
         }),
         signal: controller.signal,
       });
