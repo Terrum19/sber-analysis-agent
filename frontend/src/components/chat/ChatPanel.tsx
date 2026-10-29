@@ -589,12 +589,20 @@ export default function ChatPanel({ sessionId }: Props) {
     }
     if (handledQuestionRef.current === pendingQuestion.id) return;
     if (!activeTable || streaming || activeStreamingSessionId) return;
-    handledQuestionRef.current = pendingQuestion.id;
-    consumeQuestion(sessionId, pendingQuestion.id);
-    // Внешний вопрос не продолжает выбранную цитату: replyTo: null перекрывает
-    // значение из замыкания sendQuestion (setReplyTarget ещё не применился).
-    setReplyTarget(null);
-    sendQuestionRef.current(pendingQuestion.text, { replyTo: null });
+    // Отправка — на следующем тике, с отменой в cleanup: StrictMode сразу
+    // размонтирует панель, и cleanup отмены стрима (stopRef) оборвал бы
+    // запрос до сервера, а вопрос уже был бы снят с очереди. Так вопрос
+    // уходит один раз — после повторного монтирования.
+    const question = pendingQuestion;
+    const timer = window.setTimeout(() => {
+      handledQuestionRef.current = question.id;
+      consumeQuestion(sessionId, question.id);
+      // Внешний вопрос не продолжает выбранную цитату: replyTo: null перекрывает
+      // значение из замыкания sendQuestion (setReplyTarget ещё не применился).
+      setReplyTarget(null);
+      sendQuestionRef.current(question.text, { replyTo: null });
+    }, 0);
+    return () => window.clearTimeout(timer);
   }, [
     pendingQuestion,
     activeTable,
