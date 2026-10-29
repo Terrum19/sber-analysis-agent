@@ -88,7 +88,7 @@ export interface SessionTableSnapshot {
   tiles: DashboardTile[];
 }
 
-interface SessionState {
+export interface SessionState {
   sessionId: string | null;
   messages: ChatMessage[];
   tiles: DashboardTile[];
@@ -106,27 +106,28 @@ interface SessionState {
   sessionCache: Record<string, SessionSnapshot>;
   /** Кеш сообщений и плиток сессии, изолированный по таблицам. */
   sessionTableCache: Record<string, Record<string, SessionTableSnapshot>>;
-  /** ID сессии, в которой прямо сейчас генерируется ответ агента. */
-  activeStreamingSessionId: string | null;
   /**
    * Вопросы, поставленные извне (клик по графику / «Дообследовать»): ChatPanel
    * забирает их и отправляет сам, когда сессия готова. В localStorage не пишутся.
    */
   pendingQuestions: Record<string, { id: string; text: string } | undefined>;
-  setStreamingSessionId: (sessionId: string | null) => void;
   /** Поставить вопрос в очередь сессии (F-09). */
   queueQuestion: (sessionId: string, text: string) => void;
   /** Убрать вопрос из очереди после отправки. */
   consumeQuestion: (sessionId: string, id: string) => void;
 
   setSession: (id: string) => void;
-  addMessage: (msg: ChatMessage) => void;
-  appendToLastMessage: (chunk: string) => void;
-  updateLastMessage: (patch: Partial<ChatMessage>) => void;
-  updateMessage: (id: string, patch: Partial<ChatMessage>) => void;
-  removeMessage: (id: string) => void;
-  removeLastFailedMessage: () => void;
-  addTile: (tile: DashboardTile) => void;
+  /*
+   * Лента и плитки: sessionId — сессия, в которую пишем (по умолчанию открытая).
+   * Ход агента продолжается в фоне, поэтому пишет в свою сессию, где бы ни был пользователь.
+   */
+  addMessage: (msg: ChatMessage, sessionId?: string) => void;
+  appendToLastMessage: (chunk: string, sessionId?: string) => void;
+  updateLastMessage: (patch: Partial<ChatMessage>, sessionId?: string) => void;
+  updateMessage: (id: string, patch: Partial<ChatMessage>, sessionId?: string) => void;
+  removeMessage: (id: string, sessionId?: string) => void;
+  removeLastFailedMessage: (sessionId?: string) => void;
+  addTile: (tile: DashboardTile, sessionId?: string) => void;
   setTiles: (tiles: DashboardTile[]) => void;
   selectTile: (index: number | null) => void;
   setDatasource: (datasource: Datasource | null) => void;
@@ -149,6 +150,42 @@ interface SessionState {
   mergeSessions: (remoteSessions: SessionResponse[]) => void;
 }
 
+/** Лента и плитки сессии: открытой — из стора, фоновой — из кеша её активной таблицы. */
+export function sessionSnapshot(s: SessionState, sessionId: string): SessionSnapshot {
+  if (sessionId === s.sessionId) return { messages: s.messages, tiles: s.tiles };
+  const table = s.sessionActiveTable[sessionId];
+  return (table && s.sessionTableCache[sessionId]?.[table]) || s.sessionCache[sessionId] || { messages: [], tiles: [] };
+}
+
+/**
+ * Меняет ленту и плитки сессии. Открытая сессия живёт в messages/tiles, фоновая —
+ * в кешах: при возврате setSession достанет её снимок активной таблицы.
+ */
+function patchSession(
+  s: SessionState,
+  sessionId: string | undefined,
+  change: (snap: SessionSnapshot) => SessionSnapshot,
+): Partial<SessionState> {
+  const id = sessionId ?? s.sessionId;
+  const table = id ? s.sessionActiveTable[id] : undefined;
+  if (!id || id === s.sessionId) {
+    const next = change({ messages: s.messages, tiles: s.tiles });
+    if (!id || !table) return { messages: next.messages, tiles: next.tiles };
+    return {
+      messages: next.messages,
+      tiles: next.tiles,
+      sessionTableCache: { ...s.sessionTableCache, [id]: { ...(s.sessionTableCache[id] || {}), [table]: next } },
+    };
+  }
+  const next = change(sessionSnapshot(s, id));
+  return {
+    sessionCache: { ...s.sessionCache, [id]: next },
+    ...(table
+      ? { sessionTableCache: { ...s.sessionTableCache, [id]: { ...(s.sessionTableCache[id] || {}), [table]: next } } }
+      : {}),
+  };
+}
+
 export const useSessionStore = create<SessionState>()(
   persist(
     (set, get) => ({
@@ -165,10 +202,7 @@ export const useSessionStore = create<SessionState>()(
       sessionActiveTable: {},
       sessionCache: {},
       sessionTableCache: {},
-      activeStreamingSessionId: null,
       pendingQuestions: {},
-
-      setStreamingSessionId: (sessionId) => set({ activeStreamingSessionId: sessionId }),
 
       queueQuestion: (sessionId, text) =>
         set((s) => ({
@@ -221,158 +255,68 @@ export const useSessionStore = create<SessionState>()(
             selectedTile: null,
           };
         }),
-      addMessage: (msg) =>
-        set((s) => {
-          const newMsg: ChatMessage = {
-            ...msg,
-            id: msg.id || `msg-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
-            timestamp: msg.timestamp || new Date().toLocaleTimeString("ru-RU", { hour: "2-digit", minute: "2-digit" }),
-          };
-          const nextMessages = [...s.messages, newMsg];
-          let nextTableCache = s.sessionTableCache;
-          if (s.sessionId && s.sessionActiveTable[s.sessionId]) {
-            const curTable = s.sessionActiveTable[s.sessionId];
-            nextTableCache = {
-              ...s.sessionTableCache,
-              [s.sessionId]: {
-                ...(s.sessionTableCache[s.sessionId] || {}),
-                [curTable]: { messages: nextMessages, tiles: s.tiles },
+      addMessage: (msg, sessionId) =>
+        set((s) =>
+          patchSession(s, sessionId, (snap) => ({
+            ...snap,
+            messages: [
+              ...snap.messages,
+              {
+                ...msg,
+                id: msg.id || `msg-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+                timestamp:
+                  msg.timestamp || new Date().toLocaleTimeString("ru-RU", { hour: "2-digit", minute: "2-digit" }),
               },
-            };
-          }
-          return { messages: nextMessages, sessionTableCache: nextTableCache };
-        }),
-      removeMessage: (id) =>
-        set((s) => {
-          const nextMessages = s.messages.filter((m) => m.id !== id);
-          let nextTableCache = s.sessionTableCache;
-          if (s.sessionId && s.sessionActiveTable[s.sessionId]) {
-            const curTable = s.sessionActiveTable[s.sessionId];
-            nextTableCache = {
-              ...s.sessionTableCache,
-              [s.sessionId]: {
-                ...(s.sessionTableCache[s.sessionId] || {}),
-                [curTable]: { messages: nextMessages, tiles: s.tiles },
-              },
-            };
-          }
-          return { messages: nextMessages, sessionTableCache: nextTableCache };
-        }),
-      removeLastFailedMessage: () =>
-        set((s) => {
-          const lastIdx = s.messages.length - 1;
-          if (lastIdx < 0 || !s.messages[lastIdx].failed) return {};
-          const nextMessages = s.messages.slice(0, lastIdx);
-          let nextTableCache = s.sessionTableCache;
-          if (s.sessionId && s.sessionActiveTable[s.sessionId]) {
-            const curTable = s.sessionActiveTable[s.sessionId];
-            nextTableCache = {
-              ...s.sessionTableCache,
-              [s.sessionId]: {
-                ...(s.sessionTableCache[s.sessionId] || {}),
-                [curTable]: { messages: nextMessages, tiles: s.tiles },
-              },
-            };
-          }
-          return { messages: nextMessages, sessionTableCache: nextTableCache };
-        }),
-      appendToLastMessage: (chunk) =>
-        set((s) => {
-          const last = s.messages[s.messages.length - 1];
-          if (!last) return {};
-          const nextMessages = [
-            ...s.messages.slice(0, -1),
-            { ...last, content: last.content + chunk },
-          ];
-          let nextTableCache = s.sessionTableCache;
-          if (s.sessionId && s.sessionActiveTable[s.sessionId]) {
-            const curTable = s.sessionActiveTable[s.sessionId];
-            nextTableCache = {
-              ...s.sessionTableCache,
-              [s.sessionId]: {
-                ...(s.sessionTableCache[s.sessionId] || {}),
-                [curTable]: { messages: nextMessages, tiles: s.tiles },
-              },
-            };
-          }
-          return { messages: nextMessages, sessionTableCache: nextTableCache };
-        }),
-      updateMessage: (id, patch) =>
-        set((s) => {
-          if (!s.messages.some((m) => m.id === id)) return {};
-          const nextMessages = s.messages.map((m) => (m.id === id ? { ...m, ...patch } : m));
-          let nextTableCache = s.sessionTableCache;
-          if (s.sessionId && s.sessionActiveTable[s.sessionId]) {
-            const curTable = s.sessionActiveTable[s.sessionId];
-            nextTableCache = {
-              ...s.sessionTableCache,
-              [s.sessionId]: {
-                ...(s.sessionTableCache[s.sessionId] || {}),
-                [curTable]: { messages: nextMessages, tiles: s.tiles },
-              },
-            };
-          }
-          return { messages: nextMessages, sessionTableCache: nextTableCache };
-        }),
-      updateLastMessage: (patch) =>
-        set((s) => {
-          const last = s.messages[s.messages.length - 1];
-          if (!last) return {};
-          const nextMessages = [
-            ...s.messages.slice(0, -1),
-            { ...last, ...patch },
-          ];
-          let nextTableCache = s.sessionTableCache;
-          if (s.sessionId && s.sessionActiveTable[s.sessionId]) {
-            const curTable = s.sessionActiveTable[s.sessionId];
-            nextTableCache = {
-              ...s.sessionTableCache,
-              [s.sessionId]: {
-                ...(s.sessionTableCache[s.sessionId] || {}),
-                [curTable]: { messages: nextMessages, tiles: s.tiles },
-              },
-            };
-          }
-          return { messages: nextMessages, sessionTableCache: nextTableCache };
-        }),
-      addTile: (tile) => {
-        if (!useCanvasStore.getState().dashboardId) {
+            ],
+          })),
+        ),
+      removeMessage: (id, sessionId) =>
+        set((s) =>
+          patchSession(s, sessionId, (snap) => ({ ...snap, messages: snap.messages.filter((m) => m.id !== id) })),
+        ),
+      removeLastFailedMessage: (sessionId) =>
+        set((s) =>
+          patchSession(s, sessionId, (snap) =>
+            snap.messages[snap.messages.length - 1]?.failed ? { ...snap, messages: snap.messages.slice(0, -1) } : snap,
+          ),
+        ),
+      appendToLastMessage: (chunk, sessionId) =>
+        set((s) =>
+          patchSession(s, sessionId, (snap) => {
+            const last = snap.messages[snap.messages.length - 1];
+            if (!last) return snap;
+            return { ...snap, messages: [...snap.messages.slice(0, -1), { ...last, content: last.content + chunk }] };
+          }),
+        ),
+      updateMessage: (id, patch, sessionId) =>
+        set((s) =>
+          patchSession(s, sessionId, (snap) =>
+            snap.messages.some((m) => m.id === id)
+              ? { ...snap, messages: snap.messages.map((m) => (m.id === id ? { ...m, ...patch } : m)) }
+              : snap,
+          ),
+        ),
+      updateLastMessage: (patch, sessionId) =>
+        set((s) =>
+          patchSession(s, sessionId, (snap) => {
+            const last = snap.messages[snap.messages.length - 1];
+            if (!last) return snap;
+            return { ...snap, messages: [...snap.messages.slice(0, -1), { ...last, ...patch }] };
+          }),
+        ),
+      addTile: (tile, sessionId) => {
+        const s = get();
+        // Канвас показывает открытую сессию: плитка фоновой уходит только в её кеш
+        if ((sessionId ?? s.sessionId) === s.sessionId && !useCanvasStore.getState().dashboardId) {
           useCanvasStore.getState().addTile(tile);
         }
-        set((s) => {
-          const nextTiles = [...s.tiles, tile];
-          let nextTableCache = s.sessionTableCache;
-          if (s.sessionId && s.sessionActiveTable[s.sessionId]) {
-            const curTable = s.sessionActiveTable[s.sessionId];
-            nextTableCache = {
-              ...s.sessionTableCache,
-              [s.sessionId]: {
-                ...(s.sessionTableCache[s.sessionId] || {}),
-                [curTable]: { messages: s.messages, tiles: nextTiles },
-              },
-            };
-          }
-          return { tiles: nextTiles, sessionTableCache: nextTableCache };
-        });
+        set((st) => patchSession(st, sessionId, (snap) => ({ ...snap, tiles: [...snap.tiles, tile] })));
       },
       setTiles: (tiles) => {
         if (!useCanvasStore.getState().dashboardId) {
           useCanvasStore.getState().setTiles(tiles);
         }
-        set((s) => {
-          let nextTableCache = s.sessionTableCache;
-          if (s.sessionId && s.sessionActiveTable[s.sessionId]) {
-            const curTable = s.sessionActiveTable[s.sessionId];
-            nextTableCache = {
-              ...s.sessionTableCache,
-              [s.sessionId]: {
-                ...(s.sessionTableCache[s.sessionId] || {}),
-                [curTable]: { messages: s.messages, tiles },
-              },
-            };
-          }
-          return { tiles, sessionTableCache: nextTableCache };
-        });
+        set((s) => patchSession(s, undefined, (snap) => ({ ...snap, tiles })));
       },
       selectTile: (index) => set({ selectedTile: index }),
       setDatasource: (datasource) =>
@@ -389,7 +333,6 @@ export const useSessionStore = create<SessionState>()(
           tiles: [],
           selectedTile: null,
           datasource: null,
-          activeStreamingSessionId: null,
         }),
 
       addDatabase: (datasource, title) => {
@@ -440,7 +383,6 @@ export const useSessionStore = create<SessionState>()(
             delete nextPending[sid];
           }
           const isActiveDeleted = s.sessionId ? sessionIds.includes(s.sessionId) : false;
-          const isStreamingDeleted = s.activeStreamingSessionId ? sessionIds.includes(s.activeStreamingSessionId) : false;
           const isDatasourceDeleted = s.datasource?.datasource_id === databaseId;
           return {
             databases: nextDatabases,
@@ -451,7 +393,6 @@ export const useSessionStore = create<SessionState>()(
             sessionTableCache: nextTableCache,
             pendingQuestions: nextPending,
             ...(isActiveDeleted ? { sessionId: null, messages: [], tiles: [], selectedTile: null } : {}),
-            ...(isStreamingDeleted ? { activeStreamingSessionId: null } : {}),
             ...(isDatasourceDeleted ? { datasource: null, datasourceTitle: null } : {}),
           };
         });
@@ -554,7 +495,6 @@ export const useSessionStore = create<SessionState>()(
           const nextPending = { ...s.pendingQuestions };
           delete nextPending[sessionId];
           const isActiveDeleted = s.sessionId === sessionId;
-          const isStreamingDeleted = s.activeStreamingSessionId === sessionId;
           return {
             databases: nextDatabases,
             sessionDatabase: nextSessionDb,
@@ -563,7 +503,6 @@ export const useSessionStore = create<SessionState>()(
             sessionTableCache: nextTableCache,
             pendingQuestions: nextPending,
             ...(isActiveDeleted ? { sessionId: null, messages: [], tiles: [], selectedTile: null } : {}),
-            ...(isStreamingDeleted ? { activeStreamingSessionId: null } : {}),
           };
         }),
       mergeSessions: (remoteSessions: SessionResponse[]) =>

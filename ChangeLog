@@ -1,3 +1,28 @@
+2026-10-29  Alexander Yurits  <143354682+Terrum19@users.noreply.github.com>
+
+	Ответ агента не обрывается при уходе из чата; статус хода точкой у сессии.
+	* frontend/src/store/chatRunStore.ts: Новый.  Ход агента (стрим
+	/chat, в том числе в режиме дашборда) живёт вне ChatPanel и пишет в
+	ленту своей сессии, где бы ни был пользователь.  (startRun, stopRun)
+	(forgetRuns): Запуск, отмена, отмена при удалении сессии.  Собранный
+	дашборд открывается, только если пользователь всё ещё в этой сессии.
+	(chartTile): Перенесена из ChatPanel.  Пока идёт хоть один ход,
+	перезагрузка вкладки переспрашивает.
+	* frontend/src/store/sessionStore.ts (patchSession, sessionSnapshot):
+	Новые.  addMessage, updateMessage и др. принимают sessionId: фоновая
+	сессия пишется в свой кеш, канвас трогает только открытая.
+	(activeStreamingSessionId, setStreamingSessionId): Удалены.
+	* frontend/src/components/chat/ChatPanel.tsx: Стрим, повтор (с режимом
+	дашборда) и уточнение берутся из chatRunStore; размонтирование ход не
+	обрывает.
+	* frontend/src/components/layout/RunDot.tsx: Новый.  Жёлтая точка —
+	агент отвечает, синяя — ответ готов и не открыт, красная — ошибка.
+	* frontend/src/components/layout/LeftSidebar.tsx,
+	frontend/src/components/layout/TopHeader.tsx: Навигация, вкладки и
+	меню во время ответа больше не блокируются; точка статуса у сессии.
+	* frontend/src/i18n/dictionary.ts (sidebar.runRunning, sidebar.runDone)
+	(sidebar.runError): Новые.  (chat.cannotSwitchWhileGenerating): Удалён.
+
 2026-10-28  Dmitriy Yakushonok  <dmitriyyakushonok@yandex.ru>
 
 	Каскадное удаление дашбордов и графиков при удалении базы данных или сессии.

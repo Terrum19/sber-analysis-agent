@@ -23,6 +23,7 @@ import {
 } from "@/api/client";
 import { useSessionStore, type DatabaseFolder, type SessionItem } from "@/store/sessionStore";
 import { useCanvasStore } from "@/store/canvasStore";
+import { forgetRuns, useChatRunStore } from "@/store/chatRunStore";
 import { useArtifactStore } from "@/store/artifactStore";
 import { tabHref, useUiStore } from "@/store/uiStore";
 import { useStartSession } from "@/hooks/useStartSession";
@@ -33,6 +34,7 @@ import Icon, { type IconName } from "@/components/ui/Icon";
 import type { DbKind } from "@/types/datasource";
 import ItemActionMenu from "./ItemActionMenu";
 import RecentDashboards from "./RecentDashboards";
+import RunDot from "./RunDot";
 
 const DSN_PLACEHOLDER: Record<DbKind, string> = {
   postgres: "postgresql://analyst:pass@host:5432/db",
@@ -121,8 +123,7 @@ function DatabaseRow({
 
   const startSession = useStartSession();
   const isCurrent = useSessionStore((s) => (currentSessionId ? s.sessionDatabase[currentSessionId] === database.id : false));
-  const activeStreamingSessionId = useSessionStore((s) => s.activeStreamingSessionId);
-  const isGenerating = Boolean(activeStreamingSessionId);
+  const runs = useChatRunStore((s) => s.runs);
   const description = describeDatabase(database, t);
 
   const [menuAnchor, setMenuAnchor] = useState<
@@ -157,13 +158,11 @@ function DatabaseRow({
         </button>
         <button
           type="button"
-          onClick={() => !isGenerating && hasTables && startSession(database)}
-          disabled={!hasTables || isGenerating}
+          onClick={() => hasTables && startSession(database)}
+          disabled={!hasTables}
           className="flex min-w-0 flex-1 items-start gap-2 py-1.5 text-left text-[13px] disabled:opacity-50 disabled:cursor-not-allowed"
           title={
-            isGenerating
-              ? t("chat.cannotSwitchWhileGenerating")
-              : !hasTables
+            !hasTables
               ? t("welcome.noDataToStart")
               : `${t("sidebar.openNewSession", { title: database.title })}\n${description}`
           }
@@ -186,34 +185,26 @@ function DatabaseRow({
         </button>
         <button
           type="button"
-          onClick={() => !isGenerating && hasTables && startSession(database)}
-          disabled={!hasTables || isGenerating}
+          onClick={() => hasTables && startSession(database)}
+          disabled={!hasTables}
           className="mt-0.5 flex h-6 w-6 shrink-0 items-center justify-center self-start rounded-md text-graphite-500 hover:bg-graphite-800 hover:text-graphite-100 disabled:opacity-30 disabled:cursor-not-allowed"
-          title={
-            isGenerating
-              ? t("chat.cannotSwitchWhileGenerating")
-              : !hasTables
-              ? t("welcome.noDataToStart")
-              : t("sidebar.newSession")
-          }
+          title={!hasTables ? t("welcome.noDataToStart") : t("sidebar.newSession")}
         >
           <Icon name="plus" size={14} />
         </button>
         <button
           type="button"
-          disabled={isGenerating}
           onClick={(e) => {
-            if (isGenerating) return;
             e.stopPropagation();
             const rect = e.currentTarget.getBoundingClientRect();
             setMenuAnchor((prev) => (prev?.type === "db" ? null : { type: "db", rect }));
           }}
-          className={`mt-0.5 flex h-6 w-6 shrink-0 items-center justify-center self-start rounded-md transition disabled:opacity-30 disabled:cursor-not-allowed ${
+          className={`mt-0.5 flex h-6 w-6 shrink-0 items-center justify-center self-start rounded-md transition ${
             menuAnchor?.type === "db"
               ? "bg-graphite-800 text-graphite-100 opacity-100"
               : "text-graphite-500 hover:bg-graphite-800 hover:text-graphite-100 opacity-0 group-hover:opacity-100 focus:opacity-100"
           }`}
-          title={isGenerating ? t("chat.cannotSwitchWhileGenerating") : t("sidebar.moreActions")}
+          title={t("sidebar.moreActions")}
         >
           <Icon name="moreHorizontal" size={14} />
         </button>
@@ -226,7 +217,7 @@ function DatabaseRow({
           ) : (
             sortedSessions.map((s) => {
               const isActive = s.id === currentSessionId;
-              const isLocked = isGenerating && !isActive;
+              const run = runs[s.id];
               const isSessionMenuOpen = menuAnchor?.type === "session" && menuAnchor.session.id === s.id;
               return (
                 <div
@@ -234,24 +225,14 @@ function DatabaseRow({
                   className={`group/session flex items-center justify-between rounded-lg pr-1 transition ${
                     isActive
                       ? "bg-graphite-800 text-graphite-50"
-                      : isLocked
-                      ? "text-graphite-500 opacity-40 cursor-not-allowed"
                       : "text-graphite-400 hover:bg-graphite-900 hover:text-graphite-200"
                   }`}
                 >
                   <Link
-                    href={isLocked ? "#" : `/session/${s.id}`}
-                    onClick={(e) => {
-                      if (isLocked) {
-                        e.preventDefault();
-                        e.stopPropagation();
-                      }
-                    }}
-                    title={isLocked ? t("chat.cannotSwitchWhileGenerating") : undefined}
-                    className={`flex min-w-0 flex-1 items-center gap-1.5 px-2 py-1.5 text-[12.5px] ${
-                      isLocked ? "pointer-events-none cursor-not-allowed" : ""
-                    }`}
+                    href={`/session/${s.id}`}
+                    className="flex min-w-0 flex-1 items-center gap-1.5 px-2 py-1.5 text-[12.5px]"
                   >
+                    <RunDot run={run} />
                     <span className="truncate">{s.title}</span>
                     {s.pinned && (
                       <Icon
@@ -264,9 +245,7 @@ function DatabaseRow({
                   </Link>
                   <button
                     type="button"
-                    disabled={isGenerating}
                     onClick={(e) => {
-                      if (isGenerating) return;
                       e.stopPropagation();
                       e.preventDefault();
                       const rect = e.currentTarget.getBoundingClientRect();
@@ -276,12 +255,12 @@ function DatabaseRow({
                           : { type: "session", session: s, rect },
                       );
                     }}
-                    className={`flex h-5 w-5 shrink-0 items-center justify-center rounded transition disabled:opacity-0 disabled:cursor-not-allowed ${
+                    className={`flex h-5 w-5 shrink-0 items-center justify-center rounded transition ${
                       isSessionMenuOpen
                         ? "bg-graphite-700 text-graphite-100 opacity-100"
                         : "text-graphite-500 hover:bg-graphite-800 hover:text-graphite-100 opacity-0 group-hover/session:opacity-100 focus:opacity-100"
                     }`}
-                    title={isGenerating ? t("chat.cannotSwitchWhileGenerating") : t("sidebar.moreActions")}
+                    title={t("sidebar.moreActions")}
                   >
                     <Icon name="moreHorizontal" size={13} />
                   </button>
@@ -352,8 +331,6 @@ export default function LeftSidebar() {
   const addDatabase = useSessionStore((s) => s.addDatabase);
   const deleteDatabase = useSessionStore((s) => s.deleteDatabase);
   const deleteSession = useSessionStore((s) => s.deleteSession);
-  const activeStreamingSessionId = useSessionStore((s) => s.activeStreamingSessionId);
-  const isGenerating = Boolean(activeStreamingSessionId);
   const startSession = useStartSession();
 
   const dbModalOpen = useUiStore((s) => s.dbModalOpen);
@@ -392,6 +369,7 @@ export default function LeftSidebar() {
       canvasStore.clearCanvas();
     }
 
+    forgetRuns([sessionId]);
     deleteSession(sessionId);
     Promise.allSettled([
       deleteSessionApi(sessionId),
@@ -437,6 +415,7 @@ export default function LeftSidebar() {
       canvasStore.clearCanvas();
     }
 
+    forgetRuns(sessionIds);
     deleteDatabase(databaseId);
     // Сначала сессии и дашборды источника, затем сам источник: его таблицы уходят из DuckDB,
     // список таблиц в шапке чата перечитывается и сайдбар обновляет дашборды.
@@ -534,16 +513,7 @@ export default function LeftSidebar() {
   return (
     <aside className="flex h-full w-full flex-col bg-graphite-950 text-graphite-300 select-none">
       {/* Логотип */}
-      <Link
-        href={isGenerating ? "#" : "/"}
-        onClick={(e) => {
-          if (isGenerating) e.preventDefault();
-        }}
-        title={isGenerating ? t("chat.cannotSwitchWhileGenerating") : undefined}
-        className={`flex h-12 shrink-0 items-center gap-2 px-4 text-sm font-semibold text-graphite-100 ${
-          isGenerating ? "cursor-not-allowed opacity-50" : ""
-        }`}
-      >
+      <Link href="/" className="flex h-12 shrink-0 items-center gap-2 px-4 text-sm font-semibold text-graphite-100">
         <span className="flex h-6 w-6 items-center justify-center rounded-md bg-graphite-700 text-xs font-bold text-graphite-50">
           S
         </span>
@@ -563,26 +533,23 @@ export default function LeftSidebar() {
         <SidebarAction
           icon="upload"
           label={t("sidebar.uploadCsv")}
-          title={isGenerating ? t("chat.cannotSwitchWhileGenerating") : t("sidebar.csvHint")}
+          title={t("sidebar.csvHint")}
           onClick={openFilePicker}
-          disabled={isBusy || isGenerating}
+          disabled={isBusy}
         />
         <SidebarAction
           icon="database"
           label={t("sidebar.connectDb")}
-          title={isGenerating ? t("chat.cannotSwitchWhileGenerating") : undefined}
           onClick={() => {
             setDbErrorMsg(null);
             setDbModalOpen(true);
           }}
-          disabled={isBusy || isGenerating}
+          disabled={isBusy}
         />
         <SidebarAction
           icon="layout"
           label={t("sidebar.allDashboards")}
           href="/dashboards"
-          title={isGenerating ? t("chat.cannotSwitchWhileGenerating") : undefined}
-          disabled={isGenerating}
         />
         <RecentDashboards />
         {isBusy && <p className="px-2.5 pt-1 text-[11px] text-graphite-400 animate-pulse">{t("sidebar.processing")}</p>}
