@@ -357,11 +357,11 @@ class OverviewLLM:
         self.error = error
         self.calls = 0
 
-    async def complete(self, system, user, **kwargs):
+    async def complete_structured(self, system, user, schema):
         self.calls += 1
         if self.error is not None:
             raise self.error
-        return "Передо мной числа.\n\nПропусков нет."
+        return schema(display_name="Числа", summary="Передо мной числа.\n\nПропусков нет.")
 
 
 class NoPlanner:

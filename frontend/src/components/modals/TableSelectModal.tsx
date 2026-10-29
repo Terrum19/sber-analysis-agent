@@ -99,7 +99,8 @@ export default function TableSelectModal({
                     className="accent-graphite-100 cursor-pointer"
                   />
                   <div className="min-w-0 flex-1">
-                    <div className="font-mono truncate">{table}</div>
+                    <div className="truncate">{brief?.display_name || table}</div>
+                    {brief?.display_name && <div className="font-mono text-[11px] text-graphite-500 truncate">{table}</div>}
                     {brief && <TableBriefCard brief={brief} compact />}
                   </div>
                 </label>
