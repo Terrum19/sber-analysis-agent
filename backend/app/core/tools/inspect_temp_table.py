@@ -33,13 +33,15 @@ class InspectTempTableTool(BaseTool):
             raise ValueError(f"Table has no columns: {table}")
         row_count = db.query(f"SELECT COUNT(*) AS n FROM {table}")[0]["n"]
         stats = _numeric_stats(db, table, schema_rows)
+        # Примеры значений — одним запросом на все колонки, а не SELECT на каждую.
+        samples = _sample_values(db, table, [column["column_name"] for column in schema_rows])
         rows = [
             (
                 column["column_name"],
                 column["column_type"],
                 row_count,
                 *stats.get(column["column_name"], (None, None, None)),
-                _sample_values(db, table, column["column_name"]),
+                samples.get(column["column_name"]),
             )
             for column in schema_rows
         ]
@@ -73,22 +75,38 @@ def _numeric_stats(
     }
 
 
-def _sample_values(db, table: str, column: str) -> str | None:
-    """До трёх непустых значений колонки одной строкой, без массивов в ячейке.
+def _sample_values(db, table: str, columns: list[str]) -> dict[str, str | None]:
+    """До трёх непустых значений каждой колонки одним запросом (UNION ALL).
 
-    Без DISTINCT: примеры читаются до LIMIT даже у константной колонки,
-    а не сканируют всю таблицу ради трёх разных значений.
+    Один SELECT на колонку — это N+1 запросов к DuckDB на широкой таблице.
+    Каждая ветка UNION ограничена LIMIT, поэтому константная колонка не
+    сканирует всю таблицу ради трёх примеров.
     """
+    if not columns:
+        return {}
+    # table уже прогэкранирован identifier() в execute().
+    table_name = table
+    selects = [
+        f"(SELECT {index} AS column_index, CAST({identifier(name)} AS VARCHAR) AS value "
+        f"FROM {table_name} WHERE {identifier(name)} IS NOT NULL LIMIT {SAMPLE_LIMIT})"
+        for index, name in enumerate(columns)
+    ]
     rows = db.query(
-        f"SELECT CAST({identifier(column)} AS VARCHAR) AS value "
-        f"FROM {table} WHERE {identifier(column)} IS NOT NULL "
-        f"LIMIT {SAMPLE_LIMIT}"
+        f"SELECT column_index, value FROM ({' UNION ALL '.join(selects)}) ORDER BY column_index"
     )
-    examples = [_short(str(row["value"])) for row in rows]
-    if not examples:
-        return None
-    text = ", ".join(examples)
-    return text if len(text) <= SAMPLE_VALUES_WIDTH else text[: SAMPLE_VALUES_WIDTH - 1] + "…"
+    examples: dict[int, list[str]] = {}
+    for row in rows:
+        examples.setdefault(int(row["column_index"]), []).append(_short(str(row["value"])))
+    samples: dict[str, str | None] = {}
+    for index, name in enumerate(columns):
+        text = ", ".join(examples.get(index, []))
+        if not text:
+            samples[name] = None
+            continue
+        samples[name] = (
+            text if len(text) <= SAMPLE_VALUES_WIDTH else text[: SAMPLE_VALUES_WIDTH - 1] + "…"
+        )
+    return samples
 
 
 def _short(value: str) -> str:

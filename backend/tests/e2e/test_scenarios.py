@@ -72,7 +72,7 @@ def test_scenario_1(fake_llm: FakeLLM) -> None:
         "chart",
         "done",
     ]
-    headline = stream[1]["data"]["headline"]
+    headline = next(event for event in stream if event["type"] == "text")["data"]["headline"]
     assert "6 строк" in headline
     assert "с 2024-01-01 по 2024-02-01" in headline
     assert all(event["data"].get("stage") != "planning" for event in stream)
