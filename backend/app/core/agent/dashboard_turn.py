@@ -2,7 +2,8 @@
 
 Запрос пользователя (или выбранная идея) превращается в план из 4–5 плиток.
 Каждая плитка — отдельный маленький вопрос: обычный планировщик и исполнитель
-шагов, плитки идут параллельно. Упавшая плитка пропускается. Вид графика
+шагов, плитки идут по очереди (локальная модель держит один запрос за раз).
+Упавшая плитка пропускается. Вид графика
 выбирает LLM одним вызовом на все плитки, когда их результаты готовы;
 выбор проверяется fits, неподошедший — один повтор, дальше вид по intent.
 
@@ -72,8 +73,6 @@ logger = logging.getLogger(__name__)
 # Какой вариант сборки плиток сравниваем (см. docstring модуля).
 DASHBOARD_VARIANT = "plan_per_tile"
 
-# Плитки строятся параллельно, но не все сразу: лимиты провайдера LLM.
-TILE_CONCURRENCY = 3
 # Шаги плитки N нумеруются с (N + 1) * TILE_STEP_IDS: номера плиток не пересекаются.
 TILE_STEP_IDS = 100
 # Меньше плиток — это уже не дашборд.
@@ -175,10 +174,10 @@ class DashboardTurn:
             }
         )
 
-        limit = asyncio.Semaphore(TILE_CONCURRENCY)
-        executions = await asyncio.gather(
-            *(self._tile(memory, tile_id, tile, limit, emit) for tile_id, tile in enumerate(tiles))
-        )
+        # По одной: локальная модель всё равно обрабатывает запросы последовательно
+        executions = [
+            await self._tile(memory, tile_id, tile, emit) for tile_id, tile in enumerate(tiles)
+        ]
         built = {
             tile_id: (tiles[tile_id], execution.result_table)
             for tile_id, execution in enumerate(executions)
@@ -286,7 +285,6 @@ class DashboardTurn:
         memory: SessionMemory,
         tile_id: int,
         tile: OutlineTile,
-        limit: asyncio.Semaphore,
         emit: Emit,
     ) -> Execution | None:
         """Шаги одной плитки; вернуть итог выполнения или None, если плитка упала."""
@@ -296,47 +294,46 @@ class DashboardTurn:
                 event["data"]["tile_id"] = tile_id
             emit(event)
 
-        async with limit:
-            emit(_progress_event("tile", "started", tile_id=tile_id, purpose=tile.title))
-            started_at = time.perf_counter()
-            try:
-                context = memory.build_context(tile.question)
-                context["next_step_id"] = (tile_id + 1) * TILE_STEP_IDS
-                context["tile"] = True
-                plan = await self.agent._plan(tile.question, context)
-                _require_steps(plan)
-                execution = await self.agent._execute_plan(
-                    memory, plan, memory.table, tile.question, emit=tile_emit
-                )
-            except Exception as exc:
-                if isinstance(exc, ClarificationNeeded):
-                    # Уточнять у пользователя нечего: плитка просто не строится.
-                    memory.clear_pending_recovery()
-                    error = exc.error
-                else:
-                    logger.exception("    плитка %d %r упала", tile_id, tile.title)
-                    error = str(exc)
-                emit(
-                    _progress_event(
-                        "tile",
-                        "failed",
-                        tile_id=tile_id,
-                        purpose=tile.title,
-                        elapsed_ms=_elapsed_ms(started_at),
-                        error=error,
-                    )
-                )
-                return None
+        emit(_progress_event("tile", "started", tile_id=tile_id, purpose=tile.title))
+        started_at = time.perf_counter()
+        try:
+            context = memory.build_context(tile.question)
+            context["next_step_id"] = (tile_id + 1) * TILE_STEP_IDS
+            context["tile"] = True
+            plan = await self.agent._plan(tile.question, context)
+            _require_steps(plan)
+            execution = await self.agent._execute_plan(
+                memory, plan, memory.table, tile.question, emit=tile_emit
+            )
+        except Exception as exc:
+            if isinstance(exc, ClarificationNeeded):
+                # Уточнять у пользователя нечего: плитка просто не строится.
+                memory.clear_pending_recovery()
+                error = exc.error
+            else:
+                logger.exception("    плитка %d %r упала", tile_id, tile.title)
+                error = str(exc)
             emit(
                 _progress_event(
                     "tile",
-                    "finished",
+                    "failed",
                     tile_id=tile_id,
                     purpose=tile.title,
                     elapsed_ms=_elapsed_ms(started_at),
+                    error=error,
                 )
             )
-            return execution
+            return None
+        emit(
+            _progress_event(
+                "tile",
+                "finished",
+                tile_id=tile_id,
+                purpose=tile.title,
+                elapsed_ms=_elapsed_ms(started_at),
+            )
+        )
+        return execution
 
     async def _choose_charts(
         self, built: dict[int, tuple[OutlineTile, str]], records: dict[int, list[dict]]
