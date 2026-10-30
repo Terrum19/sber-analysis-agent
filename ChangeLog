@@ -4,8 +4,9 @@
 	* backend/app/core/agent/quality_fixes.py (insight_facts): Подпись
 	минимума и максимума — arg_min_null/arg_max_null: arg_max пропускал
 	строку с NULL в подписи и отдавал её максимум другой строке («2,14 млрд
-	у ПР-ТТ-06-01» вместо продаж без магазина).  (format_value): NULL —
-	«без значения».  (NULL_VALUE): Новая.
+	у ПР-ТТ-06-01» вместо продаж без магазина).  (_extreme_label): Новая.
+	Экстремум у строки без подписи — рядом лучшая подписанная строка.
+	(format_value): NULL — «без значения».  (NULL_VALUE): Новая.
 	* backend/tests/unit/test_quality_fixes.py: Тесты того же.
 
 2026-10-29  Alexander Yurits  <143354682+Terrum19@users.noreply.github.com>

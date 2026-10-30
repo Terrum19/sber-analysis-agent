@@ -143,8 +143,11 @@ def test_insight_facts_label_the_null_row_of_max(db) -> None:
         "(NULL, 2138), ('ПР-ТТ-06-01', 35), ('ПР-ТТ-30-01', 1)) AS v(store, revenue)"
     )
     facts = insight_facts(db, "stores", shown=50)
-    assert "макс 2138 (store = без значения)" in facts
-    assert "мин 1 (store = ПР-ТТ-30-01)" in facts
+    assert (
+        "макс 2138 (store = без значения); среди строк с store макс 35 (store = ПР-ТТ-06-01)"
+        in facts
+    )
+    assert "мин 1 (store = ПР-ТТ-30-01)," in facts
 
 
 def test_null_cells_are_shown_as_no_value() -> None:
