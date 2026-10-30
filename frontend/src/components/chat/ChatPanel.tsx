@@ -214,6 +214,21 @@ export default function ChatPanel({ sessionId }: Props) {
     messagesEndRef.current?.scrollIntoView({ behavior: streaming ? "auto" : "smooth" });
   }, [messages, streaming]);
 
+  useEffect(() => {
+    if (!streaming) return;
+    const handleBeforeUnload = (e: BeforeUnloadEvent) => {
+      e.preventDefault();
+      e.returnValue = "";
+    };
+    window.addEventListener("beforeunload", handleBeforeUnload);
+    return () => window.removeEventListener("beforeunload", handleBeforeUnload);
+  }, [streaming]);
+
+  useEffect(() => {
+    stickToBottomRef.current = true;
+    messagesEndRef.current?.scrollIntoView({ behavior: "auto" });
+  }, [sessionId, activeTable]);
+
   function handleMessagesScroll() {
     const list = messagesListRef.current;
     if (!list) return;
@@ -638,7 +653,7 @@ export default function ChatPanel({ sessionId }: Props) {
                 {m.progress && <StepProgress progress={m.progress} />}
 
                 {/* Текст сообщения */}
-                {m.content && (
+                {(m.content || m.isStreaming) && (
                   <div
                     className={`whitespace-pre-wrap transition-opacity duration-200 ${m.progress ? "mt-2.5" : ""} ${
                       m.refusal
@@ -649,11 +664,12 @@ export default function ChatPanel({ sessionId }: Props) {
                     }`}
                   >
                     {m.content}
-                    {m.role === "agent" &&
-                      streaming &&
-                      i === messages.length - 1 && (
-                        <span className="inline-block w-1.5 h-4 ml-1 bg-good/80 animate-pulse motion-reduce:animate-none align-middle rounded-[1px]" />
-                      )}
+                    {((m.role === "agent" && streaming && i === messages.length - 1) || (m.isStreaming && streaming)) && (
+                      <span
+                        className="inline-block w-1.5 h-4 ml-1 bg-good/80 animate-pulse motion-reduce:animate-none align-middle rounded-[1px]"
+                        aria-label="Генерация ответа"
+                      />
+                    )}
                   </div>
                 )}
 

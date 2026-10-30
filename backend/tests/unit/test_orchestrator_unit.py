@@ -526,3 +526,65 @@ def test_overview_failure_ends_the_stream(orchestrator, monkeypatch):
 def test_elapsed_ms_is_never_zero() -> None:
     assert _elapsed_ms(time.perf_counter()) == 1
     assert _elapsed_ms(time.perf_counter() - 2.5) == 2500
+
+
+def test_closing_stream_cancels_insight_stream(orchestrator, monkeypatch):
+    """aclose() SSE доводит отмену до стрима LLM, а не ждёт его конца."""
+    import asyncio
+
+    from app.config import settings
+    from app.models.insight import Insight
+
+    monkeypatch.setattr(settings, "insight_stream", True)
+    closed = asyncio.Event()
+
+    class HangingInsight:
+        async def generate(self, question, result_table, **_):
+            raise AssertionError("при включённом стриме generate не вызывается")
+
+        async def stream(self, question, result_table, *, supporting=None, steps=None, emit=None, **_):
+            try:
+                emit("первый ")
+                await asyncio.sleep(30)
+                return Insight(headline="никогда", details=[], limits="")
+            finally:
+                closed.set()
+
+    orchestrator.insight_gen = HangingInsight()
+
+    async def _run():
+        events = orchestrator.run(ChatRequest(session_id="s1", question="Тест отмены"))
+        try:
+            while True:
+                event = await anext(events)
+                if event["type"] == "text" and "chunk" in event["data"]:
+                    break
+        finally:
+            await events.aclose()
+        await asyncio.wait_for(closed.wait(), 1)
+
+    asyncio.run(_run())
+
+
+def test_insight_stream_skips_empty_and_whitespace_deltas(orchestrator, monkeypatch):
+    """Пустая дельта не превращается в событие, пробельная — не делает стрим успешным."""
+    from app.config import settings
+    from app.models.insight import Insight
+
+    monkeypatch.setattr(settings, "insight_stream", True)
+
+    class DeltasInsight:
+        async def generate(self, question, result_table, **_):
+            raise AssertionError("при включённом стриме generate не вызывается")
+
+        async def stream(self, question, result_table, *, supporting=None, steps=None, emit=None, **_):
+            emit("")
+            emit(" \n")
+            emit("Вывод")
+            return Insight(headline="Вывод", details=[], limits="")
+
+    orchestrator.insight_gen = DeltasInsight()
+    events = collect(orchestrator, "s1")
+    chunks = [event["data"]["chunk"] for event in events if event["type"] == "text"]
+
+    assert chunks == [" \n", "Вывод"]

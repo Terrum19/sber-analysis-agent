@@ -5,7 +5,9 @@
 агентный цикл на CI без Ollama/vLLM.
 """
 
+import asyncio
 import re
+from collections.abc import AsyncIterator
 from typing import Any, TypeVar
 
 import instructor
@@ -33,6 +35,14 @@ FAKE_TILES = (
     ("Доли категорий", "Доля записей по category", "share", {}),
 )
 
+# Тот же текст, что отдаёт structured-Insight FakeLLM: контрактные тесты
+# сравнивают стрим и не-стрим по склеенному результату.
+INSIGHT_TEXT = (
+    "Исследование завершено\n"
+    "- Данные обработаны по запросу пользователя\n"
+    "Ограничения: Результаты основаны на доступных в таблице данных"
+)
+
 
 class FakeLLM:
     """Заглушка LLMClient с фиксированным ответом для любого вопроса."""
@@ -52,6 +62,12 @@ class FakeLLM:
     async def complete(self, system: str, user: str, **kwargs: Any) -> str:
         """Возвращает фиксированную строку-ответ."""
         return "Fake LLM response"
+
+    async def complete_stream(self, system: str, user: str, **kwargs: Any) -> AsyncIterator[str]:
+        """Отдаёт заготовленный текстовый вывод кусками — CI без модели."""
+        for chunk in re.findall(r"\S+\s*", INSIGHT_TEXT):
+            await asyncio.sleep(0)  # даём event loop переключаться между чанками
+            yield chunk
 
     async def complete_structured(self, system: str, user: str, schema: type[T], **_: object) -> T:
         """Генерирует объект по схеме с фиксированными значениями.

@@ -13,6 +13,7 @@ import logging
 import os
 import re
 import time
+from collections.abc import AsyncIterator
 from typing import Any, TypeVar
 
 import httpx
@@ -184,10 +185,19 @@ class LLMClient:
         """
         if response.status_code != 200 or not response.url.path.endswith("/chat/completions"):
             return
+        # SSE нельзя читать хуком: aread() забуферизует поток и отменит
+        # инкрементальность вывода. Проверку контекста для стрима пропускаем.
+        if response.headers.get("content-type", "").startswith("text/event-stream"):
+            return
+        try:
+            body = json.loads(response.request.content)
+        except (TypeError, ValueError):
+            body = {}
+        if body.get("stream"):
+            return
         try:
             await response.aread()
             prompt_tokens = (response.json().get("usage") or {}).get("prompt_tokens")
-            body = json.loads(response.request.content)
             self.last_prompt_tokens = prompt_tokens
             if not prompt_tokens:
                 return
@@ -357,6 +367,58 @@ class LLMClient:
                 return best
             logger.info("LLM %s: повтор с max_tokens=%s", self.model, retry_limit)
             kwargs["max_tokens"] = retry_limit
+
+    async def complete_stream(self, system: str, user: str, **kwargs: Any) -> AsyncIterator[str]:
+        """Дельты текста из chat.completions.create(stream=True).
+
+        ``async with stream`` важен для отмены: при закрытии генератора
+        (aclose/CancelledError) AsyncStream.close() закрывает HTTP-ответ.
+        """
+        logger.debug(">>> complete_stream() system=%r user=%r", system, user)
+        extra: dict[str, Any] = {}
+        if settings.llm_max_tokens:
+            extra["max_tokens"] = settings.llm_max_tokens
+        extra.update(kwargs)
+
+        t0 = time.time()
+        first_at: float | None = None
+        chunks = chars = 0
+        try:
+            stream = await self._client.chat.completions.create(
+                model=self.model,
+                messages=[
+                    {"role": "system", "content": system},
+                    {"role": "user", "content": user},
+                ],
+                temperature=settings.llm_temperature,
+                stream=True,
+                **extra,
+            )
+            async with stream:
+                async for chunk in stream:
+                    if not chunk.choices:
+                        continue  # usage-only чанк
+                    choice = chunk.choices[0]
+                    content = choice.delta.content if choice.delta else None
+                    if not content:
+                        if choice.finish_reason == "length":
+                            logger.warning("LLM complete_stream(): ответ обрезан по max_tokens")
+                        continue
+                    if first_at is None:
+                        first_at = time.time()
+                        logger.info("LLM complete_stream(): первый чанк за %.2fs", first_at - t0)
+                    chunks += 1
+                    chars += len(content)
+                    yield content
+        except Exception:
+            logger.exception("LLM complete_stream() ОШИБКА")
+            raise
+        logger.info(
+            "LLM complete_stream(): чанков=%d символов=%d время=%.2fs",
+            chunks,
+            chars,
+            time.time() - t0,
+        )
 
     async def complete_structured(
         self,

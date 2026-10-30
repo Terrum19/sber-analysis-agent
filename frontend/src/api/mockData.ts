@@ -388,7 +388,13 @@ export function mockRenameSession(sessionId: string, title: string): SessionResp
 }
 
 /**
- * Эмуляция стриминга ответов агента с текстом, инсайтами и карточкой дашборда.
+ * Эмуляция стриминга ответов агента по контракту S-01 + S-02:
+ * 1. progress (planning started -> finished)
+ * 2. progress (step 1 started -> finished)
+ * 3. progress (insight started)
+ * 4. 4-6 последовательных событий text { chunk: "..." } с интервалом ~100-150 мс
+ * 5. chart (или dashboard)
+ * 6. done
  */
 export function mockStreamChat(
   sessionId: string,
@@ -418,153 +424,202 @@ export function mockStreamChat(
   let chartCaption = "Выручка по ключевым регионам";
   let chartResultTable = "temp_result_v1";
   let dashboardTitle = "Аналитический срез: продажи и KPI";
-  let steps: { delay: number; chunk?: string; headline?: string; details?: string[] }[] = [];
+  let stepPurpose = "Агрегация продаж по регионам";
+  let chunks: string[] = [];
 
   if (isElectricity) {
     tiles = ELECTRICITY_TILES;
     chartCaption = "Динамика индексов цен РСВ по часам";
     chartResultTable = "temp_hourly_price";
     dashboardTitle = "Анализ рынка электроэнергии РСВ";
-    steps = [
-      { delay: 300, chunk: `${replyPrefix}Изучаю схему данных в DuckDB (почасовые индексы цен и объёмы)...\n` },
-      { delay: 700, chunk: "Выполняю расчет средневзвешенных цен и торговых объемов РСВ (temp_elec_summary).\n" },
-      {
-        delay: 1200,
-        headline: isDashboardRequest
-          ? "Дашборд успешно сформирован по рынку электроэнергии РСВ"
-          : "Анализ данных завершён: динамика индексов цен и объемов РСВ",
-        details: [
-          "Средневзвешенная цена РСВ: 2 480 ₽/МВт·ч (+3.1% к пред. суткам)",
-          "Суммарный объем торгов: 142.5 ГВт·ч",
-          "Пик нагрузки зафиксирован в интервале 10:00–18:00 (до 2 750 ₽/МВт·ч)",
-        ],
-      },
-    ];
+    stepPurpose = "Расчет средневзвешенных цен и объемов РСВ";
+    chunks = isDashboardRequest
+      ? [
+          `${replyPrefix}Формирую аналитический дашборд `,
+          "по рынку электроэнергии РСВ. ",
+          "Выделены почасовые индексы цен, торговые объемы ",
+          "и зоны пиковой нагрузки. ",
+          "Дашборд готов к анализу.",
+        ]
+      : [
+          `${replyPrefix}По итогам анализа рынка электроэнергии РСВ `,
+          "средневзвешенная цена составила 2 480 ₽/МВт·ч (+3.1%). ",
+          "Суммарный объем торгов достиг 142.5 ГВт·ч. ",
+          "Пиковые цены зафиксированы в интервале 10:00–18:00 (до 2 750 ₽/МВт·ч).",
+        ];
   } else if (isCustomer) {
     chartCaption = "Распределение активности клиентов";
     chartResultTable = "temp_customer_segments";
     dashboardTitle = "Анализ клиентской базы и когорт";
-    steps = [
-      { delay: 300, chunk: `${replyPrefix}Изучаю структуру клиентской базы в DuckDB...\n` },
-      { delay: 700, chunk: "Выполняю расчет сегментов активности аудитории (temp_customer_segments).\n" },
-      {
-        delay: 1200,
-        headline: isDashboardRequest
-          ? "Дашборд сформирован: сегменты пользователей и активность"
-          : "Анализ клиентвой базы: активная аудитория выросла на 14.2%",
-        details: [
-          "Доля активных постоянных клиентов составила 62%",
-          "Когорта Q3 демонстрирует наивысший LTV (32 400 ₽)",
-          "Показатель оттока снизился на 3.4 п.п. относительно прошлого периода",
-        ],
-      },
-    ];
+    stepPurpose = "Расчет сегментов активности аудитории";
+    chunks = isDashboardRequest
+      ? [
+          `${replyPrefix}Формирую дашборд клиентской аналитики `,
+          "на основе когортного среза. ",
+          "Рассчитаны показатели удержания и LTV по группам, ",
+          "выделены целевые сегменты покупателей. ",
+          "Панель показателей собрана.",
+        ]
+      : [
+          `${replyPrefix}Анализ клиентской базы завершён: `,
+          "активная аудитория выросла на 14.2%, ",
+          "доля постоянных клиентов достигла 62%. ",
+          "Когорта Q3 демонстрирует наивысший LTV (32 400 ₽).",
+        ];
   } else if (isProduct) {
     chartCaption = "Маржинальность товарных категорий";
     chartResultTable = "temp_product_margin";
     dashboardTitle = "Анализ товарного каталога и маржи";
-    steps = [
-      { delay: 300, chunk: `${replyPrefix}Анализирую товарную номенклатуру в DuckDB...\n` },
-      { delay: 700, chunk: "Выполняю расчет маржинальности и оборачиваемости (temp_product_margin).\n" },
-      {
-        delay: 1200,
-        headline: isDashboardRequest
-          ? "Дашборд сформирован: оборачиваемость и маржинальность каталога"
-          : "Анализ каталога: 15% позиций генерируют 78% маржи",
-        details: [
-          "Лидирующая категория по маржинальности: Комплектующие (38.5%)",
-          "Выявлено 12 SKU с периодом оборачиваемости свыше 180 дней",
-          "Рекомендуется оптимизировать складской запас категории B",
-        ],
-      },
-    ];
+    stepPurpose = "Расчет маржинальности и оборачиваемости номенклатуры";
+    chunks = isDashboardRequest
+      ? [
+          `${replyPrefix}Формирую дашборд товарной аналитики `,
+          "по номенклатуре и товарным категориям. ",
+          "Сгруппированы метрики маржинальности и оборачиваемости SKU, ",
+          "выявлены позиции группы риска. ",
+          "Дашборд подготовлен.",
+        ]
+      : [
+          `${replyPrefix}Анализ товарного каталога показал: `,
+          "15% позиций генерируют 78% всей маржи. ",
+          "Лидер маржинальности — комплектующие (38.5%). ",
+          "Выявлено 12 медленно оборачиваемых позиций.",
+        ];
   } else if (activeTable && activeTable !== "sales_orders" && !/sale|order|retail|revenue|чек|выручк/i.test(activeTable)) {
     const cleanName = activeTable.replace(/[_-]/g, " ");
     chartCaption = `Распределение показателей таблицы «${cleanName}»`;
     chartResultTable = `temp_analytics_${activeTable}`;
     dashboardTitle = `Сводный дашборд: ${cleanName}`;
-    steps = [
-      { delay: 300, chunk: `${replyPrefix}Изучаю схему и профиль таблицы «${cleanName}» в DuckDB...\n` },
-      { delay: 700, chunk: `Выполняю агрегацию и расчет ключевых метрик (temp_analytics_${activeTable}).\n` },
-      {
-        delay: 1200,
-        headline: isDashboardRequest
-          ? `Дашборд успешно сформирован по таблице «${cleanName}»`
-          : `Анализ данных таблицы «${cleanName}» успешно завершён`,
-        details: [
-          `Успешно обработаны строки таблицы «${cleanName}» в DuckDB`,
-          `Рассчитаны ключевые распределения, агрегаты и кластеры значений`,
-          `SQL скомпилирован и выполнен в локальной базе данных без сбоев`,
-        ],
-      },
-    ];
+    stepPurpose = `Агрегация и расчет метрик таблицы «${cleanName}»`;
+    chunks = isDashboardRequest
+      ? [
+          `${replyPrefix}Формирую аналитический дашборд `,
+          `для таблицы «${cleanName}». `,
+          "Построены распределения числовых полей и ключевые срезы, ",
+          "подготовлена сводная панель данных.",
+        ]
+      : [
+          `${replyPrefix}Анализ таблицы «${cleanName}» успешно выполнен. `,
+          "Обработаны строки и рассчитаны ключевые агрегаты. ",
+          "Выявлены основные тренды и распределения показателей в DuckDB.",
+        ];
   } else {
-    // Ритейл / sales_orders
-    steps = [
-      { delay: 300, chunk: `${replyPrefix}Изучаю схему данных в DuckDB...\n` },
-      { delay: 700, chunk: "Выполняю расчет шага 1: агрегация продаж по регионам (temp_result_v1).\n" },
-      {
-        delay: 1200,
-        headline: isDashboardRequest
-          ? "Дашборд успешно сформирован на основе промежуточных результатов DuckDB"
-          : "Анализ данных завершён: выявлен рост выручки на 18.4%",
-        details: [
-          "Москва лидирует с результатом 12.5 млн ₽",
-          "Темп роста относительно Q2 составил +18.4%",
-          "SQL не генерировался заново: использован кэш шага",
-        ],
-      },
-    ];
+    chunks = isDashboardRequest
+      ? [
+          `${replyPrefix}Формирую аналитический дашборд `,
+          "на основе структуры таблицы DuckDB. ",
+          "Выделены ключевые метрики выручки и среднего чека, ",
+          "а также региональная разбивка с долей лидера. ",
+          "Дашборд подготовлен для отображения.",
+        ]
+      : [
+          `${replyPrefix}По итогам анализа данных продаж в DuckDB `,
+          "общий объём выручки показал устойчивый рост на 18.4%. ",
+          "Лидирующую позицию сохраняет Москва с результатом 12.5 млн ₽ ",
+          "(более 75% всей региональной выручки). ",
+          "Темпы прироста в мае–июне ускорились, тренд остаётся положительным.",
+        ];
   }
 
   const timeouts: NodeJS.Timeout[] = [];
 
-  steps.forEach((step, idx) => {
+  const schedule = (delay: number, fn: () => void) => {
     const t = setTimeout(() => {
-      if (isCancelled) return;
-      if (step.chunk) {
-        onEvent({ type: "text", data: { chunk: step.chunk } });
-      }
-      if (step.headline) {
-        onEvent({
-          type: "text",
-          data: { headline: step.headline, details: step.details },
-        });
-
-        // Если вопрос о графиках/дашборде — отправляем превью дашборда
-        if (isDashboardRequest) {
-          const dashId = `dash-${Date.now().toString(36)}`;
-          onEvent({
-            type: "dashboard",
-            data: {
-              dashboard_id: dashId,
-              title: dashboardTitle,
-              tiles,
-            },
-          });
-        } else {
-          onEvent({
-            type: "chart",
-            data: {
-              caption: chartCaption,
-              spec: tiles[2].spec,
-              result_table: chartResultTable,
-            },
-          });
-        }
-      }
-
-      if (idx === steps.length - 1) {
-        const finishTimer = setTimeout(() => {
-          if (!isCancelled) {
-            onEvent({ type: "done", data: { turn_id: turnId } });
-            onClose?.();
-          }
-        }, 400);
-        timeouts.push(finishTimer);
-      }
-    }, step.delay);
+      if (!isCancelled) fn();
+    }, delay);
     timeouts.push(t);
+  };
+
+  // 1. Progress: planning started -> finished
+  schedule(200, () => {
+    onEvent({
+      type: "progress",
+      data: { stage: "planning", status: "started" },
+    });
+  });
+
+  schedule(450, () => {
+    onEvent({
+      type: "progress",
+      data: { stage: "planning", status: "finished", total_steps: 1 },
+    });
+  });
+
+  // 2. Progress: step 1 started -> finished
+  schedule(650, () => {
+    onEvent({
+      type: "progress",
+      data: {
+        stage: "step",
+        status: "started",
+        step_id: 1,
+        tool: "duckdb_sql",
+        purpose: stepPurpose,
+        total_steps: 1,
+      },
+    });
+  });
+
+  schedule(1000, () => {
+    onEvent({
+      type: "progress",
+      data: {
+        stage: "step",
+        status: "finished",
+        step_id: 1,
+        elapsed_ms: 350,
+      },
+    });
+  });
+
+  // 3. Progress: insight started
+  schedule(1150, () => {
+    onEvent({
+      type: "progress",
+      data: { stage: "insight", status: "started" },
+    });
+  });
+
+  // 4. Последовательные события text { chunk: "..." }
+  chunks.forEach((chunk, idx) => {
+    schedule(1300 + idx * 130, () => {
+      onEvent({
+        type: "text",
+        data: { chunk },
+      });
+    });
+  });
+
+  const chartDelay = 1300 + chunks.length * 130 + 150;
+
+  // 5. Chart или Dashboard
+  schedule(chartDelay, () => {
+    if (isDashboardRequest) {
+      const dashId = `dash-${Date.now().toString(36)}`;
+      onEvent({
+        type: "dashboard",
+        data: {
+          dashboard_id: dashId,
+          title: dashboardTitle,
+          tiles,
+        },
+      });
+    } else {
+      onEvent({
+        type: "chart",
+        data: {
+          caption: chartCaption,
+          spec: tiles[2]?.spec || DEFAULT_TILES[2].spec,
+          result_table: chartResultTable,
+        },
+      });
+    }
+  });
+
+  // 6. Done
+  schedule(chartDelay + 250, () => {
+    onEvent({ type: "done", data: { turn_id: turnId } });
+    onClose?.();
   });
 
   return () => {

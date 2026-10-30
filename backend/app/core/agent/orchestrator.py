@@ -55,7 +55,7 @@ import math
 import re
 import time
 from collections.abc import AsyncIterator, Callable
-from contextlib import aclosing
+from contextlib import aclosing, suppress
 from dataclasses import dataclass, field
 
 import duckdb
@@ -251,6 +251,16 @@ def _step_event(step: ResearchStep, status: str, **fields: object) -> dict:
 
 def _fixing_event(step: ResearchStep, attempt: int, error: Exception) -> dict:
     return _step_event(step, "fixing", attempt=attempt, error=str(error))
+
+
+def _text_event(headline: str, details: list[str]) -> dict:
+    """Вывод целиком: когда стрим выключен или сработал structured-фолбэк."""
+    return {"type": "text", "data": {"headline": headline, "details": details}}
+
+
+def _text_chunk_event(chunk: str) -> dict:
+    """Дельта текста инсайта при INSIGHT_STREAM=true."""
+    return {"type": "text", "data": {"chunk": chunk}}
 
 
 def _chart_event(spec: dict, caption: str, result_table: str) -> dict:
@@ -592,21 +602,64 @@ class AgentOrchestrator:
         try:
             logger.info(">>> run() генерация инсайта")
             yield _progress_event("insight", "started")
-            insight = await self._insight(
-                question,
-                execution,
-                memories=memory.context_memories(),
-                source=memory.table,
-                confirmation=confirmation,
+            stream_insight = settings.insight_stream and callable(
+                getattr(self.insight_gen, "stream", None)
             )
-            yield _progress_event("insight", "finished", elapsed_ms=_elapsed_ms(stage_started))
+            if stream_insight:
+                queue: asyncio.Queue[dict | None] = asyncio.Queue()
+                streamed = False
+
+                def emit_chunk(delta: str) -> None:
+                    nonlocal streamed
+                    if not delta:
+                        return
+                    if delta.strip():
+                        streamed = True
+                    queue.put_nowait(_text_chunk_event(delta))
+
+                insight_task = asyncio.create_task(
+                    self.insight_gen.stream(
+                        question,
+                        result_table,
+                        supporting=execution.supporting,
+                        steps=execution.steps,
+                        memories=memory.context_memories(),
+                        result_tool=execution.result_tool,
+                        source=memory.table,
+                        inputs=execution.inputs,
+                        emit=emit_chunk,
+                    )
+                )
+                insight_task.add_done_callback(lambda _: queue.put_nowait(None))
+                try:
+                    while (event := await queue.get()) is not None:
+                        yield event
+                    insight = await insight_task
+                finally:
+                    # Клиент отключился посреди стрима — закрываем поток LLM.
+                    if not insight_task.done():
+                        insight_task.cancel()
+                        with suppress(asyncio.CancelledError):
+                            await insight_task
+                if confirmation:
+                    insight.details.append(confirmation)
+                yield _progress_event("insight", "finished", elapsed_ms=_elapsed_ms(stage_started))
+                if not streamed:
+                    # Фолбэк или пустой стрим: без этого фронт не увидит вывод.
+                    yield _text_event(insight.headline, insight.details)
+            else:
+                insight = await self._insight(
+                    question,
+                    execution,
+                    memories=memory.context_memories(),
+                    source=memory.table,
+                    confirmation=confirmation,
+                )
+                yield _progress_event("insight", "finished", elapsed_ms=_elapsed_ms(stage_started))
+                yield _text_event(insight.headline, insight.details)
             logger.info(
                 "<<< run() инсайт: headline=%r details=%r", insight.headline, insight.details
             )
-            yield {
-                "type": "text",
-                "data": {"headline": insight.headline, "details": insight.details},
-            }
 
             stage = "chart"
             stage_started = time.perf_counter()

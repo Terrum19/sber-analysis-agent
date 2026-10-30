@@ -68,6 +68,9 @@ class Settings(BaseSettings):
     llm_provider: str | None = None
     # Исправления качества плана и инсайта (app/core/agent/quality_fixes.py).
     agent_quality_fixes: bool = True
+    # Стриминг финального вывода: text {chunk} в SSE вместо одного text {headline}.
+    # Выключить, если выбранная модель плохо стримит через Ollama.
+    insight_stream: bool = True
     # H-R1: в промпт планировщика — только релевантные вопросу тулы.
     # Быстрее вдвое, но сломал вопрос про тренд (П8) — выключено.
     agent_tool_topk: bool = False
