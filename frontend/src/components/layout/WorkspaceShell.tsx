@@ -8,6 +8,7 @@ import { useEffect, useRef } from "react";
 import LeftSidebar from "@/components/layout/LeftSidebar";
 import TopHeader from "@/components/layout/TopHeader";
 import Splitter from "@/components/ui/Splitter";
+import ConnectDbModal from "@/components/modals/ConnectDbModal";
 import TableSelectModal from "@/components/modals/TableSelectModal";
 import { useStartSession } from "@/hooks/useStartSession";
 import { SIDEBAR_WIDTH, tabKey, useUiStore, type WorkspaceTab } from "@/store/uiStore";
@@ -32,6 +33,7 @@ export default function WorkspaceShell({ tab, children }: { tab: WorkspaceTab; c
 
   return (
     <div className="flex h-screen w-screen overflow-hidden bg-graphite-950 font-sans">
+      {/* Десктопный сайдбар */}
       <div className="hidden shrink-0 border-r border-graphite-800 md:block" style={{ width: sidebarWidth }}>
         <LeftSidebar />
       </div>
@@ -43,10 +45,14 @@ export default function WorkspaceShell({ tab, children }: { tab: WorkspaceTab; c
           onReset={() => setSidebarWidth(SIDEBAR_WIDTH.initial)}
         />
       </div>
+
       <div className="-ml-0.5 flex min-w-0 flex-1 flex-col overflow-hidden">
         <TopHeader active={tab} />
         <div className="flex min-h-0 flex-1 flex-col overflow-hidden bg-graphite-900">{children}</div>
       </div>
+
+      <ConnectDbModal />
+
       {tableModalTarget && (
         <TableSelectModal
           isOpen={Boolean(tableModalTarget)}

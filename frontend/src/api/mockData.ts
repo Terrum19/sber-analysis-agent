@@ -9,6 +9,7 @@
 import type { DashboardConfig, DashboardListItem, DashboardTile } from "@/types/dashboard";
 import type { ChatStreamEvent } from "@/types/chat";
 import type { Datasource, Glossary, SessionResponse, TableBrief } from "@/types/datasource";
+import { useSessionStore } from "@/store/sessionStore";
 
 const STORAGE_KEY = "sber_mock_dashboards_db";
 
@@ -49,7 +50,7 @@ const DEFAULT_TILES: DashboardTile[] = [
       },
       mark: { type: "bar", cornerRadiusEnd: 4, color: "#3b82f6" },
       encoding: {
-        x: { field: "region", type: "nominal", title: "Регион", axis: { labelAngle: 0 } },
+        x: { field: "region", type: "nominal", title: "Регион", axis: { labelAngle: -35 } },
         y: { field: "revenue", type: "quantitative", title: "Выручка (млн ₽)" },
       },
     },
@@ -82,6 +83,77 @@ const DEFAULT_TILES: DashboardTile[] = [
     is_kpi: false,
     insight: "Устойчивый восходящий тренд с ускорением темпов прироста в мае–июне.",
     result_table: "temp_result_v3",
+    layout: { x: 6, y: 2, w: 6, h: 4 },
+  },
+];
+
+const ELECTRICITY_TILES: DashboardTile[] = [
+  {
+    id: "tile-kpi-elec-1",
+    title: "Средневзвешенная цена РСВ",
+    spec: { mark: "text" },
+    is_kpi: true,
+    snapshot_data: { value: "2 480 ₽/МВт·ч", label: "Динамика +3.1% к пред. суткам" },
+    insight: "Индекс цен находится в пределах нормативного диапазона энергозоны.",
+    result_table: "temp_elec_summary",
+    layout: { x: 0, y: 0, w: 6, h: 2 },
+  },
+  {
+    id: "tile-kpi-elec-2",
+    title: "Суммарный объём торговли",
+    spec: { mark: "text" },
+    is_kpi: true,
+    snapshot_data: { value: "142.5 ГВт·ч", label: "Покрытие планового спроса: 99.8%" },
+    insight: "Пик потребления зафиксирован в интервале 10:00–18:00 МСК.",
+    result_table: "temp_elec_volume",
+    layout: { x: 6, y: 0, w: 6, h: 2 },
+  },
+  {
+    id: "tile-chart-elec-1",
+    title: "Динамика индексов цен РСВ по часам",
+    spec: {
+      $schema: "https://vega.github.io/schema/vega-lite/v5.json",
+      data: {
+        values: [
+          { hour: "00:00", price: 1850 },
+          { hour: "04:00", price: 1720 },
+          { hour: "08:00", price: 2340 },
+          { hour: "12:00", price: 2750 },
+          { hour: "16:00", price: 2680 },
+          { hour: "20:00", price: 2420 },
+        ],
+      },
+      mark: { type: "line", point: true, color: "#f59e0b" },
+      encoding: {
+        x: { field: "hour", type: "nominal", title: "Час суток", axis: { labelAngle: -35 } },
+        y: { field: "price", type: "quantitative", title: "Цена (₽/МВт·ч)" },
+      },
+    },
+    is_kpi: false,
+    insight: "Суточный максимум цен зафиксирован в полдень на уровне 2 750 ₽/МВт·ч.",
+    result_table: "temp_hourly_price",
+    layout: { x: 0, y: 2, w: 6, h: 4 },
+  },
+  {
+    id: "tile-chart-elec-2",
+    title: "Объёмы поставки по энергозонам",
+    spec: {
+      $schema: "https://vega.github.io/schema/vega-lite/v5.json",
+      data: {
+        values: [
+          { zone: "1-я Ценовая зона", volume: 98.4 },
+          { zone: "2-я Ценовая зона", volume: 44.1 },
+        ],
+      },
+      mark: { type: "bar", cornerRadiusEnd: 4, color: "#10b981" },
+      encoding: {
+        x: { field: "zone", type: "nominal", title: "Энергозона", axis: { labelAngle: -35 } },
+        y: { field: "volume", type: "quantitative", title: "Объём (ГВт·ч)" },
+      },
+    },
+    is_kpi: false,
+    insight: "Первая ценовая зона сформировала 69% суммарного объема торгов.",
+    result_table: "temp_zone_volume",
     layout: { x: 6, y: 2, w: 6, h: 4 },
   },
 ];
@@ -326,27 +398,124 @@ export function mockStreamChat(
   _options?: { recoveryResponse?: string; replyTo?: string | null },
 ): () => void {
   let isCancelled = false;
+  const store = useSessionStore.getState();
+  const activeTable = store.sessionActiveTable[sessionId] || "";
+  const dbId = store.sessionDatabase[sessionId];
+  const database = store.databases.find((d) => d.id === dbId);
+  const context = `${activeTable} ${database?.title || ""} ${question}`.toLowerCase();
+
   const isDashboardRequest = /дашборд|панел|график|kpi|отчет|показател/i.test(question);
   // turn_id нужен кнопкам «Спросить об этом» и цитате в демо-режиме (F-12).
   const turnId = `mock-turn-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
   // Видимая проверка, что reply_to дошёл до мока.
   const replyPrefix = _options?.replyTo ? "Уточняю по прошлому ответу…\n" : "";
 
-  const steps = [
-    { delay: 300, chunk: `${replyPrefix}Изучаю схему данных в DuckDB...\n` },
-    { delay: 700, chunk: "Выполняю расчет шага 1: агрегация продаж по регионам (temp_result_v1).\n" },
-    {
-      delay: 1200,
-      headline: isDashboardRequest
-        ? "Дашборд успешно сформирован на основе промежуточных результатов DuckDB"
-        : "Анализ данных завершён: выявлен рост выручки на 18.4%",
-      details: [
-        "Москва лидирует с результатом 12.5 млн ₽",
-        "Темп роста относительно Q2 составил +18.4%",
-        "SQL не генерировался заново: использован кэш шага",
-      ],
-    },
-  ];
+  const isElectricity = /electric|price|volume|energy|generation|power|grid|hour|load|мвт|гвт|рсв|электр|генерац/i.test(context);
+  const isCustomer = /customer|user|client|audience|subscriber|loyalt|клиент|пользовател/i.test(context);
+  const isProduct = /product|item|inventory|good|catalog|stock|товар|номенклатур|склад/i.test(context);
+
+  let tiles = DEFAULT_TILES;
+  let chartCaption = "Выручка по ключевым регионам";
+  let chartResultTable = "temp_result_v1";
+  let dashboardTitle = "Аналитический срез: продажи и KPI";
+  let steps: { delay: number; chunk?: string; headline?: string; details?: string[] }[] = [];
+
+  if (isElectricity) {
+    tiles = ELECTRICITY_TILES;
+    chartCaption = "Динамика индексов цен РСВ по часам";
+    chartResultTable = "temp_hourly_price";
+    dashboardTitle = "Анализ рынка электроэнергии РСВ";
+    steps = [
+      { delay: 300, chunk: `${replyPrefix}Изучаю схему данных в DuckDB (почасовые индексы цен и объёмы)...\n` },
+      { delay: 700, chunk: "Выполняю расчет средневзвешенных цен и торговых объемов РСВ (temp_elec_summary).\n" },
+      {
+        delay: 1200,
+        headline: isDashboardRequest
+          ? "Дашборд успешно сформирован по рынку электроэнергии РСВ"
+          : "Анализ данных завершён: динамика индексов цен и объемов РСВ",
+        details: [
+          "Средневзвешенная цена РСВ: 2 480 ₽/МВт·ч (+3.1% к пред. суткам)",
+          "Суммарный объем торгов: 142.5 ГВт·ч",
+          "Пик нагрузки зафиксирован в интервале 10:00–18:00 (до 2 750 ₽/МВт·ч)",
+        ],
+      },
+    ];
+  } else if (isCustomer) {
+    chartCaption = "Распределение активности клиентов";
+    chartResultTable = "temp_customer_segments";
+    dashboardTitle = "Анализ клиентской базы и когорт";
+    steps = [
+      { delay: 300, chunk: `${replyPrefix}Изучаю структуру клиентской базы в DuckDB...\n` },
+      { delay: 700, chunk: "Выполняю расчет сегментов активности аудитории (temp_customer_segments).\n" },
+      {
+        delay: 1200,
+        headline: isDashboardRequest
+          ? "Дашборд сформирован: сегменты пользователей и активность"
+          : "Анализ клиентвой базы: активная аудитория выросла на 14.2%",
+        details: [
+          "Доля активных постоянных клиентов составила 62%",
+          "Когорта Q3 демонстрирует наивысший LTV (32 400 ₽)",
+          "Показатель оттока снизился на 3.4 п.п. относительно прошлого периода",
+        ],
+      },
+    ];
+  } else if (isProduct) {
+    chartCaption = "Маржинальность товарных категорий";
+    chartResultTable = "temp_product_margin";
+    dashboardTitle = "Анализ товарного каталога и маржи";
+    steps = [
+      { delay: 300, chunk: `${replyPrefix}Анализирую товарную номенклатуру в DuckDB...\n` },
+      { delay: 700, chunk: "Выполняю расчет маржинальности и оборачиваемости (temp_product_margin).\n" },
+      {
+        delay: 1200,
+        headline: isDashboardRequest
+          ? "Дашборд сформирован: оборачиваемость и маржинальность каталога"
+          : "Анализ каталога: 15% позиций генерируют 78% маржи",
+        details: [
+          "Лидирующая категория по маржинальности: Комплектующие (38.5%)",
+          "Выявлено 12 SKU с периодом оборачиваемости свыше 180 дней",
+          "Рекомендуется оптимизировать складской запас категории B",
+        ],
+      },
+    ];
+  } else if (activeTable && activeTable !== "sales_orders" && !/sale|order|retail|revenue|чек|выручк/i.test(activeTable)) {
+    const cleanName = activeTable.replace(/[_-]/g, " ");
+    chartCaption = `Распределение показателей таблицы «${cleanName}»`;
+    chartResultTable = `temp_analytics_${activeTable}`;
+    dashboardTitle = `Сводный дашборд: ${cleanName}`;
+    steps = [
+      { delay: 300, chunk: `${replyPrefix}Изучаю схему и профиль таблицы «${cleanName}» в DuckDB...\n` },
+      { delay: 700, chunk: `Выполняю агрегацию и расчет ключевых метрик (temp_analytics_${activeTable}).\n` },
+      {
+        delay: 1200,
+        headline: isDashboardRequest
+          ? `Дашборд успешно сформирован по таблице «${cleanName}»`
+          : `Анализ данных таблицы «${cleanName}» успешно завершён`,
+        details: [
+          `Успешно обработаны строки таблицы «${cleanName}» в DuckDB`,
+          `Рассчитаны ключевые распределения, агрегаты и кластеры значений`,
+          `SQL скомпилирован и выполнен в локальной базе данных без сбоев`,
+        ],
+      },
+    ];
+  } else {
+    // Ритейл / sales_orders
+    steps = [
+      { delay: 300, chunk: `${replyPrefix}Изучаю схему данных в DuckDB...\n` },
+      { delay: 700, chunk: "Выполняю расчет шага 1: агрегация продаж по регионам (temp_result_v1).\n" },
+      {
+        delay: 1200,
+        headline: isDashboardRequest
+          ? "Дашборд успешно сформирован на основе промежуточных результатов DuckDB"
+          : "Анализ данных завершён: выявлен рост выручки на 18.4%",
+        details: [
+          "Москва лидирует с результатом 12.5 млн ₽",
+          "Темп роста относительно Q2 составил +18.4%",
+          "SQL не генерировался заново: использован кэш шага",
+        ],
+      },
+    ];
+  }
 
   const timeouts: NodeJS.Timeout[] = [];
 
@@ -369,17 +538,17 @@ export function mockStreamChat(
             type: "dashboard",
             data: {
               dashboard_id: dashId,
-              title: "Аналитический срез: продажи и KPI",
-              tiles: DEFAULT_TILES,
+              title: dashboardTitle,
+              tiles,
             },
           });
         } else {
           onEvent({
             type: "chart",
             data: {
-              caption: "Выручка по ключевым регионам",
-              spec: DEFAULT_TILES[2].spec,
-              result_table: "temp_result_v1",
+              caption: chartCaption,
+              spec: tiles[2].spec,
+              result_table: chartResultTable,
             },
           });
         }

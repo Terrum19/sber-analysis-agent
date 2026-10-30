@@ -410,6 +410,7 @@ export default function Canvas({ sessionId }: Props) {
           {isEditing ? (
             <input
               type="text"
+              maxLength={80}
               value={dashboardTitle}
               onChange={(e) => setDashboardTitle(e.target.value)}
               className="w-full max-w-[260px] rounded-md border border-graphite-600 bg-graphite-950 px-2 py-0.5 text-[13px] text-graphite-50 outline-none focus:border-graphite-400"
@@ -470,7 +471,7 @@ export default function Canvas({ sessionId }: Props) {
           <button
             onClick={handleRecalculate}
             disabled={isRecalculating}
-            className="flex h-7 w-7 items-center justify-center rounded-md text-graphite-400 hover:bg-graphite-800 hover:text-graphite-100 transition disabled:opacity-50"
+            className="flex h-8 w-8 items-center justify-center rounded-md text-graphite-400 hover:bg-graphite-800 hover:text-graphite-100 transition disabled:opacity-50"
             title={tr("canvas.refresh")}
           >
             <Icon name="refresh" className={isRecalculating ? "animate-spin" : ""} />
@@ -481,7 +482,7 @@ export default function Canvas({ sessionId }: Props) {
             <button
               onClick={() => setExportMenuOpen((prev) => !prev)}
               disabled={isExporting !== null}
-              className="flex h-7 w-7 items-center justify-center rounded-md text-graphite-400 hover:bg-graphite-800 hover:text-graphite-100 transition disabled:opacity-50"
+              className="flex h-8 w-8 items-center justify-center rounded-md text-graphite-400 hover:bg-graphite-800 hover:text-graphite-100 transition disabled:opacity-50"
               title={isExporting ? tr("canvas.exporting") : tr("canvas.export")}
             >
               <Icon name="download" />
@@ -513,17 +514,17 @@ export default function Canvas({ sessionId }: Props) {
             <button
               onClick={handleSave}
               disabled={isSaving}
-              className="ml-1 flex items-center gap-1.5 rounded-md bg-graphite-100 px-2.5 py-1 text-[12px] font-medium text-graphite-950 hover:bg-graphite-50 transition disabled:opacity-50"
+              className="ml-1 flex h-8 items-center gap-1.5 rounded-md bg-graphite-100 px-3 py-1 text-[12px] font-medium text-graphite-950 hover:bg-graphite-50 transition disabled:opacity-50"
             >
               <Icon name="save" size={14} className={isSaving ? "animate-spin" : ""} />
               {isSaving ? tr("canvas.saving") : tr("canvas.save")}
             </button>
           ) : (
-            <div className="flex items-center gap-0.5">
+            <div className="flex items-center gap-1">
               <button
                 onClick={handleSave}
                 disabled={isSaving}
-                className="flex h-7 items-center gap-1 rounded-md px-2 text-graphite-300 hover:bg-graphite-800 hover:text-graphite-100 transition disabled:opacity-50 text-[12px]"
+                className="flex h-8 items-center gap-1 rounded-md px-2.5 text-graphite-300 hover:bg-graphite-800 hover:text-graphite-100 transition disabled:opacity-50 text-[12px]"
                 title={tr("canvas.save")}
               >
                 <Icon name="save" size={13} className={isSaving ? "animate-spin" : ""} />
@@ -531,7 +532,7 @@ export default function Canvas({ sessionId }: Props) {
               </button>
               <button
                 onClick={handleStartEdit}
-                className="flex h-7 w-7 items-center justify-center rounded-md text-graphite-400 hover:bg-graphite-800 hover:text-graphite-100 transition"
+                className="flex h-8 w-8 items-center justify-center rounded-md text-graphite-400 hover:bg-graphite-800 hover:text-graphite-100 transition"
                 title={tr("canvas.edit")}
               >
                 <Icon name="pencil" />
@@ -542,7 +543,7 @@ export default function Canvas({ sessionId }: Props) {
           <span className="mx-1 h-4 w-px bg-graphite-800" />
           <button
             onClick={() => setCanvasOpen(false)}
-            className="flex h-7 w-7 items-center justify-center rounded-md text-graphite-400 hover:bg-graphite-800 hover:text-graphite-100 transition"
+            className="flex h-8 w-8 items-center justify-center rounded-md text-graphite-400 hover:bg-graphite-800 hover:text-graphite-100 transition"
             title={tr("canvas.hide")}
           >
             <Icon name="x" />

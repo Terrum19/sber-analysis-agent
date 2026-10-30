@@ -37,6 +37,7 @@ import LlmStatusBanner from "@/components/chat/LlmStatusBanner";
 import DashboardIdeas, { type IdeasState } from "@/components/chat/DashboardIdeas";
 import { useLlmStatus } from "@/hooks/useLlmStatus";
 import { useT } from "@/i18n/useT";
+import { getDatasetQuestions } from "@/lib/datasetQuestions";
 import { RECOVERY_SKIP_STEP, type DashboardEvent, type DashboardIdea } from "@/types/chat";
 
 /** Сколько раз подряд просить новые варианты дашборда, если все прежние уже использованы. */
@@ -153,20 +154,29 @@ export default function ChatPanel({ sessionId }: Props) {
 
   useEffect(() => {
     if (!activeTable && sessionId) {
-      getSession(sessionId)
-        .then((sess) => {
-          if (sess.table) {
-            const dbId = useSessionStore.getState().sessionDatabase[sessionId] || sess.datasource_id || "";
-            bindSession(sessionId, dbId, sess.table);
-          }
-        })
-        .catch((err) => {
-          if (err?.status === 404) {
-            setTableError(t("chat.tableNotFound"));
-          }
-        });
+      if (availableTables.length > 0) {
+        const defaultTable = availableTables[0];
+        switchSessionTable(sessionId, defaultTable);
+        if (database) {
+          bindSession(sessionId, database.id, defaultTable);
+        }
+      } else {
+        getSession(sessionId)
+          .then((sess) => {
+            if (sess.table) {
+              const dbId = useSessionStore.getState().sessionDatabase[sessionId] || sess.datasource_id || "";
+              bindSession(sessionId, dbId, sess.table);
+              switchSessionTable(sessionId, sess.table);
+            }
+          })
+          .catch((err) => {
+            if (err?.status === 404) {
+              setTableError(t("chat.tableNotFound"));
+            }
+          });
+      }
     }
-  }, [sessionId, activeTable, bindSession, t]);
+  }, [sessionId, activeTable, availableTables, database, bindSession, switchSessionTable, t]);
 
   async function handleTableChange(nextTable: string) {
     if (!nextTable || nextTable === activeTable || isTableSwitching || streaming) return;
@@ -558,18 +568,32 @@ export default function ChatPanel({ sessionId }: Props) {
                 <TableBriefCard brief={activeBrief} />
               </div>
             )}
-            <div className="mt-6 flex flex-col items-start gap-1">
-              {suggestions.map((q) => (
-                <button
-                  key={q}
-                  onClick={() => sendQuestion(q)}
-                  disabled={!activeTable}
-                  className="rounded-lg px-2 py-1 -mx-2 text-[13px] text-graphite-300 hover:bg-graphite-800 hover:text-graphite-50 transition disabled:opacity-50 disabled:cursor-not-allowed"
-                >
-                  {t("chat.quoted", { q })}
-                </button>
-              ))}
-            </div>
+            {(() => {
+              const chips = activeBrief?.suggested_questions?.length
+                ? activeBrief.suggested_questions
+                : getDatasetQuestions(
+                    activeTable,
+                    database?.title,
+                    activeBrief?.summary || database?.description
+                  );
+              return (
+                <div className="mt-6 flex flex-col items-start gap-1.5">
+                  <span className="text-[11px] font-medium text-graphite-400 uppercase tracking-wider mb-1">
+                    Релевантные вопросы к датасету:
+                  </span>
+                  {chips.map((q) => (
+                    <button
+                      key={q}
+                      onClick={() => sendQuestion(q)}
+                      disabled={!activeTable}
+                      className="rounded-lg px-2.5 py-1.5 -mx-2.5 text-left text-[13px] text-graphite-300 hover:bg-graphite-800 hover:text-graphite-50 transition disabled:opacity-50 disabled:cursor-not-allowed"
+                    >
+                      {t("chat.quoted", { q })}
+                    </button>
+                  ))}
+                </div>
+              );
+            })()}
           </div>
         ) : (
           messages.map((m, i) => (
