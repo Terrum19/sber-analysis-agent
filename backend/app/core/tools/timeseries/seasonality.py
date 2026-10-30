@@ -4,18 +4,26 @@
 «В какой день недели больше заказов?».
 """
 
+from datetime import timedelta
 from statistics import median
 from typing import Literal
 
 from pydantic import model_validator
 
 from app.core.tools.base import BaseTool, Ident, MetricArgs
-from app.core.tools.domain._common import rows_result, series
+from app.core.tools.domain._common import _MONDAY, rows_result, series
 
 NAME = "seasonality"
 
-_BUCKETS = {"month": "month", "quarter": "quarter", "dayofweek": "day", "hour": "hour"}
-_CYCLES = {"month": 12, "quarter": 4, "dayofweek": 7, "hour": 24}
+_BUCKETS = {
+    "month": "month",
+    "quarter": "quarter",
+    "week": "week",
+    "dayofweek": "day",
+    "hour": "hour",
+}
+# Неделя года — 52 шага: 53-я неделя бывает не каждый год, у неё меньше periods.
+_CYCLES = {"month": 12, "quarter": 4, "week": 52, "dayofweek": 7, "hour": 24}
 # Шагов в окне, где пустой период — ноль, а не дыра: час — в своём дне, день — в неделе.
 _ZERO_WINDOWS = {"hour": 24, "dayofweek": 7}
 
@@ -23,7 +31,7 @@ _ZERO_WINDOWS = {"hour": 24, "dayofweek": 7}
 class SeasonalityArgs(MetricArgs):
     date_column: Ident
     metric_column: Ident | None = None
-    period: Literal["month", "quarter", "dayofweek", "hour"] = "month"
+    period: Literal["month", "quarter", "week", "dayofweek", "hour"] = "month"
     function: Literal["SUM", "COUNT", "AVG"] = "SUM"
 
     @model_validator(mode="before")
@@ -56,8 +64,8 @@ class SeasonalityTool(BaseTool):
 
     name = NAME
     description = (
-        "Сезонность: типичный уровень метрики по month/quarter/dayofweek (1=пн)/hour, все годы "
-        "вместе; function=SUM — итог за конкретный период (выручка, штуки, объёмы), COUNT — "
+        "Сезонность: типичный уровень метрики по month/quarter/week (номер недели года ISO)/"
+        "dayofweek (1=пн)/hour, все годы вместе — «типичная неделя года», а не конкретная неделя; function=SUM — итог за конкретный период (выручка, штуки, объёмы), COUNT — "
         "число строк (событий, заказов), AVG — средняя величина одной записи (средний чек, "
         "цена, длительность); сначала итог за каждый месяц/день/час, потом среднее по годам "
         "(дням) — level; median — медиана тех же периодов (намного ниже level — выбросы); "
@@ -75,7 +83,9 @@ class SeasonalityTool(BaseTool):
         if not complete:
             raise ValueError("seasonality: нет ни одного полного периода")
         first, last = min(complete), max(complete)
-        cycles = (last - first + 1) // cycle
+        # Целые годы — по всему охвату, с неполными краями: у недель края почти всегда
+        # неполные, и два года данных давали 103 полные недели — один «целый год».
+        cycles = (max(totals) - min(totals) + 1) // cycle
         start = last - cycles * cycle + 1 if cycles else first
         levels: dict[int, list] = {}
         values: dict[int, list[float]] = {}
@@ -144,7 +154,9 @@ def _totals(db, table: str, args: SeasonalityArgs) -> dict:
 
 
 def _number(step: int, period: str) -> int:
-    """Номер периода по шагу: месяц 1-12, квартал 1-4, день недели 1=пн, час 0-23."""
+    """Номер периода по шагу: месяц 1-12, квартал 1-4, неделя ISO 1-53, день недели 1=пн, час 0-23."""
+    if period == "week":
+        return (_MONDAY + timedelta(weeks=step)).isocalendar().week
     if period == "hour":
         return step % 24
     if period == "dayofweek":

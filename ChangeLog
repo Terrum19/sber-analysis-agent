@@ -171,6 +171,19 @@
 	«…»» в ленте.
 	* frontend/src/i18n/dictionary.ts (chat.tableChosen): Новая.
 	* backend/tests/unit/test_relations.py: Тесты того же.
+	«Какая неделя самая слабая» — календарная неделя, «типичная неделя
+	года» — seasonality(period=week).
+	* backend/app/core/tools/timeseries/seasonality.py (SeasonalityArgs):
+	period=week — номер недели года ISO.  (_number): Неделя по календарю.
+	(SeasonalityTool.execute): Целые годы — по всему охвату, с неполными
+	краями: два года недель давали 103 полные недели и терялся год.
+	* backend/app/core/llm/prompts/quality_rules.py (PLANNER_RULES): «Какая
+	неделя / месяц / день самый …» — time_bucket и sort_limit; номер
+	недели года с SUM по годам — нет: планировщик складывал 2025 и 2026.
+	* backend/tests/unit/test_tools.py: Неделя года, четыре целых недели.
+
+2026-10-30  Alexander Yurits  <143354682+Terrum19@users.noreply.github.com>
+
 	Сезонность: пустой час или день — ноль, пик и минимум — по медиане (#215).
 	* backend/app/core/tools/timeseries/seasonality.py (SeasonalityTool.execute):
 	При SUM/COUNT час без записей в дне с данными и день без записей в

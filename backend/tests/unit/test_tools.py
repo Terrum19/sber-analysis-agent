@@ -360,7 +360,7 @@ def test_seasonality_counts_an_empty_hour_as_zero(nights: DuckDBManager) -> None
 
 
 def test_seasonality_median_exposes_an_outlier_day(nights: DuckDBManager) -> None:
-    # Среды 10.01, 17.01, 24.01 (крайние неполные дни и 03.01 сверх целых недель не входят).
+    # Среды 03.01, 10.01, 17.01, 24.01: четыре недели охвата — четыре целых недели.
     nights.execute("INSERT INTO nights VALUES (TIMESTAMP '2024-01-10 12:00', 1000.0)")
     rows = run_sales(
         nights,
@@ -372,8 +372,18 @@ def test_seasonality_median_exposes_an_outlier_day(nights: DuckDBManager) -> Non
     )
     wednesday = rows[2]
     assert wednesday["dayofweek"] == 3
-    assert wednesday["level"] == pytest.approx(1030.0 / 3)
+    assert wednesday["level"] == 260.0
     assert wednesday["median"] == 10.0
+
+
+def test_seasonality_by_week_of_year_averages_years(sales: DuckDBManager) -> None:
+    # Первая и последняя недели неполные, но два года охвата — два целых года, а не один.
+    rows = run_sales(
+        sales, "seasonality", date_column="sold_at", metric_column="amount", period="week"
+    )
+    by_week = {row["week"]: row for row in rows}
+    assert sum(row["skipped"] for row in rows) == 0
+    assert (by_week[10]["level"], by_week[10]["periods"]) == (21.0, 2)
 
 
 def test_seasonality_average_keeps_empty_periods_out(nights: DuckDBManager) -> None:
