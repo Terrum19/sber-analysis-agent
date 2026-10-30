@@ -151,7 +151,7 @@ def insight_facts(db: DuckDBManager, table: str, shown: int) -> str:
 
 
 # Номер периода года в выражении шага: EXTRACT(WEEK FROM d), date_part('month', d), week(d).
-_PERIOD_NUMBER = re.compile(
+_PERIOD_OF_YEAR = re.compile(
     r"extract\s*\(\s*(week|isoweek|month|quarter|doy|dayofyear)\s+from"
     r"|date_part\s*\(\s*'(week|isoweek|month|quarter|doy|dayofyear)'"
     r"|\b(week|weekofyear|isoweek|month|quarter|dayofyear)\s*\(",
@@ -177,7 +177,7 @@ def period_number_facts(steps: list[ResearchStep]) -> list[str]:
     lines = []
     for number, step in enumerate(steps, 1):
         for text in _strings([step.arguments, step.columns]):
-            found = _PERIOD_NUMBER.search(text)
+            found = _PERIOD_OF_YEAR.search(text)
             if found is None:
                 continue
             unit, noun = _PERIOD_UNITS[next(group for group in found.groups() if group).lower()]
