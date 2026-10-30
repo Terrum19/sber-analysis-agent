@@ -4,6 +4,7 @@
 «В какой день недели больше заказов?».
 """
 
+from statistics import median
 from typing import Literal
 
 from pydantic import model_validator
@@ -15,6 +16,8 @@ NAME = "seasonality"
 
 _BUCKETS = {"month": "month", "quarter": "quarter", "dayofweek": "day", "hour": "hour"}
 _CYCLES = {"month": 12, "quarter": 4, "dayofweek": 7, "hour": 24}
+# Шагов в окне, где пустой период — ноль, а не дыра: час — в своём дне, день — в неделе.
+_ZERO_WINDOWS = {"hour": 24, "dayofweek": 7}
 
 
 class SeasonalityArgs(MetricArgs):
@@ -57,8 +60,10 @@ class SeasonalityTool(BaseTool):
         "вместе; function=SUM — итог за конкретный период (выручка, штуки, объёмы), COUNT — "
         "число строк (событий, заказов), AVG — средняя величина одной записи (средний чек, "
         "цена, длительность); сначала итог за каждый месяц/день/час, потом среднее по годам "
-        "(дням) — level; periods — сколько периодов с данными усреднено (пропущенные не "
-        "считаются нулём); неполные крайние периоды "
+        "(дням) — level; median — медиана тех же периодов (намного ниже level — выбросы); "
+        "periods — сколько периодов усреднено: при SUM/COUNT час без записей в дне с данными "
+        "и день без записей в неделе с данными — ноль, месяц и квартал без данных — пропуск; "
+        "неполные крайние периоды "
         "(incomplete) и лишние сверх целых лет (skipped) в расчёт не входят"
     )
     Args = SeasonalityArgs
@@ -73,18 +78,29 @@ class SeasonalityTool(BaseTool):
         cycles = (last - first + 1) // cycle
         start = last - cycles * cycle + 1 if cycles else first
         levels: dict[int, list] = {}
+        values: dict[int, list[float]] = {}
+        zero_window = _ZERO_WINDOWS.get(args.period) if args.function != "AVG" else None
+        active = {step // zero_window for step in totals} if zero_window else set()
         for step in range(first, last + 1):
             number = _number(step, args.period)
             level = levels.setdefault(number, [0.0, 0, 0, 0])
-            if step not in totals:
+            if step in totals:
+                total, count, _ = totals[step]
+            elif zero_window and step // zero_window in active:
+                # Ночной час без продаж — 0 ₽, а не «нет данных»: без нуля ночь завышена.
+                total, count = 0.0, 0
+            else:
                 continue
-            total, count, _ = totals[step]
             if step < start:
                 level[3] += 1
                 continue
             level[0] += total
             level[1] += count
             level[2] += 1
+            if args.function != "AVG":
+                values.setdefault(number, []).append(total)
+            elif count:
+                values.setdefault(number, []).append(total / count)
         for step, (_, _, incomplete) in totals.items():
             if incomplete:
                 levels.setdefault(_number(step, args.period), [0.0, 0, 0, 0])
@@ -100,9 +116,13 @@ class SeasonalityTool(BaseTool):
                 level = total / count if count else None
             else:
                 level = total / periods if periods else None
-            rows.append((number, level, periods, incomplete, skipped))
+            middle = median(values[number]) if values.get(number) else None
+            rows.append((number, level, middle, periods, incomplete, skipped))
         return rows_result(
-            db, input_table, [args.period, "level", "periods", "incomplete", "skipped"], rows
+            db,
+            input_table,
+            [args.period, "level", "median", "periods", "incomplete", "skipped"],
+            rows,
         )
 
 
