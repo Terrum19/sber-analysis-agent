@@ -4,6 +4,7 @@
 поделиться» — Excel (openpyxl) и PDF (ReportLab).
 """
 
+import copy
 import logging
 import re
 import uuid
@@ -20,7 +21,7 @@ from app.api.schemas.chat import ExportRequest
 from app.config import settings
 from app.core.dashboards.store import DashboardStore
 from app.core.data.duckdb_manager import DuckDBManager
-from app.core.export.charts import render_chart_png
+from app.core.export.charts import is_table_spec, render_chart_png
 from app.core.export.excel import ExcelExporter
 from app.core.export.pdf import PdfExporter
 from app.core.memory.session_memory import SessionMemory
@@ -72,14 +73,52 @@ def export_artifact(
                 status_code=404,
                 detail=f"Дашборд «{payload.dashboard_id}» не найден.",
             )
+        if payload.title:
+            dashboard.title = payload.title.strip()
+
+        dash_title = (payload.title or dashboard.title or "dashboard").strip()
+        safe_name = re.sub(r'[\\/*?:"<>|]+', "_", dash_title).strip() or "dashboard"
+        filename = f"{safe_name}.{payload.format}"
+        unique_filename = f"{safe_name}_{uuid.uuid4().hex[:8]}.{payload.format}"
+
         if payload.format == "pdf":
-            raise HTTPException(
-                status_code=501,
-                detail="Экспорт дашборда в PDF пока не реализован. Попробуйте .xlsx.",
+            path = export_dir / unique_filename
+            try:
+                PdfExporter().export_dashboard(
+                    dashboard,
+                    str(path),
+                    db=db,
+                    session_title=payload.session_title,
+                    source_name=payload.source_name,
+                    database_name=payload.database_name,
+                )
+            except Exception as exc:
+                logger.error("Ошибка при генерации PDF дашборда: %s", exc)
+                raise HTTPException(
+                    status_code=500,
+                    detail=f"Не удалось сгенерировать PDF: {exc}",
+                ) from exc
+            return FileResponse(
+                path,
+                media_type="application/pdf",
+                filename=filename,
             )
-        filename = f"dashboard_{payload.dashboard_id}_{uuid.uuid4().hex[:8]}.xlsx"
-        path = export_dir / filename
-        ExcelExporter().export_dashboard(dashboard, str(path), db=db)
+        path = export_dir / unique_filename
+        try:
+            ExcelExporter().export_dashboard(
+                dashboard,
+                str(path),
+                db=db,
+                session_title=payload.session_title,
+                source_name=payload.source_name,
+                database_name=payload.database_name,
+            )
+        except Exception as exc:
+            logger.error("Ошибка при генерации Excel дашборда: %s", exc)
+            raise HTTPException(
+                status_code=500,
+                detail=f"Не удалось сгенерировать Excel: {exc}",
+            ) from exc
         return FileResponse(
             path,
             media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
@@ -133,19 +172,34 @@ def export_artifact(
         spec_data = payload.spec.get("data")
         if isinstance(spec_data, dict) and isinstance(spec_data.get("values"), list):
             records = [r for r in spec_data["values"] if isinstance(r, dict)]
+        elif isinstance(spec_data, list):
+            records = [r for r in spec_data if isinstance(r, dict)]
+        elif isinstance(payload.spec.get("values"), list):
+            records = [r for r in payload.spec["values"] if isinstance(r, dict)]
+
+    export_title = (payload.title or payload.headline or "Аналитический отчёт").strip()
+    safe_name = re.sub(r'[\\/*?:"<>|]+', "_", export_title).strip() or "agent_export"
+    filename = f"{safe_name}.{payload.format}"
+    unique_filename = f"{safe_name}_{uuid.uuid4().hex[:8]}.{payload.format}"
 
     if payload.format == "xlsx":
-        filename = f"agent_export_{uuid.uuid4().hex[:8]}.xlsx"
-        path = export_dir / filename
-        ExcelExporter().export(
-            records,
-            str(path),
-            title="Результат исследования",
-            question=payload.question,
-            headline=payload.headline,
-            details=payload.details,
-            spec=payload.spec,
-        )
+        path = export_dir / unique_filename
+        try:
+            ExcelExporter().export(
+                records,
+                str(path),
+                title=export_title,
+                question=payload.question,
+                headline=payload.headline,
+                details=payload.details,
+                spec=payload.spec,
+            )
+        except Exception as exc:
+            logger.error("Ошибка при генерации Excel отчёта: %s", exc)
+            raise HTTPException(
+                status_code=500,
+                detail=f"Не удалось сгенерировать Excel: {exc}",
+            ) from exc
         return FileResponse(
             path,
             media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
@@ -153,9 +207,17 @@ def export_artifact(
         )
 
     # payload.format == "pdf"
-    chart_png = render_chart_png(payload.spec) if payload.spec else None
-    filename = f"agent_export_{uuid.uuid4().hex[:8]}.pdf"
-    path = export_dir / filename
+    is_table = is_table_spec(payload.spec)
+    chart_spec = copy.deepcopy(payload.spec) if payload.spec else None
+    if chart_spec and records:
+        chart_spec["data"] = {"values": records}
+
+    chart_png = None
+    if not is_table and chart_spec:
+        chart_png = render_chart_png(chart_spec)
+    chart_render_failed = bool(chart_spec and not is_table and chart_png is None)
+
+    path = export_dir / unique_filename
     try:
         PdfExporter().export_answer(
             path=str(path),
@@ -164,8 +226,11 @@ def export_artifact(
             headline=payload.headline,
             details=payload.details,
             chart_png=chart_png,
+            title=export_title,
+            is_table=is_table,
+            chart_render_failed=chart_render_failed,
         )
-    except RuntimeError as exc:
+    except Exception as exc:
         logger.error("Ошибка при генерации PDF отчёта: %s", exc)
         raise HTTPException(
             status_code=500,

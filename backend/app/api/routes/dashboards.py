@@ -4,6 +4,7 @@
 интерфейса платформы (см. core/dashboards/store.py).
 """
 
+import re
 from collections.abc import Collection
 from pathlib import Path
 from typing import Annotated, Literal
@@ -26,6 +27,7 @@ from app.core.dashboards.recalculate import recalculate
 from app.core.dashboards.store import DashboardStore
 from app.core.data.duckdb_manager import DuckDBManager
 from app.core.export.excel import ExcelExporter
+from app.core.export.pdf import PdfExporter
 
 router = APIRouter()
 
@@ -116,22 +118,64 @@ def export_dashboard(
     dashboard_id: str,
     db: Annotated[DuckDBManager, Depends(get_db)],
     format: Literal["xlsx", "pdf"] = "xlsx",
+    title: str | None = None,
+    session_title: str | None = None,
+    source_name: str | None = None,
+    database_name: str | None = None,
 ) -> FileResponse:
-    """Экспорт дашборда в .xlsx (или .pdf)."""
-    if format == "pdf":
-        raise HTTPException(
-            status.HTTP_501_NOT_IMPLEMENTED,
-            "Экспорт дашборда в PDF пока не реализован. Попробуйте .xlsx.",
-        )
+    """Экспорт дашборда в .xlsx или .pdf."""
     dashboard = DashboardStore().get(dashboard_id)
     if dashboard is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, NOT_FOUND)
 
-    filename = f"dashboard_{dashboard_id}_{uuid4().hex[:8]}.xlsx"
+    if title:
+        dashboard.title = title.strip()
+
+    dash_title = (title or dashboard.title or "dashboard").strip()
+    safe_name = re.sub(r'[\\/*?:"<>|]+', "_", dash_title).strip() or "dashboard"
+    filename = f"{safe_name}.{format}"
+    unique_filename = f"{safe_name}_{uuid4().hex[:8]}.{format}"
+
     export_dir = Path(settings.storage_dir) / "exports"
     export_dir.mkdir(parents=True, exist_ok=True)
-    path = export_dir / filename
-    ExcelExporter().export_dashboard(dashboard, str(path), db=db)
+
+    if format == "pdf":
+        path = export_dir / unique_filename
+        try:
+            PdfExporter().export_dashboard(
+                dashboard,
+                str(path),
+                db=db,
+                session_title=session_title,
+                source_name=source_name,
+                database_name=database_name,
+            )
+        except Exception as exc:
+            raise HTTPException(
+                status.HTTP_500_INTERNAL_SERVER_ERROR,
+                f"Не удалось сгенерировать PDF: {exc}",
+            ) from exc
+        return FileResponse(
+            path,
+            media_type="application/pdf",
+            filename=filename,
+        )
+
+    path = export_dir / unique_filename
+    try:
+        ExcelExporter().export_dashboard(
+            dashboard,
+            str(path),
+            db=db,
+            session_title=session_title,
+            source_name=source_name,
+            database_name=database_name,
+        )
+    except Exception as exc:
+        raise HTTPException(
+            status.HTTP_500_INTERNAL_SERVER_ERROR,
+            f"Не удалось сгенерировать Excel: {exc}",
+        ) from exc
     return FileResponse(
         path,
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",

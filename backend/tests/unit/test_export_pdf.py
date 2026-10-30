@@ -173,7 +173,8 @@ def test_5_api_export_pdf_endpoint(client: TestClient, tmp_path: Path) -> None:
     response = client.post("/api/artifacts/export", json=payload)
     assert response.status_code == 200
     assert response.headers["content-type"] == "application/pdf"
-    assert response.headers["content-disposition"].startswith('attachment; filename="agent_export_')
+    assert "attachment;" in response.headers["content-disposition"]
+    assert ".pdf" in response.headers["content-disposition"]
     assert response.content.startswith(b"%PDF")
 
     # Проверяем, что полученный PDF валиден
@@ -232,7 +233,8 @@ def test_api_export_xlsx_endpoint(client: TestClient, tmp_path: Path) -> None:
     )
     assert resp.status_code == 200
     assert "spreadsheetml" in resp.headers["content-type"]
-    assert resp.headers["content-disposition"].startswith('attachment; filename="agent_export_')
+    assert "attachment;" in resp.headers["content-disposition"]
+    assert ".xlsx" in resp.headers["content-disposition"]
 
 
 def test_xml_escaping_in_pdf_report(tmp_path: Path) -> None:
@@ -368,6 +370,7 @@ def test_charts_edge_cases(monkeypatch) -> None:
             raise ImportError("no vl_convert")
         return real_import(name, *args, **kwargs)
 
+    assert fake_import("math") is not None
     monkeypatch.setattr(builtins, "__import__", fake_import)
     assert render_chart_png(SAMPLE_SPEC) is None
 
@@ -832,3 +835,210 @@ def test_api_export_xlsx_of_a_dashboard_tile(client: TestClient) -> None:
         },
     )
     assert missing.status_code == 404
+
+
+def test_export_answer_as_table_single_page(tmp_path: Path) -> None:
+    """Табличный ответ должен рендериться на 1-й странице и не занимать 2-ю страницу."""
+    pdf_path = str(tmp_path / "table_answer.pdf")
+    records = [{"ID": i, "Название": f"Позиция {i}", "Сумма": i * 100} for i in range(15)]
+    exporter = PdfExporter()
+    out = exporter.export_answer(
+        path=pdf_path,
+        records=records,
+        question="Список товаров",
+        headline="Топ позиций",
+        details=["Всего 15 строк"],
+        title="Таблица позиций",
+        is_table=True,
+    )
+    assert out == pdf_path
+    assert Path(pdf_path).exists()
+
+    reader = pypdf.PdfReader(pdf_path)
+    assert len(reader.pages) == 1, "Табличный ответ должен строго помещаться на одной странице"
+    text = reader.pages[0].extract_text()
+    assert "Таблица позиций" in text
+    assert "Данные таблицы" in text
+    assert "Визуализация данных" not in text
+    assert "Таблица с детальными показателями приведена в приложении ниже" not in text
+    assert "Позиция 0" in text
+    assert "Позиция 14" in text
+
+
+def test_export_answer_as_table_large_table_does_not_spill_to_page_2(tmp_path: Path) -> None:
+    """Большая таблица с длинными текстами и подробным инсайтом динамически сжимается и не вылезает на 2 страницу."""
+    pdf_path = str(tmp_path / "large_table_answer.pdf")
+    records = [
+        {
+            "Код": f"SKU-{i:04d}",
+            "Описание": f"Длинное подробное описание товара категории {i} со множеством дополнительных характеристик для проверки высоты строки",
+            "Выручка, ₽": 100000.0 + i * 500,
+            "Статус": "В наличии на складе в Москве",
+        }
+        for i in range(50)
+    ]
+    exporter = PdfExporter()
+    out = exporter.export_answer(
+        path=pdf_path,
+        records=records,
+        question="Длинный вопрос исследования:\nКаковы основные показатели по всем товарным позициям на текущую дату?",
+        headline="Ключевой аналитический вывод по товарным остаткам",
+        details=[
+            "Первая деталь: выручка стабильно растёт во всех филиалах",
+            "Вторая деталь: наличие запасов на складах превышает норматив",
+            "Третья деталь: динамика заказов положительная",
+        ],
+        title="Отчёт по товарным остаткам",
+        is_table=True,
+    )
+    assert out == pdf_path
+    reader = pypdf.PdfReader(pdf_path)
+    assert len(reader.pages) == 1, (
+        "Даже большая таблица с длинным текстом не должна вылезать на страницу 2"
+    )
+
+
+def test_export_answer_as_table_empty_row_dict(tmp_path: Path) -> None:
+    """Таблица без колонок обрабатывается корректно."""
+    pdf_path = str(tmp_path / "empty_cols.pdf")
+    exporter = PdfExporter()
+    out = exporter.export_answer(
+        path=pdf_path,
+        records=[{}],
+        is_table=True,
+    )
+    assert out == pdf_path
+    assert Path(pdf_path).exists()
+
+
+def test_is_table_spec_text_mark_and_transforms() -> None:
+    """Проверка определения табличных спецификаций с mark: text и transform."""
+    from app.core.export.charts import is_table_spec
+
+    assert is_table_spec({"mark": "text", "transform": [{"fold": ["a", "b"]}]}) is True
+    assert (
+        is_table_spec({"mark": {"type": "text"}, "transform": [{"window": [{"op": "row_number"}]}]})
+        is True
+    )
+    assert is_table_spec({"mark": "text", "transform": [{"filter": "datum.x > 0"}]}) is False
+    assert is_table_spec({"mark": "text"}) is False
+    assert is_table_spec({"mark": {"type": "bar"}}) is False
+    assert is_table_spec({"usermeta": {"chart_type": "grid"}}) is True
+    assert is_table_spec({"usermeta": {"requested_type": "dataframe"}}) is True
+
+
+def test_api_export_pdf_of_table_spec_single_page(client: TestClient) -> None:
+    """Экспорт плитки-таблицы через API возвращает PDF с 1 страницей без картинки графика."""
+    db: DuckDBManager = client.app.dependency_overrides[get_db]()
+    memory = SessionMemory("test_table_export_session", db)
+    memory.set_table("raw")
+
+    spec = {
+        "usermeta": {"chart_type": "table"},
+        "data": {"values": [{"Категория": f"Кат {i}", "Значение": i * 100} for i in range(10)]},
+    }
+    resp = client.post(
+        "/api/artifacts/export",
+        json={
+            "session_id": "test_table_export_session",
+            "format": "pdf",
+            "title": "Таблица исследования",
+            "headline": "Ключевые показатели",
+            "spec": spec,
+        },
+    )
+    assert resp.status_code == 200
+    reader = pypdf.PdfReader(io.BytesIO(resp.content))
+    assert len(reader.pages) == 1
+    text = reader.pages[0].extract_text()
+    assert "Таблица исследования" in text
+    assert "Данные таблицы" in text
+    assert "Визуализация данных" not in text
+
+
+def test_export_answer_chart_render_failed_notice(tmp_path: Path) -> None:
+    """Проверка вывода предупреждения, когда chart_render_failed=True."""
+    pdf_path = str(tmp_path / "chart_failed.pdf")
+    exporter = PdfExporter()
+    out = exporter.export_answer(
+        path=pdf_path,
+        records=[{"x": 1, "y": 2}],
+        chart_render_failed=True,
+    )
+    assert out == pdf_path
+    reader = pypdf.PdfReader(pdf_path)
+    text = "".join(p.extract_text() or "" for p in reader.pages)
+    assert "График не удалось отобразить в PDF (ошибка рендеринга визуализации)" in text
+
+
+def test_api_export_overwrites_stale_spec_values(client: TestClient, monkeypatch) -> None:
+    """Проверка безусловной синхронизации данных: свежие records из result_ref перезаписывают stale spec.data.values."""
+    db: DuckDBManager = client.app.dependency_overrides[get_db]()
+    db.execute("CREATE TABLE temp_result_v99 AS SELECT 'Свежие_данные' AS title, 999 AS val")
+    memory = SessionMemory("sync_spec_session", db)
+    memory.set_table("raw")
+    memory.start_turn("Какая выручка?")
+    memory.finish_turn(
+        "ok",
+        result_table="temp_result_v99",
+        result_columns=["title", "val"],
+    )
+
+    rendered_specs: list[dict] = []
+
+    def mock_render(spec, **kwargs):
+        rendered_specs.append(spec)
+        return b"fake_png"
+
+    monkeypatch.setattr("app.api.routes.artifacts.render_chart_png", mock_render)
+
+    stale_spec = {
+        "mark": "bar",
+        "data": {"values": [{"title": "Устаревшие_данные", "val": 1}]},
+    }
+
+    resp = client.post(
+        "/api/artifacts/export",
+        json={
+            "session_id": "sync_spec_session",
+            "format": "pdf",
+            "result_ref": "temp_result_v99",
+            "spec": stale_spec,
+        },
+    )
+    assert resp.status_code == 200
+    assert len(rendered_specs) == 1
+    # Проверяем, что в рендеринг ушли свежие данные, а не старые
+    assert rendered_specs[0]["data"]["values"] == [{"title": "Свежие_данные", "val": 999}]
+
+
+def test_api_export_chart_render_failure_adds_warning_in_pdf(
+    client: TestClient, monkeypatch
+) -> None:
+    """Если render_chart_png возвращает None, экспорт в PDF включает уведомление о сбое графика."""
+    db: DuckDBManager = client.app.dependency_overrides[get_db]()
+    db.execute("CREATE TABLE temp_result_v88 AS SELECT 'Данные' AS col, 123 AS num")
+    memory = SessionMemory("render_fail_session", db)
+    memory.set_table("raw")
+    memory.start_turn("Покажи данные")
+    memory.finish_turn(
+        "ok",
+        result_table="temp_result_v88",
+        result_columns=["col", "num"],
+    )
+
+    monkeypatch.setattr("app.api.routes.artifacts.render_chart_png", lambda *args, **kwargs: None)
+
+    resp = client.post(
+        "/api/artifacts/export",
+        json={
+            "session_id": "render_fail_session",
+            "format": "pdf",
+            "result_ref": "temp_result_v88",
+            "spec": {"mark": "line"},
+        },
+    )
+    assert resp.status_code == 200
+    reader = pypdf.PdfReader(io.BytesIO(resp.content))
+    text = "".join(p.extract_text() or "" for p in reader.pages)
+    assert "График не удалось отобразить в PDF (ошибка рендеринга визуализации)" in text
