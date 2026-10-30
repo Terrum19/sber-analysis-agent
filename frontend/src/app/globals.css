@@ -142,6 +142,11 @@ body {
   box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.35), 0 10px 10px -5px rgba(0, 0, 0, 0.15);
 }
 
+/* Список инсайтов для печати (F-17): в документе только на время печати */
+.insights-print {
+  display: none;
+}
+
 /* Стили для системной печати и экспорта в PDF */
 @media print {
   @page {
@@ -160,6 +165,48 @@ body {
   button,
   .react-resizable-handle {
     display: none !important;
+  }
+
+  /* Печать инсайтов: страница — только список, без интерфейса вокруг */
+  body:has(> .insights-print) > :not(.insights-print) {
+    display: none !important;
+  }
+
+  .insights-print {
+    display: block;
+    font-size: 11pt;
+    line-height: 1.45;
+  }
+
+  .insights-print h1 {
+    margin: 0 0 6mm;
+    font-size: 16pt;
+    font-weight: 600;
+  }
+
+  .insights-print section {
+    margin-bottom: 5mm;
+    padding-bottom: 4mm;
+    border-bottom: 1px solid #e0ded8;
+    break-inside: avoid;
+    page-break-inside: avoid;
+  }
+
+  .insights-print h2 {
+    margin: 0 0 1.5mm;
+    font-size: 12pt;
+    font-weight: 600;
+  }
+
+  .insights-print ul {
+    margin: 1.5mm 0 0;
+    padding-left: 5mm;
+    list-style: disc;
+  }
+
+  .insights-print-meta {
+    color: #75736c;
+    font-size: 9pt;
   }
 
   .print-clean {

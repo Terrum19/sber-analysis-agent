@@ -134,6 +134,7 @@ export default function ChatPanel({ sessionId }: Props) {
 
   const [remoteTables, setRemoteTables] = useState<string[]>([]);
   const tablesVersion = useUiStore((s) => s.tablesVersion);
+  const focusTurn = useUiStore((s) => s.focusTurn);
   useEffect(() => {
     let cancelled = false;
     listTables()
@@ -277,6 +278,12 @@ export default function ChatPanel({ sessionId }: Props) {
     if (highlightTimer.current) clearTimeout(highlightTimer.current);
     highlightTimer.current = setTimeout(() => setHighlightedTurnId(null), 1600);
   }
+
+  // «Открыть в чате» с вкладки инсайтов
+  useEffect(() => {
+    if (focusTurn) scrollToTurn(focusTurn.turnId);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [focusTurn]);
 
   /**
    * Отправить вопрос. recoveryResponse — ответ на уточнение: тогда q — то, что
