@@ -4,6 +4,7 @@ import asyncio
 
 import pytest
 
+from app.api.schemas.chat import ProgressPayload
 from app.core.agent.orchestrator import (
     UNSUPPORTED_SUGGESTIONS,
     AgentOrchestrator,
@@ -390,11 +391,88 @@ def test_lookup_step_triggers_replanning_with_observation(db: DuckDBManager) -> 
         ]
     )
     memory = FakeMemory()
-    execution = run_plan(orchestrator(db, planner), memory, plan)
+    events: list[dict] = []
+    agent = orchestrator(db, planner)
+    execution = asyncio.run(agent._execute_plan(memory, plan, "raw", "вопрос", emit=events.append))
+    # Достроенный план приходит целиком: выполненный lookup и новые шаги (#239).
+    plans = [e["data"] for e in events if e["data"]["stage"] == "planning"]
+    assert [[step["step_id"] for step in p["steps"]] for p in plans] == [[0, 1]]
     assert planner.contexts[0]["next_step_id"] == 1
     assert "spb" in planner.contexts[0]["executed"]
     assert memory.steps == [0, 1]
     assert [row["id"] for row in db.to_records(execution.result_table)] == [3, 4]
+
+
+def test_finished_step_shows_operation_input_and_result(db: DuckDBManager) -> None:
+    plan = ResearchPlan(
+        steps=[
+            ResearchStep(
+                step_id=0,
+                tool="filter_rows",
+                arguments={"column": "region", "operator": "IN", "value": ["msk", "spb"]},
+            ),
+            ResearchStep(
+                step_id=1,
+                tool="group_by",
+                arguments={"by": "region", "column": "amount", "function": "SUM"},
+            ),
+            ResearchStep(
+                step_id=2,
+                tool="t_test_ind",
+                input="$step_0",
+                arguments={"column_a": "amount", "column_b": "region"},
+            ),
+        ]
+    )
+    events: list[dict] = []
+    agent = orchestrator(db)
+    asyncio.run(agent._execute_plan(FakeMemory(), plan, "raw", "вопрос", emit=events.append))
+    for event in events:
+        ProgressPayload(**event["data"])
+    finished = {
+        e["data"]["step_id"]: e["data"] for e in events if e["data"]["status"] == "finished"
+    }
+
+    first = finished[0]
+    assert first["arguments"] == {"column": "region", "operator": "IN", "value": ["msk", "spb"]}
+    assert (first["input"], first["input_table"]) == ("$prev", "raw")
+    assert "input_step_id" not in first
+    assert first["code_language"] == "sql"
+    assert "WHERE" in first["code"]
+    assert first["rows"] == 4
+    assert {row["region"] for row in first["preview"]} == {"msk", "spb"}
+
+    second = finished[1]
+    assert second["input_table"] == first["result_table"]
+    assert second["input_step_id"] == 0
+    assert second["rows"] == 2
+    assert second["result_columns"][0]["name"] == "region"
+
+    # Статистика посчитана в Python: кода нет, а результат и вход — есть.
+    third = finished[2]
+    assert (third["input"], third["input_step_id"]) == ("$step_0", 0)
+    assert "code" not in third
+    assert "p_value" in third["preview"][0]
+
+
+def test_unreadable_step_result_keeps_the_turn_going(db: DuckDBManager) -> None:
+    class GhostExecutor:
+        db = None
+
+        async def execute(self, step, input_table, **_):
+            return "temp_result_v404"
+
+    agent = orchestrator(db)
+    agent.executor = GhostExecutor()
+    events: list[dict] = []
+    plan = ResearchPlan(steps=[ResearchStep(step_id=0, tool="aggregate")])
+    execution = asyncio.run(
+        agent._execute_plan(FakeMemory(), plan, "raw", "вопрос", emit=events.append)
+    )
+    assert execution.result_table == "temp_result_v404"
+    finished = events[-1]["data"]
+    assert finished["result_table"] == "temp_result_v404"
+    assert "preview" not in finished
 
 
 def test_sandbox_error_asks_the_user_without_fixing_the_step(

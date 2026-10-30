@@ -74,7 +74,10 @@ def rows_result(db, source: str, columns: list[str], rows: list[tuple[object, ..
         raise ValueError("Result row/column count mismatch")
     values_sql = ", ".join(f"({', '.join(literal(value) for value in row)})" for row in rows)
     names = ", ".join(identifier(name) for name in columns)
-    return db.save_step_result(source, f"SELECT * FROM (VALUES {values_sql}) AS t({names})")
+    # Values are computed in Python: a VALUES query of literals explains nothing.
+    return db.save_step_result(
+        source, f"SELECT * FROM (VALUES {values_sql}) AS t({names})", language=None
+    )
 
 
 def result(db, source: str, columns: str, values_: tuple[object, ...]) -> str:

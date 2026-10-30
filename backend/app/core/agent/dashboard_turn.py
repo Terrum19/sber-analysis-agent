@@ -33,6 +33,7 @@ from app.core.agent.orchestrator import (
     _arrange,
     _done,
     _elapsed_ms,
+    _plan_event,
     _progress_event,
     _require_steps,
 )
@@ -326,6 +327,7 @@ class DashboardTurn:
             context["related"] = self.agent._related(memory.table, tile.question)
             plan = await self.agent._plan(tile.question, context)
             _require_steps(plan)
+            tile_emit(_plan_event(plan.steps))
             execution = await self.agent._execute_plan(
                 memory, plan, memory.table, tile.question, emit=tile_emit
             )

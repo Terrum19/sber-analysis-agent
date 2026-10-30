@@ -70,7 +70,8 @@
 `ProgressPayload`: `stage` (`planning` / `step` / `insight` / `chart` /
 `dashboard`), `status` (`started` / `finished` / `failed` / `fixing`) и
 необязательные `step_id`, `tool`, `purpose`, `total_steps`, `elapsed_ms`,
-`attempt`, `error` — пустые поля в событие не попадают.
+`attempt`, `error`, а также план и детали шага (#239, ниже) — пустые поля в
+событие не попадают.
 
 События прогресса по порядку:
 
@@ -78,21 +79,43 @@
 |---|---|---|---|
 | `planning` | `started` | — | планировщик получил вопрос |
 | `planning` | `failed` | `error` | планировщик упал (LLM недоступна), дальше `error` и `done` |
-| `planning` | `finished` | `total_steps` | план готов (`0` — инструментов нет, дальше `clarification_needed`) |
-| `step` | `started` | `step_id`, `tool`, `purpose` | шаг начал выполняться |
-| `step` | `fixing` | `step_id`, `tool`, `purpose`, `attempt`, `error` | шаг упал, планировщик исправляет его |
-| `step` | `finished` | `step_id`, `tool`, `purpose`, `elapsed_ms` | шаг выполнен (время — с учётом исправлений) |
-| `step` | `failed` | `step_id`, `tool`, `purpose`, `elapsed_ms`, `error` | шаг не исправился, дальше `clarification_needed` |
+| `planning` | `finished` | `total_steps`, `steps` | план готов (`0` — инструментов нет, дальше `clarification_needed`) |
+| `step` | `started` | `step_id`, `tool`, `purpose`, `input`, `arguments` | шаг начал выполняться |
+| `step` | `fixing` | то же, `attempt`, `error` | шаг упал, планировщик исправляет его |
+| `step` | `finished` | то же, `elapsed_ms`, детали результата | шаг выполнен (время — с учётом исправлений) |
+| `step` | `failed` | то же, `elapsed_ms`, `error` | шаг не исправился, дальше `clarification_needed` |
 | `insight` | `started` | — | план выполнен, генерируется инсайт (дальше `text`) |
 | `chart` | `started` | — | строится график (дальше `chart`) |
 | `insight` / `chart` | `failed` | `error` | этап упал, дальше `error` и `done` |
 | `dashboard` | `failed` | `error` | дашборд не собран; ответ и график уже отданы, дальше `done` без `error` |
 
-`planning` приходит один раз на новый вопрос: ни достройка плана после
-lookup-шага, ни ответ на уточнение (`recovery_response`) его не шлют, а
-шаги после них идут теми же событиями `step`. У `step/finished` и
-`step/failed` поля `tool` и `purpose` — от последней версии шага (после
-исправления). Смена вида прошлого графика («сделай таблицей») идёт без
+`planning/started` приходит один раз на новый вопрос. `planning/finished`
+несёт весь план — `steps: [{step_id, tool, purpose, input, arguments}]`,
+чтобы фронт показал его строками до выполнения (#239). Его же шлют
+достройка плана после lookup-шага (выполненные и новые шаги вместе), ответ
+на уточнение (`recovery_response`: шаги, которые выполнит этот ход) и
+каждая плитка дашборда по кнопке (с её `tile_id`). У `step/*` поля `tool`,
+`purpose`, `input` и `arguments` — от последней версии шага (после
+исправления): `arguments` — как их написал планировщик, ссылки `$prev`,
+`$step_N` не развёрнуты.
+
+Детали результата в `step/finished`:
+
+| поле | что |
+|---|---|
+| `input_table` | во что развернулся `input`: таблица источника или `temp_result_vN` |
+| `input_step_id` | шаг, чей результат пришёл на вход (нет — вход из источника) |
+| `result_table` | `temp_result_vN` шага |
+| `rows`, `result_columns` | число строк и колонки `[{name, type}]` |
+| `preview` | первые `STEP_PREVIEW_ROWS` (5) строк |
+| `code`, `code_language` | SQL (`sql`) или код песочницы (`python`), которым построен результат; нет у статистических тулов (значения посчитаны в Python) |
+
+Результат не прочитался — приходят только `input_table`, `input_step_id`,
+`result_table`, ход идёт дальше. Весь результат постранично —
+`GET /api/sessions/{id}/results/{temp_result_vN}?offset=0&limit=50`
+(`limit` до 500) → `{columns, rows, total}`. Отдаются только результаты
+завершённых ходов этой сессии; чужой, удалённый или результат ещё идущего
+хода — 404 (у идущего хода есть `preview`), имя не `temp_result_vN` — 422. Смена вида прошлого графика («сделай таблицей») идёт без
 плана: сразу `chart` и `done`. Этап `dashboard` шлёт только `failed`.
 
 Вопрос про таблицу целиком («что передо мной?», «сколько строк и за какой
@@ -117,11 +140,19 @@ lookup-шага, ни ответ на уточнение (`recovery_response`) �
 
 ```json
 {"type": "progress", "data": {"stage": "planning", "status": "started"}}
-{"type": "progress", "data": {"stage": "planning", "status": "finished", "total_steps": 1}}
+{"type": "progress", "data": {"stage": "planning", "status": "finished", "total_steps": 1,
+ "steps": [{"step_id": 1, "tool": "group_by", "purpose": "Выручка по регионам",
+            "input": "$prev", "arguments": {"by": "region", "column": "revenue", "function": "SUM"}}]}}
 {"type": "progress", "data": {"stage": "step", "status": "started", "step_id": 1,
- "tool": "group_by", "purpose": "Выручка по регионам"}}
+ "tool": "group_by", "purpose": "Выручка по регионам", "input": "$prev",
+ "arguments": {"by": "region", "column": "revenue", "function": "SUM"}}}
 {"type": "progress", "data": {"stage": "step", "status": "finished", "step_id": 1,
- "tool": "group_by", "purpose": "Выручка по регионам", "elapsed_ms": 42}}
+ "tool": "group_by", "purpose": "Выручка по регионам", "input": "$prev",
+ "arguments": {"by": "region", "column": "revenue", "function": "SUM"}, "elapsed_ms": 42,
+ "input_table": "sales", "result_table": "temp_result_v3", "rows": 2,
+ "result_columns": [{"name": "region", "type": "VARCHAR"}, {"name": "revenue", "type": "DOUBLE"}],
+ "preview": [{"region": "msk", "revenue": 120.0}, {"region": "spb", "revenue": 80.0}],
+ "code_language": "sql", "code": "SELECT ... FROM \"sales\" GROUP BY ..."}}
 {"type": "progress", "data": {"stage": "insight", "status": "started"}}
 {"type": "text", "data": {"headline": "...", "details": ["..."]}}
 {"type": "progress", "data": {"stage": "chart", "status": "started"}}

@@ -31,6 +31,34 @@ def test_save_step_result(db):
     assert len(rows) == 2
 
 
+def test_step_code_is_taken_once(db):
+    db.execute("CREATE TABLE source AS SELECT 1 AS a")
+    sql = db.save_step_result("source", "  SELECT a FROM source  ")
+    python = db.save_step_result("source", "SELECT 1 AS a", code="result = df", language="python")
+    values = db.save_step_result("source", "SELECT * FROM (VALUES (1)) AS t(a)", language=None)
+    assert db.step_code(sql) == ("sql", "SELECT a FROM source")
+    assert db.step_code(sql) is None
+    assert db.step_code(python) == ("python", "result = df")
+    assert db.step_code(values) is None
+
+
+def test_step_code_keeps_only_recent_results(db, monkeypatch):
+    monkeypatch.setattr("app.core.data.duckdb_manager.STEP_CODE_LIMIT", 2)
+    db.execute("CREATE TABLE source AS SELECT 1 AS a")
+    names = [db.save_step_result("source", "SELECT a FROM source") for _ in range(3)]
+    assert [db.step_code(name) is not None for name in names] == [False, True, True]
+
+
+def test_result_shape_and_pages(db):
+    db.execute("CREATE TABLE big AS SELECT i AS v, 'x' AS s FROM range(7) t(i)")
+    assert db.result_shape("big") == (
+        [{"name": "v", "type": "BIGINT"}, {"name": "s", "type": "VARCHAR"}],
+        7,
+    )
+    assert db.result_shape("missing") == ([], 0)
+    assert [row["v"] for row in db.to_records("big", limit=3, offset=5)] == [5, 6]
+
+
 def test_to_records_limit(db):
     db.execute("CREATE TABLE big AS SELECT i AS v FROM range(100) t(i)")
     rows = db.to_records("big", limit=5)
