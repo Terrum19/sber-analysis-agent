@@ -418,6 +418,12 @@
 	меню во время ответа больше не блокируются; точка статуса у сессии.
 	* frontend/src/i18n/dictionary.ts (sidebar.runRunning, sidebar.runDone)
 	(sidebar.runError): Новые.  (chat.cannotSwitchWhileGenerating): Удалён.
+	Самый слабый период в ответе — полный, а не неполный крайний.
+	* backend/app/core/llm/prompts/quality_rules.py (PARTIAL_HINT): На «какой
+	период самый слабый / сильный» headline — лучший из полных периодов,
+	неполный — оговоркой в details: модель называла неделю 28.09.2026
+	(3 дня) самой слабой и только добавляла, что она неполная.
+
 2026-10-29  thebulkapro  <saitbatalovbulat200@gmail.com>
 
 	Факты инсайта о данных за результатом: пропуски, период, ничья на
