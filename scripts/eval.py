@@ -494,9 +494,15 @@ def used_tools(turn: Turn) -> list[str]:
 
 def answer_text(turn: Turn) -> str:
     parts = []
+    chunks = []
     for data in events_of(turn, "text"):
-        parts.append(str(data.get("headline", "")))
+        if "chunk" in data:
+            chunks.append(str(data["chunk"]))
+        if "headline" in data:
+            parts.append(str(data["headline"]))
         parts += [str(detail) for detail in data.get("details", [])]
+    if chunks:
+        parts.append("".join(chunks))
     return "\n".join(parts)
 
 

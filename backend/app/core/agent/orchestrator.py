@@ -631,10 +631,20 @@ class AgentOrchestrator:
         try:
             logger.info(">>> run() генерация инсайта")
             yield _progress_event("insight", "started")
-            stream_insight = settings.insight_stream and callable(
-                getattr(self.insight_gen, "stream", None)
+            fast = getattr(self.insight_gen, "fast_insight", None)
+            fast_res = (
+                fast(question, result_table, execution.steps)
+                if settings.agent_fast_insight and callable(fast)
+                else None
             )
-            if stream_insight:
+            if fast_res is not None:
+                logger.info("<<< run() быстрый инсайт без LLM")
+                if confirmation:
+                    fast_res.details.append(confirmation)
+                insight = fast_res
+                yield _progress_event("insight", "finished", elapsed_ms=_elapsed_ms(stage_started))
+                yield _text_event(insight.headline, insight.details)
+            elif settings.insight_stream and callable(getattr(self.insight_gen, "stream", None)):
                 queue: asyncio.Queue[dict | None] = asyncio.Queue()
                 streamed = False
 

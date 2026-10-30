@@ -345,7 +345,7 @@ class InsightGenerator:
             extra_plain = "\n".join(f"- {purpose}: {rows}" for purpose, rows in supporting_records)
             return _Materials(
                 shown=str(result),
-                supporting=extra_plain or "нет",
+                supporting=extra_plain,
                 facts="нет",
                 plan="нет",
                 shape="",
@@ -378,7 +378,7 @@ class InsightGenerator:
         sources = f"{question}\n{shown}\n{extra}\n{facts_str}\n{plan}"
         return _Materials(
             shown=shown,
-            supporting=extra or "нет",
+            supporting=extra,
             facts=facts_str,
             plan=plan,
             shape=shape,
