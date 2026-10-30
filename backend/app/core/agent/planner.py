@@ -7,6 +7,7 @@
 import json
 import logging
 import re
+from collections.abc import Callable
 
 from app.config import settings
 from app.core.agent.quality_fixes import select_tools
@@ -27,6 +28,7 @@ from app.core.llm.prompts.step_planner import (
     DASHBOARD_CUSTOM,
     DASHBOARD_PLAN,
     DASHBOARD_TEMPLATE,
+    EMPTY_PLAN,
     MEMORIES,
     NO_TEMPLATE_TILES,
     NO_TILES,
@@ -49,6 +51,9 @@ from app.models.research_step import (
 # Сколько раз переспросить LLM, если план не прошёл валидацию.
 PLAN_FIX_ATTEMPTS = 1
 
+# Колбэк реальных фаз планирования: semantic -> llm -> validation.
+SubstageCallback = Callable[[str], None]
+
 # Ответ хода без headline: ход упал или ждал уточнения.
 NO_ANSWER = {"failed": "не получен (ход упал)", "clarification": "не получен (ход ждал уточнения)"}
 
@@ -69,8 +74,23 @@ class StepPlanner:
     def __init__(self, llm: LLMClient | None = None) -> None:
         self.llm = llm or LLMClient()
 
-    async def plan(self, question: str, context: dict) -> ResearchPlan:
-        """Сгенерировать план шагов под вопрос."""
+    async def plan(
+        self,
+        question: str,
+        context: dict,
+        on_substage: SubstageCallback | None = None,
+    ) -> ResearchPlan:
+        """Сгенерировать план шагов под вопрос.
+
+        ``on_substage`` получает реальные фазы: ``semantic`` (отбор колонок и
+        инструментов), ``llm`` (вызов модели), ``validation`` (проверка плана).
+        """
+
+        def substage(name: str) -> None:
+            if on_substage is not None:
+                on_substage(name)
+
+        substage("semantic")
         tools = tool_registry.describe()
         columns = all_columns = context.get("columns", [])
         profile = context.get("profile")
@@ -118,16 +138,26 @@ class StepPlanner:
             logger.info("    дашборд: шаблон=%s", template.id if template else None)
         logger.debug(">>> StepPlanner.plan() вопрос=%r", question)
         logger.debug("    промпт=%r", prompt)
+        substage("llm")
         plan = await self._ask(prompt, start, template)
+        if not plan.steps and start == 0:
+            # Без размышлений модель отдаёт пустой план и на вопросы о данных
+            # («что с выручкой каждый июль?»); второй шанс — один вызов.
+            logger.warning("    план пустой, переспрос")
+            substage("llm")
+            plan = await self._ask(prompt + EMPTY_PLAN, start, template)
         # Проверяем и ответ на переспрос: непроверенный план упал бы уже при
         # исполнении, потратив попытки fix_step и показав ошибку шага.
+        substage("validation")
         errors = validate_plan(plan, known_steps=start)
         for _ in range(PLAN_FIX_ATTEMPTS):
             if not errors:
                 break
             logger.warning("    план не прошёл валидацию: %s", errors)
             fix = PLAN_ERRORS.format(plan=_plan_json(plan), errors="\n".join(errors))
+            substage("llm")
             plan = await self._ask(prompt + fix, start, template)
+            substage("validation")
             errors = validate_plan(plan, known_steps=start)
         if errors and errors == [template_gap(plan)]:
             logger.warning("<<< StepPlanner.plan() шаблон не собран, дашборд без шаблона")

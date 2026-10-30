@@ -174,8 +174,10 @@ def test_progress_events_precede_the_answer(orchestrator):
         "step:started",
         "step:finished",
         "insight:started",
+        "insight:finished",
         "text",
         "chart:started",
+        "chart:finished",
         "chart",
         "done",
     ]
@@ -185,7 +187,15 @@ def test_progress_events_precede_the_answer(orchestrator):
             ProgressPayload(**event["data"])
     progress = [event["data"] for event in events if event["type"] == "progress"]
     assert progress[0] == {"stage": "planning", "status": "started", "tables": ["raw"]}
-    assert progress[1] == {"stage": "planning", "status": "finished", "total_steps": 1}
+    planned = ProgressPayload(**progress[1]).planned_steps
+    assert planned is not None and planned[0].tool == "aggregate"
+    assert progress[1]["stage"] == "planning"
+    assert progress[1]["status"] == "finished"
+    assert progress[1]["total_steps"] == 1
+    assert progress[1]["planned_steps"] == [
+        {"step_id": 0, "purpose": "Мок шаг", "tool": "aggregate"}
+    ]
+    assert progress[1]["elapsed_ms"] >= 1
     assert progress[2] == {
         "stage": "step",
         "status": "started",
@@ -197,7 +207,35 @@ def test_progress_events_precede_the_answer(orchestrator):
     assert progress[3]["step_id"] == 0
     assert progress[3]["elapsed_ms"] >= 1
     assert progress[4] == {"stage": "insight", "status": "started"}
-    assert progress[5] == {"stage": "chart", "status": "started"}
+    assert progress[5]["stage"] == "insight"
+    assert progress[5]["status"] == "finished"
+    assert progress[5]["elapsed_ms"] >= 1
+    assert progress[6] == {"stage": "chart", "status": "started"}
+    assert progress[7]["stage"] == "chart"
+    assert progress[7]["status"] == "finished"
+    assert progress[7]["elapsed_ms"] >= 1
+
+
+def test_planning_reports_real_substages(orchestrator):
+    class SubstagePlanner(FakePlanner):
+        async def plan(self, question, context, on_substage=None):
+            for name in ("semantic", "llm", "validation"):
+                if on_substage is not None:
+                    on_substage(name)
+            return await super().plan(question, context)
+
+    orchestrator.planner = SubstagePlanner()
+    events = collect(orchestrator, "s1")
+    substages = [
+        event["data"]
+        for event in events
+        if event["type"] == "progress" and event["data"].get("status") == "substage"
+    ]
+    assert [(event["stage"], event["substage"]) for event in substages] == [
+        ("planning", "semantic"),
+        ("planning", "llm"),
+        ("planning", "validation"),
+    ]
 
 
 def test_failed_step_reports_progress(orchestrator):
@@ -276,7 +314,14 @@ def test_dashboard_failure_keeps_the_answer(orchestrator, monkeypatch):
     monkeypatch.setattr(DashboardGenerator, "generate", failing_generate)
     events = collect(orchestrator, "s1")
 
-    assert stages(events)[-4:] == ["chart:started", "chart", "dashboard:failed", "done"]
+    assert stages(events)[-6:] == [
+        "chart:started",
+        "chart:finished",
+        "chart",
+        "dashboard:started",
+        "dashboard:failed",
+        "done",
+    ]
     assert "error" not in stages(events)
     assert events[-2]["data"]["error"] == "SQLite недоступна"
 
@@ -393,7 +438,15 @@ class NoPlanner:
         raise AssertionError("обзорный вопрос не идёт в планировщик")
 
 
-OVERVIEW_STAGES = ["insight:started", "text", "chart:started", "chart", "done"]
+OVERVIEW_STAGES = [
+    "insight:started",
+    "insight:finished",
+    "text",
+    "chart:started",
+    "chart:finished",
+    "chart",
+    "done",
+]
 
 
 def test_overview_question_skips_planner(orchestrator):
@@ -402,11 +455,11 @@ def test_overview_question_skips_planner(orchestrator):
     events = ask(orchestrator, "Что передо мной?")
 
     assert stages(events) == OVERVIEW_STAGES
-    assert events[1]["data"] == {
+    assert events[2]["data"] == {
         "headline": "raw: 2 строки, 1 колонка, колонок с датами нет — период не определить",
         "details": ["Передо мной числа.", "Пропусков нет."],
     }
-    spec = events[3]["data"]["spec"]
+    spec = events[5]["data"]["spec"]
     assert spec["usermeta"]["chart_type"] == "table"
     assert [row["Колонка"] for row in spec["data"]["values"]] == ["a"]
     assert stages(ask(orchestrator, "Сколько строк?")) == OVERVIEW_STAGES
@@ -421,7 +474,7 @@ def test_overview_without_llm_still_answers(orchestrator):
     events = ask(orchestrator, "Что за данные?")
 
     assert stages(events) == OVERVIEW_STAGES
-    assert events[1]["data"]["details"] == [SUMMARY_UNAVAILABLE]
+    assert events[2]["data"]["details"] == [SUMMARY_UNAVAILABLE]
 
 
 def test_overview_failure_ends_the_stream(orchestrator, monkeypatch):

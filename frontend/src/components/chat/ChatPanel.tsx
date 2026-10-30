@@ -2,7 +2,8 @@
 
 /**
  * Панель диалога (Chat):
- * - Стриминг ответов агента (текст, инсайты)
+ * - Анимация печати ответа агента (текст, инсайты): бэкенд присылает
+ *   инсайт одним событием, поэтому это клиентский эффект, не сетевой стриминг
  * - Графики и дашборды в ленту не выводятся: они уходят на правую панель,
  *   а в сообщении остаётся ссылка «Показать на панели» / «Открыть во вкладке»
  * - Режим дашборда (#224): переключатель под строкой ввода, варианты по кнопке
@@ -82,9 +83,11 @@ export default function ChatPanel({ sessionId }: Props) {
   const [dashboardMode, setDashboardMode] = useState(false);
   const [ideas, setIdeas] = useState<IdeasState | null>(null);
   const ideasRequestRef = useRef(0);
-  // Сообщение с карточкой уточнения, на которую ещё можно ответить
   const activeClarificationId = run?.clarificationId ?? null;
   const messagesEndRef = useRef<HTMLDivElement | null>(null);
+  const messagesListRef = useRef<HTMLDivElement | null>(null);
+  // Пользователь у нижней границы ленты — только тогда догоняем новый текст.
+  const stickToBottomRef = useRef(true);
   const inputRef = useRef<HTMLTextAreaElement | null>(null);
   // Ответ, на который пользователь отвечает: уходит в reply_to (F-12).
   const [replyTarget, setReplyTarget] = useState<{ turn_id: string; excerpt: string } | null>(null);
@@ -204,9 +207,18 @@ export default function ChatPanel({ sessionId }: Props) {
     if (run?.unseen) markSeen(sessionId);
   }, [run?.unseen, sessionId, markSeen]);
 
+  // Автоскролл: не дёргаем smooth-анимацию на каждый чанк печати и не уводим
+  // ленту вниз, если пользователь читает историю выше.
   useEffect(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
+    if (!stickToBottomRef.current) return;
+    messagesEndRef.current?.scrollIntoView({ behavior: streaming ? "auto" : "smooth" });
   }, [messages, streaming]);
+
+  function handleMessagesScroll() {
+    const list = messagesListRef.current;
+    if (!list) return;
+    stickToBottomRef.current = list.scrollHeight - list.scrollTop - list.clientHeight < 80;
+  }
 
   // Цитата и варианты дашборда не должны «протечь» в другую сессию или таблицу.
   useEffect(() => {
@@ -519,7 +531,11 @@ export default function ChatPanel({ sessionId }: Props) {
       </div>
 
       {/* Лента сообщений */}
-      <div className="flex-1 space-y-5 overflow-y-auto px-4 py-6 md:px-8">
+      <div
+        ref={messagesListRef}
+        onScroll={handleMessagesScroll}
+        className="flex-1 space-y-5 overflow-y-auto px-4 py-6 md:px-8"
+      >
         {messages.length === 0 ? (
           <div className="mx-auto flex h-full max-w-xl flex-col justify-center">
             <div className="flex items-center gap-2 text-[13px] text-graphite-400">
@@ -624,7 +640,7 @@ export default function ChatPanel({ sessionId }: Props) {
                 {/* Текст сообщения */}
                 {m.content && (
                   <div
-                    className={`whitespace-pre-wrap ${
+                    className={`whitespace-pre-wrap transition-opacity duration-200 ${m.progress ? "mt-2.5" : ""} ${
                       m.refusal
                         ? "border-l-2 border-warn/60 pl-3 text-graphite-300"
                         : m.dashboardFallback
@@ -633,6 +649,11 @@ export default function ChatPanel({ sessionId }: Props) {
                     }`}
                   >
                     {m.content}
+                    {m.role === "agent" &&
+                      streaming &&
+                      i === messages.length - 1 && (
+                        <span className="inline-block w-1.5 h-4 ml-1 bg-good/80 animate-pulse motion-reduce:animate-none align-middle rounded-[1px]" />
+                      )}
                   </div>
                 )}
 
@@ -792,7 +813,6 @@ export default function ChatPanel({ sessionId }: Props) {
                   !m.failed &&
                   !m.progress &&
                   !m.clarification &&
-                  !m.refusal &&
                   !(streaming && i === messages.length - 1) &&
                   (m.turn_id || m.answer || m.chart) && (
                     <AnswerActions

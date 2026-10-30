@@ -131,6 +131,8 @@ export interface SessionState {
    */
   addMessage: (msg: ChatMessage, sessionId?: string) => void;
   appendToLastMessage: (chunk: string, sessionId?: string) => void;
+  /** Дописать текст в сообщение по id (анимация печати не зависит от порядка ленты). */
+  appendToMessage: (id: string, chunk: string, sessionId?: string) => void;
   updateLastMessage: (patch: Partial<ChatMessage>, sessionId?: string) => void;
   updateMessage: (id: string, patch: Partial<ChatMessage>, sessionId?: string) => void;
   removeMessage: (id: string, sessionId?: string) => void;
@@ -308,6 +310,17 @@ export const useSessionStore = create<SessionState>()(
             const last = snap.messages[snap.messages.length - 1];
             if (!last) return snap;
             return { ...snap, messages: [...snap.messages.slice(0, -1), { ...last, content: last.content + chunk }] };
+          }),
+        ),
+      appendToMessage: (id, chunk, sessionId) =>
+        set((s) =>
+          patchSession(s, sessionId, (snap) => {
+            const index = snap.messages.findIndex((m) => m.id === id);
+            if (index < 0) return snap;
+            return {
+              ...snap,
+              messages: snap.messages.map((m) => (m.id === id ? { ...m, content: m.content + chunk } : m)),
+            };
           }),
         ),
       updateMessage: (id, patch, sessionId) =>

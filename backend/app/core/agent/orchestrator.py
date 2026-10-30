@@ -48,6 +48,7 @@ SessionMemory состояние ожидания уточнения (``pending_
 """
 
 import asyncio
+import inspect
 import json
 import logging
 import re
@@ -60,7 +61,7 @@ logger = logging.getLogger(__name__)
 
 import duckdb
 
-from app.api.schemas.chat import ChatRequest, DashboardPayload, ProgressPayload
+from app.api.schemas.chat import ChatRequest, DashboardPayload, PlannedStep, ProgressPayload
 from app.core.agent.insight import InsightGenerator
 from app.core.agent.planner import PlanInvalid, StepPlanner, is_dashboard_question
 from app.core.agent.recovery import STEP_FIX_ATTEMPTS, fixable
@@ -97,7 +98,13 @@ from app.core.viz.vega_spec_builder import (
     column_aliases,
     infer_field_types,
 )
-from app.models.research_step import DashboardTilePlan, ResearchPlan, ResearchStep
+from app.models.research_step import (
+    PREVIOUS,
+    SOURCE,
+    DashboardTilePlan,
+    ResearchPlan,
+    ResearchStep,
+)
 
 NO_TABLE_MESSAGE = "Сначала подключите данные"
 # pending_recovery уточнения «какие данные взять?» и вопрос пользователю (#165).
@@ -107,6 +114,8 @@ TABLE_QUESTION = "Вопрос подходит к разным данным. П
 FAILURE_MESSAGE = "Не удалось ответить на вопрос, попробуйте ещё раз"
 # Плитка дашборда и экспорт принимают только результаты шагов (temp_result_vN).
 RESULT_TABLE = re.compile(r"temp_result_v\d+")
+# DuckDB: колонки нет во входной таблице шага.
+MISSING_COLUMN = re.compile(r'Referenced column "([^"]+)" not found')
 
 # Подтверждение записи в воспоминания сессии (#197).
 REMEMBERED = "Запомнено: {notes}"
@@ -134,6 +143,8 @@ UNSUPPORTED_SUGGESTIONS = [
 ]
 
 DISTRIBUTION_TOOL = "describe_stats"
+# Осмотр таблицы — разведка: его паспорт не ответ пользователю.
+INSPECT_TOOL = "inspect_temp_table"
 
 # Сколько раз план можно достроить после lookup-шагов (защита от циклов).
 MAX_REPLANS = 2
@@ -200,6 +211,25 @@ def _ignore(event: dict) -> None:
 def _progress_event(stage: str, status: str, **fields: object) -> dict:
     payload = ProgressPayload(stage=stage, status=status, **fields)
     return {"type": "progress", "data": payload.model_dump(exclude_none=True)}
+
+
+def _planned_steps(steps: list[ResearchStep]) -> list[PlannedStep]:
+    """Шаги плана для прогресса: purpose или tool, без выдуманных «Шаг N»."""
+    return [
+        PlannedStep(step_id=step.step_id, purpose=step.purpose or step.tool, tool=step.tool)
+        for step in steps
+    ]
+
+
+def _reports_substages(planner: object) -> bool:
+    """Планировщик умеет сообщать реальные фазы планирования."""
+    plan = getattr(planner, "plan", None)
+    if plan is None:
+        return False
+    try:
+        return "on_substage" in inspect.signature(plan).parameters
+    except (TypeError, ValueError):
+        return False
 
 
 def _step_event(step: ResearchStep, status: str, **fields: object) -> dict:
@@ -465,6 +495,7 @@ class AgentOrchestrator:
 
         # --- Финальный блок: инсайт -> чарт -> дашборд -> done ---
         stage = "insight"
+        stage_started = time.perf_counter()
         try:
             logger.info(">>> run() генерация инсайта")
             yield _progress_event("insight", "started")
@@ -478,6 +509,7 @@ class AgentOrchestrator:
                 source=memory.table,
                 inputs=execution.inputs,
             )
+            yield _progress_event("insight", "finished", elapsed_ms=_elapsed_ms(stage_started))
             if confirmation:
                 insight.details.append(confirmation)
             logger.info(
@@ -489,6 +521,7 @@ class AgentOrchestrator:
             }
 
             stage = "chart"
+            stage_started = time.perf_counter()
             records = self.db.to_records(result_table, limit=SPEC_ROW_LIMIT)
             view = _requested_view(execution, records)
             chart_type = select_chart(question, result_table, view, records, titles)
@@ -515,6 +548,7 @@ class AgentOrchestrator:
                 titles=titles,
                 title=execution.result_purpose or chart_title(records, titles),
             )
+            yield _progress_event("chart", "finished", elapsed_ms=_elapsed_ms(stage_started))
             logger.debug(
                 "<<< run() график построен: mark=%s строк=%d",
                 spec.get("mark", "?"),
@@ -525,12 +559,16 @@ class AgentOrchestrator:
         except Exception as exc:
             logger.exception("<<< run() этап %s упал", stage)
             memory.finish_turn("failed")
-            yield _progress_event(stage, "failed", error=str(exc))
+            yield _progress_event(
+                stage, "failed", error=str(exc), elapsed_ms=_elapsed_ms(stage_started)
+            )
             yield _failure_event()
             yield _done(turn_id)
             return
 
         if execution.dashboard_requested:
+            dashboard_started = time.perf_counter()
+            yield _progress_event("dashboard", "started")
             fallback = DashboardTile(
                 title=spec.get("title") or insight.headline,
                 spec=spec,
@@ -545,8 +583,16 @@ class AgentOrchestrator:
                 # Ответ и график уже у пользователя: ход не провален, нет
                 # только дашборда — без error, дальше обычный done.
                 logger.exception("<<< run() дашборд не собран")
-                yield _progress_event("dashboard", "failed", error=str(exc))
+                yield _progress_event(
+                    "dashboard",
+                    "failed",
+                    error=str(exc),
+                    elapsed_ms=_elapsed_ms(dashboard_started),
+                )
             else:
+                yield _progress_event(
+                    "dashboard", "finished", elapsed_ms=_elapsed_ms(dashboard_started)
+                )
                 yield event
 
         memory.finish_turn(
@@ -589,13 +635,29 @@ class AgentOrchestrator:
             context["related"] = self._related(memory.table, request.question)
             tables = [memory.table, *(item.table for item in context["related"])]
         logger.debug(">>> run() планируем шаги (planner.plan)")
+        planning_started = time.perf_counter()
         emit(_progress_event("planning", "started", tables=tables))
         try:
-            plan = await self._plan(request.question, context)
+            plan = await self._plan(request.question, context, emit=emit)
         except Exception as exc:
-            emit(_progress_event("planning", "failed", error=str(exc)))
+            emit(
+                _progress_event(
+                    "planning",
+                    "failed",
+                    error=str(exc),
+                    elapsed_ms=_elapsed_ms(planning_started),
+                )
+            )
             raise
-        emit(_progress_event("planning", "finished", total_steps=len(plan.steps)))
+        emit(
+            _progress_event(
+                "planning",
+                "finished",
+                total_steps=len(plan.steps),
+                planned_steps=_planned_steps(plan.steps),
+                elapsed_ms=_elapsed_ms(planning_started),
+            )
+        )
         chosen = plan.steps[0].input if plan.steps else None
         if catalog and chosen in catalog and chosen != memory.table:
             logger.info("планировщик выбрал таблицу %s", chosen)
@@ -645,11 +707,29 @@ class AgentOrchestrator:
             logger.exception("связанные таблицы %s не прочитаны", table)
             return []
 
-    async def _plan(self, question: str, context: dict) -> ResearchPlan:
-        """План от планировщика; невалидный и после переспроса — уточнение у пользователя."""
+    async def _plan(
+        self,
+        question: str,
+        context: dict,
+        *,
+        stage: str = "planning",
+        emit: Emit = _ignore,
+    ) -> ResearchPlan:
+        """План от планировщика; невалидный и после переспроса — уточнение у пользователя.
+
+        ``stage`` — куда относить реальные фазы планирования: ``planning`` для
+        нового вопроса и ``replanning`` для достройки после lookup-шага.
+        """
         started_at = time.perf_counter()
+
+        def on_substage(name: str) -> None:
+            emit(_progress_event(stage, "substage", substage=name))
+
         try:
-            plan = await self.planner.plan(question, context)
+            if _reports_substages(self.planner):
+                plan = await self.planner.plan(question, context, on_substage=on_substage)
+            else:
+                plan = await self.planner.plan(question, context)
         except PlanInvalid as exc:
             raise ClarificationNeeded(
                 step_id=-1,
@@ -763,8 +843,40 @@ class AgentOrchestrator:
             if kind == "lookup" and replans < MAX_REPLANS:
                 replans += 1
                 executed = steps[:index]
-                replanned = await self._replan_after_lookup(
-                    memory, question, executed, tables, observation=table
+                replanning_started = time.perf_counter()
+                emit(_progress_event("replanning", "started"))
+                try:
+                    replanned = await self._replan_after_lookup(
+                        memory,
+                        question,
+                        executed,
+                        tables,
+                        observation=table,
+                        # Паспорт осмотренной таблицы не хранит связь колонок в
+                        # строке: планировщику дополнительно показываем её строки.
+                        sample_source=(
+                            inputs.get(step.step_id) if step.tool == INSPECT_TOOL else None
+                        ),
+                        emit=emit,
+                    )
+                except Exception as exc:
+                    emit(
+                        _progress_event(
+                            "replanning",
+                            "failed",
+                            error=str(exc),
+                            elapsed_ms=_elapsed_ms(replanning_started),
+                        )
+                    )
+                    raise
+                emit(
+                    _progress_event(
+                        "replanning",
+                        "finished",
+                        total_steps=len(executed) + len(replanned.steps),
+                        planned_steps=_planned_steps(replanned.steps),
+                        elapsed_ms=_elapsed_ms(replanning_started),
+                    )
                 )
                 steps = executed + replanned.steps
                 plan = ResearchPlan(
@@ -810,11 +922,24 @@ class AgentOrchestrator:
             return step, await execute(step)
         except Exception as exc:  # noqa: BLE001 — решает recovery.fixable
             error = exc
+        executions = 1
+        rerouted = self._from_source(step, error, current, tables, source)
+        if rerouted is not None:
+            # Исправление через LLM видит только колонки $prev и чинить вход
+            # не догадывается: две попытки уходили впустую.
+            logger.warning(
+                "    шаг %d: колонки нет в $prev, есть в $source — беру $source", step.step_id
+            )
+            step = rerouted
+            executions += 1
+            try:
+                return step, await execute(step)
+            except Exception as exc:  # noqa: BLE001
+                error = exc
         # error — последняя ошибка выполнения: её видят фронт и пользователь.
         # feedback — что получает планировщик: та же ошибка и, если его
         # исправление отклонила валидация, этот шаг с причиной отказа.
         feedback = str(error)
-        executions = 1
         for attempt in range(1, STEP_FIX_ATTEMPTS + 1):
             if not fixable(error):
                 break
@@ -843,6 +968,28 @@ class AgentOrchestrator:
                 error = exc
                 feedback = str(exc)
         raise _StepFailed(step, error, executions)
+
+    def _from_source(
+        self,
+        step: ResearchStep,
+        error: Exception,
+        current: str,
+        tables: dict[int, str],
+        source: str,
+    ) -> ResearchStep | None:
+        """Тот же шаг на $source, если колонки из ошибки нет в $prev, но есть в источнике.
+
+        Модель ставит второй независимый расчёт после первого без
+        "input": "$source", и он ищет исходную колонку в таблице результата
+        (группировка по «Статус» после средней суммы).
+        """
+        missing = MISSING_COLUMN.search(str(error))
+        if missing is None or step.input != PREVIOUS or current == source:
+            return None
+        rerouted = step.model_copy(update={"input": SOURCE})
+        if missing.group(1) not in self._input_columns(rerouted, current, tables, source):
+            return None
+        return rerouted
 
     def _input_columns(
         self, step: ResearchStep, current: str, tables: dict[int, str], source: str
@@ -884,18 +1031,36 @@ class AgentOrchestrator:
     ) -> Execution:
         """Выбрать таблицу ответа и сопутствующие результаты."""
         executed = [step for step in steps if step.step_id in tables]
-        if plan.result_step is not None and plan.result_step in tables:
-            result_table = tables[plan.result_step]
+        # Осмотр таблицы — разведка: его паспорт не ответ, ответ — сама таблица.
+        answer_steps = [step for step in executed if step.tool != INSPECT_TOOL]
+        chosen = next((step for step in executed if step.step_id == plan.result_step), None)
+        if chosen is not None and chosen.tool == INSPECT_TOOL:
+            # result_step явно указывает на осмотр: ответ — осмотренная таблица,
+            # даже если в плане есть обычные шаги (docs/visualization.md).
+            result_table = inputs.get(chosen.step_id) or fallback
+        elif chosen is not None:
+            result_table = tables[chosen.step_id]
+        elif answer_steps:
+            chosen = answer_steps[-1]
+            result_table = tables[chosen.step_id]
         elif executed:
-            result_table = tables[executed[-1].step_id]
+            # План кончился осмотром: показываем осмотренную таблицу, а паспорт
+            # уходит в инсайт — иначе «сколько строк» отвечало бы числом колонок.
+            chosen = executed[-1]
+            result_table = inputs.get(chosen.step_id) or fallback
         else:
             result_table = fallback
-        shown = next((step for step in executed if tables[step.step_id] == result_table), None)
+        passports = [
+            (step.purpose or step.tool or f"шаг {step.step_id}", tables[step.step_id])
+            for step in executed
+            if step.tool == INSPECT_TOOL
+        ]
         supporting = [
             (step.purpose or step.tool or f"шаг {step.step_id}", tables[step.step_id])
             for step in executed
             if tool_kind(step) == "analysis" and tables[step.step_id] != result_table
         ]
+        supporting += [(purpose, table) for purpose, table in passports if table != result_table]
         execution = Execution(
             result_table=result_table,
             supporting=supporting,
@@ -905,28 +1070,30 @@ class AgentOrchestrator:
             plan=plan,
             steps=executed,
             inputs=dict(inputs or {}),
-            result_purpose=shown.purpose if shown else "",
-            result_kind=tool_kind(shown) if shown else "transform",
-            result_tool=shown.tool if shown else "",
+            result_purpose=chosen.purpose if chosen else "",
+            result_kind=tool_kind(chosen) if chosen else "transform",
+            result_tool=chosen.tool if chosen else "",
         )
         try:
-            values = self._distribution_values(question, shown, inputs or {})
+            values = self._distribution_values(question, chosen, inputs or {})
         except Exception:
             # Гистограмма — дополнение: без неё показываем статистики шага.
             logger.exception("<<< _finish выборка для гистограммы не собрана")
             values = None
-        if values is None:
+        if values is None or chosen is None:
             return execution
         return Execution(
             result_table=values,
-            supporting=[(shown.purpose or shown.tool, result_table), *supporting],
+            supporting=[(chosen.purpose or chosen.tool, result_table), *supporting],
             final_viz="histogram",
             dashboard_requested=plan.dashboard_requested,
             tables=dict(tables),
             plan=plan,
             steps=executed,
             inputs=dict(inputs or {}),
-            result_purpose=shown.purpose,
+            result_purpose=chosen.purpose,
+            result_kind=tool_kind(chosen),
+            result_tool=chosen.tool,
         )
 
     def _distribution_values(
@@ -968,14 +1135,26 @@ class AgentOrchestrator:
         executed: list[ResearchStep],
         tables: dict[int, str],
         observation: str,
+        sample_source: str | None = None,
+        emit: Emit = _ignore,
     ) -> ResearchPlan:
-        """Достроить план с учётом результата lookup-шага."""
+        """Достроить план с учётом результата lookup-шага.
+
+        ``sample_source`` — таблица, строки которой показываются планировщику
+        дополнительно: паспорт ``inspect_temp_table`` описывает колонки по
+        отдельности и теряет связь «регион ↔ категория ↔ сумма» в строке.
+        """
         observed = self.executor.db.to_records(observation, limit=OBSERVATION_ROWS)
         context = memory.build_context(question)
-        context["executed"] = _describe_executed(executed, tables, observed)
+        lines = [_describe_executed(executed, tables, observed)]
+        if sample_source is not None:
+            sample_rows = self.executor.db.to_records(sample_source, limit=OBSERVATION_ROWS)
+            if sample_rows:
+                lines.append(f"Строки {sample_source}: {sample_rows}")
+        context["executed"] = "\n".join(lines)
         context["next_step_id"] = _next_step_id(tables)
         logger.info(">>> _replan_after_lookup после шага %d", executed[-1].step_id)
-        plan = await self._plan(question, context)
+        plan = await self._plan(question, context, stage="replanning", emit=emit)
         return _renumber(plan, context["next_step_id"])
 
     async def _build_dashboard(
@@ -1140,6 +1319,7 @@ class AgentOrchestrator:
                 yield event
             return
         stage = "insight"
+        stage_started = time.perf_counter()
         try:
             yield _progress_event("insight", "started")
             profile = overview.passport(self.db, table)
@@ -1153,18 +1333,23 @@ class AgentOrchestrator:
                 logger.exception("<<< run() описание таблицы %s не построено", table)
                 summary = ""
             details = overview.paragraphs(summary) or [SUMMARY_UNAVAILABLE]
+            yield _progress_event("insight", "finished", elapsed_ms=_elapsed_ms(stage_started))
             yield {"type": "text", "data": {"headline": headline, "details": details}}
 
             stage = "chart"
+            stage_started = time.perf_counter()
             yield _progress_event("chart", "started")
             spec = build_vega_spec(
                 "table", data=overview.profile_rows(profile, enrichment), title=OVERVIEW_CAPTION
             )
+            yield _progress_event("chart", "finished", elapsed_ms=_elapsed_ms(stage_started))
             yield {"type": "chart", "data": {"spec": spec, "caption": OVERVIEW_CAPTION}}
         except Exception as exc:
             logger.exception("<<< run() обзор таблицы: этап %s упал", stage)
             memory.finish_turn("failed")
-            yield _progress_event(stage, "failed", error=str(exc))
+            yield _progress_event(
+                stage, "failed", error=str(exc), elapsed_ms=_elapsed_ms(stage_started)
+            )
             yield _failure_event()
             yield _done(memory.turn_id)
             return
@@ -1262,6 +1447,8 @@ def _requested_view(execution: Execution, records: list[dict]) -> str:
     if execution.final_viz == NO_CHART and not execution.dashboard_requested:
         return NO_CHART
     requested = "auto" if execution.final_viz == NO_CHART else execution.final_viz
+    if requested == "histogram":
+        return "histogram"
     if execution.result_kind == "transform":
         return requested
     # Стат-тест и разведка — строки чисел: таблица. Тренд и сезонность —

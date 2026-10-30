@@ -58,7 +58,7 @@
 
 | type | data | когда |
 |---|---|---|
-| `progress` | `ProgressPayload` (ниже) | по ходу хода: план, шаги, начало инсайта и графика |
+| `progress` | `ProgressPayload` (ниже) | по ходу хода: план, шаги, перепланирование, инсайт, график, дашборд |
 | `table` | `{table, previous, title}` | агент сам взял таблицу под вопрос до плана: у сессии её не было (`previous: null`) или вопрос явно про другие, несвязанные данные. `title` — название таблицы (#211) или `null`. Фронт переносит ленту на эту таблицу и пишет «Беру данные «…»» |
 | `text` | `{headline, details}` | инсайт готов |
 | `chart` | `{spec, caption, result_table?}` | Vega-Lite спека (нет, если план выбрал `final_viz: "none"`); `result_table` — `temp_result_vN` ответа (нет, если ответ без шагов): по нему плитка пересчитывается, а результат выгружается в Excel |
@@ -67,39 +67,72 @@
 | `error` | `{message}` | сбой хода; дальше `done` |
 | `done` | `{}` или `{prompt_truncated}` | ход завершён; `prompt_truncated` — сколько промптов хода сервер LLM обрезал (только если > 0) |
 
-`ProgressPayload`: `stage` (`planning` / `step` / `insight` / `chart` /
-`dashboard`), `status` (`started` / `finished` / `failed` / `fixing`) и
-необязательные `step_id`, `tool`, `purpose`, `total_steps`, `elapsed_ms`,
-`attempt`, `error` — пустые поля в событие не попадают.
+`ProgressPayload`: `stage` (`planning` / `replanning` / `step` / `insight` /
+`chart` / `dashboard`), `status` (`started` / `substage` / `finished` /
+`failed` / `fixing`) и необязательные `step_id`, `tool`, `purpose`,
+`total_steps`, `planned_steps`, `elapsed_ms`, `attempt`, `error`, `substage` —
+пустые поля в событие не попадают. `planned_steps` — типизированный список
+`{step_id, purpose?, tool?}`: `purpose` — назначение от модели, если его нет,
+фронт показывает `tool`; «Шаг N» формируется на клиенте через i18n.
+`substage` — реальная фаза планирования (`semantic` / `llm` / `validation`),
+фронт рисует её под активной стадией. `elapsed_ms` у этапов (`planning`,
+`replanning`, `insight`, `chart`, `dashboard`) замеряется `perf_counter()` на
+сервере и не включает сетевую задержку.
 
 События прогресса по порядку:
 
 | stage | status | поля | когда |
 |---|---|---|---|
 | `planning` | `started` | — | планировщик получил вопрос |
-| `planning` | `failed` | `error` | планировщик упал (LLM недоступна), дальше `error` и `done` |
-| `planning` | `finished` | `total_steps` | план готов (`0` — инструментов нет, дальше `clarification_needed`) |
+| `planning` | `substage` | `substage` | реальная фаза: `semantic` (отбор колонок/инструментов), `llm` (вызов модели), `validation` (проверка плана) |
+| `planning` | `failed` | `error`, `elapsed_ms` | планировщик упал (LLM недоступна), дальше `error` и `done` |
+| `planning` | `finished` | `total_steps`, `planned_steps`, `elapsed_ms` | план готов (`0` — инструментов нет, дальше `clarification_needed`) |
 | `step` | `started` | `step_id`, `tool`, `purpose` | шаг начал выполняться |
 | `step` | `fixing` | `step_id`, `tool`, `purpose`, `attempt`, `error` | шаг упал, планировщик исправляет его |
 | `step` | `finished` | `step_id`, `tool`, `purpose`, `elapsed_ms` | шаг выполнен (время — с учётом исправлений) |
 | `step` | `failed` | `step_id`, `tool`, `purpose`, `elapsed_ms`, `error` | шаг не исправился, дальше `clarification_needed` |
-| `insight` | `started` | — | план выполнен, генерируется инсайт (дальше `text`) |
-| `chart` | `started` | — | строится график (дальше `chart`) |
-| `insight` / `chart` | `failed` | `error` | этап упал, дальше `error` и `done` |
-| `dashboard` | `failed` | `error` | дашборд не собран; ответ и график уже отданы, дальше `done` без `error` |
+| `replanning` | `started` | — | lookup-шаг выполнен, план достраивается по увиденному |
+| `replanning` | `substage` | `substage` | реальная фаза достройки плана |
+| `replanning` | `finished` | `total_steps`, `planned_steps`, `elapsed_ms` | новый план готов, дальше новые `step` |
+| `replanning` | `failed` | `error`, `elapsed_ms` | перепланирование упало, дальше `clarification_needed` |
+| `insight` | `started` | — | план выполнен, генерируется инсайт |
+| `insight` | `finished` | `elapsed_ms` | инсайт готов, дальше `text` |
+| `chart` | `started` | — | строится график |
+| `chart` | `finished` | `elapsed_ms` | график готов, дальше `chart` |
+| `dashboard` | `started` | — | собирается дашборд (после `chart`) |
+| `dashboard` | `finished` | `elapsed_ms` | дашборд готов, дальше `dashboard` |
+| `insight` / `chart` | `failed` | `error`, `elapsed_ms` | этап упал, дальше `error` и `done` |
+| `dashboard` | `failed` | `error`, `elapsed_ms` | дашборд не собран; ответ и график уже отданы, дальше `done` без `error` |
 
-`planning` приходит один раз на новый вопрос: ни достройка плана после
-lookup-шага, ни ответ на уточнение (`recovery_response`) его не шлют, а
-шаги после них идут теми же событиями `step`. У `step/finished` и
-`step/failed` поля `tool` и `purpose` — от последней версии шага (после
-исправления). Смена вида прошлого графика («сделай таблицей») идёт без
-плана: сразу `chart` и `done`. Этап `dashboard` шлёт только `failed`.
+`planning` приходит на новый вопрос; достройка плана после lookup-шага
+идёт отдельной стадией `replanning` (её `finished`/`failed` закрывает
+стадию явно, а не при старте следующего этапа), ответ на уточнение
+(`recovery_response`) перепланирует через `_plan` и тоже шлёт `step` без
+повторного `planning`. Во время `planning` и `replanning` приходят
+`substage`-события из `StepPlanner.plan`: фронт показывает реальные фазы
+`semantic` → `llm` → `validation`, а не таймерные догадки. У
+`step/finished` и `step/failed` поля `tool` и `purpose` — от последней
+версии шага (после исправления). Смена вида прошлого графика («сделай
+таблицей») идёт без плана: сразу `chart` и `done`. Этапы `insight`,
+`chart` и `dashboard` явно шлют `finished` (или `failed`) с `elapsed_ms`,
+поэтому длительность стадии не зависит от момента прихода следующего
+события.
+
+План от LLM приходит одним structured-ответом, поэтому `planned_steps`
+появляются только в `planning/finished` (и `replanning/finished`). Фронт
+раскрывает их по одному; отдельные `step`-строки для шагов, уже
+перечисленных в плане, не дублируются — статус, время и ошибка
+показываются внутри раскрытого плана. Для настоящего построчного
+стриминга плана нужен отдельный режим LLM-клиента
+(`instructor.create_partial` / streaming JSON), это не входит в текущий
+контракт `progress`.
 
 Вопрос про таблицу целиком («что передо мной?», «сколько строк и за какой
 период?», «опиши данные») тоже идёт без плана (`core/data/overview.py`):
-`insight/started` → `text` (`headline` — объём и период из паспорта,
-`details` — описание LLM по абзацам) → `chart/started` → `chart` (вид
-`table`, по строке на колонку) → `done`. Вопрос должен целиком состоять из
+`insight/started` → `insight/finished` → `text` (`headline` — объём и
+период из паспорта, `details` — описание LLM по абзацам) →
+`chart/started` → `chart/finished` → `chart` (вид `table`, по строке на
+колонку) → `done`. Вопрос должен целиком состоять из
 обзорных фраз: «сколько строк по Москве?» идёт в планировщик. Описание
 берётся из паспорта, LLM вызывается, только если паспорт изменился. LLM не
 ответила — в `details` строка «Описание данных сейчас недоступно», факты и
@@ -117,14 +150,21 @@ lookup-шага, ни ответ на уточнение (`recovery_response`) �
 
 ```json
 {"type": "progress", "data": {"stage": "planning", "status": "started"}}
-{"type": "progress", "data": {"stage": "planning", "status": "finished", "total_steps": 1}}
-{"type": "progress", "data": {"stage": "step", "status": "started", "step_id": 1,
+{"type": "progress", "data": {"stage": "planning", "status": "substage", "substage": "semantic"}}
+{"type": "progress", "data": {"stage": "planning", "status": "substage", "substage": "llm"}}
+{"type": "progress", "data": {"stage": "planning", "status": "substage", "substage": "validation"}}
+{"type": "progress", "data": {"stage": "planning", "status": "finished", "total_steps": 1,
+ "planned_steps": [{"step_id": 0, "purpose": "Выручка по регионам", "tool": "group_by"}],
+ "elapsed_ms": 120}}
+{"type": "progress", "data": {"stage": "step", "status": "started", "step_id": 0,
  "tool": "group_by", "purpose": "Выручка по регионам"}}
-{"type": "progress", "data": {"stage": "step", "status": "finished", "step_id": 1,
+{"type": "progress", "data": {"stage": "step", "status": "finished", "step_id": 0,
  "tool": "group_by", "purpose": "Выручка по регионам", "elapsed_ms": 42}}
 {"type": "progress", "data": {"stage": "insight", "status": "started"}}
+{"type": "progress", "data": {"stage": "insight", "status": "finished", "elapsed_ms": 800}}
 {"type": "text", "data": {"headline": "...", "details": ["..."]}}
 {"type": "progress", "data": {"stage": "chart", "status": "started"}}
+{"type": "progress", "data": {"stage": "chart", "status": "finished", "elapsed_ms": 15}}
 {"type": "chart", "data": {"spec": {}, "caption": "..."}}
 {"type": "done", "data": {}}
 ```

@@ -141,9 +141,19 @@ export function startRun(
   // Прогресс хода живёт в отдельном сообщении над ответом
   let progress: TurnProgress | null = null;
   const progressId = `msg-progress-${Date.now().toString(36)}`;
-  const finishProgress = () => {
+  const finishProgress = (failed = false) => {
     if (progress && progress.finished_at === undefined) {
-      progress = { ...progress, finished_at: Date.now() };
+      const now = Date.now();
+      const timeline = progress.timeline?.map((item) => {
+        if (item.kind !== "stage" || item.finished_at !== undefined) return item;
+        return {
+          ...item,
+          finished_at: now,
+          elapsed_ms: Math.max(1, now - item.started_at),
+          status: failed ? ("failed" as const) : ("finished" as const),
+        };
+      });
+      progress = { ...progress, finished_at: now, ...(timeline ? { timeline } : {}) };
       store.updateMessage(progressId, { progress }, sessionId);
     }
   };
@@ -241,12 +251,14 @@ export function startRun(
         }
       } else if (event.type === "clarification_needed") {
         // Бэкенд закрывает поток без done: ждёт recovery_response
+        finishProgress(true);
         answerStarted = false;
         streamFinished = true;
         const id = `msg-clarify-${Date.now().toString(36)}`;
         addMessage({ id, role: "agent", content: "", clarification: event.data });
         runs.patchRun(sessionId, { clarificationId: id });
       } else if (event.type === "refusal") {
+        finishProgress(true);
         answerStarted = false;
         streamFinished = true;
         addMessage({ role: "agent", content: event.data.reason || t("chat.refusal"), refusal: event.data });
@@ -301,6 +313,7 @@ export function startRun(
             .setDashboard(dashData.dashboard_id, dashData.title || t("chat.dashboardDefault"), dashData.tiles);
         }
       } else if (event.type === "error") {
+        finishProgress(true);
         answerStarted = false;
         fail();
         const raw = event as any;
@@ -316,7 +329,7 @@ export function startRun(
       }
     },
     (error) => {
-      finishProgress();
+      finishProgress(true);
       if (error) {
         fail();
         addMessage({
@@ -347,6 +360,7 @@ export function startRun(
     { recoveryResponse, replyTo: options.replyTo, dashboard },
   );
   stoppers.set(sessionId, () => {
+    finishProgress(true);
     cancelled = true;
     stop();
   });

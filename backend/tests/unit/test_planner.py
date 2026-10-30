@@ -174,6 +174,21 @@ def test_plan_ending_with_lookup_drops_tiles_on_future_steps():
     assert [planned.step_id for planned in plan.dashboard_tiles] == [0]
 
 
+def test_plan_reports_real_substages() -> None:
+    import asyncio
+
+    llm = ScriptedLLM(ResearchPlan(steps=[total(0, "revenue")]))
+    substages: list[str] = []
+    asyncio.run(
+        StepPlanner(llm=llm).plan(
+            "Выручка по категориям",
+            {"columns": ["revenue"]},
+            on_substage=substages.append,
+        )
+    )
+    assert substages == ["semantic", "llm", "validation"]
+
+
 def test_question_without_dashboard_words_gets_no_dashboard_prompt():
     import asyncio
 
@@ -181,6 +196,19 @@ def test_question_without_dashboard_words_gets_no_dashboard_prompt():
     plan = asyncio.run(StepPlanner(llm=llm).plan("Выручка по категориям", {"columns": ["revenue"]}))
     assert "dashboard_tiles" not in llm.prompts[0]
     assert plan.template_id is None
+
+
+def test_planner_prompt_requires_required_arguments():
+    import asyncio
+
+    llm = ScriptedLLM(ResearchPlan(steps=[total(0, "revenue")]))
+    asyncio.run(StepPlanner(llm=llm).plan("Что за данные?", {"columns": ["revenue"]}))
+    assert "by: column | list[column] (обязательный)" in llm.prompts[0]
+    assert "указывай в каждом шаге всегда" in llm.prompts[0]
+    assert 'group_by с "by": []' in llm.prompts[0]
+    # Вторая метрика без input бралась из $prev — таблицы результата прошлого шага.
+    assert "Указывай всегда" in llm.prompts[0]
+    assert '(вторая метрика по\n  исходным данным), — "$source"' in llm.prompts[0]
 
 
 def test_dashboard_without_template_asks_for_three_to_six_tiles():
