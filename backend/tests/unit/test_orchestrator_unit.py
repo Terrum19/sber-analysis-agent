@@ -20,9 +20,10 @@ class FakeExecutor:
 class FakeInsightGen:
     """МOCK генератора инсайта."""
 
-    async def generate(self, question, result_table, **_):
+    async def generate(self, question, result_table, **kwargs):
         from app.models.insight import Insight
 
+        self.kwargs = kwargs
         return Insight(
             headline="Мок инсайт",
             details=["Деталь 1"],
@@ -120,6 +121,37 @@ def test_run_error_in_step(orchestrator):
     assert clar_events[0]["data"]["step_id"] == 0
     assert "Таблица не найдена" in clar_events[0]["data"]["error"]
     assert "suggestions" in clar_events[0]["data"]
+
+
+def test_insight_gets_source_and_step_inputs(orchestrator):
+    collect(orchestrator, "s1")
+    assert orchestrator.insight_gen.kwargs["source"] == "raw"
+    assert orchestrator.insight_gen.kwargs["inputs"] == {0: "raw"}
+
+
+def test_insight_gets_source_and_step_inputs_after_recovery(orchestrator):
+    import asyncio
+
+    class FailingExecutor:
+        async def execute(self, step, input_table, **_):
+            raise ValueError("Таблица не найдена")
+
+    SessionMemory("s3").set_table("raw")
+    orchestrator.executor = FailingExecutor()
+    assert "clarification_needed" in stages(collect(orchestrator, "s3"))
+    orchestrator.executor = FakeExecutor()
+
+    async def _collect():
+        request = ChatRequest(
+            session_id="s3", question="считай по category", recovery_response="считай по category"
+        )
+        return [event async for event in orchestrator.run(request)]
+
+    events = stages(asyncio.run(_collect()))
+    assert "planning:started" not in events
+    assert "done" in events
+    assert orchestrator.insight_gen.kwargs["source"] == "raw"
+    assert orchestrator.insight_gen.kwargs["inputs"] == {0: "raw"}
 
 
 def collect(orchestrator, session_id: str) -> list[dict]:

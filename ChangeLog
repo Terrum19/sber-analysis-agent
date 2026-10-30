@@ -252,6 +252,89 @@
 	меню во время ответа больше не блокируются; точка статуса у сессии.
 	* frontend/src/i18n/dictionary.ts (sidebar.runRunning, sidebar.runDone)
 	(sidebar.runError): Новые.  (chat.cannotSwitchWhileGenerating): Удалён.
+2026-10-29  thebulkapro  <saitbatalovbulat200@gmail.com>
+
+	Факты инсайта о данных за результатом: пропуски, период, ничья на
+	вершине, неполный крайний период (#216, A-25.6 – A-25.9).
+	* backend/app/core/agent/quality_fixes.py (plan_facts): Новая.
+	По паспорту источника и колонкам плана — «в исходной таблице price:
+	8996 из 129971 без значения» и период данных по колонкам дат; без
+	паспорта этих фактов нет, запросов к источнику нет.  Возвращает и
+	подсказки инсайту — только к сработавшим фактам.
+	(top_tie): Новая.  Ничья на вершине sort_limit по первой колонке
+	order_by: один COUNT по входу шага, MAX при descending, иначе MIN;
+	видна и при limit=1.
+	(partial_periods, _period_start, _period_end, _day): Новые.  Первый
+	или последний период time_bucket, который данные покрывают не
+	целиком; только при колонке period в результате, неделя — с
+	понедельника, как date_trunc.
+	* backend/app/core/llm/prompts/quality_rules.py (PLANNER_RULES):
+	NULL в долях и CASE WHEN — «неизвестно», а не 0: filter_rows IS NOT
+	NULL или CASE без ELSE 0.  (INSIGHT_RULES): Место {hints}.
+	(NULLS_HINT, TIE_HINT, PARTIAL_HINT): Новые.
+	* backend/app/core/agent/insight.py (generate): Факты по плану из
+	паспорта source и входов шагов inputs дополняют факты о результате;
+	сбой фактов по плану инсайт не роняет.
+	* backend/tests/unit/test_quality_fixes.py: Пропуски в колонках плана
+	и вне его, без паспорта, период дат, ничья при limit=10 и limit=1 и
+	по минимуму, неполные неделя и первый месяц, факты в промпте.
+	* docs/prompts.md: То же.
+
+	Колонки источника, которые использует план (#216, A-25.5).
+	* backend/app/core/agent/quality_fixes.py (plan_columns, _strings):
+	Новые.  Колонка использована, если её имя — значение аргумента или
+	отдельное слово в выражении (price, но не price_eur), без учёта
+	регистра; аргументы обходятся вглубь (metrics у group_by).
+	* backend/tests/unit/test_quality_fixes.py: Планы «доля вин дороже
+	$100» и «цена/качество», price_eur, позиционные columns, имя с
+	пробелом и скобками.
+
+	Инсайт получает исходную таблицу и входы шагов (#216, A-25.4).
+	* backend/app/core/agent/orchestrator.py (Execution): Поле inputs —
+	шаг -> его входная таблица, без второй таблицы join_tables.
+	(_finish): Заполняет inputs, в том числе для гистограммы.
+	(_turn): generate получает source (таблица сессии) и inputs — и в
+	обычном ходе, и после ответа на уточнение.
+	* backend/app/core/agent/insight.py (generate): Параметры source и
+	inputs; пока не используются, поведение не меняется.
+	* backend/tests/unit/test_orchestrator_unit.py: source и inputs в
+	generate после хода и после recovery_response.
+
+	Проверка чисел инсайта: «тыс/млн/млрд» и числа из промпта (#216,
+	п. 3).
+	* backend/app/core/agent/quality_fixes.py (ungrounded_numbers):
+	Число со словом «тыс», «млн» или «млрд» сверяется и с опорными,
+	делёнными на 10³, 10⁶ или 10⁹, и с самими опорными; допуск прежний.
+	«726,9 млн» при 726930548.86 больше не вызывает переспроса.
+	(_SCALES): Новый.
+	* backend/app/core/agent/insight.py (_grounded): Опора — весь текст
+	промпта вместо строки sources: порог 0.05 из P_VALUE_RULE опорный,
+	только когда правило попало в промпт.  (generate): То же.
+	* backend/tests/unit/test_quality_fixes.py: Тысячи, миллионы,
+	миллиарды, число без слова масштаба.
+	* backend/tests/unit/test_insight_generator.py: «p < 0,05» с p_value
+	в результате — без переспроса, без p_value — с переспросом.
+	* docs/prompts.md: То же.
+
+	Блок о стат-тестах в инсайте — только когда тесты были (#216, п. 5).
+	* backend/app/core/llm/prompts/insight_summary.py (INSIGHT_SUMMARY):
+	Без блока «Сопутствующие результаты».  (INSIGHT_SUPPORTING)
+	(P_VALUE_RULE): Новые.
+	* backend/app/core/agent/insight.py (generate): Сопутствующие
+	результаты — при непустом supporting, порог p_value — при колонке
+	p_value в результате или сопутствующих таблицах; в обеих ветках
+	agent_quality_fixes.  (has_p_value, describe_supporting): Новые.
+	* backend/tests/unit/test_insight_generator.py: Промпт без тестов,
+	с p_value в результате и в сопутствующих таблицах.
+	* docs/prompts.md: То же.
+
+	Точность малых дробных чисел в промпте инсайта (#216, п. 4).
+	* backend/app/core/agent/quality_fixes.py (_round): При |x| < 1 —
+	3 значащие цифры вместо 2 знаков: доля 0,0259 больше не попадает
+	в промпт как «0.03», p-value 1e-30 — как «0.0».
+	(format_value): Docstring.
+	* backend/tests/unit/test_quality_fixes.py: Доли, p-value и сотые
+	в format_value; доля 0.0259 в промпте инсайта.
 
 2026-10-28  thebulkapro  <saitbatalovbulat200@gmail.com>
 
