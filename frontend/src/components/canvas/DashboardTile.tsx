@@ -262,6 +262,10 @@ export default function DashboardTile({
   const [editingTitle, setEditingTitle] = useState(false);
   const [titleInput, setTitleInput] = useState(tile.title);
 
+  React.useEffect(() => {
+    setTitleInput(tile.title);
+  }, [tile.title]);
+
   const isKpi = isKpiTile(tile);
   const hasChart = !isKpi && tile.spec && Object.keys(tile.spec).length > 0;
   const locale = useUiStore((s) => s.locale);
@@ -426,15 +430,24 @@ export default function DashboardTile({
               <h3
                 className={`truncate font-semibold uppercase tracking-wider text-graphite-300 ${
                   large ? "text-sm" : dense ? "text-[11px]" : "text-xs"
-                }`}
+                } ${onRename ? "cursor-text" : ""}`}
                 title={tile.result_table ? `${tile.title} · ${t("tile.source")}: ${tile.result_table}` : tile.title}
+                onDoubleClick={() => {
+                  if (onRename) setEditingTitle(true);
+                }}
               >
                 {tile.title}
               </h3>
-              {isEditing && (
+              {(isEditing || Boolean(onRename)) && (
                 <button
-                  onClick={() => setEditingTitle(true)}
-                  className="shrink-0 text-graphite-400 hover:text-graphite-200"
+                  type="button"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setEditingTitle(true);
+                  }}
+                  className={`shrink-0 text-graphite-400 hover:text-graphite-200 transition ${
+                    isEditing ? "" : "opacity-0 group-hover:opacity-100"
+                  }`}
                   title={t("tile.rename")}
                 >
                   <Icon name="pencil" size={13} />
