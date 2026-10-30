@@ -89,6 +89,8 @@ class SeasonalityTool(BaseTool):
         start = last - cycles * cycle + 1 if cycles else first
         levels: dict[int, list] = {}
         values: dict[int, list[float]] = {}
+        # Последний учтённый шаг номера: даты недели года («4-я» — это 20.01–26.01).
+        latest: dict[int, int] = {}
         zero_window = _ZERO_WINDOWS.get(args.period) if args.function != "AVG" else None
         active = {step // zero_window for step in totals} if zero_window else set()
         for step in range(first, last + 1):
@@ -107,6 +109,7 @@ class SeasonalityTool(BaseTool):
             level[0] += total
             level[1] += count
             level[2] += 1
+            latest[number] = step
             if args.function != "AVG":
                 values.setdefault(number, []).append(total)
             elif count:
@@ -127,13 +130,14 @@ class SeasonalityTool(BaseTool):
             else:
                 level = total / periods if periods else None
             middle = median(values[number]) if values.get(number) else None
-            rows.append((number, level, middle, periods, incomplete, skipped))
-        return rows_result(
-            db,
-            input_table,
-            [args.period, "level", "median", "periods", "incomplete", "skipped"],
-            rows,
-        )
+            row = (number, level, middle, periods, incomplete, skipped)
+            if args.period == "week":
+                row += (_week_dates(latest.get(number)),)
+            rows.append(row)
+        columns = [args.period, "level", "median", "periods", "incomplete", "skipped"]
+        if args.period == "week":
+            columns.append("dates")
+        return rows_result(db, input_table, columns, rows)
 
 
 def _totals(db, table: str, args: SeasonalityArgs) -> dict:
@@ -151,6 +155,14 @@ def _totals(db, table: str, args: SeasonalityArgs) -> dict:
         point.step: (point.value, int(counts.get(point.step, 1)), point.incomplete)
         for point in sums[0][1]
     }
+
+
+def _week_dates(step: int | None) -> str | None:
+    """Даты недели по шагу: «20.01–26.01» — модель не угадывает месяц по номеру недели."""
+    if step is None:
+        return None
+    monday = _MONDAY + timedelta(weeks=step)
+    return f"{monday:%d.%m}–{monday + timedelta(days=6):%d.%m}"
 
 
 def _number(step: int, period: str) -> int:

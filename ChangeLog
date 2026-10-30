@@ -1,3 +1,15 @@
+2026-10-31  Alexander Yurits  <143354682+Terrum19@users.noreply.github.com>
+
+	Неделя года — с датами; слабейшая неделя — не неполная крайняя.
+	* backend/app/core/tools/timeseries/seasonality.py (_week_dates): Новая.
+	У period=week колонка dates («19.01–25.01»): модель называла 4-ю неделю
+	«началом января».
+	* backend/app/core/llm/prompts/quality_rules.py (PLANNER_RULES):
+	«Какая неделя самая …» — sort_limit с limit=3: при limit=1 ответом была
+	неполная последняя неделя.  (RESULT_SHAPES): При двух периодах медиана
+	выбросов не показывает; неделю года называть датами из dates.
+	* backend/tests/unit/test_tools.py: Даты недели года.
+
 2026-10-30  Alexander Yurits  <143354682+Terrum19@users.noreply.github.com>
 
 	«Какая неделя самая слабая» — календарная неделя, «типичная неделя

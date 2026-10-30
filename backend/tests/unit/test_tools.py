@@ -384,6 +384,8 @@ def test_seasonality_by_week_of_year_averages_years(sales: DuckDBManager) -> Non
     by_week = {row["week"]: row for row in rows}
     assert sum(row["skipped"] for row in rows) == 0
     assert (by_week[10]["level"], by_week[10]["periods"]) == (21.0, 2)
+    # Даты — последнего учтённого года: 10-я неделя 2024 года — 04.03–10.03.
+    assert by_week[10]["dates"] == "04.03–10.03"
 
 
 def test_seasonality_average_keeps_empty_periods_out(nights: DuckDBManager) -> None:
