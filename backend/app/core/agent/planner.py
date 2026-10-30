@@ -28,6 +28,7 @@ from app.core.llm.prompts.step_planner import (
     DASHBOARD_PLAN,
     DASHBOARD_TEMPLATE,
     MEMORIES,
+    NEW_TOOLS,
     NO_TEMPLATE_TILES,
     NO_TILES,
     OLDER_TURNS,
@@ -110,6 +111,13 @@ class StepPlanner:
         )
         if settings.agent_quality_fixes:
             prompt += PLANNER_RULES
+        created = context.get("created_tools") or []
+        if created:
+            described_tools = [
+                f"- {item.tool.describe()}" if getattr(item, "tool", None) else f"- {item}"
+                for item in created
+            ]
+            prompt += NEW_TOOLS.format(tools="\n".join(described_tools))
         template = None
         # Плитка дашборда по кнопке (#224) — обычный вопрос, без шаблонов и плиток.
         if not context.get("tile") and is_dashboard_question(question):

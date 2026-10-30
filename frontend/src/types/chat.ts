@@ -120,7 +120,7 @@ export interface RefusalEvent {
 
 /** ProgressPayload бэкенда; пустые поля не приходят. */
 export interface ProgressPayload {
-  stage: "planning" | "step" | "insight" | "chart" | "dashboard" | "outline" | "tile";
+  stage: "planning" | "step" | "insight" | "chart" | "dashboard" | "outline" | "tile" | "toolgen";
   status: "started" | "finished" | "failed" | "fixing";
   step_id?: number;
   tool?: string;
@@ -190,6 +190,8 @@ export interface TurnProgress {
   outlining?: boolean;
   /** Плитки из dashboard_outline; есть только в режиме дашборда. */
   tiles?: TileState[];
+  /** Агент создаёт и проверяет новый инструмент (toolgen). */
+  toolgen?: boolean;
 }
 
 /** Применить событие progress к прогрессу хода. */
@@ -212,8 +214,12 @@ export function applyProgress(progress: TurnProgress, event: ProgressPayload): T
     if (index >= 0) tiles[index] = tile;
     else tiles.push(tile);
     next.tiles = tiles;
+  } else if (event.stage === "toolgen") {
+    next.toolgen = event.status === "started";
+    next.planning = false;
   } else if (event.stage === "planning") {
     next.planning = event.status === "started";
+    next.toolgen = false;
     if (event.total_steps !== undefined) next.total_steps = event.total_steps;
   } else if (event.stage === "step" && event.step_id !== undefined) {
     const index = next.steps.findIndex((step) => step.step_id === event.step_id);
@@ -233,8 +239,10 @@ export function applyProgress(progress: TurnProgress, event: ProgressPayload): T
     if (index >= 0) next.steps[index] = step;
     else next.steps.push(step);
     next.planning = false;
+    next.toolgen = false;
   } else {
     next.planning = false;
+    next.toolgen = false;
     next.stage = event.stage;
   }
   return next;

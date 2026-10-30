@@ -9,6 +9,12 @@
 [1] Planner (LLM + Instructor) --> ResearchPlan {steps[], final_viz, dashboard_requested,
   |        dashboard_title, template_id, dashboard_tiles[]} (план дашборда: docs/visualization.md)
   |        вход: вопрос, топ-5 релевантных колонок (semantic_select), контекст сессии
+  |        пустой план / неизвестный инструмент
+  v
+[1b] Toolgen (опц.): LLM проектирует декларативную спеку (SQL-шаблон или Python
+  |        для WASM-песочницы) -> статические проверки -> smoke/reference/checks
+  |        на выборке входной таблицы -> регистрация в ToolRegistry -> перепланирование.
+  |        Код LLM в процесс бэкенда не импортируется (docs/architecture.md, sandbox.md).
   v
 [2] StepExecutor: последовательное применение шагов
   |        тул = предзаписанный SQL/стат-тест (подстановка колонок)
@@ -39,6 +45,7 @@
 |---|---|
 | **DuckDB как единый движок** | SQL в едином диалекте к CSV/PostgreSQL/ClickHouse без предобработки |
 | **ResearchStep + реестр тулов** | расширяемость: новый тул = файл, оркестратор не меняется |
+| **Toolgen: спека, а не Python-модуль** | LLM создаёт декларативную спеку; SQL проверяется по AST DuckDB, Python исполняется только в WASM — импорт кода LLM в процесс бэкенда был бы RCE |
 | **Семантический отбор топ-5 колонок** | схема неконтролируемого размера не влезает в контекст LLM |
 | **WASM-песочница вместо Docker** | инкапсуляция кодогенерации без «жирного» контейнера |
 | **chart_morph без LLM** | «покажи в другом виде» — быстро и дёшево, не нагружая локальную модель |
@@ -46,6 +53,33 @@
 | **4 уровня памяти** | сессия (последние 3 хода) / кеш результатов (DuckDB) / паспорт данных (DuckDB `_meta`) / реестр дашбордов |
 | **Замкнутый контур** | Ollama/vLLM локально; интернет — только к разрешённым доменам (HuggingFace, пакеты) |
 | **Контекст LLM на сервере, проверка в клиенте** | Ollama молча обрезает начало длинного промпта, а `options.num_ctx` в `/v1` не действует (0.24, 0.35.1). Контекст задаёт сервер (`LLM_NUM_CTX` = `OLLAMA_CONTEXT_LENGTH` / `--max-model-len`); клиент сверяет `usage.prompt_tokens` с контекстом сервера (0.24 упирается в него) и с оценкой по символам вместе со схемой тулов (0.35.1 оставляет ~половину контекста); контекст сервера спрашивается при старте бэкенда и переспрашивается, пока сервер его не назовёт; бюджет промпта — `core/llm/budget.py` |
+
+## Toolgen: инструмент как данные
+
+Когда планировщик вернул пустой план (кроме просьбы `remember`) или сослался
+на неизвестный инструмент, оркестратор вызывает `ToolFactory`
+(`core/tools/toolgen/factory.py`). LLM возвращает `GeneratedToolSpec`:
+SQL-шаблон с `{input}`/`{param}` либо Python-код, получающий `df` и `params`.
+Спека проходит каскад:
+
+1. статические правила — имя, параметры, AST DuckDB (один SELECT, только
+   `{input}`/CTE, без DDL/DML, table functions, `SAMPLE`, `getenv`,
+   `random/now/uuid`), AST Python (импорты, опасные вызовы, `result`);
+2. сборка динамической Pydantic-модели аргументов и разбор
+   `sample_arguments`;
+3. smoke на выборке `TOOLGEN_SAMPLE_ROWS` строк: `EXPLAIN`/исполнение,
+   непустой результат (если не `allow_empty`), уникальные колонки;
+4. `reference_sql` с независимым запросом или SQL-`checks` над
+   `__tool_result` — сравнение результатов.
+
+Только после этого инструмент регистрируется
+(`ToolRegistry.register_generated`) и, при `TOOLGEN_STORE=true`, сохраняется в
+`STORAGE_DIR/tools/generated/<name>.json`; при старте проверенные спеки
+загружаются снова. SQL исполняется в DuckDB с повторной AST-проверкой при
+каждом вызове, Python — только в `WASMSandbox`. При неудаче поведение
+прежнее: `clarification_needed`; `run_python` остаётся для разовых
+вычислений. Лимиты — `TOOLGEN_MAX_TOOLS`, `TOOLGEN_MAX_PER_TURN`,
+`TOOLGEN_ATTEMPTS`, `TOOLGEN_MAX_SQL_CHARS`, `TOOLGEN_MAX_CODE_CHARS`.
 
 ## Память
 
@@ -67,8 +101,8 @@
 | `error` | `{message}` | сбой хода; дальше `done` |
 | `done` | `{}` или `{prompt_truncated}` | ход завершён; `prompt_truncated` — сколько промптов хода сервер LLM обрезал (только если > 0) |
 
-`ProgressPayload`: `stage` (`planning` / `step` / `insight` / `chart` /
-`dashboard`), `status` (`started` / `finished` / `failed` / `fixing`) и
+`ProgressPayload`: `stage` (`planning` / `toolgen` / `step` / `insight` /
+`chart` / `dashboard`), `status` (`started` / `finished` / `failed` / `fixing`) и
 необязательные `step_id`, `tool`, `purpose`, `total_steps`, `elapsed_ms`,
 `attempt`, `error` — пустые поля в событие не попадают.
 
@@ -78,7 +112,10 @@
 |---|---|---|---|
 | `planning` | `started` | — | планировщик получил вопрос |
 | `planning` | `failed` | `error` | планировщик упал (LLM недоступна), дальше `error` и `done` |
-| `planning` | `finished` | `total_steps` | план готов (`0` — инструментов нет, дальше `clarification_needed`) |
+| `planning` | `finished` | `total_steps` | план готов (`0` — инструментов нет; дальше toolgen или `clarification_needed`) |
+| `toolgen` | `started` | `purpose`, `tool?` | агент создаёт инструмент (toolgen включён и есть LLM) |
+| `toolgen` | `finished` | `tool`, `purpose`, `elapsed_ms` | инструмент проверен и зарегистрирован; дальше перепланирование |
+| `toolgen` | `failed` | `purpose`, `elapsed_ms`, `error` | создать не удалось; дальше прежнее `clarification_needed` |
 | `step` | `started` | `step_id`, `tool`, `purpose` | шаг начал выполняться |
 | `step` | `fixing` | `step_id`, `tool`, `purpose`, `attempt`, `error` | шаг упал, планировщик исправляет его |
 | `step` | `finished` | `step_id`, `tool`, `purpose`, `elapsed_ms` | шаг выполнен (время — с учётом исправлений) |
@@ -88,7 +125,8 @@
 | `insight` / `chart` | `failed` | `error` | этап упал, дальше `error` и `done` |
 | `dashboard` | `failed` | `error` | дашборд не собран; ответ и график уже отданы, дальше `done` без `error` |
 
-`planning` приходит один раз на новый вопрос: ни достройка плана после
+`planning` приходит на новую попытку плана: после toolgen он приходит ещё
+раз (модель видит созданный инструмент). Ни достройка плана после
 lookup-шага, ни ответ на уточнение (`recovery_response`) его не шлют, а
 шаги после них идут теми же событиями `step`. У `step/finished` и
 `step/failed` поля `tool` и `purpose` — от последней версии шага (после

@@ -190,6 +190,7 @@ export default function StepProgress({ progress }: { progress: TurnProgress }) {
         <div className="mb-1 tabular-nums text-graphite-500">{t("progress.seconds", { s: Math.floor((now - progress.started_at) / 1000) })}</div>
       )}
       {progress.outlining && <div className="animate-pulse">{t("progress.outline")}</div>}
+      {progress.toolgen && <div className="animate-pulse">{t("progress.toolgen")}</div>}
       {progress.planning && !tiles && <div className="animate-pulse">{t("progress.planning")}</div>}
       {tiles && tiles.length > 0 && (
         <ul className="space-y-1.5">

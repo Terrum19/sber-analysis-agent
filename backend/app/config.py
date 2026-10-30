@@ -82,6 +82,15 @@ class Settings(BaseSettings):
     codegen_enabled: bool = True
     codegen_attempts: int = 2
     codegen_max_rows: int = 200_000
+    # Самосоздание инструментов (toolgen): спека + SQL или Python в WASM.
+    toolgen_enabled: bool = True
+    toolgen_attempts: int = 2
+    toolgen_sample_rows: int = 500
+    toolgen_max_tools: int = 25
+    toolgen_max_per_turn: int = 2
+    toolgen_store: bool = True
+    toolgen_max_sql_chars: int = 4000
+    toolgen_max_code_chars: int = 6000
     agent_max_steps: int = 12
     # Сколько последних ходов сессии (любого статуса) видит планировщик (#197).
     context_turns: int = 5

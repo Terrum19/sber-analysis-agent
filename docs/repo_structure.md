@@ -90,6 +90,11 @@ backend/
 │   │   ├── tools/          — РЕЕСТР ТУЛОВ (расширяемый; оркестратор не меняется)
 │   │   │   ├── registry.py        — регистрация/диспетчеризация тулов по имени, алиасы, describe() для планировщика
 │   │   │   ├── base.py            — BaseTool: вход -> DuckDB-таблица; кавычки для имён, проверка SQL-выражений; transforms_data
+│   │   │   ├── generated.py       — GeneratedSqlTool/GeneratedPythonTool: адаптеры декларативной спеки toolgen
+│   │   │   ├── toolgen/           — самосоздание инструментов
+│   │   │   │   ├── validator.py   — AST DuckDB, запреты, smoke/reference/checks на выборке
+│   │   │   │   ├── factory.py     — LLM -> спека -> проверка -> регистрация; загрузка спек
+│   │   │   │   └── store.py       — атомарное JSON-хранилище проверенных спек
 │   │   │   ├── inspect_temp_table.py — паспорт промежуточной таблицы: схема, типы, строки, образцы, статистика
 │   │   │   ├── run_wasm_python.py — мост шага в WASM-песочницу (не зарегистрирован, пока нет песочницы)
 │   │   │   ├── sql/               — предзаписанные SQL с подстановкой колонок
@@ -156,6 +161,7 @@ backend/
 │   │
 │   ├── models/            — доменные Pydantic-модели (контракты конвейера)
 │   │   ├── research_step.py   — ResearchStep: тул, колонки, parameters, флаг LLM-кодген
+│   │   ├── generated_tool.py  — GeneratedToolSpec: декларативная спека toolgen (SQL/Python)
 │   │   ├── insight.py         — Insight: headline, details, limits
 │   │   ├── enrichment.py      — ColumnEnrichment/EnrichmentBatch: названия и описания колонок
 │   │   └── datasource.py      — Datasource: тип, путь/DSN, таблицы

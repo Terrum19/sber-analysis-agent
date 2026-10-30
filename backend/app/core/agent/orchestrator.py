@@ -61,6 +61,7 @@ logger = logging.getLogger(__name__)
 import duckdb
 
 from app.api.schemas.chat import ChatRequest, DashboardPayload, ProgressPayload
+from app.config import settings
 from app.core.agent.insight import InsightGenerator
 from app.core.agent.planner import PlanInvalid, StepPlanner, is_dashboard_question
 from app.core.agent.recovery import STEP_FIX_ATTEMPTS, fixable
@@ -80,6 +81,7 @@ from app.core.memory.state_cache import StateCache
 from app.core.sandbox.wasm_runtime import SandboxError
 from app.core.tools.base import identifier
 from app.core.tools.registry import tool_registry
+from app.core.tools.toolgen.factory import CreatedTool, ToolCreationError, ToolFactory
 from app.core.viz.chart_morph import detect_morph, morph
 from app.core.viz.chart_selector import (
     MIN_HISTOGRAM_VALUES,
@@ -175,6 +177,27 @@ class ClarificationNeeded(Exception):
         super().__init__(error)
 
 
+class NoSuitableTool(ClarificationNeeded):
+    """Подходящего инструмента нет; оркестратор может создать его (toolgen).
+
+    Наследник ClarificationNeeded: если создание не удалось, внешний код
+    по-прежнему получает обычное уточнение. ``planning_finished`` — событие
+    planning/finished уже отправлено (пустой план), failed слать не нужно.
+    """
+
+    def __init__(
+        self,
+        error: str = "Не удалось подобрать инструменты под этот вопрос.",
+        suggestions: list[str] | None = None,
+    ) -> None:
+        super().__init__(
+            step_id=-1,
+            error=error,
+            suggestions=suggestions or ["Переформулировать вопрос"],
+        )
+        self.planning_finished = False
+
+
 class _StepFailed(Exception):
     """Шаг не выполнился и не исправился: последняя версия шага и ошибка.
 
@@ -242,6 +265,7 @@ class AgentOrchestrator:
         insight_gen: InsightGenerator | None = None,
         cache: StateCache | None = None,
         db: DuckDBManager | None = None,
+        tool_factory: ToolFactory | None = None,
     ) -> None:
         # Один DuckDB на весь ход: temp_result_vN, созданные исполнителем,
         # должны читаться графиком, инсайтом и кешем из той же базы.
@@ -253,6 +277,9 @@ class AgentOrchestrator:
         self.cache = cache or StateCache(self.db)
         self.profiles = ProfileMemory(self.db)
         self.vectors = TableVectors(self.db)
+        # toolgen: инъекция фабрики для тестов, иначе создаётся лениво из planner.llm.
+        self.tool_factory = tool_factory
+        self._created_tools_count = 0
 
     async def run(self, request: ChatRequest) -> AsyncIterator[dict]:
         """Выполнить исследование и вернуть поток событий для фронта.
@@ -292,6 +319,9 @@ class AgentOrchestrator:
             memory.start_turn(request.question, reply_to=request.reply_to)
         turn_id = memory.turn_id
         set_turn_id(turn_id)
+        # Лимит TOOLGEN_MAX_PER_TURN считается на ход, а оркестратор может
+        # переиспользоваться между запросами.
+        self._created_tools_count = 0
         logger.info("ход начат: вопрос=%r", request.question)
 
         catalog: list[str] = []
@@ -583,13 +613,14 @@ class AgentOrchestrator:
             context["related"] = self._related(memory.table, request.question)
             tables = [memory.table, *(item.table for item in context["related"])]
         logger.debug(">>> run() планируем шаги (planner.plan)")
-        emit(_progress_event("planning", "started", tables=tables))
-        try:
-            plan = await self._plan(request.question, context)
-        except Exception as exc:
-            emit(_progress_event("planning", "failed", error=str(exc)))
-            raise
-        emit(_progress_event("planning", "finished", total_steps=len(plan.steps)))
+        plan = await self._plan_or_create(
+            request.question,
+            context,
+            memory.table,
+            emit,
+            tables=tables,
+            allow_empty_remember=True,
+        )
         chosen = plan.steps[0].input if plan.steps else None
         if catalog and chosen in catalog and chosen != memory.table:
             logger.info("планировщик выбрал таблицу %s", chosen)
@@ -645,13 +676,149 @@ class AgentOrchestrator:
         try:
             plan = await self.planner.plan(question, context)
         except PlanInvalid as exc:
+            message = "Не удалось составить корректный план: " + "; ".join(exc.errors)
+            if any(
+                marker in error
+                for error in exc.errors
+                for marker in ("неизвестный инструмент", "не указан инструмент")
+            ):
+                # Модель придумала тул: возможно, его стоит создать, а не просить
+                # пользователя переформулировать.
+                raise NoSuitableTool(message) from exc
             raise ClarificationNeeded(
                 step_id=-1,
-                error="Не удалось составить корректный план: " + "; ".join(exc.errors),
+                error=message,
                 suggestions=["Переформулировать вопрос"],
             ) from exc
         logger.info("план за %.1f с: %s", time.perf_counter() - started_at, describe_plan(plan))
         return plan
+
+    async def _plan_or_create(
+        self,
+        question: str,
+        context: dict,
+        input_table: str,
+        emit: Emit = _ignore,
+        *,
+        tables: list[str] | None = None,
+        allow_empty_remember: bool = True,
+        tile_id: int | None = None,
+    ) -> ResearchPlan:
+        """План; если инструментов не хватает — создать тул и перепланировать.
+
+        Пустой план с remember — это просьба запомнить, toolgen не нужен.
+        Создание ограничено TOOLGEN_MAX_PER_TURN на ход.
+        """
+        while True:
+            emit(_progress_event("planning", "started", tables=tables, tile_id=tile_id))
+            try:
+                plan = await self._plan(question, context)
+            except NoSuitableTool as exc:
+                if not await self._create_tool(question, input_table, context, emit, exc):
+                    emit(_progress_event("planning", "failed", error=str(exc), tile_id=tile_id))
+                    raise
+                continue
+            except Exception as exc:
+                emit(_progress_event("planning", "failed", error=str(exc), tile_id=tile_id))
+                raise
+            if plan.steps or (allow_empty_remember and plan.remember):
+                emit(
+                    _progress_event(
+                        "planning",
+                        "finished",
+                        total_steps=len(plan.steps),
+                        tile_id=tile_id,
+                    )
+                )
+                return plan
+            # Пустой план без remember: подходящего инструмента нет.
+            emit(_progress_event("planning", "finished", total_steps=0, tile_id=tile_id))
+            exc = NoSuitableTool()
+            if not await self._create_tool(question, input_table, context, emit, exc):
+                exc.planning_finished = True
+                raise exc
+
+    async def _create_tool(
+        self,
+        question: str,
+        input_table: str,
+        context: dict,
+        emit: Emit,
+        reason: Exception | None = None,
+    ) -> bool:
+        """Создать инструмент через toolgen; False — создание недоступно/упало."""
+        if self._created_tools_count >= settings.toolgen_max_per_turn:
+            logger.info("toolgen: лимит созданий за ход исчерпан")
+            return False
+        factory = self._get_tool_factory()
+        if factory is None:
+            return False
+        tile_id = context.get("tile_id")
+        purpose = context.get("tile_title") or question
+        requested = _requested_tool(reason) if reason is not None else None
+        emit(
+            _progress_event("toolgen", "started", purpose=purpose, tool=requested, tile_id=tile_id)
+        )
+        started_at = time.perf_counter()
+        try:
+            created: CreatedTool = await factory.create(
+                question=question,
+                input_table=input_table,
+                purpose=purpose,
+                tile_title=context.get("tile_title", ""),
+                tile_intent=context.get("tile_intent", ""),
+            )
+        except ToolCreationError as exc:
+            logger.warning("toolgen: инструмент не создан: %s", exc)
+            emit(
+                _progress_event(
+                    "toolgen",
+                    "failed",
+                    purpose=purpose,
+                    error=str(exc),
+                    elapsed_ms=_elapsed_ms(started_at),
+                    tile_id=tile_id,
+                )
+            )
+            return False
+        except Exception as exc:
+            logger.exception("toolgen: неожиданный сбой")
+            emit(
+                _progress_event(
+                    "toolgen",
+                    "failed",
+                    purpose=purpose,
+                    error=str(exc),
+                    elapsed_ms=_elapsed_ms(started_at),
+                    tile_id=tile_id,
+                )
+            )
+            return False
+        self._created_tools_count += 1
+        context.setdefault("created_tools", []).append(created)
+        emit(
+            _progress_event(
+                "toolgen",
+                "finished",
+                purpose=purpose,
+                tool=created.tool.name,
+                elapsed_ms=_elapsed_ms(started_at),
+                tile_id=tile_id,
+            )
+        )
+        return True
+
+    def _get_tool_factory(self) -> ToolFactory | None:
+        """Фабрика по умолчанию: LLM планировщика и общий DuckDB."""
+        if not settings.toolgen_enabled:
+            return None
+        if self.tool_factory is not None:
+            return self.tool_factory
+        llm = getattr(self.planner, "llm", None)
+        if llm is None:
+            return None
+        self.tool_factory = ToolFactory(db=self.db, llm=llm)
+        return self.tool_factory
 
     async def _execute_plan(
         self,
@@ -1310,13 +1477,17 @@ def _renumber(plan: ResearchPlan, start: int) -> ResearchPlan:
 
 
 def _require_steps(plan: ResearchPlan) -> None:
-    """Пустой план — подходящих инструментов нет; просим переформулировать."""
+    """Пустой план — подходящих инструментов нет; можно создать новый."""
     if not plan.steps:
-        raise ClarificationNeeded(
-            step_id=-1,
-            error="Не удалось подобрать инструменты под этот вопрос.",
-            suggestions=["Переформулировать вопрос"],
-        )
+        raise NoSuitableTool()
+
+
+def _requested_tool(error: Exception | None) -> str | None:
+    """Имя инструмента из ошибки «неизвестный инструмент 'x'» (для прогресса)."""
+    if error is None:
+        return None
+    match = re.search(r"инструмент\s+'([^']+)'", str(error))
+    return match.group(1) if match else None
 
 
 def _describe_executed(

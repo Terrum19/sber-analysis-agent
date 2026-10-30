@@ -122,7 +122,9 @@ class ProgressPayload(BaseModel):
     которые видит планировщик (первая — $source).
     """
 
-    stage: Literal["planning", "step", "insight", "chart", "dashboard", "outline", "tile"]
+    stage: Literal[
+        "planning", "step", "insight", "chart", "dashboard", "outline", "tile", "toolgen"
+    ]
     status: Literal["started", "finished", "failed", "fixing"]
     step_id: int | None = None
     tool: str | None = None

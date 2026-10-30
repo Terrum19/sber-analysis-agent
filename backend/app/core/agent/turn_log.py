@@ -13,7 +13,7 @@ STATUS_CLARIFICATION = "clarification"
 STATUS_DISCONNECTED = "disconnected"
 START_STAGE = "start"
 DISCONNECT_REASON = "клиент отключился"
-NOT_FATAL_STAGES = ("dashboard",)
+NOT_FATAL_STAGES = ("dashboard", "toolgen")
 TIMED_STAGES = {"text": ("insight", "инсайт"), "chart": ("chart", "график")}
 
 

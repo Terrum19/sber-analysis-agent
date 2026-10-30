@@ -34,7 +34,6 @@ from app.core.agent.orchestrator import (
     _done,
     _elapsed_ms,
     _progress_event,
-    _require_steps,
 )
 from app.core.dashboards.explain import explain_tile
 from app.core.dashboards.generator import DashboardGenerator
@@ -322,10 +321,19 @@ class DashboardTurn:
             context = memory.build_context(tile.question)
             context["next_step_id"] = (tile_id + 1) * TILE_STEP_IDS
             context["tile"] = True
+            context["tile_id"] = tile_id
+            context["tile_title"] = tile.title
+            context["tile_intent"] = tile.intent
             # Плитка «по регионам» на таблице заказов — через join_related (#165).
             context["related"] = self.agent._related(memory.table, tile.question)
-            plan = await self.agent._plan(tile.question, context)
-            _require_steps(plan)
+            plan = await self.agent._plan_or_create(
+                tile.question,
+                context,
+                memory.table,
+                tile_emit,
+                allow_empty_remember=False,
+                tile_id=tile_id,
+            )
             execution = await self.agent._execute_plan(
                 memory, plan, memory.table, tile.question, emit=tile_emit
             )

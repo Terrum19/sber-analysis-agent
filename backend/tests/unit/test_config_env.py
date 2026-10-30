@@ -13,6 +13,14 @@ def test_wasm_settings_defaults():
     assert defaults.wasm_timeout_s == 60
     assert defaults.wasm_mem_mb == 2048
     assert defaults.agent_max_steps == 12
+    assert defaults.toolgen_enabled is True
+    assert defaults.toolgen_attempts == 2
+    assert defaults.toolgen_sample_rows == 500
+    assert defaults.toolgen_max_tools == 25
+    assert defaults.toolgen_max_per_turn == 2
+    assert defaults.toolgen_store is True
+    assert defaults.toolgen_max_sql_chars == 4000
+    assert defaults.toolgen_max_code_chars == 6000
 
 
 def test_llm_settings_defaults():

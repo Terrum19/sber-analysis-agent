@@ -7,7 +7,8 @@
 | `system_analyst.py` | системная роль: аналитик + список тулов + правила | все |
 | `schema_describe.py` | «Что передо мной?» — описание данных простым языком; с `SCHEMA_DESCRIBE_JSON` — JSON `{display_name, summary}` с названием таблицы для пользователя (`core/data/overview.py`, кеш в паспорте) | №1 |
 | `column_extract.py` | документ-описание таблицы + пачка колонок -> JSON `{columns: [{column, title, description}]}`: только то, что написано в документе, иначе `null` | №1-2 |
-| `step_planner.py` | вопрос -> список ResearchStep; для вопроса про дашборд — `DASHBOARD_PLAN` с плитками шаблона или просьбой составить 3–6 плиток; `MEMORIES` — воспоминания сессии, `PAST_TURNS` + `OLDER_TURNS` — последние ходы и указание на `read_history`, поле `remember` — просьба запомнить (#197) | №2-6 |
+| `step_planner.py` | вопрос -> список ResearchStep; для вопроса про дашборд — `DASHBOARD_PLAN` с плитками шаблона или просьбой составить 3–6 плиток; `MEMORIES` — воспоминания сессии, `PAST_TURNS` + `OLDER_TURNS` — последние ходы и указание на `read_history`, поле `remember` — просьба запомнить (#197); `NEW_TOOLS` — созданные toolgen инструменты при перепланировании | №2-6 |
+| `toolgen.py` | `TOOL_SMITH_SYSTEM` + `TOOLGEN`: вопрос/плитка, схема и примеры строк -> декларативная спека `GeneratedToolSpec`; `TOOLGEN_FIX` — исправление по ошибкам проверки; `TOOLGEN_TILE` — контекст плитки дашборда | все |
 | `insight_summary.py` | результат -> «узнали то, узнать невозможно»; `INSIGHT_MEMORIES` — воспоминания сессии (#197); `TILE_INSIGHT` — вывод в 1–2 предложения к плитке дашборда | №2-6 |
 | `chart_selector.py` | выбор типа визуализации под вопрос | №4 |
 | `quality_rules.py` | при `AGENT_QUALITY_FIXES`: подсказки к тулам, правила планировщика, факты и проверка чисел для инсайта, рамка прошлых шагов | №2-6 |

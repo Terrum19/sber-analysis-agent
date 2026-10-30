@@ -23,6 +23,7 @@ from app.core.llm import ollama_setup
 from app.core.llm.client import LLMClient
 from app.core.logging_setup import configure_logging, startup_summary
 from app.core.memory.profile_memory import ProfileMemory
+from app.core.tools.registry import tool_registry
 
 logger = logging.getLogger(__name__)
 
@@ -34,8 +35,9 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     модели на сервере Ollama и запрос контекста сервера LLM."""
     log_file = configure_logging(settings.log_level, settings.storage_dir)
     logger.info("%s", startup_summary(settings, log_file))
-    # TODO(round-2): инициализация ToolRegistry, WASMRuntime
     app.state.db = DuckDBManager(settings.duckdb_path)
+    # Проверенные toolgen-спеки поднимаем с диска; битые пропускаются.
+    tool_registry.load_generated()
     cleanup(app.state.db)
     interrupted = ProfileMemory(app.state.db).fail_pending()
     if interrupted:
