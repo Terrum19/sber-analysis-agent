@@ -645,6 +645,9 @@ class AgentOrchestrator:
                 yield _progress_event("insight", "finished", elapsed_ms=_elapsed_ms(stage_started))
                 yield _text_event(insight.headline, insight.details)
             elif settings.insight_stream and callable(getattr(self.insight_gen, "stream", None)):
+                budget = current_budget()
+                if budget is not None:
+                    budget.enter_stage("insight")
                 queue: asyncio.Queue[dict | None] = asyncio.Queue()
                 streamed = False
 
@@ -671,15 +674,31 @@ class AgentOrchestrator:
                 )
                 insight_task.add_done_callback(lambda _: queue.put_nowait(None))
                 try:
-                    while (event := await queue.get()) is not None:
-                        yield event
-                    insight = await insight_task
+                    try:
+                        while (event := await queue.get()) is not None:
+                            yield event
+                        insight = await insight_task
+                    except (BudgetExceeded, TimeoutError, ValueError) as exc:
+                        # Бюджет или нечитаемый ответ: результат уже посчитан,
+                        # поэтому отдаём шаблонный вывод, как в _insight().
+                        # Если текст уже показан, второй ответ дал бы дубль.
+                        if streamed:
+                            raise
+                        metrics = current_metrics()
+                        if metrics is not None and isinstance(exc, (BudgetExceeded, TimeoutError)):
+                            metrics.budget_exceeded = f"insight: {exc}"
+                        logger.warning("инсайт (стрим) не удался, шаблонный вывод: %s", exc)
+                        insight = self._fallback_insight(
+                            question, result_table, execution.steps, str(exc)
+                        )
                 finally:
                     # Клиент отключился посреди стрима — закрываем поток LLM.
                     if not insight_task.done():
                         insight_task.cancel()
                         with suppress(asyncio.CancelledError):
                             await insight_task
+                    if budget is not None:
+                        budget.leave_stage("insight")
                 if confirmation:
                     insight.details.append(confirmation)
                 yield _progress_event("insight", "finished", elapsed_ms=_elapsed_ms(stage_started))

@@ -44,8 +44,10 @@ def tool_call_response(arguments: dict) -> dict:
     }
 
 
-def text_response(content: str, finish_reason: str = "stop") -> dict:
-    return {
+def text_response(
+    content: str, finish_reason: str = "stop", reasoning_tokens: int | None = None
+) -> dict:
+    body = {
         "id": "c1",
         "object": "chat.completion",
         "created": 0,
@@ -58,12 +60,24 @@ def text_response(content: str, finish_reason: str = "stop") -> dict:
             }
         ],
     }
+    if reasoning_tokens is not None:
+        body["usage"] = {
+            "prompt_tokens": 10,
+            "completion_tokens": reasoning_tokens,
+            "total_tokens": 10 + reasoning_tokens,
+            "completion_tokens_details": {"reasoning_tokens": reasoning_tokens},
+        }
+    return body
 
 
 def client_with(responses: list[httpx.Response]) -> tuple[LLMClient, list[httpx.Request]]:
     requests: list[httpx.Request] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
+        # Служебные запросы контекста (/models, /api/ps) не вызовы LLM:
+        # в счётчик и в заготовленные ответы они не идут.
+        if request.url.path != "/v1/chat/completions":
+            return httpx.Response(404, json={"error": {"message": "not found"}})
         requests.append(request)
         return responses[min(len(requests), len(responses)) - 1]
 
@@ -162,6 +176,44 @@ async def test_length_cut_answer_is_retried_with_more_tokens(
 
 
 async def test_length_retry_happens_once(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(settings, "llm_max_tokens", 16)
+    monkeypatch.setattr(settings, "llm_length_retry_tokens", 256)
+    llm, requests = client_with(
+        [
+            httpx.Response(200, json=text_response("", "length")),
+            httpx.Response(200, json=text_response("", "length")),
+        ]
+    )
+    assert await llm.complete("s", "u") == ""
+    assert len(requests) == 2
+
+
+async def test_reasoning_cut_answer_is_retried_without_reasoning(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # И увеличенный лимит целиком ушёл в рассуждения: пустой ответ хуже
+    # ответа без скрытых рассуждений, поэтому последняя попытка — без них.
+    monkeypatch.setattr(settings, "llm_max_tokens", 16)
+    monkeypatch.setattr(settings, "llm_length_retry_tokens", 256)
+    monkeypatch.setattr(settings, "llm_num_ctx", 16384)
+    llm, requests = client_with(
+        [
+            httpx.Response(200, json=text_response("", "length", reasoning_tokens=16)),
+            httpx.Response(200, json=text_response("", "length", reasoning_tokens=256)),
+            httpx.Response(200, json=text_response('{"value": 1}')),
+        ]
+    )
+    assert await llm.complete("s", "u") == '{"value": 1}'
+    assert len(requests) == 3
+    retry = json.loads(requests[2].content)
+    assert retry["reasoning"] == {"enabled": False}
+    assert retry["max_tokens"] == 256
+
+
+async def test_reasoning_retry_not_made_without_reasoning_tokens(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Провайдер не сообщил reasoning_tokens (Ollama/vLLM) — лишнего вызова нет.
     monkeypatch.setattr(settings, "llm_max_tokens", 16)
     monkeypatch.setattr(settings, "llm_length_retry_tokens", 256)
     llm, requests = client_with(

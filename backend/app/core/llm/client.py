@@ -260,6 +260,23 @@ class LLMClient:
         except Exception as error:  # noqa: BLE001 — LLM может ещё не подняться
             logger.warning("LLM недоступна при старте, контекст сервера узнаем позже: %s", error)
 
+    @staticmethod
+    def _routing_extra() -> dict[str, Any]:
+        """reasoning/provider для OpenRouter; пустой dict — параметры не передаются.
+
+        LLM_REASONING_EFFORT=none (off) выключает скрытые рассуждения,
+        LLM_PROVIDER закрепляет провайдера (provider.only). Ollama/vLLM оба
+        поля не понимают, поэтому там настройки должны оставаться пустыми.
+        """
+        extra: dict[str, Any] = {}
+        if settings.llm_reasoning_effort:
+            effort = settings.llm_reasoning_effort
+            extra["reasoning"] = {"enabled": False} if effort == "none" else {"effort": effort}
+        if settings.llm_provider:
+            only = [name.strip() for name in settings.llm_provider.split(",") if name.strip()]
+            extra["provider"] = {"only": only}
+        return extra
+
     async def complete(self, system: str, user: str, **kwargs: Any) -> str:
         """Одиночный completion (без structured output).
 
@@ -271,7 +288,9 @@ class LLMClient:
         LLM_LENGTH_RETRY_TOKENS: reasoning-модель (Qwen3 через OpenRouter)
         могла потратить весь max_tokens на скрытые рассуждения и вернуть
         пустой content. Обрыв по длине виден и у непустого ответа — он
-        тоже повторяется, чтобы JSON не пришёл обрезанным.
+        тоже повторяется, чтобы JSON не пришёл обрезанным. Если и
+        увеличенный лимит целиком ушёл в рассуждения, последняя попытка
+        идёт без них: пустой ответ хуже ответа без скрытых рассуждений.
         """
         logger.debug(
             ">>> complete() system=%r user=%r kwargs=%s",
@@ -279,13 +298,8 @@ class LLMClient:
             user,
             kwargs,
         )
-        if settings.llm_reasoning_effort:
-            effort = settings.llm_reasoning_effort
-            reasoning = {"enabled": False} if effort == "none" else {"effort": effort}
-            kwargs["extra_body"] = {**kwargs.get("extra_body", {}), "reasoning": reasoning}
-        if settings.llm_provider:
-            only = [name.strip() for name in settings.llm_provider.split(",") if name.strip()]
-            kwargs["extra_body"] = {**kwargs.get("extra_body", {}), "provider": {"only": only}}
+        if routing := self._routing_extra():
+            kwargs["extra_body"] = {**kwargs.get("extra_body", {}), **routing}
         budget = current_budget()
         timeout = (
             budget.timeout_for("llm", settings.llm_timeout_s) if budget else settings.llm_timeout_s
@@ -299,6 +313,7 @@ class LLMClient:
         retry_tokens = settings.llm_length_retry_tokens
         # Лучший непустой ответ: если повтор окажется пустым, вернём первый.
         best = ""
+        reasoning_off = False
         while True:
             if budget is not None:
                 budget.consume_llm_call("llm")
@@ -364,6 +379,21 @@ class LLMClient:
             room = max(0, settings.llm_num_ctx - prompt_tokens)
             retry_limit = min(retry_tokens, room) if retry_tokens else 0
             if retry_limit <= max_tokens:
+                # Увеличенный лимит тоже целиком ушёл в рассуждения (провайдер
+                # их считает — reasoning_tokens есть): пробуем последний раз без
+                # них. Иначе structured-вызов получит пустой ответ и ход упадёт.
+                if not best and reasoning_tokens and retry_tokens and not reasoning_off:
+                    reasoning_off = True
+                    kwargs["extra_body"] = {
+                        **kwargs.get("extra_body", {}),
+                        "reasoning": {"enabled": False},
+                    }
+                    logger.warning(
+                        "LLM %s: рассуждения съели max_tokens=%s, повтор без них",
+                        self.model,
+                        max_tokens,
+                    )
+                    continue
                 return best
             logger.info("LLM %s: повтор с max_tokens=%s", self.model, retry_limit)
             kwargs["max_tokens"] = retry_limit
@@ -373,43 +403,70 @@ class LLMClient:
 
         ``async with stream`` важен для отмены: при закрытии генератора
         (aclose/CancelledError) AsyncStream.close() закрывает HTTP-ответ.
+
+        Reasoning/provider передаются так же, как в complete().
+
+        Если поток оборвался по max_tokens, а дельт не было, — один повтор с
+        LLM_LENGTH_RETRY_TOKENS: reasoning-модель могла потратить весь лимит
+        на скрытые рассуждения и не выдать видимого текста.
         """
         logger.debug(">>> complete_stream() system=%r user=%r", system, user)
         extra: dict[str, Any] = {}
         if settings.llm_max_tokens:
             extra["max_tokens"] = settings.llm_max_tokens
         extra.update(kwargs)
+        # Как и в complete(): иначе стрим шёл бы с рассуждениями провайдера
+        # по умолчанию, пока structured-вызовы уже слушают LLM_REASONING_EFFORT.
+        if routing := self._routing_extra():
+            extra["extra_body"] = {**extra.get("extra_body", {}), **routing}
 
         t0 = time.time()
         first_at: float | None = None
         chunks = chars = 0
+        messages = [
+            {"role": "system", "content": system},
+            {"role": "user", "content": user},
+        ]
+        retry_tokens = settings.llm_length_retry_tokens
         try:
-            stream = await self._client.chat.completions.create(
-                model=self.model,
-                messages=[
-                    {"role": "system", "content": system},
-                    {"role": "user", "content": user},
-                ],
-                temperature=settings.llm_temperature,
-                stream=True,
-                **extra,
-            )
-            async with stream:
-                async for chunk in stream:
-                    if not chunk.choices:
-                        continue  # usage-only чанк
-                    choice = chunk.choices[0]
-                    content = choice.delta.content if choice.delta else None
-                    if not content:
-                        if choice.finish_reason == "length":
-                            logger.warning("LLM complete_stream(): ответ обрезан по max_tokens")
-                        continue
-                    if first_at is None:
-                        first_at = time.time()
-                        logger.info("LLM complete_stream(): первый чанк за %.2fs", first_at - t0)
-                    chunks += 1
-                    chars += len(content)
-                    yield content
+            for attempt in range(2):
+                truncated = False
+                stream = await self._client.chat.completions.create(
+                    model=self.model,
+                    messages=messages,
+                    temperature=settings.llm_temperature,
+                    stream=True,
+                    **extra,
+                )
+                async with stream:
+                    async for chunk in stream:
+                        if not chunk.choices:
+                            continue  # usage-only чанк
+                        choice = chunk.choices[0]
+                        content = choice.delta.content if choice.delta else None
+                        if not content:
+                            if choice.finish_reason == "length":
+                                truncated = True
+                                logger.warning(
+                                    "LLM complete_stream(): ответ обрезан по max_tokens=%s",
+                                    extra.get("max_tokens"),
+                                )
+                            continue
+                        if first_at is None:
+                            first_at = time.time()
+                            logger.info(
+                                "LLM complete_stream(): первый чанк за %.2fs", first_at - t0
+                            )
+                        chunks += 1
+                        chars += len(content)
+                        yield content
+                limit = int(extra.get("max_tokens") or 0)
+                # Рассуждения съели весь лимит и дельт не было — один повтор,
+                # как в complete(): иначе поток пуст и уходит в structured fallback.
+                if not truncated or chunks or attempt or retry_tokens <= limit:
+                    break
+                logger.info("LLM %s: повтор стрима с max_tokens=%s", self.model, retry_tokens)
+                extra["max_tokens"] = retry_tokens
         except Exception:
             logger.exception("LLM complete_stream() ОШИБКА")
             raise

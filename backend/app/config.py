@@ -22,7 +22,9 @@ ENV_FILES = (_REPO_ROOT / ".env", _BACKEND_DIR / ".env")
 
 
 class Settings(BaseSettings):
-    model_config = SettingsConfigDict(env_file=ENV_FILES, extra="ignore")
+    # populate_by_name — чтобы настройки с validation_alias (llm_reasoning_effort)
+    # по-прежнему задавались и по имени поля, как в остальных тестах.
+    model_config = SettingsConfigDict(env_file=ENV_FILES, extra="ignore", populate_by_name=True)
 
     # LLM (локально, без облака)
     llm_base_url: str = "http://localhost:11434/v1"  # Ollama / vLLM (OpenAI-совместимый)
@@ -58,10 +60,16 @@ class Settings(BaseSettings):
     # скрытые рассуждения и возвращают пустой content с finish_reason=length.
     # В этом случае — один повтор с увеличенным лимитом; 0 отключает повтор.
     llm_length_retry_tokens: int = 4096
-    # Сила размышлений думающей модели (OpenRouter, reasoning.effort): low,
-    # medium, high; none — размышления выключены. None — параметр не
-    # передаётся, решает провайдер. Ollama/vLLM его не понимают.
-    llm_reasoning_effort: Literal["none", "low", "medium", "high"] | None = None
+    # Сила размышлений думающей модели (OpenRouter, reasoning.effort): minimal,
+    # low, medium, high; none (или off) — размышления выключены. None — параметр
+    # не передаётся, решает провайдер. Ollama/vLLM его не понимают.
+    # LLM_REASONING — прежнее имя переменной: старые .env писали его без
+    # _EFFORT, и настройка молча не применялась — рассуждения съедали весь
+    # max_tokens, а structured-ответ приходил пустым.
+    llm_reasoning_effort: Literal["none", "minimal", "low", "medium", "high"] | None = Field(
+        default=None,
+        validation_alias=AliasChoices("LLM_REASONING_EFFORT", "LLM_REASONING"),
+    )
     # Провайдеры OpenRouter через запятую (provider.only), например deepinfra.
     # С размышлениями часть провайдеров ломает json_schema-план; None — выбирает
     # OpenRouter. Ollama/vLLM параметр не понимают.
@@ -175,6 +183,15 @@ class Settings(BaseSettings):
     @classmethod
     def _upper_level(cls, value: object) -> object:
         return value.upper() if isinstance(value, str) else value
+
+    @field_validator("llm_reasoning_effort", mode="before")
+    @classmethod
+    def _reasoning_effort(cls, value: object) -> object:
+        """off — прежнее имя выключенных размышлений; регистр и пробелы не важны."""
+        if isinstance(value, str):
+            text = value.strip().lower()
+            return "none" if text == "off" else text or None
+        return value
 
     @field_validator("storage_dir", "duckdb_path", "sqlite_path", "wasm_runtime_dir")
     @classmethod

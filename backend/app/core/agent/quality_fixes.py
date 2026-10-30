@@ -42,9 +42,12 @@ def ungrounded_numbers(headline: str, sources: str) -> list[str]:
     («12.3» опирается на 12.34). Проценты не проверяются: доли модель считает
     сама, в фактах их нет. Число со словом «тыс», «млн» или «млрд» сверяется
     и с опорными, делёнными на масштаб («726,9 млн» — 726930548.86), и с
-    самими опорными (выручка уже в миллионах).
+    самими опорными (выручка уже в миллионах). Даты «дд.мм», которыми модель
+    называет день и месяц, сверяются с ISO-датами промпта: «01.09» — это
+    не число 1.09, а 2006-09-01.
     """
     known = [_value(m) for m in _NUMBER.findall(sources)]
+    dates = _date_forms(sources)
     missing = []
     for match in _NUMBER.finditer(headline):
         rest = headline[match.end() :].lstrip()
@@ -52,12 +55,29 @@ def ungrounded_numbers(headline: str, sources: str) -> list[str]:
             continue
         scale = next((size for word, size in _SCALES.items() if rest.startswith(word)), 1)
         text = match.group()
+        if text in dates:
+            continue
         value, tolerance = _value(text), _tolerance(text)
         if not any(
             abs(value - other / divisor) <= tolerance for other in known for divisor in {1, scale}
         ):
             missing.append(text)
     return missing
+
+
+def _date_forms(sources: str) -> set[str]:
+    """ISO-даты промпта в форматах «дд.мм» и «дд/мм»: так модель их и называет."""
+    forms: set[str] = set()
+    for _, month, day in re.findall(r"(?<!\d)(\d{4})-(\d{2})-(\d{2})(?!\d)", sources):
+        forms.update(
+            {
+                f"{day}.{month}",
+                f"{int(day)}.{int(month)}",
+                f"{day}/{month}",
+                f"{int(day)}/{int(month)}",
+            }
+        )
+    return forms
 
 
 def _value(number: str) -> float:

@@ -324,6 +324,35 @@ def test_unreadable_insight_falls_back_to_template(orchestrator):
     assert text["data"]["headline"] == "Результат готов"
 
 
+def test_stream_budget_exceeded_falls_back_to_template(orchestrator, monkeypatch):
+    from app.config import settings
+    from app.core.agent.budget import BudgetExceeded
+    from app.models.insight import Insight
+
+    monkeypatch.setattr(settings, "insight_stream", True)
+
+    class BudgetInsightGen:
+        async def stream(self, question, result_table, **_):
+            raise BudgetExceeded("llm", 638.7, "лимит вызовов LLM 6 исчерпан")
+
+        def fallback_insight(self, question, result_table, steps=None, error=""):
+            return Insight(
+                headline="Результат готов",
+                details=["Строк в результате: 2"],
+                limits=error,
+            )
+
+    orchestrator.insight_gen = BudgetInsightGen()
+    events = collect(orchestrator, "s1")
+
+    assert "insight:failed" not in stages(events)
+    assert "error" not in stages(events)
+    assert "insight:started" in stages(events)
+    assert stages(events)[-1] == "done"
+    text = next(event for event in events if event["type"] == "text")
+    assert text["data"]["headline"] == "Результат готов"
+
+
 def test_dashboard_failure_keeps_the_answer(orchestrator, monkeypatch):
     from app.core.dashboards.generator import DashboardGenerator
     from app.models.research_step import ResearchPlan

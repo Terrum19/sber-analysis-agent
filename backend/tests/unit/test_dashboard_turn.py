@@ -263,6 +263,66 @@ async def test_outline_without_tiles_for_an_idea_is_asked_again_then_fails(db) -
     assert stages(events, "dashboard")[-1]["status"] == "failed"
 
 
+async def test_outline_with_one_tile_builds_a_dashboard(db) -> None:
+    one = DashboardOutline(
+        title="Цены",
+        tiles=[OutlineTile(title="Регионы", question="Выручка по регионам", intent="compare")],
+    )
+    llm = ScriptedLLM(DashboardOutline=[one, one], ChartChoices=[RuntimeError("timeout")])
+    events = await collect(agent(db, llm), question="Цены", idea=DashboardIdea(title="Цены"))
+
+    assert "error" not in kinds(events)
+    dashboard = next(event for event in events if event["type"] == "dashboard")
+    assert len(dashboard["data"]["tiles"]) == 1
+    text = next(event for event in events if event["type"] == "text")
+    assert "меньше обычного" in " ".join(text["data"]["details"])
+
+
+async def test_retry_reports_the_actual_number_of_tiles(db) -> None:
+    one = DashboardOutline(
+        title="Цены",
+        tiles=[OutlineTile(title="Регионы", question="Выручка по регионам", intent="compare")],
+    )
+    llm = ScriptedLLM(DashboardOutline=[one, OUTLINE], ChartChoices=[RuntimeError("timeout")])
+    await collect(agent(db, llm), question="Цены", idea=DashboardIdea(title="Цены"))
+
+    second = llm.prompts["DashboardOutline"][1]
+    assert "в плане плиток: 1" in second
+    assert "нужно от 4 до 5" in second
+
+
+async def test_failed_retry_keeps_the_first_outline(db) -> None:
+    one = DashboardOutline(
+        title="Цены",
+        tiles=[OutlineTile(title="Регионы", question="Выручка по регионам", intent="compare")],
+    )
+    llm = ScriptedLLM(
+        DashboardOutline=[one, ValueError("LLM не вернул валидный JSON")],
+        ChartChoices=[RuntimeError("timeout")],
+    )
+    events = await collect(agent(db, llm), question="Цены", idea=DashboardIdea(title="Цены"))
+
+    assert "error" not in kinds(events)
+    dashboard = next(event for event in events if event["type"] == "dashboard")
+    assert len(dashboard["data"]["tiles"]) == 1
+
+
+async def test_empty_retry_keeps_the_first_outline(db) -> None:
+    one = DashboardOutline(
+        title="Цены",
+        tiles=[OutlineTile(title="Регионы", question="Выручка по регионам", intent="compare")],
+    )
+    llm = ScriptedLLM(
+        DashboardOutline=[one, DashboardOutline()],
+        ChartChoices=[RuntimeError("timeout")],
+    )
+    events = await collect(agent(db, llm), question="Цены", idea=DashboardIdea(title="Цены"))
+
+    assert "error" not in kinds(events)
+    dashboard = next(event for event in events if event["type"] == "dashboard")
+    assert len(dashboard["data"]["tiles"]) == 1
+
+
 async def test_dashboard_needs_a_table() -> None:
     empty = DuckDBManager(":memory:")
     SessionMemory("s2")

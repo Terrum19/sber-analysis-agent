@@ -29,6 +29,7 @@ import time
 from collections.abc import AsyncIterator
 
 from app.api.schemas.chat import ChatRequest, DashboardPayload
+from app.core.agent.budget import BudgetExceeded
 from app.core.agent.orchestrator import (
     NO_TABLE_MESSAGE,
     AgentOrchestrator,
@@ -54,6 +55,7 @@ from app.core.llm.prompts.dashboard_builder import (
     CHART_RETRY,
     CHART_TILE,
     DASHBOARD_OUTLINE,
+    OUTLINE_FEW_TILES,
     OUTLINE_FORCED,
     OUTLINE_NO_TILES,
     OUTLINE_NOT_ENOUGH,
@@ -199,7 +201,10 @@ class DashboardTurn:
             for tile_id, execution in enumerate(executions)
             if execution is not None
         }
-        if len(built) < MIN_BUILT_TILES:
+        # Одна плитка — не полноценный дашборд, но если модель спланировала
+        # только её, собираем одну, а не теряем уже посчитанный результат.
+        required = max(1, min(MIN_BUILT_TILES, len(tiles)))
+        if len(built) < required:
             message = TOO_FEW_TILES.format(built=len(built), total=len(tiles))
             emit(_progress_event("dashboard", "failed", error=message))
             emit({"type": "error", "data": {"message": message}})
@@ -238,11 +243,20 @@ class DashboardTurn:
         emit({"type": "dashboard", "data": payload.model_dump(exclude_none=True)})
 
         failed = [tile.title for tile_id, tile in enumerate(tiles) if tile_id not in built]
+        if len(tiles) < MIN_BUILT_TILES:
+            details_note = (
+                f"Модель предложила плиток: {len(tiles)} — меньше обычного, "
+                "дашборд собран из того, что удалось построить."
+            )
+        else:
+            details_note = ""
         headline = f"Дашборд «{title}» готов: плиток {len(built)}. Что и как посчитано:"
         details = [
             f"{tile.title}: {explain_tile(executions[tile_id].steps, titles, records[tile_id])}."
             for tile_id, (tile, _) in built.items()
         ]
+        if details_note:
+            details.append(details_note)
         if failed:
             details.append("Не удалось построить: " + ", ".join(failed) + ".")
         emit({"type": "text", "data": {"headline": headline, "details": details}})
@@ -284,12 +298,38 @@ class DashboardTurn:
         )
         outline = await self._ask_outline(prompt)
         if forced and len(outline.tiles) < MIN_BUILT_TILES:
-            logger.warning("дашборд: план по идее без плиток, переспрос с ошибкой")
-            problem = OUTLINE_NO_TILES if outline.enough_info else OUTLINE_NOT_ENOUGH
+            logger.warning(
+                "дашборд: план по идее неполный (%d плиток), переспрос", len(outline.tiles)
+            )
+            if not outline.tiles:
+                problem = OUTLINE_NOT_ENOUGH if not outline.enough_info else OUTLINE_NO_TILES
+            else:
+                problem = OUTLINE_FEW_TILES.format(
+                    count=len(outline.tiles), min_tiles=MIN_TILES, max_tiles=MAX_TILES
+                )
             retry = OUTLINE_RETRY.format(problem=problem, min_tiles=MIN_TILES, max_tiles=MAX_TILES)
-            outline = await self._ask_outline(prompt + retry)
-            if len(outline.tiles) < MIN_BUILT_TILES:
+            first = outline
+            try:
+                outline = await self._ask_outline(prompt + retry)
+            except (BudgetExceeded, TimeoutError, ValueError) as exc:
+                # Переспрос не удался, но первый ответ был разбираемым:
+                # лучше собрать по нему, чем потерять уже готовый план.
+                logger.warning("дашборд: переспрос не удался (%s), оставляем первый план", exc)
+                return first
+            if not outline.tiles:
+                if first.tiles:
+                    logger.warning("дашборд: переспрос вернул пустой план, оставляем первый")
+                    return first
                 raise ValueError("Модель не составила план дашборда")
+            if len(outline.tiles) < MIN_BUILT_TILES:
+                # Пусть лучше будет дашборд из одной осмысленной плитки, чем
+                # ошибка после уже показанного плана: результат не теряем.
+                logger.warning(
+                    "дашборд: модель вернула %d плиток вместо %d–%d, собираем что есть",
+                    len(outline.tiles),
+                    MIN_TILES,
+                    MAX_TILES,
+                )
         logger.info(
             "дашборд: план %r enough_info=%s плитки=%s",
             outline.title,

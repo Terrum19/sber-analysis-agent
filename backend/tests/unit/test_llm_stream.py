@@ -105,6 +105,48 @@ async def test_complete_stream_skips_empty_and_usage_chunks():
     assert chunks == ["A", "B"]
 
 
+async def test_complete_stream_retries_empty_truncated_reasoning(monkeypatch):
+    from app.config import settings
+
+    monkeypatch.setattr(settings, "llm_max_tokens", 16)
+    monkeypatch.setattr(settings, "llm_length_retry_tokens", 256)
+    bodies = [
+        sse_body([completion_chunk({}, finish_reason="length")]),
+        sse_body([completion_chunk({"content": "Ответ"})]),
+    ]
+    llm, requests = client_with(
+        lambda _: httpx.Response(
+            200,
+            headers={"content-type": "text/event-stream"},
+            content=bodies.pop(0),
+        )
+    )
+
+    chunks = [chunk async for chunk in llm.complete_stream("system", "user")]
+
+    assert chunks == ["Ответ"]
+    assert len(requests) == 2
+    assert json.loads(requests[0].content)["max_tokens"] == 16
+    assert json.loads(requests[1].content)["max_tokens"] == 256
+
+
+async def test_complete_stream_sends_reasoning_and_provider(monkeypatch):
+    from app.config import settings
+
+    # Стрим должен слушать те же LLM_REASONING_EFFORT/LLM_PROVIDER, что и complete().
+    monkeypatch.setattr(settings, "llm_reasoning_effort", "low")
+    monkeypatch.setattr(settings, "llm_provider", "deepinfra")
+    body = sse_body([completion_chunk({"content": "A"})])
+    llm, requests = client_with(
+        lambda _: httpx.Response(200, headers={"content-type": "text/event-stream"}, content=body)
+    )
+
+    assert [chunk async for chunk in llm.complete_stream("system", "user")] == ["A"]
+    payload = json.loads(requests[0].content)
+    assert payload["reasoning"] == {"effort": "low"}
+    assert payload["provider"] == {"only": ["deepinfra"]}
+
+
 async def test_complete_stream_raises_on_server_error():
     llm, _ = client_with(lambda _: httpx.Response(500, json={"error": {"message": "boom"}}))
 

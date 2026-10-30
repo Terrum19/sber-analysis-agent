@@ -40,6 +40,28 @@ def test_insight_stream_can_be_disabled_from_env(monkeypatch):
     assert Settings(_env_file=None).insight_stream is False
 
 
+def test_legacy_reasoning_env_name_is_still_read(monkeypatch):
+    # Старые .env задавали LLM_REASONING: поле молча оставалось пустым,
+    # и рассуждения съедали весь max_tokens (пустой structured-ответ).
+    monkeypatch.delenv("LLM_REASONING_EFFORT", raising=False)
+    monkeypatch.setenv("LLM_REASONING", "low")
+    assert Settings(_env_file=None).llm_reasoning_effort == "low"
+
+
+def test_reasoning_effort_env_name_has_priority(monkeypatch):
+    monkeypatch.setenv("LLM_REASONING", "high")
+    monkeypatch.setenv("LLM_REASONING_EFFORT", "minimal")
+    assert Settings(_env_file=None).llm_reasoning_effort == "minimal"
+
+
+def test_reasoning_effort_off_means_disabled():
+    assert Settings(_env_file=None, llm_reasoning_effort="off").llm_reasoning_effort == "none"
+
+
+def test_empty_reasoning_effort_is_not_passed():
+    assert Settings(_env_file=None, llm_reasoning_effort="").llm_reasoning_effort is None
+
+
 def test_storage_dir_defaults():
     assert settings.storage_dir == str(REPO_ROOT / "backend" / "storage")
 
