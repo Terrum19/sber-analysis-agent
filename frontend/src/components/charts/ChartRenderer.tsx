@@ -115,8 +115,9 @@ export default function ChartRenderer({ spec, height = 300 }: { spec: Spec; heig
     const option = (isRecord(spec.option) ? spec.option : spec) as EChartsOption;
     return <ReactECharts option={option} notMerge style={{ height, width: "100%" }} />;
   }
+  // Лежащие столбцы с height: {step} выше плитки при многих категориях — прокрутка.
   return (
-    <div style={{ height, width: "100%" }}>
+    <div style={{ height, width: "100%", overflowY: "auto" }}>
       <VegaLite
         spec={{ height: Math.max(height - 60, 120), ...spec } as VisualizationSpec}
         actions={false}

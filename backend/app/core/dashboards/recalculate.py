@@ -29,7 +29,28 @@ def rebuild_spec(tile: DashboardTile, records: list[dict]) -> dict:
         data=records,
         titles=titles,
         title=title if isinstance(title, str) else None,
+        x=usermeta.get("x"),
+        y=usermeta.get("y"),
+        color=usermeta.get("color"),
     )
+
+
+def respec(spec: dict, chart_type: str) -> dict:
+    """Спека в другом виде по её же строкам (data.values): смена вида до сохранения дашборда.
+
+    Без usermeta (спека не из build_vega_spec) перестраивать не по чему — как есть.
+    """
+    usermeta = spec.get("usermeta")
+    if not usermeta:
+        return spec
+    data = spec.get("data")
+    records = data.get("values") if isinstance(data, dict) else None
+    tile = DashboardTile(
+        title="",
+        spec={**spec, "usermeta": {**usermeta, "requested_type": chart_type}},
+        result_table=usermeta.get("result_table"),
+    )
+    return rebuild_spec(tile, records if isinstance(records, list) else [])
 
 
 def recalculate(

@@ -10,7 +10,7 @@
 
 ## Финал
 - [x] Коннектор PostgreSQL (postgres_scanner, см. data_connectors.md)
-- [ ] Коннектор ClickHouse
+- [x] Коннектор ClickHouse
 - [x] WASM-песочница (лимиты, таймаут) + кодогенерация (см. sandbox.md)
 - [x] chart_morph (смена вида без LLM) + ECharts для тяжёлых дашбордов (см. visualization.md)
 - [ ] Генерация дашбордов + повторный доступ (чат/UI) + drag&drop
