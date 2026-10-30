@@ -19,6 +19,8 @@ _DAYS = {"day": 1, "week": 7}
 
 def shift(value: date, interval: str, steps: int) -> date:
     """Сдвинуть дату периода на steps интервалов вперёд."""
+    if interval == "hour":
+        return value + timedelta(hours=steps)
     if interval in _DAYS:
         return value + timedelta(days=_DAYS[interval] * steps)
     months = value.month - 1 + _MONTHS[interval] * steps

@@ -327,9 +327,10 @@
     answer_contains: []
     value:
       sql: >-
-        SELECT max(total) FROM (SELECT month("Дата"), sum("Сколько_Купили") AS total
-        FROM t_09_lekarstvennye_preparaty
-        WHERE "Тип_Лекарства" ILIKE '%жаропонижающ%' GROUP BY 1)
+        SELECT max(level) FROM (SELECT month_number, avg(total) AS level FROM
+        (SELECT month("Дата") AS month_number, date_trunc('month', "Дата") AS bucket,
+        sum("Сколько_Купили") AS total FROM t_09_lekarstvennye_preparaty
+        WHERE "Тип_Лекарства" ILIKE '%жаропонижающ%' GROUP BY 1, 2) GROUP BY 1)
       tolerance: 0.02
     chart_type_any: [line, bar, area]
     refusal: false
