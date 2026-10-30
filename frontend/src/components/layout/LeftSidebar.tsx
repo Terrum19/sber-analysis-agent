@@ -10,7 +10,7 @@
  */
 import { useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
-import { useParams, useRouter } from "next/navigation";
+import { useParams, usePathname, useRouter } from "next/navigation";
 import {
   attachDb,
   deleteDashboard,
@@ -327,11 +327,18 @@ function PreferencesBar() {
   );
 }
 
+// Сохраняем позицию скролла сайдбара и время последней синхронизации, чтобы переключение
+// между вкладками не сбрасывало скролл и не спамило запросами syncSessions
+let cachedSidebarScrollTop = 0;
+let lastSessionsSyncTime = 0;
+const SESSIONS_SYNC_THROTTLE_MS = 30_000;
+
 export default function LeftSidebar() {
   const t = useT();
   const router = useRouter();
+  const pathname = usePathname();
   const params = useParams();
-  const currentSessionId = params?.id as string | undefined;
+  const currentSessionId = pathname?.startsWith("/session/") ? (params?.id as string | undefined) : undefined;
 
   const databases = useSessionStore((s) => s.databases);
   const addDatabase = useSessionStore((s) => s.addDatabase);
@@ -461,8 +468,12 @@ export default function LeftSidebar() {
   const isBusy = isCsvBusy || isDbBusy;
   const errorMsg = csvErrorMsg || dbErrorMsg;
 
-  // Синхронизация сессий с бэкендом на старте страницы
+  // Синхронизация сессий с бэкендом (с троттлингом 30 сек, чтобы не спамить при переключении вкладок)
   useEffect(() => {
+    if (Date.now() - lastSessionsSyncTime < SESSIONS_SYNC_THROTTLE_MS) {
+      return;
+    }
+    lastSessionsSyncTime = Date.now();
     let cancelled = false;
     async function syncSessions() {
       try {
@@ -563,7 +574,17 @@ export default function LeftSidebar() {
       </div>
 
       {/* Загруженные базы данных и их сессии */}
-      <div className="flex-1 overflow-y-auto px-2 pb-3">
+      <div
+        ref={(el) => {
+          if (el && cachedSidebarScrollTop > 0) {
+            el.scrollTop = cachedSidebarScrollTop;
+          }
+        }}
+        onScroll={(e) => {
+          cachedSidebarScrollTop = e.currentTarget.scrollTop;
+        }}
+        className="flex-1 overflow-y-auto px-2 pb-3"
+      >
         <span className="block px-2.5 pb-1.5 text-[11px] font-medium text-graphite-500">{t("sidebar.databases")}</span>
         {sortedDatabases.length === 0 ? (
           <p className="px-2.5 text-[12px] text-graphite-500">{t("sidebar.noDatabases")}</p>

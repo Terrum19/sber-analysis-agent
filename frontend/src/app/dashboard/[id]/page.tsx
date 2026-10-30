@@ -624,8 +624,7 @@ export default function DashboardPage({ params }: { params: { id: string } }) {
                   containerPadding={[0, 0]}
                   isDraggable={!stack}
                   isResizable={!stack}
-                  // Вне режима правки плитку тащат за шапку: клики по графику и кнопкам работают
-                  draggableHandle={isEditing ? undefined : ".tile-drag-handle"}
+                  draggableHandle=".tile-drag-handle"
                   draggableCancel="button, input, a, select"
                   onLayoutChange={handleLayoutChange}
                   onDragStop={(layout: Layout[]) => handleLayoutChange(layout, true)}
@@ -644,7 +643,7 @@ export default function DashboardPage({ params }: { params: { id: string } }) {
                           dense={dense}
                           onRename={(newTitle) => handleRenameTile(i, newTitle)}
                           onDelete={() => handleDeleteTile(i)}
-                          onOpen={() => openArtifact(tile, config.session_id)}
+                          onOpen={() => openArtifact(tile, config.session_id, params.id)}
                           onElaborate={(selection) => handleElaborate(i, selection)}
                           onChangeChartType={(rect) => openPicker(i, rect)}
                           onMenu={(rect) => setMenu({ index: i, rect })}
@@ -663,19 +662,10 @@ export default function DashboardPage({ params }: { params: { id: string } }) {
           target="tile"
           title={config.tiles[menu.index].title}
           anchorRect={menu.rect}
-          chartType={chartTypeOf(config.tiles[menu.index])}
-          chartTypes={CHART_TYPES}
           onClose={() => setMenu(null)}
           onRename={(newTitle) => handleRenameTile(menu.index, newTitle)}
           onDelete={() => handleDeleteTile(menu.index)}
-          onOpenChartTypePicker={() => {
-            const idx = menu.index;
-            const rect = menu.rect;
-            setMenu(null);
-            openPicker(idx, rect);
-          }}
-          onChartTypeChange={(type) => changeChartType(menu.index, type as ChartType)}
-          onOpen={() => openArtifact(config.tiles[menu.index], config.session_id)}
+          onOpen={() => openArtifact(config.tiles[menu.index], config.session_id, params.id)}
           onElaborate={() => handleElaborate(menu.index)}
         />
       )}

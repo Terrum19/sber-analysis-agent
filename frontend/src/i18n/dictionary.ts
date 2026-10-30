@@ -91,6 +91,7 @@ const ru = {
   "zoom.in": "Увеличить плитки",
   "zoom.reset": "Масштаб 100%",
   "artifact.open": "Открыть во вкладке на весь экран",
+  "artifact.toDashboard": "Назад в дашборд",
   "artifact.notFound": "Артефакт не найден",
   "artifact.notFoundText": "Откройте график или KPI из панели дашборда ещё раз.",
 
@@ -423,6 +424,7 @@ const en: Record<MessageKey, string> = {
   "zoom.in": "Larger tiles",
   "zoom.reset": "Zoom 100%",
   "artifact.open": "Open full size in a tab",
+  "artifact.toDashboard": "Back to dashboard",
   "artifact.notFound": "Artifact not found",
   "artifact.notFoundText": "Open the chart or KPI from the dashboard panel again.",
 

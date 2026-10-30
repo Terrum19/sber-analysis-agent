@@ -7,8 +7,8 @@
     "dev:mock": "cross-env NEXT_PUBLIC_USE_MOCKS=true next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "next lint"
-
+    "lint": "next lint",
+    "test": "node --test src/tests/chartTypeChange.runner.mjs"
   },
   "dependencies": {
     "next": "^14.2.5",

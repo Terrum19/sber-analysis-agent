@@ -562,6 +562,7 @@ export const useSessionStore = create<SessionState>()(
         }),
       mergeSessions: (remoteSessions: SessionResponse[]) =>
         set((s) => {
+          let hasChanges = false;
           const nextDatabases = s.databases.map((d) => ({
             ...d,
             tables: [...d.tables],
@@ -589,10 +590,14 @@ export const useSessionStore = create<SessionState>()(
                 sessions: [],
               };
               nextDatabases.push(db);
+              hasChanges = true;
             }
 
             if (db) {
-              nextSessionDb[remote.session_id] = db.id;
+              if (nextSessionDb[remote.session_id] !== db.id) {
+                nextSessionDb[remote.session_id] = db.id;
+                hasChanges = true;
+              }
               const sessionExists = db.sessions.some((x) => x.id === remote.session_id);
               if (!sessionExists) {
                 db.sessions = [
@@ -603,17 +608,26 @@ export const useSessionStore = create<SessionState>()(
                   },
                   ...db.sessions,
                 ];
+                hasChanges = true;
               } else if (remote.title) {
-                // Название на бэкенде — источник правды (переименование, #147).
-                db.sessions = db.sessions.map((x) =>
-                  x.id === remote.session_id ? { ...x, title: remote.title || x.title } : x
-                );
+                const currentSession = db.sessions.find((x) => x.id === remote.session_id);
+                if (currentSession && currentSession.title !== remote.title) {
+                  db.sessions = db.sessions.map((x) =>
+                    x.id === remote.session_id ? { ...x, title: remote.title || x.title } : x
+                  );
+                  hasChanges = true;
+                }
               }
             }
 
             if (remote.table && !nextActiveTable[remote.session_id]) {
               nextActiveTable[remote.session_id] = remote.table;
+              hasChanges = true;
             }
+          }
+
+          if (!hasChanges) {
+            return {};
           }
 
           return {

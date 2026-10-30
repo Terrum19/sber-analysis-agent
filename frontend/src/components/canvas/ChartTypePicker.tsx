@@ -22,7 +22,21 @@ export default function ChartTypePicker({
 }: ChartTypePickerProps) {
   const t = useT();
   const menuRef = useRef<HTMLDivElement>(null);
-  const [pos, setPos] = useState({ top: 0, left: 0 });
+  const [pos, setPos] = useState(() => {
+    if (!anchorRect) return { top: 0, left: 0 };
+    const padding = 8;
+    const estimatedWidth = 220;
+    const estimatedHeight = 320;
+    let left = anchorRect.left;
+    if (typeof window !== "undefined" && left + estimatedWidth > window.innerWidth - padding) {
+      left = Math.max(padding, anchorRect.right - estimatedWidth);
+    }
+    let top = anchorRect.bottom + 4;
+    if (typeof window !== "undefined" && top + estimatedHeight > window.innerHeight - padding) {
+      top = Math.max(padding, anchorRect.top - estimatedHeight - 4);
+    }
+    return { top, left };
+  });
 
   useLayoutEffect(() => {
     if (!anchorRect || !menuRef.current) return;
@@ -80,7 +94,7 @@ export default function ChartTypePicker({
         if (e.pointerType === "touch") return;
         onPreview(null);
       }}
-      className="fixed z-50 min-w-[210px] max-w-[260px] rounded-xl border border-graphite-700 bg-graphite-900 p-1.5 shadow-2xl text-graphite-100 select-none animate-in fade-in zoom-in-95 duration-100"
+      className="fixed z-50 min-w-[210px] max-w-[260px] rounded-xl border border-graphite-700 bg-graphite-900 p-1.5 shadow-2xl text-graphite-100 select-none animate-in fade-in duration-75"
     >
       <div className="px-2 py-1 text-[11px] font-semibold uppercase tracking-wider text-graphite-400">
         {t("canvas.chartType")}
@@ -95,6 +109,7 @@ export default function ChartTypePicker({
               onClick={(e) => {
                 e.stopPropagation();
                 onSelect(type);
+                onClose();
               }}
               onPointerEnter={(e) => {
                 if (e.pointerType === "touch") return;

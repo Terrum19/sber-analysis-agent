@@ -6,6 +6,7 @@
  */
 import { useEffect, useState } from "react";
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import WorkspaceShell from "@/components/layout/WorkspaceShell";
 import DashboardTile from "@/components/canvas/DashboardTile";
 import AnswerExport from "@/components/chat/AnswerExport";
@@ -17,6 +18,7 @@ import { useT } from "@/i18n/useT";
 
 export default function ArtifactPage({ params }: { params: { id: string } }) {
   const t = useT();
+  const router = useRouter();
   const artifact = useArtifactStore((s) => s.artifacts[params.id]);
   const askAgent = useAskAgent();
   const sessionId = artifact?.sessionId;
@@ -28,32 +30,63 @@ export default function ArtifactPage({ params }: { params: { id: string } }) {
     <WorkspaceShell tab={{ kind: "artifact", id: params.id, title: artifact?.title }}>
       {!mounted ? null : artifact ? (
         <div className="flex min-h-0 flex-1 flex-col gap-3 p-4 md:p-6">
-          {sessionId && (
-            <div className="flex flex-wrap items-center gap-3">
+          <div className="flex flex-wrap items-center gap-3">
+            {artifact.dashboardId ? (
               <Link
-                href={`/session/${sessionId}`}
-                className="flex w-fit items-center gap-1.5 text-[12px] text-graphite-400 hover:text-graphite-100"
+                href={`/dashboard/${artifact.dashboardId}`}
+                className="flex w-fit items-center gap-1 text-[12px] text-graphite-400 hover:text-graphite-100 transition"
               >
-                <Icon name="chat" size={13} />
-                {t("dashboard.toSession")}
+                ← {t("artifact.toDashboard")}
               </Link>
+            ) : (
               <button
-                onClick={() => askAgent(sessionId, drillQuestion(t, artifact.tile.title))}
-                className="flex w-fit items-center gap-1.5 rounded-md border border-graphite-700 px-2 py-1 text-[12px] text-graphite-300 hover:bg-graphite-800 hover:text-graphite-50 transition"
-                title={t("drill.hint")}
+                type="button"
+                onClick={() => {
+                  if (typeof window !== "undefined" && window.history.length > 1) {
+                    router.back();
+                  } else if (sessionId) {
+                    router.push(`/session/${sessionId}`);
+                  } else {
+                    router.push("/dashboards");
+                  }
+                }}
+                className="flex w-fit items-center gap-1 text-[12px] text-graphite-400 hover:text-graphite-100 transition"
               >
-                <Icon name="sparkle" size={13} />
-                {t("drill.menu")}
+                ← {t("welcome.back")}
               </button>
-              <AnswerExport
-                sessionId={sessionId}
-                headline={artifact.tile.title}
-                spec={artifact.tile.spec}
-                resultTable={artifact.tile.result_table}
-                compact
-              />
-            </div>
-          )}
+            )}
+            {sessionId && (
+              <>
+                <span className="text-graphite-600">·</span>
+                <Link
+                  href={`/session/${sessionId}`}
+                  className="flex w-fit items-center gap-1.5 text-[12px] text-graphite-400 hover:text-graphite-100 transition"
+                >
+                  <Icon name="chat" size={13} />
+                  {t("dashboard.toSession")}
+                </Link>
+              </>
+            )}
+            {sessionId && (
+              <>
+                <button
+                  onClick={() => askAgent(sessionId, drillQuestion(t, artifact.tile.title))}
+                  className="flex w-fit items-center gap-1.5 rounded-md border border-graphite-700 px-2 py-1 text-[12px] text-graphite-300 hover:bg-graphite-800 hover:text-graphite-50 transition"
+                  title={t("drill.hint")}
+                >
+                  <Icon name="sparkle" size={13} />
+                  {t("drill.menu")}
+                </button>
+                <AnswerExport
+                  sessionId={sessionId}
+                  headline={artifact.tile.title}
+                  spec={artifact.tile.spec}
+                  resultTable={artifact.tile.result_table}
+                  compact
+                />
+              </>
+            )}
+          </div>
           <div className="min-h-0 flex-1">
             <DashboardTile
               tile={artifact.tile}

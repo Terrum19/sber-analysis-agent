@@ -378,10 +378,10 @@ export default function DashboardTile({
         dense ? "p-3" : "p-4"
       } ${canOpen ? "cursor-zoom-in" : ""}`}
     >
-      {/* Верхняя строка плитки; вне режима правки — ручка перетаскивания */}
+      {/* Верхняя строка плитки; шапка — ручка перетаскивания */}
       <div
         className={`flex shrink-0 items-start justify-between gap-2 ${dense ? "mb-1.5" : "mb-2"} ${
-          draggable && !isEditing ? "tile-drag-handle cursor-grab active:cursor-grabbing" : ""
+          draggable ? "tile-drag-handle cursor-grab active:cursor-grabbing" : ""
         }`}
       >
         <div className="min-w-0 flex-1">
@@ -437,7 +437,12 @@ export default function DashboardTile({
               </h3>
               {isEditing && (
                 <button
-                  onClick={() => setEditingTitle(true)}
+                  type="button"
+                  onMouseDown={(e) => e.stopPropagation()}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setEditingTitle(true);
+                  }}
                   className="shrink-0 text-graphite-400 hover:text-graphite-200"
                   title={t("tile.rename")}
                 >
@@ -452,7 +457,12 @@ export default function DashboardTile({
           {actions && !dense && <div className="flex shrink-0 items-center gap-1">{actions}</div>}
           {canDrill && (
             <button
-              onClick={() => onElaborate?.()}
+              type="button"
+              onMouseDown={(e) => e.stopPropagation()}
+              onClick={(e) => {
+                e.stopPropagation();
+                onElaborate?.();
+              }}
               className="flex h-6 w-6 shrink-0 items-center justify-center rounded-md text-graphite-400 hover:bg-graphite-800 hover:text-graphite-100 transition"
               title={t("drill.menu")}
             >
@@ -463,6 +473,7 @@ export default function DashboardTile({
             <button
               type="button"
               data-chart-picker-trigger="true"
+              onMouseDown={(e) => e.stopPropagation()}
               onClick={(e) => {
                 e.stopPropagation();
                 onChangeChartType(e.currentTarget.getBoundingClientRect());
@@ -483,7 +494,12 @@ export default function DashboardTile({
           )}
           {isEditing && onMenu && (
             <button
-              onClick={(e) => onMenu(e.currentTarget.getBoundingClientRect())}
+              type="button"
+              onMouseDown={(e) => e.stopPropagation()}
+              onClick={(e) => {
+                e.stopPropagation();
+                onMenu(e.currentTarget.getBoundingClientRect());
+              }}
               className="flex h-6 w-6 items-center justify-center rounded-md text-graphite-400 hover:bg-graphite-800 hover:text-graphite-100 transition"
               title={t("canvas.tileMenu")}
             >
@@ -492,16 +508,27 @@ export default function DashboardTile({
           )}
           {isEditing && onDelete ? (
             <button
-              onClick={onDelete}
+              type="button"
+              onMouseDown={(e) => e.stopPropagation()}
+              onClick={(e) => {
+                e.stopPropagation();
+                onDelete();
+              }}
               className="flex h-6 w-6 shrink-0 items-center justify-center rounded-md bg-bad/10 text-bad hover:bg-bad/20 transition"
               title={t("tile.delete")}
+              aria-label={t("tile.delete")}
             >
               <Icon name="x" size={13} />
             </button>
           ) : (
             canOpen && (
               <button
-                onClick={onOpen}
+                type="button"
+                onMouseDown={(e) => e.stopPropagation()}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onOpen?.();
+                }}
                 className="flex h-6 w-6 shrink-0 items-center justify-center rounded-md text-graphite-500 opacity-0 transition hover:bg-graphite-800 hover:text-graphite-100 group-hover:opacity-100 focus:opacity-100"
                 title={t("artifact.open")}
               >

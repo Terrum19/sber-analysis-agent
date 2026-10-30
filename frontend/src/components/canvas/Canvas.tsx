@@ -241,6 +241,16 @@ export default function Canvas({ sessionId }: Props) {
     }
   }
 
+  function handleRemoveTile(index: number) {
+    if (dashboardId) {
+      removeTile(index);
+    } else {
+      removeTile(index);
+      const next = sessionTiles.filter((_, i) => i !== index);
+      useSessionStore.getState().setTiles(next);
+    }
+  }
+
   function handleStartEdit() {
     if (tiles.length === 0 && sessionTiles.length > 0) {
       setTiles(sessionTiles);
@@ -592,7 +602,7 @@ export default function Canvas({ sessionId }: Props) {
                   isDraggable={!stack}
                   isResizable={!stack}
                   // Вне режима правки плитку тащат за шапку: клики по графику и кнопкам работают
-                  draggableHandle={isEditing ? undefined : ".tile-drag-handle"}
+                  draggableHandle=".tile-drag-handle"
                   draggableCancel="button, input, a, select"
                   onLayoutChange={handleLayoutChange}
                   onDragStop={(layout: Layout[]) => handleLayoutChange(layout, true)}
@@ -611,8 +621,8 @@ export default function Canvas({ sessionId }: Props) {
                           draggable={!stack}
                           dense={dense}
                           onRename={(newTitle) => updateTile(i, { title: newTitle })}
-                          onDelete={() => removeTile(i)}
-                          onOpen={() => openArtifact(tile, sessionId)}
+                          onDelete={() => handleRemoveTile(i)}
+                          onOpen={() => openArtifact(tile, sessionId, dashboardId ?? undefined)}
                           onElaborate={(selection) => handleElaborate(tile, selection)}
                           onChangeChartType={(rect) => openPicker(i, rect)}
                           onMenu={(rect) => setMenu({ index: i, rect })}
@@ -649,7 +659,7 @@ export default function Canvas({ sessionId }: Props) {
                             inline
                           />
                         }
-                        onOpen={() => openArtifact(tile, sessionId)}
+                        onOpen={() => openArtifact(tile, sessionId, dashboardId ?? undefined)}
                         onElaborate={(selection) => handleElaborate(tile, selection)}
                         onChangeChartType={(rect) => openPicker(origIndex, rect)}
                       />
@@ -698,19 +708,10 @@ export default function Canvas({ sessionId }: Props) {
           target="tile"
           title={displayTiles[menu.index].title}
           anchorRect={menu.rect}
-          chartType={chartTypeOf(displayTiles[menu.index])}
-          chartTypes={CHART_TYPES}
           onClose={() => setMenu(null)}
           onRename={(newTitle) => updateTile(menu.index, { title: newTitle })}
-          onDelete={() => removeTile(menu.index)}
-          onOpenChartTypePicker={() => {
-            const idx = menu.index;
-            const rect = menu.rect;
-            setMenu(null);
-            openPicker(idx, rect);
-          }}
-          onChartTypeChange={(type) => changeChartType(menu.index, type as ChartType)}
-          onOpen={() => openArtifact(displayTiles[menu.index], sessionId)}
+          onDelete={() => handleRemoveTile(menu.index)}
+          onOpen={() => openArtifact(displayTiles[menu.index], sessionId, dashboardId ?? undefined)}
           onElaborate={() => handleElaborate(displayTiles[menu.index])}
         />
       )}

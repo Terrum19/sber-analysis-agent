@@ -8,7 +8,7 @@
  * - Режим дашборда (#224): переключатель под строкой ввода, варианты по кнопке
  *   «Автоматическая генерация», ход с mode: "dashboard" открывает /dashboard/{id}
  */
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import {
   getSession,
@@ -83,6 +83,7 @@ export default function ChatPanel({ sessionId }: Props) {
   const ideasRequestRef = useRef(0);
   // Сообщение с карточкой уточнения, на которую ещё можно ответить
   const activeClarificationId = run?.clarificationId ?? null;
+  const scrollContainerRef = useRef<HTMLDivElement | null>(null);
   const messagesEndRef = useRef<HTMLDivElement | null>(null);
   const inputRef = useRef<HTMLTextAreaElement | null>(null);
   // Ответ, на который пользователь отвечает: уходит в reply_to (F-12).
@@ -194,9 +195,25 @@ export default function ChatPanel({ sessionId }: Props) {
     if (run?.unseen) markSeen(sessionId);
   }, [run?.unseen, sessionId, markSeen]);
 
+  // Мгновенная прокрутка к последнему сообщению при открытии сессии/переключении вкладок
+  // и при новых сообщениях (без плавной «прокатки» всей истории с начала до конца)
+  const scrollToBottom = () => {
+    if (scrollContainerRef.current) {
+      scrollContainerRef.current.scrollTop = scrollContainerRef.current.scrollHeight;
+    } else {
+      messagesEndRef.current?.scrollIntoView({ behavior: "auto" });
+    }
+  };
+
+  useLayoutEffect(() => {
+    scrollToBottom();
+  }, [sessionId, messages, streaming]);
+
   useEffect(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [messages, streaming]);
+    scrollToBottom();
+    const rafId = requestAnimationFrame(scrollToBottom);
+    return () => cancelAnimationFrame(rafId);
+  }, [sessionId, messages, streaming]);
 
   // Цитата и варианты дашборда не должны «протечь» в другую сессию или таблицу.
   useEffect(() => {
@@ -507,7 +524,7 @@ export default function ChatPanel({ sessionId }: Props) {
       </div>
 
       {/* Лента сообщений */}
-      <div className="flex-1 space-y-5 overflow-y-auto px-4 py-6 md:px-8">
+      <div ref={scrollContainerRef} className="flex-1 space-y-5 overflow-y-auto px-4 py-6 md:px-8">
         {messages.length === 0 ? (
           <div className="mx-auto flex h-full max-w-xl flex-col justify-center">
             <div className="flex items-center gap-2 text-[13px] text-graphite-400">

@@ -17,6 +17,26 @@ import type { DashboardListItem } from "@/types/dashboard";
 
 const MAX_ITEMS = 5;
 
+// Кэш списка недавних дашбордов в памяти и в sessionStorage, чтобы при переключении
+// вкладок блок не исчезал на 50 мс и не толкал базы данных и сессии вниз (устранение CLS/дёргания)
+let cachedRecentDashboards: DashboardListItem[] = [];
+if (typeof window !== "undefined") {
+  try {
+    const raw = sessionStorage.getItem("sber_recent_dashboards");
+    if (raw) cachedRecentDashboards = JSON.parse(raw);
+  } catch {}
+}
+
+function areDashboardsEqual(a: DashboardListItem[], b: DashboardListItem[]): boolean {
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i++) {
+    if (a[i].id !== b[i].id || a[i].title !== b[i].title || updatedAt(a[i]) !== updatedAt(b[i])) {
+      return false;
+    }
+  }
+  return true;
+}
+
 function updatedAt(item: DashboardListItem): number {
   const value = item.updated_at ?? item.created_at;
   if (typeof value === "number") return value;
@@ -33,7 +53,7 @@ export default function RecentDashboards() {
   const canvasDashboardId = useCanvasStore((s) => s.dashboardId);
   const databases = useSessionStore((s) => s.databases);
   const sessionDatabase = useSessionStore((s) => s.sessionDatabase);
-  const [items, setItems] = useState<DashboardListItem[]>([]);
+  const [items, setItems] = useState<DashboardListItem[]>(cachedRecentDashboards);
   const [revision, setRevision] = useState(0);
 
   useEffect(() => {
@@ -55,15 +75,21 @@ export default function RecentDashboards() {
           }
           return databases.some((d) => d.sessions?.some((s) => s.id === item.session_id));
         });
-        setItems(
-          [...validList]
-            .sort((a, b) => updatedAt(b) - updatedAt(a))
-            .slice(0, MAX_ITEMS),
-        );
+        const sorted = [...validList]
+          .sort((a, b) => updatedAt(b) - updatedAt(a))
+          .slice(0, MAX_ITEMS);
+
+        if (!areDashboardsEqual(cachedRecentDashboards, sorted)) {
+          cachedRecentDashboards = sorted;
+          try {
+            sessionStorage.setItem("sber_recent_dashboards", JSON.stringify(sorted));
+          } catch {}
+          setItems(sorted);
+        }
       })
       .catch(() => undefined); // сайдбар не должен ломать приложение
     return () => controller.abort();
-  }, [pathname, canvasDashboardId, revision, databases, sessionDatabase]);
+  }, [canvasDashboardId, revision, databases, sessionDatabase]);
 
   if (items.length === 0) return null;
 

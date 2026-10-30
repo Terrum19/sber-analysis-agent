@@ -85,9 +85,21 @@ function Tab({
   });
   const activeTable = useActiveTableTitle(tab);
 
-  // Активная вкладка всегда видна в полосе
+  // Активная вкладка всегда видна в полосе без вызова глобального scrollIntoView
   useEffect(() => {
-    if (active) ref.current?.scrollIntoView({ block: "nearest", inline: "nearest" });
+    if (active && ref.current) {
+      const el = ref.current;
+      const container = el.parentElement;
+      if (container) {
+        const left = el.offsetLeft;
+        const right = left + el.offsetWidth;
+        if (left < container.scrollLeft) {
+          container.scrollLeft = left;
+        } else if (right > container.scrollLeft + container.clientWidth) {
+          container.scrollLeft = right - container.clientWidth;
+        }
+      }
+    }
   }, [active]);
 
   function handleClose(e: React.MouseEvent) {
