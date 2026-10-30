@@ -118,7 +118,6 @@ RESULT_TABLE = re.compile(r"temp_result_v\d+")
 REMEMBERED = "Запомнено: {notes}"
 
 SUMMARY_UNAVAILABLE = "Описание данных сейчас недоступно: модель не ответила."
-OVERVIEW_CAPTION = "Колонки таблицы"
 SCHEMA_CAPTION = "Связанные таблицы"
 TABLE_WORDS = ("таблица", "таблицы", "таблиц")
 # Событие, которым кончается ход: после него поток закрывается.
@@ -171,6 +170,8 @@ class Execution:
     remembered: list[str] = field(default_factory=list)
     # Ответ по журналу ходов (маршрут answer): шагов нет.
     reply: Insight | None = None
+    # Вопрос о таблице целиком (маршрут overview): ответ — обзор таблицы.
+    overview: bool = False
 
 
 class ClarificationNeeded(Exception):
@@ -443,6 +444,11 @@ class AgentOrchestrator:
         result_table = execution.result_table
         confirmation = _confirmation(execution.remembered)
 
+        if execution.overview:
+            async for event in self._overview(memory, memory.table):
+                yield event
+            return
+
         if execution.reply is not None:
             # Вопрос о прошлых ответах: ответ по журналу, без инсайта и графика.
             reply = execution.reply
@@ -605,6 +611,12 @@ class AgentOrchestrator:
         remembered = [item["text"] for text in plan.remember if (item := memory.remember(text))]
         if remembered:
             logger.info("<<< run() запомнено: %s", remembered)
+        if plan.route == "overview" and not plan.steps:
+            # Обзорный вопрос, который не узнали шаблоны is_overview_question.
+            logger.info("маршрут: обзор таблицы (от планировщика)")
+            return request.question, Execution(
+                result_table="", remembered=remembered, overview=True
+            )
         if not plan.steps and (plan.route == "answer" or not remembered):
             # Вопрос о прошлых ответах. Модель часто возвращает пустой план, не
             # сменив route: пустой план — тоже ответ словами, а не отказ «не
@@ -1120,12 +1132,12 @@ class AgentOrchestrator:
         )
 
     async def _overview(self, memory: SessionMemory, table: str) -> AsyncIterator[dict]:
-        """Ответ на «что передо мной?»: факты, описание и таблица колонок, без планировщика.
+        """Ответ на «что передо мной?»: объём, период и описание простыми словами.
 
         Таблица связана ключами с другими — обзор всех связанных таблиц
-        (_schema_overview). Описание не построилось (LLM недоступна) — факты и
-        таблица всё равно отдаются. Таблица колонок не становится last_chart:
-        «покажи в другом виде» относится к прошлому графику исследования.
+        (_schema_overview). Описание не построилось (LLM недоступна) — объём
+        и период всё равно отдаются. Технической таблицы колонок (типы,
+        заполненность) в ответе нет: пользователю она не нужна.
         """
         group = relations.component(relations.load(self.db), table)
         if len(group) > 1:
@@ -1136,8 +1148,6 @@ class AgentOrchestrator:
         try:
             yield _progress_event("insight", "started")
             profile = overview.passport(self.db, table)
-            enrichment = self.profiles.load_enrichment(table)
-            headline = overview.facts(profile)
             try:
                 summary = await overview.describe_dataset(
                     self.db, table, getattr(self.planner, "llm", None)
@@ -1145,15 +1155,10 @@ class AgentOrchestrator:
             except Exception:
                 logger.exception("<<< run() описание таблицы %s не построено", table)
                 summary = ""
+            # Название LLM пишет вместе с описанием (#211): читаем после него.
+            headline = overview.headline(profile, relations.table_title(self.db, table))
             details = overview.paragraphs(summary) or [SUMMARY_UNAVAILABLE]
             yield {"type": "text", "data": {"headline": headline, "details": details}}
-
-            stage = "chart"
-            yield _progress_event("chart", "started")
-            spec = build_vega_spec(
-                "table", data=overview.profile_rows(profile, enrichment), title=OVERVIEW_CAPTION
-            )
-            yield {"type": "chart", "data": {"spec": spec, "caption": OVERVIEW_CAPTION}}
         except Exception as exc:
             logger.exception("<<< run() обзор таблицы: этап %s упал", stage)
             memory.finish_turn("failed")
@@ -1161,7 +1166,7 @@ class AgentOrchestrator:
             yield _failure_event()
             yield _done(memory.turn_id)
             return
-        memory.finish_turn("ok", headline=headline)
+        memory.finish_turn("ok", headline=headline, details=details)
         yield _done(memory.turn_id)
 
     async def _schema_overview(

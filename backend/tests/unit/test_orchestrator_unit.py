@@ -379,7 +379,7 @@ class NoPlanner:
         raise AssertionError("обзорный вопрос не идёт в планировщик")
 
 
-OVERVIEW_STAGES = ["insight:started", "text", "chart:started", "chart", "done"]
+OVERVIEW_STAGES = ["insight:started", "text", "done"]
 
 
 def test_overview_question_skips_planner(orchestrator):
@@ -388,16 +388,32 @@ def test_overview_question_skips_planner(orchestrator):
     events = ask(orchestrator, "Что передо мной?")
 
     assert stages(events) == OVERVIEW_STAGES
+    # Заголовок — название от LLM и объём, без служебного имени таблицы и колонок.
     assert events[1]["data"] == {
-        "headline": "raw: 2 строки, 1 колонка, колонок с датами нет — период не определить",
+        "headline": "Числа: 2 записи",
         "details": ["Передо мной числа.", "Пропусков нет."],
     }
-    spec = events[3]["data"]["spec"]
-    assert spec["usermeta"]["chart_type"] == "table"
-    assert [row["Колонка"] for row in spec["data"]["values"]] == ["a"]
     assert stages(ask(orchestrator, "Сколько строк?")) == OVERVIEW_STAGES
     assert llm.calls == 1
     assert SessionMemory("s1").last_chart() is None
+
+
+def test_overview_route_from_the_planner(orchestrator):
+    from app.models.research_step import ResearchPlan
+
+    class OverviewPlanner:
+        def __init__(self, llm) -> None:
+            self.llm = llm
+
+        async def plan(self, question, context):
+            return ResearchPlan(route="overview")
+
+    orchestrator.planner = OverviewPlanner(OverviewLLM())
+    # Формулировку шаблоны не узнают — обзор выбирает планировщик.
+    events = ask(orchestrator, "Расскажи вкратце, с чем мне тут работать")
+
+    assert stages(events)[-3:] == OVERVIEW_STAGES
+    assert events[-2]["data"]["headline"] == "Числа: 2 записи"
 
 
 def test_overview_without_llm_still_answers(orchestrator):

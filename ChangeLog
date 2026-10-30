@@ -1,3 +1,26 @@
+2026-10-30  Alexander Yurits  <143354682+Terrum19@users.noreply.github.com>
+
+	Обзор таблицы — для бизнес-пользователя, без технической таблицы колонок.
+	* backend/app/core/llm/prompts/schema_describe.py (SCHEMA_DESCRIBE): О чём
+	данные, что в них есть и что интересного посмотреть; поля по-русски по
+	смыслу, без имён колонок и типов.
+	* backend/app/core/data/overview.py (headline): Новая.  Название, объём и
+	период для человека.  (profile_rows, KIND_LABELS): Удалены.
+	(_OVERVIEW): «что в таблице есть», «что тут есть», «о чём эти данные».
+	* backend/app/models/research_step.py (ResearchPlan.route): Значение
+	overview.
+	* backend/app/core/llm/prompts/step_planner.py (STEP_PLANNER): Правило
+	маршрута overview.
+	* backend/app/core/agent/orchestrator.py (_overview): Без графика
+	колонок, заголовок — headline.  (_research, _turn): Маршрут overview
+	от планировщика.
+	* backend/app/core/llm/prompts/insight_summary.py (INSIGHT_SUMMARY)
+	* backend/app/core/llm/prompts/explainer.py (EXPLAINER): Поля по-русски,
+	без технических имён и функций.
+	* docs/architecture.md, docs/memory.md: Обзор таблицы.
+	* backend/tests/unit/test_overview.py, test_orchestrator_unit.py,
+	test_relations.py, tests/e2e/test_scenarios.py: Тесты того же.
+
 2026-10-29  Alexander Yurits  <143354682+Terrum19@users.noreply.github.com>
 
 	Пустой план — ответ словами; причина неудачного хода — в журнале.

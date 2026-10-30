@@ -275,7 +275,7 @@ def test_prompt_never_exceeds_the_limit(db) -> None:
     prompt = overview.build_prompt(memory.load_profile("huge"), rows)
     assert len(SCHEMA_DESCRIBE_SYSTEM) + len(prompt) <= overview.PROMPT_MAX_CHARS
     assert "- … и ещё" in prompt
-    assert "колонок" in prompt.split("Качество данных:")[0].splitlines()[-2]
+    assert "колон" in prompt.split("Качество данных:")[0].splitlines()[-2]
     quality = prompt.split("Качество данных:\n")[1].strip()
     # Замечания таблицы (#105) идут перед замечаниями колонок.
     assert quality.startswith(
@@ -354,25 +354,28 @@ def test_plural(count: int, text: str) -> None:
     assert overview.plural(count, overview.ROW_WORDS) == text
 
 
+def test_headline_is_for_people(db) -> None:
+    db.execute(
+        "CREATE TABLE sold AS SELECT * FROM (VALUES (DATE '2024-10-01', 1), "
+        "(DATE '2026-09-30', 2)) AS rows(order_date, order_id)"
+    )
+    memory = ProfileMemory(db)
+    memory.save_profile(profile_table(db, "sold"))
+    profile = memory.load_profile("sold")
+
+    text = overview.headline(profile, "Продажи товаров")
+
+    # Без служебного имени таблицы, числа колонок и имени колонки дат.
+    assert text == "Продажи товаров: 2 записи с 01.10.2024 по 30.09.2026"
+    assert overview.headline(profile) == "Данные: 2 записи с 01.10.2024 по 30.09.2026"
+
+
 def test_facts_without_dates(db) -> None:
     db.execute("CREATE TABLE plain AS SELECT 1 AS id")
     profile = profile_table(db, "plain")
     assert overview.facts(profile) == (
         "plain: 1 строка, 1 колонка, колонок с датами нет — период не определить"
     )
-
-
-def test_profile_rows(db) -> None:
-    orders(db)
-    memory = ProfileMemory(db)
-    rows = overview.profile_rows(memory.load_profile("orders"), [])
-    assert [row["Колонка"] for row in rows] == ["day", "region", "amount"]
-    assert rows[0]["Тип"] == "дата"
-    assert rows[2]["Заполнено, %"] == 100
-    assert "Название" not in rows[0]
-    titled = [ColumnEnrichment(column="amount", title="Сумма")]
-    rows = overview.profile_rows(memory.load_profile("orders"), titled)
-    assert [row["Название"] for row in rows] == ["", "", "Сумма"]
 
 
 @pytest.mark.parametrize(
@@ -387,6 +390,10 @@ def test_profile_rows(db) -> None:
         "Опиши данные",
         "Какие колонки есть в таблице?",
         "сколько записей в таблице",
+        "Что в таблице есть",
+        "что у меня в данных?",
+        "Что тут есть?",
+        "О чём эти данные?",
     ],
 )
 def test_overview_questions(question: str) -> None:
