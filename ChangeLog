@@ -1679,6 +1679,15 @@
 	* Makefile (smoke): Новая цель.
 	* CONTRIBUTING.md: Smoke-тест чистого запуска.
 
+	README для жюри, первая часть (#80).
+	* README.md: Разделы в порядке #80: что это, быстрый старт в три
+	команды (make up / make up-gpu), требования к железу и выбор модели,
+	данные (CSV, PostgreSQL, датасеты хакатона), шесть сценариев с
+	примерами вопросов на датасетах хакатона, архитектура, ограничения,
+	результаты eval.  Скриншоты, итоги #58 и ссылка на отчёт eval
+	отмечены TODO-комментариями.
+
+2026-10-22  mb6ockatf  <smokenmirror@tutamail.com>
 	Ollama с моделью в docker compose (#78).
 	* docker-compose.yml (ollama-cpu, ollama-gpu): Новые сервисы Ollama
 	(ollama/ollama:0.35.1) в профилях cpu и gpu, оба с сетевым именем
