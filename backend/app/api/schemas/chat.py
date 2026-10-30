@@ -87,6 +87,9 @@ class ChatRequest(BaseModel):
     # dashboard — ход строит дашборд по кнопке (#224); idea — выбранный вариант.
     mode: Literal["chat", "dashboard"] = "chat"
     idea: DashboardIdea | None = None
+    # turn_id остановленного или упавшего хода: продолжить его с чекпоинта,
+    # не повторяя выполненные шаги и плитки (question тогда не используется).
+    resume_turn: str | None = None
 
 
 class ChartPayload(BaseModel):
@@ -120,6 +123,8 @@ class ProgressPayload(BaseModel):
     (``attempt`` — номер попытки исправления, ``error`` — текст ошибки).
     ``tables`` — на этапе planning: таблица хода и связанные с ней таблицы,
     которые видит планировщик (первая — $source).
+    ``turn_id`` — в начале planning и outline: по нему фронт продолжает
+    остановленный ход (``ChatRequest.resume_turn``), ``done`` до него не дойдёт.
     """
 
     stage: Literal["planning", "step", "insight", "chart", "dashboard", "outline", "tile"]
@@ -134,6 +139,7 @@ class ProgressPayload(BaseModel):
     tables: list[str] | None = None
     # Плитка дашборда по кнопке (#224), к которой относится этап или шаг.
     tile_id: int | None = None
+    turn_id: str | None = None
 
 
 class DashboardIdeasRequest(BaseModel):

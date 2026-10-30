@@ -341,9 +341,13 @@ class FakeMemory:
     def __init__(self) -> None:
         self.steps: list[int] = []
         self.pending: dict | None = None
+        self.checkpoint: dict | None = None
 
     def record_step(self, step, result_table=None) -> None:
         self.steps.append(step.step_id)
+
+    def save_checkpoint(self, checkpoint: dict) -> None:
+        self.checkpoint = checkpoint
 
     def set_pending_recovery(self, data: dict) -> None:
         self.pending = data
@@ -548,6 +552,99 @@ def test_skip_step_resumes_with_saved_step_tables(db: DuckDBManager) -> None:
     row = db.to_records(execution.result_table)[0]
     assert row["n"] == 2
     assert row["mean"] == 15.0
+
+
+class CountingRuns(StepExecutor):
+    def __init__(self, db: DuckDBManager) -> None:
+        super().__init__(db=db)
+        self.executed: list[int] = []
+
+    async def execute(self, step: ResearchStep, *args: object, **kwargs: object) -> str:
+        self.executed.append(step.step_id)
+        return await super().execute(step, *args, **kwargs)
+
+
+def resumable_plan() -> ResearchPlan:
+    return ResearchPlan(
+        steps=[
+            ResearchStep(
+                step_id=0, tool="filter_rows", arguments={"column": "region", "value": "msk"}
+            ),
+            ResearchStep(step_id=1, tool="describe_stats", arguments={"column": "amount"}),
+        ]
+    )
+
+
+def stop_after_first_step(db: DuckDBManager) -> dict:
+    """Ход, остановленный после первого шага: чекпоинт, какой остался в памяти."""
+    memory = FakeMemory()
+    agent = orchestrator(db)
+    plan = resumable_plan()
+    run_plan(agent, memory, ResearchPlan(steps=plan.steps[:1]))
+    checkpoint = memory.checkpoint
+    checkpoint["plan"] = plan.model_dump(mode="json")
+    return checkpoint
+
+
+def resume(db: DuckDBManager, checkpoint: dict) -> tuple[CountingRuns, list[dict], object]:
+    executor = CountingRuns(db)
+    agent = AgentOrchestrator(
+        planner=ScriptedPlanner(), executor=executor, insight_gen=object(), db=db
+    )
+    events: list[dict] = []
+
+    class Request:
+        question = "не используется"
+
+    memory = FakeMemory()
+    memory.question = "вопрос"
+    question, execution = asyncio.run(
+        agent._research(memory, None, Request(), events.append, resume=checkpoint)
+    )
+    assert question == "вопрос"
+    return executor, events, execution
+
+
+def test_execute_plan_saves_a_checkpoint_after_each_step(db: DuckDBManager) -> None:
+    memory = FakeMemory()
+    run_plan(orchestrator(db), memory, resumable_plan())
+    checkpoint = memory.checkpoint
+    assert checkpoint["kind"] == "research"
+    assert checkpoint["input_table"] == checkpoint["source_table"] == "raw"
+    assert set(checkpoint["step_tables"]) == {"0", "1"}
+    assert [step["step_id"] for step in checkpoint["plan"]["steps"]] == [0, 1]
+
+
+def test_resume_skips_steps_done_before_the_stop(db: DuckDBManager) -> None:
+    checkpoint = stop_after_first_step(db)
+    executor, events, execution = resume(db, checkpoint)
+    # Первый шаг не выполняется заново, но фронт видит его готовым.
+    assert executor.executed == [1]
+    assert [(e["data"]["step_id"], e["data"]["status"]) for e in events] == [
+        (0, "finished"),
+        (1, "started"),
+        (1, "finished"),
+    ]
+    row = db.to_records(execution.result_table)[0]
+    assert row["n"] == 2
+    assert row["mean"] == 15.0
+
+
+def test_resume_after_all_steps_only_picks_the_answer(db: DuckDBManager) -> None:
+    memory = FakeMemory()
+    run_plan(orchestrator(db), memory, resumable_plan())
+    executor, _, execution = resume(db, memory.checkpoint)
+    assert executor.executed == []
+    # Последний шаг — стат-тест: $prev он не меняет, но ответ — его таблица.
+    assert execution.result_table == memory.checkpoint["step_tables"]["1"]
+
+
+def test_resume_reruns_a_step_whose_table_was_cleaned_up(db: DuckDBManager) -> None:
+    checkpoint = stop_after_first_step(db)
+    db.execute(f"DROP TABLE {checkpoint['step_tables']['0']}")
+    executor, _, execution = resume(db, checkpoint)
+    assert executor.executed == [0, 1]
+    assert db.to_records(execution.result_table)[0]["n"] == 2
 
 
 def test_result_step_ahead_of_trailing_lookup_is_dropped_without_retry() -> None:

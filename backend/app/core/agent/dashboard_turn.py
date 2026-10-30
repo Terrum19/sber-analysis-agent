@@ -10,6 +10,11 @@
 
 Каждый этап шлёт событие: фронт показывает, что происходит, на каждом шаге.
 
+После плана и каждой построенной плитки ход пишет чекпоинт: план и таблицы
+готовых плиток. Остановленный или упавший ход продолжается с него
+(``resume``): план не составляется заново, готовые плитки не пересчитываются,
+строятся только остальные.
+
 Сейчас сравниваем два варианта сборки плиток с одним контрактом событий:
 - plan_per_tile (эта ветка, feature/B-07-dashboard-buttons) — на каждую
   плитку свой вызов планировщика;
@@ -27,6 +32,7 @@ from collections.abc import AsyncIterator
 from app.api.schemas.chat import ChatRequest, DashboardPayload
 from app.core.agent.chart_pick import ask_chart
 from app.core.agent.orchestrator import (
+    DASHBOARD_CHECKPOINT,
     NO_TABLE_MESSAGE,
     AgentOrchestrator,
     ClarificationNeeded,
@@ -37,6 +43,7 @@ from app.core.agent.orchestrator import (
     _elapsed_ms,
     _progress_event,
     _require_steps,
+    existing_results,
 )
 from app.core.dashboards.explain import explain_tile
 from app.core.dashboards.generator import DashboardGenerator
@@ -73,6 +80,7 @@ from app.models.dashboard_plan import (
     DashboardOutline,
     OutlineTile,
 )
+from app.models.research_step import ResearchStep
 
 logger = logging.getLogger(__name__)
 
@@ -113,10 +121,15 @@ class DashboardTurn:
         self.db = agent.db
         self.llm = getattr(agent.planner, "llm", None) or LLMClient()
 
-    async def run(self, memory: SessionMemory, request: ChatRequest) -> AsyncIterator[dict]:
-        """События хода до done; сборка идёт задачей, её события отдаются сразу."""
+    async def run(
+        self, memory: SessionMemory, request: ChatRequest, resume: dict | None = None
+    ) -> AsyncIterator[dict]:
+        """События хода до done; сборка идёт задачей, её события отдаются сразу.
+
+        resume — чекпоинт остановленного хода: сборка продолжается с него.
+        """
         events: asyncio.Queue[dict | None] = asyncio.Queue()
-        task = asyncio.create_task(self._build(memory, request, events.put_nowait))
+        task = asyncio.create_task(self._build(memory, request, events.put_nowait, resume))
         task.add_done_callback(lambda _: events.put_nowait(None))
         try:
             while (event := await events.get()) is not None:
@@ -138,7 +151,9 @@ class DashboardTurn:
             memory.finish_turn("ok", headline=headline)
         yield _done(memory.turn_id)
 
-    async def _build(self, memory: SessionMemory, request: ChatRequest, emit: Emit) -> str | None:
+    async def _build(
+        self, memory: SessionMemory, request: ChatRequest, emit: Emit, resume: dict | None = None
+    ) -> str | None:
         """Собрать дашборд; None — ошибка уже отправлена событием error."""
         table = memory.table
         if table is None:
@@ -152,13 +167,29 @@ class DashboardTurn:
                 },
             }
         )
-        described = describe_table(self.db, table, request.question)
         logger.info("дашборд: вариант=%s", DASHBOARD_VARIANT)
 
-        emit(_progress_event("outline", "started"))
+        emit(_progress_event("outline", "started", turn_id=memory.turn_id))
         started_at = time.perf_counter()
-        outline = await self._outline_for(request, table, described, emit)
-        tiles = outline.tiles[:MAX_TILES]
+        # Готовые плитки: таблица результата и выполненные шаги.
+        done: dict[int, tuple[str, list[ResearchStep]]] = {}
+        if resume is None:
+            described = describe_table(self.db, table, request.question)
+            outline = await self._outline_for(request, table, described, emit)
+            tiles = outline.tiles[:MAX_TILES]
+            title = outline.title.strip() or DASHBOARD_TITLE
+        else:
+            tiles = [OutlineTile.model_validate(tile) for tile in resume["tiles"]]
+            title = resume["title"]
+            saved = {int(key): tile for key, tile in resume["built"].items()}
+            kept = existing_results(
+                self.db, {key: tile["result_table"] for key, tile in saved.items()}
+            )
+            done = {
+                key: (table_name, [ResearchStep.model_validate(s) for s in saved[key]["steps"]])
+                for key, table_name in kept.items()
+            }
+            logger.info("дашборд продолжен: готовы плитки %s из %d", sorted(done), len(tiles))
         emit(
             _progress_event(
                 "outline",
@@ -167,7 +198,6 @@ class DashboardTurn:
                 elapsed_ms=_elapsed_ms(started_at),
             )
         )
-        title = outline.title.strip() or DASHBOARD_TITLE
         emit(
             {
                 "type": "dashboard_outline",
@@ -181,15 +211,33 @@ class DashboardTurn:
             }
         )
 
+        def checkpoint() -> None:
+            memory.save_checkpoint(
+                {
+                    "kind": DASHBOARD_CHECKPOINT,
+                    "title": title,
+                    "tiles": [tile.model_dump(mode="json") for tile in tiles],
+                    "built": {
+                        str(tile_id): {
+                            "result_table": result,
+                            "steps": [step.model_dump(mode="json") for step in steps],
+                        }
+                        for tile_id, (result, steps) in done.items()
+                    },
+                }
+            )
+
+        checkpoint()
         # По одной: локальная модель всё равно обрабатывает запросы последовательно
-        executions = [
-            await self._tile(memory, tile_id, tile, emit) for tile_id, tile in enumerate(tiles)
-        ]
-        built = {
-            tile_id: (tiles[tile_id], execution.result_table)
-            for tile_id, execution in enumerate(executions)
-            if execution is not None
-        }
+        for tile_id, tile in enumerate(tiles):
+            if tile_id in done:
+                emit(_progress_event("tile", "finished", tile_id=tile_id, purpose=tile.title))
+                continue
+            execution = await self._tile(memory, tile_id, tile, emit)
+            if execution is not None:
+                done[tile_id] = (execution.result_table, execution.steps)
+                checkpoint()
+        built = {tile_id: (tiles[tile_id], done[tile_id][0]) for tile_id in sorted(done)}
         if len(built) < MIN_BUILT_TILES:
             message = TOO_FEW_TILES.format(built=len(built), total=len(tiles))
             emit(_progress_event("dashboard", "failed", error=message))
@@ -240,7 +288,7 @@ class DashboardTurn:
         failed = [tile.title for tile_id, tile in enumerate(tiles) if tile_id not in built]
         headline = f"Дашборд «{title}» готов: плиток {len(built)}. Что и как посчитано:"
         details = [
-            f"{tile.title}: {explain_tile(executions[tile_id].steps, titles, records[tile_id])}."
+            f"{tile.title}: {explain_tile(done[tile_id][1], titles, records[tile_id])}."
             for tile_id, (tile, _) in built.items()
         ]
         if failed:
@@ -337,7 +385,7 @@ class DashboardTurn:
             plan = await self.agent._plan(tile.question, context)
             _require_steps(plan)
             execution = await self.agent._execute_plan(
-                memory, plan, memory.table, tile.question, emit=tile_emit
+                memory, plan, memory.table, tile.question, emit=tile_emit, checkpoint=False
             )
         except Exception as exc:
             if isinstance(exc, ClarificationNeeded):

@@ -629,3 +629,62 @@ async def test_retry_tells_the_model_what_was_wrong(db) -> None:
     events = await collect(agent(db, llm), question="Продажи", idea=idea)
     assert "ключ tiles пропущен или пуст" in llm.prompts["DashboardOutline"][1]
     assert "dashboard" in kinds(events)
+
+
+class StoppingPlanner(SqlPlanner):
+    """План плиток; на вопросе stop_at ход останавливается (кнопка «Стоп»)."""
+
+    def __init__(self, llm: ScriptedLLM, stop_at: str | None = None) -> None:
+        super().__init__(llm)
+        self.stop_at = stop_at
+        self.questions: list[str] = []
+
+    async def plan(self, question: str, context: dict) -> ResearchPlan:
+        if question == self.stop_at:
+            raise asyncio.CancelledError
+        self.questions.append(question)
+        return await super().plan(question, context)
+
+
+def stopping_agent(db, llm: ScriptedLLM, stop_at: str | None = None):
+    planner = StoppingPlanner(llm, stop_at)
+    planner.fix_step = _no_fix
+    orchestrator = AgentOrchestrator(
+        planner=planner, executor=SqlExecutor(db), insight_gen=NoInsight(), db=db
+    )
+    return orchestrator, planner
+
+
+async def test_stopped_dashboard_continues_without_rebuilding_ready_tiles(db) -> None:
+    orchestrator, _ = stopping_agent(
+        db, ScriptedLLM(DashboardOutline=[OUTLINE]), stop_at="Выручка по дням"
+    )
+    events: list[dict] = []
+    with pytest.raises(asyncio.CancelledError):
+        async for event in orchestrator.run(
+            ChatRequest(session_id="s1", mode="dashboard", question="Продажи")
+        ):
+            events.append(event)
+    turn_id = stages(events, "outline")[0]["turn_id"]
+    checkpoint = SessionMemory("s1")._state["turns"][-1]["checkpoint"]
+    assert checkpoint["title"] == "Продажи"
+    assert checkpoint["built"].keys() == {"0", "1"}
+
+    # План дашборда не запрашивается: в ScriptedLLM нет DashboardOutline.
+    llm = ScriptedLLM(ChartChoices=[RuntimeError("timeout")])
+    orchestrator, planner = stopping_agent(db, llm)
+    events = await collect(orchestrator, question="", resume_turn=turn_id)
+
+    assert planner.questions == ["Выручка по дням", "Сломанная плитка"]
+    assert kinds(events) == ["dashboard_outline", "dashboard", "text", "done"]
+    assert [(tile["tile_id"], tile["status"]) for tile in stages(events, "tile")][:2] == [
+        (0, "finished"),
+        (1, "finished"),
+    ]
+    built = {tile.title: tile.spec["usermeta"]["chart_type"] for tile in saved(events).tiles}
+    assert built == {"Регионы": "bar", "Выручка": "kpi", "По дням": "line"}
+    text = next(event["data"] for event in events if event["type"] == "text")
+    assert any(detail.startswith("Регионы: ") for detail in text["details"])
+    turn = SessionMemory("s1")._state["turns"][-1]
+    assert turn["status"] == "ok"
+    assert "checkpoint" not in turn
