@@ -6,19 +6,23 @@
  * - Дата снимка, переход в сессию
  * - «Обновить данные» -> recalculateDashboard(id)
  * - Редактирование названий, раскладки и удаление плиток с сохранением (updateDashboard)
+ * - «＋ в дашборды» и переход к чату, где построен график (F-15); скрытые плитки не видны
  */
 import { useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import type { Layout } from "react-grid-layout";
 import {
   exportArtifact,
   fetchDashboard,
+  getSession,
   isNotFound,
   recalculateDashboard,
   updateDashboard,
 } from "@/api/client";
 import WorkspaceShell from "@/components/layout/WorkspaceShell";
 import DashboardTile from "@/components/canvas/DashboardTile";
+import AddToDashboardsDialog from "@/components/canvas/AddToDashboardsDialog";
 import Icon from "@/components/ui/Icon";
 import ZoomControl from "@/components/ui/ZoomControl";
 import ItemActionMenu from "@/components/layout/ItemActionMenu";
@@ -63,7 +67,11 @@ export default function DashboardPage({ params }: { params: { id: string } }) {
   const [saveState, setSaveState] = useState<"idle" | "saving" | "saved" | "error">("idle");
   const [saveError, setSaveError] = useState<string | null>(null);
   const [revision, setRevision] = useState(0);
+  const [addTo, setAddTo] = useState<number | null>(null);
+  const [deletedChats, setDeletedChats] = useState<Set<string>>(new Set());
+  const router = useRouter();
   const configRef = useRef<DashboardConfig | null>(null);
+  const editSnapshotRef = useRef<DashboardConfig | null>(null);
   const saveSeqRef = useRef(0);
   configRef.current = config;
 
@@ -106,10 +114,47 @@ export default function DashboardPage({ params }: { params: { id: string } }) {
     void load();
   }, [load]);
 
+  /** Сессия, где построен график: у старых плиток — сессия дашборда. */
+  function chatOf(tile: DashboardTileType): string | undefined {
+    return tile.source_session_id || config?.session_id || undefined;
+  }
+
+  // Чаты, на которые ссылаются плитки: удалённые — «Открыть чат» неактивен.
+  const chatIds = config
+    ? Array.from(new Set(config.tiles.map((tile) => tile.source_session_id || config.session_id).filter(Boolean)))
+        .sort()
+        .join(",")
+    : "";
+  useEffect(() => {
+    if (!chatIds) return;
+    let alive = true;
+    Promise.all(
+      chatIds.split(",").map((id) =>
+        getSession(id).then(
+          () => null,
+          (err) => (isNotFound(err) ? id : null),
+        ),
+      ),
+    ).then((missing) => {
+      if (alive) setDeletedChats(new Set(missing.filter((id): id is string => Boolean(id))));
+    });
+    return () => {
+      alive = false;
+    };
+  }, [chatIds]);
+
+  function handleOpenChat(tile: DashboardTileType) {
+    const sessionId = chatOf(tile);
+    if (!sessionId) return;
+    const turn = tile.source_turn_id ? `?turn=${encodeURIComponent(tile.source_turn_id)}` : "";
+    router.push(`/session/${sessionId}${turn}`);
+  }
+
   // Автосохранение правок страницы (раскладка, название плитки/дашборда,
   // удаление и добавление плиток): debounce 800 мс, последний запрос выигрывает.
+  // В режиме правки не сохраняем: правки уходят по «Сохранить», «Отмена» их откатывает.
   useEffect(() => {
-    if (revision === 0) return;
+    if (revision === 0 || isEditing) return;
     const timer = setTimeout(async () => {
       const snapshot = configRef.current;
       if (!snapshot) return;
@@ -146,7 +191,7 @@ export default function DashboardPage({ params }: { params: { id: string } }) {
       }
     }, 800);
     return () => clearTimeout(timer);
-  }, [revision, params.id]);
+  }, [revision, isEditing, params.id]);
 
   // «Сохранено» гаснет через 2 секунды; «Ошибка» остаётся до повтора.
   useEffect(() => {
@@ -228,6 +273,19 @@ export default function DashboardPage({ params }: { params: { id: string } }) {
     }
   }
 
+  function handleStartEdit() {
+    editSnapshotRef.current = config;
+    setIsEditing(true);
+  }
+
+  /** Выйти из правки без сохранения: дашборд — как до «Редактировать». */
+  function handleCancelEdit() {
+    const snapshot = editSnapshotRef.current;
+    editSnapshotRef.current = null;
+    if (snapshot) setConfig(snapshot);
+    setIsEditing(false);
+  }
+
   function handleRenameTile(index: number, newTitle: string) {
     if (!config) return;
     const newTiles = [...config.tiles];
@@ -268,7 +326,10 @@ export default function DashboardPage({ params }: { params: { id: string } }) {
     markDirty();
   }
 
-  const gridLayout: Layout[] = tileGridLayout(config?.tiles || [], isKpiTile, { stack });
+  // Скрытые плитки (график убран из дашборда, где построен) хранятся, но не рисуются;
+  // i — индекс в config.tiles, по нему работают правки.
+  const visible = (config?.tiles || []).map((tile, i) => ({ tile, i })).filter(({ tile }) => !tile.hidden);
+  const gridLayout: Layout[] = tileGridLayout(visible.map(({ tile }) => tile), isKpiTile, { stack });
 
   /** committed — пользователь отпустил плитку (drag/resize): раскладка меняется и вне режима правки. */
   function handleLayoutChange(newLayout: Layout[], committed = false) {
@@ -323,8 +384,9 @@ export default function DashboardPage({ params }: { params: { id: string } }) {
     setIsExporting(format);
     setExportMenuOpen(false);
     try {
-      const source = [...config.tiles].reverse().find((tile) => tile.result_table);
-      const target = source ?? config.tiles[0];
+      const shownTiles = visible.map(({ tile }) => tile);
+      const source = [...shownTiles].reverse().find((tile) => tile.result_table);
+      const target = source ?? shownTiles[0];
 
       // Готовим спецификацию с данными (из spec или snapshot_data)
       let spec = target?.spec as Record<string, any> | undefined;
@@ -431,8 +493,8 @@ export default function DashboardPage({ params }: { params: { id: string } }) {
   }
 
   const snapshotAt = dashboardSnapshotAt(config);
-  const staleCount = config.tiles.filter((tile) => tile.stale).length;
-  const hasResultTable = config.tiles.some((tile) => Boolean(tile.result_table));
+  const staleCount = visible.filter(({ tile }) => tile.stale).length;
+  const hasResultTable = visible.some(({ tile }) => Boolean(tile.result_table));
 
   return (
     <WorkspaceShell tab={tab}>
@@ -564,21 +626,31 @@ export default function DashboardPage({ params }: { params: { id: string } }) {
               </div>
 
               {isEditing ? (
-                <button
-                  onClick={handleSave}
-                  disabled={isSaving}
-                  className="ml-1 flex h-8 items-center gap-1.5 rounded-lg bg-graphite-100 px-3 text-[12px] font-medium text-graphite-950 hover:bg-graphite-50 disabled:opacity-50"
-                >
-                  <Icon name="save" size={14} className={isSaving ? "animate-spin" : ""} />
-                  {isSaving ? t("canvas.saving") : t("canvas.save")}
-                </button>
+                <>
+                  <button
+                    onClick={handleCancelEdit}
+                    disabled={isSaving}
+                    className="ml-1 flex h-8 items-center rounded-lg border border-graphite-700 px-3 text-[12px] text-graphite-300 hover:bg-graphite-800 hover:text-graphite-50 disabled:opacity-50"
+                    title={t("canvas.cancelEditHint")}
+                  >
+                    {t("canvas.cancelEdit")}
+                  </button>
+                  <button
+                    onClick={handleSave}
+                    disabled={isSaving}
+                    className="ml-1 flex h-8 items-center gap-1.5 rounded-lg bg-graphite-100 px-3 text-[12px] font-medium text-graphite-950 hover:bg-graphite-50 disabled:opacity-50"
+                  >
+                    <Icon name="save" size={14} className={isSaving ? "animate-spin" : ""} />
+                    {isSaving ? t("canvas.saving") : t("canvas.save")}
+                  </button>
+                </>
               ) : (
                 <div className="flex items-center gap-1">
                   <button onClick={handleSave} disabled={isSaving} className={iconButton}>
                     <Icon name="save" size={14} className={isSaving ? "animate-spin" : ""} />
                     {isSaving ? t("canvas.saving") : t("canvas.save")}
                   </button>
-                  <button onClick={() => setIsEditing(true)} className={iconButton}>
+                  <button onClick={handleStartEdit} className={iconButton}>
                     <Icon name="pencil" />
                     {t("canvas.edit")}
                   </button>
@@ -606,7 +678,7 @@ export default function DashboardPage({ params }: { params: { id: string } }) {
             </div>
           )}
 
-          {config.tiles.length === 0 ? (
+          {visible.length === 0 ? (
             <div className="flex h-56 items-center justify-center rounded-xl border border-graphite-800 text-[13px] text-graphite-500">
               {t("dashboard.noTiles")}
             </div>
@@ -630,8 +702,9 @@ export default function DashboardPage({ params }: { params: { id: string } }) {
                   onResizeStop={(layout: Layout[]) => handleLayoutChange(layout, true)}
                   useCSSTransforms
                 >
-                  {config.tiles.map((tile, i) => {
-                    const dense = (gridLayout[i]?.h ?? 0) <= MIN_SIZE.chart.h;
+                  {visible.map(({ tile, i }, shownIndex) => {
+                    const dense = (gridLayout[shownIndex]?.h ?? 0) <= MIN_SIZE.chart.h;
+                    const chat = chatOf(tile);
                     return (
                       <div key={tile.id || `tile-${i}`} className="h-full">
                         <DashboardTile
@@ -644,6 +717,9 @@ export default function DashboardPage({ params }: { params: { id: string } }) {
                           onOpen={() => openArtifact(tile, config.session_id)}
                           onElaborate={(selection) => handleElaborate(i, selection)}
                           onMenu={(rect) => setMenu({ index: i, rect })}
+                          onAddToDashboards={() => setAddTo(i)}
+                          onOpenChat={chat ? () => handleOpenChat(tile) : undefined}
+                          chatDeleted={Boolean(chat && deletedChats.has(chat))}
                         />
                       </div>
                     );
@@ -667,6 +743,17 @@ export default function DashboardPage({ params }: { params: { id: string } }) {
           onChartTypeChange={(type) => handleChartTypeChange(menu.index, type as ChartType)}
           onOpen={() => openArtifact(config.tiles[menu.index], config.session_id)}
           onElaborate={() => handleElaborate(menu.index)}
+        />
+      )}
+
+      {addTo !== null && config.tiles[addTo] && (
+        <AddToDashboardsDialog
+          tile={config.tiles[addTo]}
+          sessionId={config.session_id}
+          current={{ id: config.id, tiles: config.tiles }}
+          onCurrentSaved={(updated) => setConfig((prev) => (prev ? { ...updated, title: prev.title } : updated))}
+          onDone={(message) => flash(message, 4000)}
+          onClose={() => setAddTo(null)}
         />
       )}
     </WorkspaceShell>

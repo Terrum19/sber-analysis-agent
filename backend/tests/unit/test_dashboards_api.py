@@ -90,6 +90,7 @@ def test_list_with_and_without_session(client: TestClient) -> None:
         "session_id",
         "title",
         "tiles_count",
+        "origin_keys",
         "created_at",
         "updated_at",
     }
@@ -276,3 +277,29 @@ def test_recalculate_keeps_a_kpi_tile(client: TestClient, db: DuckDBManager) -> 
     assert rebuilt["spec"]["usermeta"]["chart_type"] == "kpi"
     assert rebuilt["spec"]["data"]["values"] == [{"total": 20}]
     assert rebuilt["is_kpi"] is True
+
+
+def test_copy_keeps_origin_and_source(client: TestClient, db: DuckDBManager) -> None:
+    source = create(client, tiles=[chart_tile(db)])
+    original = source["tiles"][0]
+    copy = {**original, "origin_tile_id": original["id"], "source_session_id": "s1"}
+    target = create(client, session_id="s2")
+    response = client.put(f"/api/dashboards/{target['id']}", json={"tiles": [copy]})
+    tile = response.json()["tiles"][0]
+    assert tile["id"] != original["id"]
+    assert tile["origin_tile_id"] == original["id"]
+    assert tile["source_session_id"] == "s1"
+    listed = {item["id"]: item for item in client.get("/api/dashboards").json()}
+    assert listed[target["id"]]["origin_keys"] == [original["id"]]
+    assert listed[source["id"]]["origin_keys"] == [original["id"]]
+
+
+def test_hidden_tile_is_not_recalculated(client: TestClient, db: DuckDBManager) -> None:
+    created = create(client, tiles=[{**chart_tile(db), "hidden": True}])
+    db.execute(f"UPDATE {RESULT_TABLE} SET revenue = revenue * 10")
+    tile = client.post(f"/api/dashboards/{created['id']}/recalculate").json()["tiles"][0]
+    assert tile["hidden"] is True
+    assert tile["snapshot_at"] == 1.0
+    listed = client.get("/api/dashboards").json()[0]
+    assert listed["tiles_count"] == 0
+    assert listed["origin_keys"] == []

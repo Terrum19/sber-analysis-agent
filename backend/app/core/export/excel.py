@@ -431,7 +431,12 @@ class ExcelExporter:
         Включает:
         - Лист «Сводка» с крупными KPI-карточками, реестром плиток и гиперссылками.
         - Отдельные листы под каждую плитку с исходными данными и графиком.
+
+        Скрытые плитки (график убран из дашборда, где построен) не выгружаются.
         """
+        dashboard = dashboard.model_copy(
+            update={"tiles": [tile for tile in dashboard.tiles if not tile.hidden]}
+        )
         wb = openpyxl.Workbook()
         summary_ws = wb.active
         summary_ws.title = "Сводка"

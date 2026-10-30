@@ -8,6 +8,7 @@
  * - Или карточка KPI (большая цифра, изменение со стрелкой и смысловым цветом)
  * - Инсайт под графиком/KPI
  * - Режим редактирования (переименование, удаление)
+ * - «＋ в дашборды» и «Открыть чат» в шапке (F-15)
  * - Клик по точке графика — «дообследуй» (onElaborate, F-09);
  *   клик по плитке открывает её на весь экран (onOpen)
  * - Вариант mini — маленькое превью для реестра, large — вкладка артефакта
@@ -65,6 +66,11 @@ interface Props {
   dense?: boolean;
   /** Плитка во всю вкладку: крупнее цифра, инсайт целиком. */
   large?: boolean;
+  /** «＋ в дашборды»: положить график в другие дашборды (F-15). */
+  onAddToDashboards?: () => void;
+  /** Перейти в чат, где построен график; chatDeleted — сессии больше нет. */
+  onOpenChat?: () => void;
+  chatDeleted?: boolean;
   /** Дополнительные действия в шапке плитки (например, экспорт графика, F-12). */
   actions?: React.ReactNode;
 }
@@ -250,6 +256,9 @@ export default function DashboardTile({
   onOpen,
   onElaborate,
   onMenu,
+  onAddToDashboards,
+  onOpenChat,
+  chatDeleted = false,
   mini = false,
   preview = false,
   dense = false,
@@ -453,6 +462,25 @@ export default function DashboardTile({
               title={t("drill.menu")}
             >
               <Icon name="sparkle" size={13} />
+            </button>
+          )}
+          {onOpenChat && (
+            <button
+              onClick={onOpenChat}
+              disabled={chatDeleted}
+              className="flex h-6 w-6 shrink-0 items-center justify-center rounded-md text-graphite-400 transition hover:bg-graphite-800 hover:text-graphite-100 disabled:cursor-not-allowed disabled:opacity-40"
+              title={chatDeleted ? t("tile.chatDeleted") : t("tile.openChat")}
+            >
+              <Icon name="chat" size={13} />
+            </button>
+          )}
+          {onAddToDashboards && (
+            <button
+              onClick={onAddToDashboards}
+              className="flex h-6 w-6 shrink-0 items-center justify-center rounded-md text-graphite-400 transition hover:bg-graphite-800 hover:text-graphite-100"
+              title={t("addTo.button")}
+            >
+              <Icon name="plus" size={13} />
             </button>
           )}
           {isEditing && onMenu && (

@@ -26,6 +26,10 @@ class DashboardTile(BaseModel):
     # Строки результата или значение KPI ({"value", "label"})
     snapshot_data: list[dict[str, Any]] | dict[str, Any] | None = None
     snapshot_at: float | None = None
+    origin_tile_id: str | None = None
+    source_session_id: str | None = None
+    source_turn_id: str | None = None
+    hidden: bool = False
 
 
 class Dashboard(BaseModel):
@@ -45,5 +49,6 @@ class DashboardSummary(BaseModel):
     session_id: str
     title: str
     tiles_count: int
+    origin_keys: list[str] = Field(default_factory=list)
     created_at: float
     updated_at: float

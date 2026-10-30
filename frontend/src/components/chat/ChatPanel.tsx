@@ -273,6 +273,20 @@ export default function ChatPanel({ sessionId }: Props) {
     highlightTimer.current = setTimeout(() => setHighlightedTurnId(null), 1600);
   }
 
+  // «Открыть чат» с плитки дашборда: ?turn= — прокрутить к ответу, когда лента загрузится.
+  const jumpTurnRef = useRef<string | null>(null);
+  useEffect(() => {
+    jumpTurnRef.current = new URLSearchParams(window.location.search).get("turn");
+  }, [sessionId]);
+  useEffect(() => {
+    const turnId = jumpTurnRef.current;
+    if (!turnId || !messages.some((m) => m.turn_id === turnId)) return;
+    jumpTurnRef.current = null;
+    window.history.replaceState(null, "", window.location.pathname);
+    setTimeout(() => scrollToTurn(turnId), 400);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [messages]);
+
   /**
    * Отправить вопрос. recoveryResponse — ответ на уточнение: тогда q — то, что
    * видит пользователь в ленте, а бэкенд продолжает исходный вопрос.

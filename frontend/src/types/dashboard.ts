@@ -24,6 +24,13 @@ export interface DashboardTile {
   snapshot_data?: any;
   snapshot_at?: number;
   updated_at?: number | string;
+  /** Ключ происхождения графика: у копии — ключ исходной плитки, у оригинала нет. */
+  origin_tile_id?: string | null;
+  /** Сессия и ход чата, где график построен. */
+  source_session_id?: string | null;
+  source_turn_id?: string | null;
+  /** Оригинал убран из своего дашборда, но хранится (копии ссылаются на него). */
+  hidden?: boolean;
 }
 
 export interface DashboardConfig {
@@ -46,6 +53,8 @@ export interface DashboardListItem {
   created_at?: number | string;
   updated_at?: number | string;
   tiles_count?: number;
+  /** Ключи происхождения видимых плиток (origin_tile_id ?? id). */
+  origin_keys?: string[];
 }
 
 export interface DashboardCreatePayload {
