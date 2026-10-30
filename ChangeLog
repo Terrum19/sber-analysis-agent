@@ -1,3 +1,17 @@
+2026-10-30  Alexander Yurits  <143354682+Terrum19@users.noreply.github.com>
+
+	Сезонность: пустой час или день — ноль, пик и минимум — по медиане (#215).
+	* backend/app/core/tools/timeseries/seasonality.py (SeasonalityTool.execute):
+	При SUM/COUNT час без записей в дне с данными и день без записей в
+	неделе с данными — ноль, а не пропуск: ночь в продажах HK была завышена
+	на 20 %.  Месяц и квартал без данных — по-прежнему пропуск.  Новая
+	колонка median.  (_ZERO_WINDOWS): Новая.
+	* backend/app/core/llm/prompts/quality_rules.py (RESULT_SHAPES): Пик,
+	минимум и разница — по median; другой пик по level — назвать выбросы.
+	* docs/repo_structure.md: Медиана в сезонности.
+	* backend/tests/unit/test_tools.py: Пустой час — ноль, медиана при
+	выбросе, AVG без нулей.
+
 2026-10-30  thebulkapro  <saitbatalovbulat200@gmail.com>
 
 	Временные ряды: исправления по ревью #233.
