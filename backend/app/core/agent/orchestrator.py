@@ -159,6 +159,8 @@ class Execution:
     plan: ResearchPlan = field(default_factory=ResearchPlan)
     # Выполненные шаги: вывод знает, какие фильтры и периоды уже применены.
     steps: list[ResearchStep] = field(default_factory=list)
+    # Шаг -> его входная таблица (вторая таблица join_tables не учитывается).
+    inputs: dict[int, str] = field(default_factory=dict)
     result_purpose: str = ""
     result_kind: str = "transform"
     result_tool: str = ""
@@ -473,6 +475,8 @@ class AgentOrchestrator:
                 steps=execution.steps,
                 memories=memory.context_memories(),
                 result_tool=execution.result_tool,
+                source=memory.table,
+                inputs=execution.inputs,
             )
             if confirmation:
                 insight.details.append(confirmation)
@@ -900,6 +904,7 @@ class AgentOrchestrator:
             tables=dict(tables),
             plan=plan,
             steps=executed,
+            inputs=dict(inputs or {}),
             result_purpose=shown.purpose if shown else "",
             result_kind=tool_kind(shown) if shown else "transform",
             result_tool=shown.tool if shown else "",
@@ -920,6 +925,7 @@ class AgentOrchestrator:
             tables=dict(tables),
             plan=plan,
             steps=executed,
+            inputs=dict(inputs or {}),
             result_purpose=shown.purpose,
         )
 
