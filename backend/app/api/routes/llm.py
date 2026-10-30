@@ -7,12 +7,20 @@
 from fastapi import APIRouter
 
 from app.api.schemas.llm import LLMStatusOut
-from app.core.llm import ollama_setup
+from app.config import settings
+from app.core.agent.metrics import last_latency_ms
+from app.core.llm import budget, ollama_setup
 
 router = APIRouter()
 
 
 @router.get("/status", response_model=LLMStatusOut)
 def llm_status() -> LLMStatusOut:
-    """Готова ли LLM отвечать на вопросы."""
-    return LLMStatusOut(**ollama_setup.status())
+    """Готова ли LLM отвечать на вопросы и в каком режиме работает бэкенд."""
+    return LLMStatusOut(
+        **ollama_setup.status(),
+        context=budget.server_context() or settings.llm_num_ctx,
+        structured_mode=settings.llm_structured_mode,
+        max_tokens=settings.llm_max_tokens,
+        last_latency_ms=last_latency_ms(),
+    )

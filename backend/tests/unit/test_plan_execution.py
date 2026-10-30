@@ -528,6 +528,41 @@ def test_replan_after_inspect_shows_sample_rows_to_the_planner(db: DuckDBManager
     assert "msk" in context
 
 
+def test_replan_after_lookup_reports_planning_progress(db: DuckDBManager) -> None:
+    # Достройка плана — второй вызов LLM: фронт должен видеть «Планирую…»,
+    # а не законченный lookup и минуты тишины.
+    replanned = ResearchPlan(
+        steps=[
+            ResearchStep(
+                step_id=1,
+                tool="filter_rows",
+                arguments={"column": "region", "value": "spb"},
+            ),
+        ]
+    )
+    plan = ResearchPlan(
+        steps=[
+            ResearchStep(
+                step_id=0,
+                tool="search_categorical_values",
+                arguments={"column": "region", "query": "SPB"},
+            ),
+        ]
+    )
+    events: list[dict] = []
+    asyncio.run(
+        orchestrator(db, ScriptedPlanner(replanned))._execute_plan(
+            FakeMemory(), plan, "raw", "вопрос", emit=events.append
+        )
+    )
+    planning = [
+        event["data"]
+        for event in events
+        if event["type"] == "progress" and event["data"]["stage"] in ("planning", "replanning")
+    ]
+    assert [e["status"] for e in planning] == ["started", "finished"]
+
+
 def test_sandbox_error_asks_the_user_without_fixing_the_step(
     db: DuckDBManager, monkeypatch: pytest.MonkeyPatch, codegen_available
 ) -> None:

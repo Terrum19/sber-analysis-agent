@@ -40,6 +40,8 @@ PLANNER_RULES = """
   {"tool": "time_bucket", "arguments": {"date_column": "event_date", "interval": "month", "function": "COUNT"}}
 - Пример: «растёт ли выручка» ->
   {"tool": "trend_analysis", "arguments": {"date_column": "event_date", "value_column": "revenue", "interval": "month", "function": "SUM"}}
+- Независимые шаги (например, плитки дашборда) читают "$source" и не зависят друг
+  от друга; ветку от конкретного шага задавай полем depends_on: [N].
 """
 
 INSIGHT_RULES = """

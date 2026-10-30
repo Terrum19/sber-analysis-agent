@@ -541,6 +541,9 @@ class SessionMemory:
                     columns = []
 
         reply = self.reply_chain()
+        semantic_model = None
+        if self.db is not None and datasource is not None:
+            semantic_model = ProfileMemory(self.db).load_semantic_model(datasource)
         return {
             "turns": [] if reply else self.recent_turns(),
             "reply": reply,
@@ -549,6 +552,8 @@ class SessionMemory:
             "columns": columns,
             "datasource": datasource,
             "profile": profile,
+            # P1: управляемая семантика таблицы (None — planner по колонкам).
+            "semantic_model": semantic_model,
             # Описание таблицы из паспорта: названия для отбора колонок, описания для промпта.
             "titles": {row.column: row.title for row in enrichment if row.title},
             "descriptions": {row.column: row.description for row in enrichment if row.description},

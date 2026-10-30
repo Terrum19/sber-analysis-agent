@@ -15,3 +15,8 @@ class LLMStatusOut(BaseModel):
     model: str
     progress: float | None = None
     detail: str | None = None
+    # P0: наблюдаемость конфигурации без секретов.
+    context: int | None = None
+    structured_mode: str | None = None
+    max_tokens: int | None = None
+    last_latency_ms: int | None = None

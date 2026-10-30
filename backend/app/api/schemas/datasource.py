@@ -7,6 +7,10 @@ from pydantic import BaseModel, ConfigDict, Field, StringConstraints
 from app.core.data.overview import DISPLAY_NAME_MAX_CHARS, key_columns, starter_questions
 from app.core.data.profiling import TableProfile, profile_warnings
 from app.models.enrichment import ColumnEnrichment
+from app.models.semantic import SemanticModel
+
+# Ответы CRUD semantic model (P1) — та же модель, что хранится в _meta.
+SemanticModelOut = SemanticModel
 
 
 class DatasourceCreate(BaseModel):

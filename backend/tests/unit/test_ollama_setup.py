@@ -267,12 +267,18 @@ def test_status_endpoint(monkeypatch: pytest.MonkeyPatch) -> None:
     )
     response = TestClient(app).get("/api/llm/status")
     assert response.status_code == 200
-    assert response.json() == {
+    body = response.json()
+    for key, value in {
         "state": "pulling",
         "model": "qwen2.5-coder:7b",
         "progress": 0.37,
-        "detail": None,
-    }
+    }.items():
+        assert body[key] == value
+    # P0: аддитивные поля наблюдаемости.
+    assert body["context"] == settings.llm_num_ctx
+    assert body["structured_mode"] == settings.llm_structured_mode
+    assert body["max_tokens"] == settings.llm_max_tokens
+    assert "last_latency_ms" in body
 
 
 async def test_embedding_model_is_pulled_quietly(monkeypatch: pytest.MonkeyPatch) -> None:

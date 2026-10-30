@@ -4,6 +4,7 @@
 Результат валидируется по ResearchPlan (см. models/research_step.py).
 """
 
+import difflib
 import json
 import logging
 import re
@@ -11,7 +12,11 @@ from collections.abc import Callable
 
 from app.config import settings
 from app.core.agent.quality_fixes import select_tools
+from app.core.agent.turn_log import describe_plan
+from app.core.cache.models import cache_key, schema_hash
+from app.core.cache.plan_cache import PlanCache
 from app.core.llm.client import LLMClient
+from app.core.llm.profiles import ModelPool
 
 logger = logging.getLogger(__name__)
 from app.core.agent.step_executor import tool_kind
@@ -71,8 +76,14 @@ class PlanInvalid(Exception):
 class StepPlanner:
     """Планировщик исследования на базе LLM."""
 
-    def __init__(self, llm: LLMClient | None = None) -> None:
-        self.llm = llm or LLMClient()
+    def __init__(
+        self,
+        llm: LLMClient | None = None,
+        pool: ModelPool | None = None,
+        cache: PlanCache | None = None,
+    ) -> None:
+        self.llm = llm or (pool.get("planner") if pool is not None else LLMClient())
+        self.cache = cache
 
     async def plan(
         self,
@@ -100,6 +111,51 @@ class StepPlanner:
                 question, columns, profile=profile, titles=context.get("titles")
             )
         start = int(context.get("next_step_id", 0))
+        cache_key_obj = None
+        if (
+            self.cache is not None
+            and start == 0
+            and not context.get("executed")
+            and not context.get("reply")
+        ):
+            cache_key_obj = cache_key(
+                namespace="plan",
+                question=question,
+                table=str(context.get("datasource") or ""),
+                schema=schema_hash(list(all_columns), context.get("descriptions")),
+                model=str(getattr(self.llm, "model", "")),
+                prompt_version="step_planner_v1",
+            )
+            cached = self.cache.get(cache_key_obj)
+            if cached is not None:
+                logger.info("план из кеша: %s", describe_plan(cached))
+                return cached
+        semantic_model = context.get("semantic_model")
+        semantic_block = ""
+        if settings.agent_semantic_layer and semantic_model is not None:
+            from app.core.data.semantic_compiler import SemanticCompiler
+            from app.core.data.semantic_planner import SemanticPlanner
+
+            semantic_planner = SemanticPlanner()
+            intent = semantic_planner.map(question, semantic_model)
+            semantic_block = semantic_planner.to_prompt(semantic_model, intent)
+            if intent.metrics and not is_dashboard_question(question):
+                try:
+                    semantic_plan = SemanticCompiler().compile(intent, semantic_model)
+                except ValueError:
+                    semantic_plan = None
+                if semantic_plan is not None:
+                    renumber_steps(semantic_plan, start)
+                    errors = validate_plan(
+                        semantic_plan,
+                        known_steps=start,
+                        columns=set(all_columns) if profile else None,
+                        question=question,
+                    )
+                    if not errors:
+                        logger.info("план (semantic layer): %s", describe_plan(semantic_plan))
+                        return semantic_plan
+                    logger.warning("semantic layer: план отклонён: %s", errors)
         if settings.agent_tool_topk:
             tools = select_tools(question)
         if not context.get("related") and not context.get("catalog"):
@@ -116,49 +172,82 @@ class StepPlanner:
             context.get("titles"),
             question=question,
         )
-        described = f"{described}\n{others}" if others else described
-        related = describe_related(context.get("datasource"), context.get("related", []))
-        tables = [block for block in (related, context.get("catalog")) if block]
-        prompt = STEP_PLANNER.format(
-            tools=tools,
-            columns="\n\n".join([described, *tables]),
-            memories=describe_memories(context.get("memories", [])),
-            history=describe_history(context),
-            executed=context.get("executed", "нет"),
-            next_step_id=start,
-            question=question,
-        )
-        if settings.agent_quality_fixes:
-            prompt += PLANNER_RULES
         template = None
         # Плитка дашборда по кнопке (#224) — обычный вопрос, без шаблонов и плиток.
         if not context.get("tile") and is_dashboard_question(question):
             template = templates.match(all_columns, context.get("titles"))
-            prompt += dashboard_prompt(template, all_columns, context.get("titles"))
             logger.info("    дашборд: шаблон=%s", template.id if template else None)
+
+        described = f"{described}\n{others}" if others else described
+        related = describe_related(context.get("datasource"), context.get("related", []))
+        tables = [block for block in (related, context.get("catalog")) if block]
+
+        def build_prompt(tools_text: str) -> str:
+            text = STEP_PLANNER.format(
+                tools=tools_text,
+                columns="\n\n".join([described, *tables]),
+                memories=describe_memories(context.get("memories", [])),
+                history=describe_history(context),
+                executed=context.get("executed", "нет"),
+                next_step_id=start,
+                question=question,
+            )
+            if settings.agent_quality_fixes:
+                text += PLANNER_RULES
+            if semantic_block:
+                text += "\n\nСемантический слой:\n" + semantic_block
+            if is_dashboard_question(question):
+                text += dashboard_prompt(template, all_columns, context.get("titles"))
+            return text
+
+        prompt = build_prompt(tools)
+        schema_override = None
+        if settings.agent_typed_schema:
+            from app.core.tools.schema import compact_planner_schema
+
+            schema_override = compact_planner_schema(
+                tool_registry.planner_tools(), settings.agent_max_steps
+            )
         logger.debug(">>> StepPlanner.plan() вопрос=%r", question)
         logger.debug("    промпт=%r", prompt)
         substage("llm")
-        plan = await self._ask(prompt, start, template)
+        plan = await self._ask(prompt, start, template, schema_override)
         if not plan.steps and start == 0:
             # Без размышлений модель отдаёт пустой план и на вопросы о данных
             # («что с выручкой каждый июль?»); второй шанс — один вызов.
             logger.warning("    план пустой, переспрос")
             substage("llm")
-            plan = await self._ask(prompt + EMPTY_PLAN, start, template)
+            plan = await self._ask(prompt + EMPTY_PLAN, start, template, schema_override)
         # Проверяем и ответ на переспрос: непроверенный план упал бы уже при
         # исполнении, потратив попытки fix_step и показав ошибку шага.
+        # Колонки проверяем при наличии паспорта: без него список из каталога
+        # может быть неполным, а точную ошибку всё равно поймает исполнитель.
         substage("validation")
-        errors = validate_plan(plan, known_steps=start)
+        plan_columns = set(all_columns) if profile else None
+        errors = validate_plan(
+            plan,
+            known_steps=start,
+            columns=plan_columns,
+            question=question,
+        )
         for _ in range(PLAN_FIX_ATTEMPTS):
             if not errors:
                 break
             logger.warning("    план не прошёл валидацию: %s", errors)
             fix = PLAN_ERRORS.format(plan=_plan_json(plan), errors="\n".join(errors))
+            if settings.agent_tool_topk and tools != tool_registry.describe():
+                # Retrieval мог не включить нужный тул — вторая попытка видит весь список.
+                logger.info("    повтор с полным списком тулов")
+                prompt = build_prompt(tool_registry.describe())
             substage("llm")
-            plan = await self._ask(prompt + fix, start, template)
+            plan = await self._ask(prompt + fix, start, template, schema_override)
             substage("validation")
-            errors = validate_plan(plan, known_steps=start)
+            errors = validate_plan(
+                plan,
+                known_steps=start,
+                columns=plan_columns,
+                question=question,
+            )
         if errors and errors == [template_gap(plan)]:
             logger.warning("<<< StepPlanner.plan() шаблон не собран, дашборд без шаблона")
             plan.template_id = None
@@ -166,6 +255,8 @@ class StepPlanner:
         if errors:
             logger.warning("<<< StepPlanner.plan() план отклонён после переспроса: %s", errors)
             raise PlanInvalid(errors)
+        if cache_key_obj is not None:
+            self.cache.put(cache_key_obj, plan, ttl_s=settings.agent_cache_ttl_s)
         logger.debug("<<< StepPlanner.plan() шагов=%d", len(plan.steps))
         return plan
 
@@ -199,11 +290,16 @@ class StepPlanner:
         return fixed
 
     async def _ask(
-        self, prompt: str, start: int, template: DashboardTemplate | None = None
+        self,
+        prompt: str,
+        start: int,
+        template: DashboardTemplate | None = None,
+        schema_override: dict | None = None,
     ) -> ResearchPlan:
         from app.core.llm.prompts.system_analyst import SYSTEM_ANALYST
 
-        plan = await self.llm.complete_structured(SYSTEM_ANALYST, prompt, ResearchPlan)
+        kwargs = {"schema_override": schema_override} if schema_override else {}
+        plan = await self.llm.complete_structured(SYSTEM_ANALYST, prompt, ResearchPlan, **kwargs)
         # LLM может не включать step_id в шаги — присваиваем последовательные ID.
         renumber_steps(plan, start)
         if template is not None:
@@ -342,13 +438,29 @@ def _without_refs(value: object) -> object:
     return value
 
 
-def validate_plan(plan: ResearchPlan, known_steps: int = 0) -> list[str]:
-    """Проверить шаги до выполнения: инструмент, аргументы, ссылки на шаги (и у плиток)."""
+def validate_plan(
+    plan: ResearchPlan,
+    known_steps: int = 0,
+    columns: set[str] | None = None,
+    question: str = "",
+) -> list[str]:
+    """Проверить шаги до выполнения: лимит, инструмент, аргументы, ссылки, колонки.
+
+    ``columns`` — колонки исходной таблицы: ошибка в имени колонки ловится
+    до выполнения, а не после падения шага. ``question`` нужен для проверки
+    «для динамики нет date_column»: такая ошибка дешевле переспроса.
+    """
     errors: list[str] = []
+    if len(plan.steps) > settings.agent_max_steps:
+        errors.append(f"в плане {len(plan.steps)} шагов, максимум {settings.agent_max_steps}")
     seen = set(range(known_steps))
-    for step in plan.steps:
+    for index, step in enumerate(plan.steps):
         errors.extend(_validate_step(step, seen))
+        if columns:
+            errors.extend(_validate_step_columns(step, columns, index=index, plan=plan, seen=seen))
         seen.add(step.step_id)
+    if question:
+        errors.extend(_validate_time_hint(plan, question))
     # План, который кончается разведкой (lookup), всё равно будет достроен —
     # result_step может указывать на будущие шаги, сбрасываем его без переспроса.
     ends_with_lookup = bool(plan.steps) and tool_kind(plan.steps[-1]) == "lookup"
@@ -361,6 +473,73 @@ def validate_plan(plan: ResearchPlan, known_steps: int = 0) -> list[str]:
     else:
         errors.extend(_validate_tiles(plan, seen))
     return errors
+
+
+def _validate_step_columns(
+    step: ResearchStep,
+    columns: set[str],
+    *,
+    index: int,
+    plan: ResearchPlan,
+    seen: set[int],
+) -> list[str]:
+    """Колоночные аргументы шага над исходной таблицей должны быть в схеме."""
+    if not step.tool:
+        return []
+    # Шаг читает не источник: предыдущий transform мог переименовать/создать колонки.
+    if step.input.startswith("$step_") and step.input[6:].isdigit():
+        return []
+    # Известные шаги (recovery) могли переименовать колонки — не угадываем.
+    if step.input == PREVIOUS and seen:
+        return []
+    if step.input == PREVIOUS and _has_previous_transform(plan, index):
+        return []
+    if step.input not in (PREVIOUS, SOURCE):
+        return []
+    try:
+        tool = tool_registry.get(step.tool)
+        args = tool.parse_args(_without_refs(step.columns), _without_refs(step.arguments))
+    except (KeyError, ValueError):
+        # Основные ошибки инструмента/аргументов уже собраны _validate_step.
+        return []
+    errors: list[str] = []
+    for name in tool.column_fields():
+        value = getattr(args, name, None)
+        for item in value if isinstance(value, list) else [value]:
+            if not isinstance(item, str) or item.startswith("$") or item in columns:
+                continue
+            hint = difflib.get_close_matches(item, sorted(columns), n=1)
+            suffix = f"; возможно, имелось в виду {hint[0]!r}" if hint else ""
+            errors.append(f"шаг {step.step_id}: колонки {item!r} нет в таблице{suffix}")
+    return errors
+
+
+def _has_previous_transform(plan: ResearchPlan, index: int) -> bool:
+    """Был ли до шага transform (тогда $prev — уже не исходная таблица)."""
+    return any(tool_kind(step) == "transform" for step in plan.steps[:index])
+
+
+_TIME_HINT = re.compile(
+    r"динамик|тренд|по\s+месяц|по\s+недел|по\s+квартал|по\s+год|во\s+времени|по\s+дням",
+    re.IGNORECASE,
+)
+
+
+def _validate_time_hint(plan: ResearchPlan, question: str) -> list[str]:
+    """Вопрос про динамику требует date_column или отдельного time-шага."""
+    if not _TIME_HINT.search(question):
+        return []
+    has_time_step = any(
+        step.tool in ("time_bucket", "time_series", "trend_analysis") for step in plan.steps
+    )
+    for step in plan.steps:
+        if step.tool != "revenue_analysis":
+            continue
+        arguments = step.arguments or {}
+        has_date = bool(arguments.get("date_column"))
+        if not has_date and not has_time_step:
+            return ["для динамики нужен date_column в revenue_analysis или time_bucket"]
+    return []
 
 
 def _validate_tiles(plan: ResearchPlan, seen: set[int]) -> list[str]:

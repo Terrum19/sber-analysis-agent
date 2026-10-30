@@ -35,6 +35,8 @@ class ResearchStep(BaseModel):
     # Старый позиционный формат: раскладывается по аргументам тула по порядку.
     columns: list[Any] = Field(default_factory=list)
     purpose: str = ""
+    # P1: явные зависимости DAG. $prev/$step_N выводятся автоматически.
+    depends_on: list[int] = Field(default_factory=list)
 
     @model_validator(mode="before")
     @classmethod
@@ -82,6 +84,17 @@ class ResearchStep(BaseModel):
             data.pop("input", None)
         elif isinstance(data["input"], int):
             data["input"] = f"$step_{data['input']}"
+
+        # depends_on: одиночное число -> список; отрицательные id запрещены.
+        depends = data.get("depends_on")
+        if isinstance(depends, int):
+            depends = [depends]
+        if isinstance(depends, list):
+            if any(isinstance(item, bool) or not isinstance(item, int) for item in depends):
+                raise ValueError("depends_on должен содержать целые id шагов")
+            if any(item < 0 for item in depends):
+                raise ValueError("depends_on не может содержать отрицательные id")
+            data["depends_on"] = depends
 
         return data
 
