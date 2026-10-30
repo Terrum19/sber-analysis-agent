@@ -60,6 +60,45 @@
 	* docs/eval.md: Набор explain и ключ route.
 	* backend/tests/unit/test_explain_turn.py: Новый.
 	* backend/tests/unit/test_eval_runner.py: Тесты route.
+	График ответа выбирает агент по таблицам выполненных шагов (#224).
+	* backend/app/core/agent/chart_pick.py: Новый.  ChartPicker: один вызов
+	LLM по описанию таблиц шагов (кроме lookup) — шаг, вид, x, y, color,
+	limit; неподошедший выбор — один повтор с причиной, затем select_chart.
+	(ask_chart): Срок chart_choice_timeout_s на вызов, повтор, TimeoutError.
+	* backend/app/core/viz/chart_choice.py: Новый.  (rejection): Колонки есть
+	в таблице, вид подходит к данным.  (top_rows): Топ-N по y в новую
+	temp_result_vN.  (describe_columns, sample_rows): Описание для промпта.
+	* backend/app/models/chart_choice.py: Новый.  ChartPick, AnswerChart:
+	все поля обязательные, «нет» — null.
+	* backend/app/core/agent/orchestrator.py: Выбор графика параллельно с
+	инсайтом; без выбора — прежняя эвристика.
+	* backend/app/core/agent/dashboard_turn.py: Плитки — тот же rejection и
+	ask_chart; x, y, color, limit идут в спеку плитки.
+	* backend/app/core/viz/vega_spec_builder.py (build_vega_spec): Параметры
+	x, y, color; больше 12 категорий — лежащие столбцы по убыванию; color —
+	серии рядом (xOffset).  Колонки пишутся в usermeta.
+	* backend/app/core/viz/chart_selector.py (fits): Предел столбцов 50.
+	* backend/app/core/dashboards/recalculate.py (rebuild_spec): Колонки из
+	usermeta.  (respec): Новая.  Спека в другом виде по data.values.
+	* backend/app/api/routes/dashboards.py (tile_spec): Новый
+	POST /api/dashboards/tile-spec.
+	* backend/app/api/schemas/dashboard.py (TileSpecRequest): Новая.
+	* backend/app/core/llm/client.py: Срок llm_timeout_s на весь ответ, а не
+	на паузу между байтами: keep-alive OpenRouter держал запрос без конца.
+	* backend/app/config.py (chart_choice_timeout_s): Новая, 90 с.
+	* backend/app/core/llm/prompts/chart_selector.py (ANSWER_CHART, ANSWER_HINT)
+	(ANSWER_RETRY, CHART_STEP, CHART_KINDS): Новые.
+	* backend/app/core/llm/prompts/dashboard_builder.py (CHART_CHOICE): Виды
+	из CHART_KINDS, limit.
+	* frontend/src/lib/chartTypes.ts (withRebuiltChartType): Новая.  Смена
+	вида плитки пересобирает спеку на бэкенде: таблица больше не рисуется
+	полосами по ячейкам.
+	* frontend/src/store/sessionStore.ts (addTile): График из чата встаёт
+	на панель и при сохранённом дашборде.
+	* frontend/src/components/charts/ChartRenderer.tsx: Прокрутка по высоте.
+	* docs/visualization.md, docs/architecture.md, docs/prompts.md,
+	docs/repo_structure.md: Выбор графика агентом.
+	* backend/tests/unit/test_chart_pick.py, test_chart_choice.py: Новые.
 
 2026-10-29  Alexander Yurits  <143354682+Terrum19@users.noreply.github.com>
 

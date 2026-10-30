@@ -20,10 +20,11 @@ from app.api.schemas.dashboard import (
     DashboardSummary,
     DashboardTileOut,
     DashboardUpdate,
+    TileSpecRequest,
 )
 from app.config import settings
 from app.core.dashboards.models import Dashboard, DashboardTile
-from app.core.dashboards.recalculate import recalculate
+from app.core.dashboards.recalculate import recalculate, respec
 from app.core.dashboards.store import DashboardStore
 from app.core.data.duckdb_manager import DuckDBManager
 from app.core.export.excel import ExcelExporter
@@ -101,6 +102,12 @@ def delete_dashboard(dashboard_id: str) -> Response:
     if not DashboardStore().delete(dashboard_id):
         raise HTTPException(status.HTTP_404_NOT_FOUND, NOT_FOUND)
     return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+@router.post("/tile-spec")
+def tile_spec(payload: TileSpecRequest) -> dict:
+    """Спека плитки в другом виде по её же данным: без SQL и LLM, дашборд не нужен."""
+    return respec(payload.spec, payload.chart_type)
 
 
 @router.post("/{dashboard_id}/recalculate", response_model=DashboardOut)

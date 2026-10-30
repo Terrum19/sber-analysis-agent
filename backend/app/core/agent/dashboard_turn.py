@@ -3,9 +3,10 @@
 Запрос пользователя (или выбранная идея) превращается в план из 4–5 плиток.
 Каждая плитка — отдельный маленький вопрос: обычный планировщик и исполнитель
 шагов, плитки идут по очереди (локальная модель держит один запрос за раз).
-Упавшая плитка пропускается. Вид графика
+Упавшая плитка пропускается. Вид графика и колонки осей
 выбирает LLM одним вызовом на все плитки, когда их результаты готовы;
-выбор проверяется fits, неподошедший — один повтор, дальше вид по intent.
+выбор проверяется по данным (viz/chart_choice.py), неподошедший — один
+повтор, дальше вид по intent.
 
 Каждый этап шлёт событие: фронт показывает, что происходит, на каждом шаге.
 
@@ -24,6 +25,7 @@ import time
 from collections.abc import AsyncIterator
 
 from app.api.schemas.chat import ChatRequest, DashboardPayload
+from app.core.agent.chart_pick import ask_chart
 from app.core.agent.orchestrator import (
     NO_TABLE_MESSAGE,
     AgentOrchestrator,
@@ -41,6 +43,7 @@ from app.core.dashboards.generator import DashboardGenerator
 from app.core.dashboards.ideas import describe_table, generate_ideas
 from app.core.dashboards.models import DashboardTile
 from app.core.llm.client import LLMClient
+from app.core.llm.prompts.chart_selector import CHART_KINDS
 from app.core.llm.prompts.dashboard_builder import (
     CHART_CHOICE,
     CHART_RETRY,
@@ -53,13 +56,13 @@ from app.core.llm.prompts.dashboard_builder import (
 )
 from app.core.llm.prompts.system_analyst import SYSTEM_ANALYST
 from app.core.memory.session_memory import SessionMemory
+from app.core.viz.chart_choice import describe_columns, rejection, sample_rows, top_rows
 from app.core.viz.chart_selector import fits, is_single_number
 from app.core.viz.vega_spec_builder import (
     SPEC_ROW_LIMIT,
     build_vega_spec,
     column_aliases,
     infer_field_types,
-    to_json_value,
 )
 from app.models.dashboard_plan import (
     MAX_TILES,
@@ -80,8 +83,6 @@ DASHBOARD_VARIANT = "plan_per_tile"
 TILE_STEP_IDS = 100
 # Меньше плиток — это уже не дашборд.
 MIN_BUILT_TILES = 2
-# Строк результата в промпте выбора графика.
-CHART_SAMPLE_ROWS = 10
 
 # Выбор графика LLM не удался или не подошёл — вид по тому, что плитка показывает.
 INTENT_CHARTS = {
@@ -208,9 +209,18 @@ class DashboardTurn:
         dashboard_tiles = []
         for tile_id, (tile, result) in built.items():
             choice = choices[tile_id]
-            data = _focus(records[tile_id], choice)
+            data = records[tile_id]
+            if (shown := top_rows(self.db, result, choice)) != result:
+                result, data = shown, self.db.to_records(shown, limit=SPEC_ROW_LIMIT)
             spec = build_vega_spec(
-                choice.chart_type, result, data=data, titles=titles, title=tile.title
+                choice.chart_type,
+                result,
+                data=data,
+                titles=titles,
+                title=tile.title,
+                x=choice.x,
+                y=choice.y,
+                color=choice.color,
             )
             dashboard_tiles.append(
                 DashboardTile(
@@ -377,6 +387,7 @@ class DashboardTurn:
                 else ""
             )
             prompt = CHART_CHOICE.format(
+                kinds=CHART_KINDS,
                 tiles="\n".join(
                     _describe_tile(tile_id, tile, records[tile_id])
                     for tile_id, (tile, _) in pending.items()
@@ -384,7 +395,10 @@ class DashboardTurn:
                 retry=retry,
             )
             try:
-                answer = await self.llm.complete_structured(SYSTEM_ANALYST, prompt, ChartChoices)
+                answer = await ask_chart(self.llm, prompt, ChartChoices)
+            except TimeoutError:
+                logger.warning("    выбор графика: модель не ответила и на повтор — вид по intent")
+                break
             except Exception:
                 logger.exception("    выбор графика: модель не ответила")
                 break
@@ -392,7 +406,7 @@ class DashboardTurn:
             for choice in answer.charts:
                 if choice.tile_id not in pending:
                     continue
-                why = _rejection(choice, records[choice.tile_id])
+                why = rejection(choice, records[choice.tile_id])
                 if why is None:
                     chosen[choice.tile_id] = choice
                     rejected.pop(choice.tile_id, None)
@@ -414,43 +428,14 @@ def _idea_request(idea: DashboardIdea) -> str:
 
 
 def _describe_tile(tile_id: int, tile: OutlineTile, records: list[dict]) -> str:
-    types = infer_field_types(records)
-    columns = ", ".join(
-        f"{column} ({kind}, уникальных {len({repr(row.get(column)) for row in records})})"
-        for column, kind in types.items()
-    )
-    sample = [
-        {key: to_json_value(value) for key, value in row.items()}
-        for row in records[:CHART_SAMPLE_ROWS]
-    ]
     return CHART_TILE.format(
         tile_id=tile_id,
         title=tile.title,
         intent=tile.intent,
         rows=len(records),
-        columns=columns,
-        sample=sample,
+        columns=describe_columns(records),
+        sample=sample_rows(records),
     )
-
-
-def _rejection(choice: ChartChoice, records: list[dict]) -> str | None:
-    """Почему выбор не подходит к строкам результата; None — подходит."""
-    if not records:
-        return "результат пуст"
-    known = set(records[0])
-    for name in (choice.x, choice.y, choice.color):
-        if name is not None and name not in known:
-            return f"колонки {name!r} нет в результате"
-    if choice.chart_type == "kpi":
-        return None if is_single_number(records) else "kpi — только когда результат одно число"
-    data = _focus(records, choice)
-    types = infer_field_types(data)
-    column = (choice.y or choice.x) if choice.chart_type == "histogram" else None
-    if column is not None and types.get(column) != "quantitative":
-        column = None
-    if fits(choice.chart_type, data, types, column):
-        return None
-    return f"{choice.chart_type} не подходит к {len(records)} строкам с колонками {list(types)}"
 
 
 def _by_intent(tile_id: int, tile: OutlineTile, records: list[dict]) -> ChartChoice:
@@ -461,16 +446,3 @@ def _by_intent(tile_id: int, tile: OutlineTile, records: list[dict]) -> ChartCho
     if records and fits(chart_type, records, types):
         return ChartChoice(tile_id=tile_id, chart_type=chart_type, reason="по intent")
     return ChartChoice(tile_id=tile_id, chart_type="table", reason="ничего не подошло")
-
-
-def _focus(records: list[dict], choice: ChartChoice) -> list[dict]:
-    """Колонки x, y, color — первыми: построитель спеки берёт первые категорию и число."""
-    if not records:
-        return records
-    first = [
-        name
-        for name in dict.fromkeys((choice.x, choice.y, choice.color))
-        if name is not None and name in records[0]
-    ]
-    order = [*first, *(column for column in records[0] if column not in first)]
-    return [{column: row.get(column) for column in order} for row in records]

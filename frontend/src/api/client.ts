@@ -572,6 +572,23 @@ export async function recalculateDashboard(id: string): Promise<DashboardConfig>
   }
 }
 
+/**
+ * Спека плитки в другом виде по её же данным (data.values): бэкенд строит её
+ * тем же построителем, что и график ответа. Без SQL и LLM, дашборд не нужен.
+ */
+export async function rebuildTileSpec(
+  spec: Record<string, unknown>,
+  chartType: string,
+): Promise<Record<string, unknown>> {
+  const res = await fetch(`${API}/dashboards/tile-spec`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ spec, chart_type: chartType }),
+  });
+  if (!res.ok) throw await parseApiError(res);
+  return await res.json();
+}
+
 /** Выгрузка артефактов (Excel / PDF). */
 export interface ExportPayload {
   session_id: string;

@@ -66,6 +66,7 @@ logger = logging.getLogger(__name__)
 import duckdb
 
 from app.api.schemas.chat import ChatRequest, DashboardPayload, ProgressPayload
+from app.core.agent.chart_pick import ChartPicker
 from app.core.agent.explainer import Explainer
 from app.core.agent.insight import InsightGenerator
 from app.core.agent.planner import PlanInvalid, StepPlanner, is_dashboard_question
@@ -79,6 +80,7 @@ from app.core.data import overview, relations
 from app.core.data.duckdb_manager import DuckDBManager
 from app.core.data.table_vectors import TableVectors
 from app.core.llm.budget import track_truncations
+from app.core.llm.client import LLMClient
 from app.core.logging_setup import set_turn_id
 from app.core.memory.profile_memory import ProfileMemory
 from app.core.memory.session_memory import SessionMemory
@@ -256,6 +258,7 @@ class AgentOrchestrator:
         cache: StateCache | None = None,
         db: DuckDBManager | None = None,
         explainer: Explainer | None = None,
+        chart_llm: LLMClient | None = None,
     ) -> None:
         # Один DuckDB на весь ход: temp_result_vN, созданные исполнителем,
         # должны читаться графиком, инсайтом и кешем из той же базы.
@@ -270,6 +273,8 @@ class AgentOrchestrator:
         self.cache = cache or StateCache(self.db)
         self.profiles = ProfileMemory(self.db)
         self.vectors = TableVectors(self.db)
+        # Модель планировщика выбирает и график; без неё — эвристика select_chart.
+        self.chart_picker = ChartPicker(chart_llm or getattr(self.planner, "llm", None), self.db)
 
     async def run(self, request: ChatRequest) -> AsyncIterator[dict]:
         """Выполнить исследование и вернуть поток событий для фронта.
@@ -493,6 +498,8 @@ class AgentOrchestrator:
             return
 
         # --- Финальный блок: инсайт -> чарт -> дашборд -> done ---
+        # График по таблицам шагов агент выбирает, пока пишется вывод.
+        picking = self._start_chart_pick(question, execution)
         stage = "insight"
         try:
             logger.info(">>> run() генерация инсайта")
@@ -518,40 +525,48 @@ class AgentOrchestrator:
             }
 
             stage = "chart"
-            records = self.db.to_records(result_table, limit=SPEC_ROW_LIMIT)
-            view = _requested_view(execution, records)
-            chart_type = select_chart(question, result_table, view, records, titles)
-            if chart_type == NO_CHART:
-                logger.info("<<< run() ответ без графика")
-                memory.finish_turn(
-                    "ok",
-                    headline=insight.headline,
-                    result_table=result_table,
-                    result_columns=self._result_columns(result_table),
-                    details=insight.details,
-                )
-                yield _done(turn_id)
-                return
+            picked = await picking if picking is not None else None
+            if picked is not None:
+                chart_type, chart_table, records = picked.chart_type, picked.table, picked.records
+                columns = {"x": picked.x, "y": picked.y, "color": picked.color}
+                purpose = picked.purpose
+            else:
+                records = self.db.to_records(result_table, limit=SPEC_ROW_LIMIT)
+                view = _requested_view(execution, records)
+                chart_type = select_chart(question, result_table, view, records, titles)
+                if chart_type == NO_CHART:
+                    logger.info("<<< run() ответ без графика")
+                    memory.finish_turn(
+                        "ok",
+                        headline=insight.headline,
+                        result_table=result_table,
+                        result_columns=self._result_columns(result_table),
+                        details=insight.details,
+                    )
+                    yield _done(turn_id)
+                    return
+                if chart_type == "histogram":
+                    result_table, records = self._histogram_values(
+                        question, result_table, records, titles
+                    )
+                chart_table, columns, purpose = result_table, {}, execution.result_purpose
             yield _progress_event("chart", "started")
-            if chart_type == "histogram":
-                result_table, records = self._histogram_values(
-                    question, result_table, records, titles
-                )
             logger.debug(">>> run() построение графика chart_type=%s", chart_type)
             spec = build_vega_spec(
                 chart_type,
-                result_table,
+                chart_table,
                 data=records,
                 titles=titles,
-                title=execution.result_purpose or chart_title(records, titles),
+                title=purpose or chart_title(records, titles),
+                **columns,
             )
             logger.debug(
                 "<<< run() график построен: mark=%s строк=%d",
                 spec.get("mark", "?"),
                 len(spec.get("data", {}).get("values", [])),
             )
-            memory.record_chart(spec["usermeta"]["chart_type"], result_table, insight.headline)
-            yield _chart_event(spec, insight.headline, result_table)
+            memory.record_chart(spec["usermeta"]["chart_type"], chart_table, insight.headline)
+            yield _chart_event(spec, insight.headline, chart_table)
         except Exception as exc:
             logger.exception("<<< run() этап %s упал", stage)
             memory.finish_turn("failed", reason=f"{stage}: {exc}")
@@ -559,12 +574,16 @@ class AgentOrchestrator:
             yield _failure_event()
             yield _done(turn_id)
             return
+        finally:
+            # Ход упал или клиент ушёл раньше графика — выбор больше не нужен.
+            if picking is not None:
+                picking.cancel()
 
         if execution.dashboard_requested:
             fallback = DashboardTile(
                 title=spec.get("title") or insight.headline,
                 spec=spec,
-                result_table=result_table,
+                result_table=chart_table,
                 insight=insight.headline,
             )
             try:
@@ -589,6 +608,20 @@ class AgentOrchestrator:
         yield _done(turn_id)
 
     # --- Вспомогательные методы ---
+
+    def _start_chart_pick(self, question: str, execution: Execution) -> asyncio.Task | None:
+        """Задача выбора графика агентом; None — графику не нужен выбор LLM.
+
+        Без графика (final_viz=none) выбирать нечего; выборка для гистограммы
+        (_finish) — не таблица шага, её вид уже решён.
+        """
+        if execution.final_viz == NO_CHART and not execution.dashboard_requested:
+            return None
+        if execution.result_table not in execution.tables.values():
+            return None
+        return asyncio.create_task(
+            self.chart_picker.pick(question, execution.steps, execution.tables, execution.final_viz)
+        )
 
     async def _research(
         self,

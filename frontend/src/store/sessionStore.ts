@@ -326,8 +326,10 @@ export const useSessionStore = create<SessionState>()(
         ),
       addTile: (tile, sessionId) => {
         const s = get();
-        // Канвас показывает открытую сессию: плитка фоновой уходит только в её кеш
-        if ((sessionId ?? s.sessionId) === s.sessionId && !useCanvasStore.getState().dashboardId) {
+        // Канвас показывает открытую сессию: плитка фоновой уходит только в её кеш.
+        // Сохранённый дашборд на канвасе — тоже этой сессии (смена сессии его
+        // сбрасывает): новый график встаёт к нему, автосохранение допишет его в дашборд.
+        if ((sessionId ?? s.sessionId) === s.sessionId) {
           useCanvasStore.getState().addTile(tile);
         }
         set((st) => patchSession(st, sessionId, (snap) => ({ ...snap, tiles: [...snap.tiles, tile] })));
