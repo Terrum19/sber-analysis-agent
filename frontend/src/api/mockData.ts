@@ -322,7 +322,7 @@ export function mockStreamChat(
   sessionId: string,
   question: string,
   onEvent: (event: ChatStreamEvent) => void,
-  onClose?: (error?: string) => void,
+  onClose?: (error?: string, status?: number) => void,
   _options?: { recoveryResponse?: string; replyTo?: string | null },
 ): () => void {
   let isCancelled = false;

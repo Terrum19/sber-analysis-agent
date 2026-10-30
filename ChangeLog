@@ -1,3 +1,19 @@
+2026-10-31  Alexander Yurits  <143354682+Terrum19@users.noreply.github.com>
+
+	Вопрос в удалённую сессию — 404, а не новая пустая сессия.
+	* backend/app/api/routes/chat.py (chat): Несохранённая сессия — 404
+	«Сессия не найдена.»: ход заводил её заново без таблицы и истории, и
+	таблица выбиралась по словам вопроса, хотя вкладка показывала прежнюю.
+	* frontend/src/api/client.ts (streamChat), frontend/src/api/mockData.ts:
+	onClose получает и HTTP-статус.
+	* frontend/src/store/chatRunStore.ts: На 404 — «Сессия удалена на
+	сервере — начните новую сессию», без повтора вопроса.
+	* frontend/src/components/chat/ChatPanel.tsx: 404 сессии при открытии —
+	то же сообщение, а не «Таблица не найдена»; при смене таблицы — текст
+	бэкенда.
+	* frontend/src/i18n/dictionary.ts (chat.sessionGone): Новая.
+	* backend/tests/unit/test_chat_api.py: Удалённая сессия.
+
 2026-10-29  Alexander Yurits  <143354682+Terrum19@users.noreply.github.com>
 
 	Переход к другим данным по смыслу вопроса — эмбеддинги (#165).

@@ -12,12 +12,13 @@ from collections.abc import AsyncIterator, Callable
 from contextlib import aclosing, suppress
 from typing import Annotated, TypeVar
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
 
 from app.api.deps import get_db
 from app.api.schemas.chat import ChatEvent, ChatRequest
 from app.core.data.duckdb_manager import DuckDBManager
+from app.core.memory.session_memory import SessionMemory
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -118,7 +119,11 @@ async def chat(
 
     Запускает AgentOrchestrator.run() и стримит события через StreamingResponse.
     Каждый элемент — ChatEvent в формате SSE: data: {"type": "...", "data": {...}}
+    Неизвестная (удалённая) сессия — 404: иначе ход молча заводил её заново, без
+    таблицы и истории, а вкладка браузера показывала прежнюю таблицу.
     """
+    if not SessionMemory(payload.session_id).exists():
+        raise HTTPException(status_code=404, detail="Сессия не найдена.")
 
     def turn() -> AsyncIterator[dict]:
         # Импорт (первый — около секунды) и оркестратор — в потоке хода:
