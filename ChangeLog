@@ -1,3 +1,66 @@
+2026-10-30  Alexander Yurits  <143354682+Terrum19@users.noreply.github.com>
+
+	Обзор таблицы — для бизнес-пользователя, без технической таблицы колонок.
+	* backend/app/core/llm/prompts/schema_describe.py (SCHEMA_DESCRIBE): О чём
+	данные, что в них есть и что интересного посмотреть; поля по-русски по
+	смыслу, без имён колонок и типов.
+	* backend/app/core/data/overview.py (headline): Новая.  Название, объём и
+	период для человека.  (profile_rows, KIND_LABELS): Удалены.
+	(_OVERVIEW): «что в таблице есть», «что тут есть», «о чём эти данные».
+	* backend/app/models/research_step.py (ResearchPlan.route): Значение
+	overview.
+	* backend/app/core/llm/prompts/step_planner.py (STEP_PLANNER): Правило
+	маршрута overview.
+	* backend/app/core/agent/orchestrator.py (_overview): Без графика
+	колонок, заголовок — headline.  (_research, _turn): Маршрут overview
+	от планировщика.
+	* backend/app/core/llm/prompts/insight_summary.py (INSIGHT_SUMMARY)
+	* backend/app/core/llm/prompts/explainer.py (EXPLAINER): Поля по-русски,
+	без технических имён и функций.
+	* docs/architecture.md, docs/memory.md: Обзор таблицы.
+	* backend/tests/unit/test_overview.py, test_orchestrator_unit.py,
+	test_relations.py, tests/e2e/test_scenarios.py: Тесты того же.
+
+2026-10-29  Alexander Yurits  <143354682+Terrum19@users.noreply.github.com>
+
+	Пустой план — ответ словами; причина неудачного хода — в журнале.
+	* backend/app/core/agent/orchestrator.py (_research): Пустой план без
+	просьбы запомнить идёт в пояснение, а не в отказ «не удалось подобрать
+	инструменты».  (_turn): Причина уточнения и сбоя — в ход.
+	* backend/app/core/memory/session_memory.py (finish_turn): Хранит
+	reason.
+	* backend/app/core/agent/explainer.py (_columns): Новая.  Колонки
+	таблицы сессии.  (_describe_turn): Причина неудачного хода.
+	* backend/app/core/llm/prompts/explainer.py (EXPLAINER): Колонки,
+	причина неудачи, вопросы с новым расчётом.
+	* backend/tests/unit/test_orchestrator_unit.py: Пустой план отвечается
+	пояснением.
+	* backend/tests/unit/test_explain_turn.py: Тесты того же.
+
+2026-10-29  Alexander Yurits  <143354682+Terrum19@users.noreply.github.com>
+
+	Вопрос о прошлых ответах агента — ответ словами, без плана.
+	* backend/app/models/research_step.py (ResearchPlan.route): Новое
+	поле: data или answer; null и незнакомое значение — data.
+	* backend/app/core/llm/prompts/step_planner.py (STEP_PLANNER): Правило
+	и пример маршрута answer; вопросы к данным со словами «почему», «как»,
+	«объясни» — data.
+	* backend/app/core/agent/explainer.py: Новый.  Ответ по журналу ходов:
+	шаги с аргументами, строки после шага, ответ и начало результата;
+	число без опоры в журнале — один переспрос.
+	* backend/app/core/llm/prompts/explainer.py: Новый.  Промпт пояснения.
+	* backend/app/core/memory/session_memory.py (finish_turn): Хранит
+	details ответа.  (explained_turns): Новая.  Последние ходы и ход из
+	reply_to.
+	* backend/app/core/agent/orchestrator.py (_research): Маршрут answer
+	без шагов — пояснение; план с шагами выполняется.  (_turn): Ответ
+	пояснения без инсайта и графика; details ответа — в ход.
+	* scripts/eval.py (check_route): Новая.  Ключ expect.route.
+	* data/eval/explain/questions.yaml: Новый.  Набор-ловушки пояснений.
+	* docs/eval.md: Набор explain и ключ route.
+	* backend/tests/unit/test_explain_turn.py: Новый.
+	* backend/tests/unit/test_eval_runner.py: Тесты route.
+
 2026-10-29  Alexander Yurits  <143354682+Terrum19@users.noreply.github.com>
 
 	Переход к другим данным по смыслу вопроса — эмбеддинги (#165).

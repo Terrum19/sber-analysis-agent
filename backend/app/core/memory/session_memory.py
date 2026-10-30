@@ -378,11 +378,19 @@ class SessionMemory:
         headline: str | None = None,
         result_table: str | None = None,
         result_columns: list[str] | None = None,
+        details: list[str] | None = None,
+        reason: str | None = None,
     ) -> None:
-        """Закрыть текущий ход ответом и статусом: ok, failed или clarification."""
+        """Закрыть текущий ход ответом и статусом: ok, failed или clarification.
+
+        details — пункты ответа под headline, reason — почему ход не дал ответа:
+        по ним агент потом объясняет вывод или неудачу.
+        """
         self._turn.update(
             status=status,
             headline=headline,
+            details=list(details or []),
+            reason=reason,
             result_table=result_table,
             result_columns=list(result_columns or []),
         )
@@ -410,6 +418,19 @@ class SessionMemory:
     def recent_turns(self) -> list[dict]:
         """Последние ``settings.context_turns`` ходов любого статуса, старые первыми."""
         return self._past_turns()[-settings.context_turns :] if settings.context_turns else []
+
+    def explained_turns(self) -> list[dict]:
+        """Ходы для пояснения прошлых ответов: последние ходы и ход, на который отвечает текущий.
+
+        Ход из reply_to старше окна последних ходов добавляется в начало;
+        у него и только у него ``focus`` — True.
+        """
+        reply_to = self._turn.get("reply_to") if self._turn is not None else None
+        turns = self.recent_turns()
+        if reply_to is not None and all(turn["turn_id"] != reply_to for turn in turns):
+            target = [turn for turn in self._past_turns() if turn["turn_id"] == reply_to]
+            turns = target + turns
+        return [{**turn, "focus": turn["turn_id"] == reply_to} for turn in turns]
 
     def find_turns(self, query: str | None = None, number: int | None = None) -> list[dict]:
         """Прошлые ходы для read_history: ход по номеру или поиск по вопросам и ответам.
