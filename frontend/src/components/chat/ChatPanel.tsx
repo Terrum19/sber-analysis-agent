@@ -782,6 +782,12 @@ export default function ChatPanel({ sessionId }: Props) {
               </div>
               <span className="mt-1 text-[10px] text-graphite-500 px-1">
                 {m.timestamp || ""}
+                {/* Ход из ссылки другого пользователя (#249) */}
+                {m.imported && m.role === "user" && (
+                  <span className="ml-1.5 rounded border border-graphite-700 px-1 py-px text-graphite-400">
+                    {t("chat.importedBadge")}
+                  </span>
+                )}
               </span>
             </div>
           ))

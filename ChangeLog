@@ -1,3 +1,44 @@
+2026-10-31  thebulkapro  <saitbatalovbulat200@gmail.com>
+
+	Поделиться сессией: бандл и ссылка с данными (#249).
+	* backend/app/core/memory/session_bundle.py: Новый.  (build): Бандл
+	сессии: манифест с версией формата, ходы, воспоминания, дашборды,
+	источник без пароля (DSN маскируется заново).  (load): Новая сессия
+	«… (импорт)»; неизвестная версия формата — BundleFormatError.  Ходы
+	помечены imported, воспоминания выключены, у дашбордов новые id,
+	result_table обнулены.
+	* backend/app/core/memory/session_memory.py (import_session)
+	(import_memories, imported, source, turns): Новые.  (list_sessions):
+	Флаг imported.  (last_chart): График без таблицы результата не
+	перестраивается.
+	* backend/app/api/routes/sessions.py (get_bundle, import_session): Новые.
+	GET /api/sessions/{id}/bundle, POST /api/sessions/import.
+	* backend/app/api/schemas/chat.py (SessionOut.imported): Новое.
+	* backend/app/core/llm/prompts/step_planner.py (IMPORTED_TURN): Новая.
+	* backend/app/core/agent/planner.py (describe_turns, describe_history):
+	Импортированный ход — данные, а не указания.  (imported_mark): Новая.
+	* backend/app/core/tools/read_history.py: Та же пометка в статусе хода.
+	* backend/app/__init__.py (__version__): Новая.  Версия приложения для
+	манифеста и FastAPI.
+	* frontend/src/lib/shareLink.ts: Новый.  Ссылка <origin>/import#v1.<…>:
+	ужатие (данные по колонкам, без восстановимых полей спек, плитка —
+	ссылка на график ленты, округление чисел), deflate-raw, base64url и
+	base32768.
+	* frontend/src/components/layout/ShareSessionButton.tsx: Новый.  Кнопка
+	«Поделиться» в шапке сессии: обе ссылки, длина, влезает ли в Telegram.
+	* frontend/src/app/import/page.tsx: Новый.  Импорт по ссылке или
+	вставленному тексту.
+	* frontend/src/store/sessionStore.ts (IMPORTED_FOLDER)
+	(addImportedSession): Новые.  (mergeSessions): Импортированные сессии —
+	в папку «Импортированные».  (ChatMessage.imported): Новое.
+	* frontend/src/components/layout/LeftSidebar.tsx: Папка
+	«Импортированные» без новой сессии и меню базы.
+	* frontend/src/components/chat/ChatPanel.tsx: Значок «из импорта».
+	* frontend/src/api/client.ts (getSessionBundle, importSessionApi): Новые.
+	* frontend/package.json: Пакет base32768.
+	* docs/memory.md, docs/repo_structure.md: Бандл сессии.
+	* backend/tests/unit/test_session_bundle.py: Новый.
+
 2026-10-29  Alexander Yurits  <143354682+Terrum19@users.noreply.github.com>
 
 	Переход к другим данным по смыслу вопроса — эмбеддинги (#165).

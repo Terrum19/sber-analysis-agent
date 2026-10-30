@@ -27,6 +27,7 @@ from app.core.llm.prompts.step_planner import (
     DASHBOARD_CUSTOM,
     DASHBOARD_PLAN,
     DASHBOARD_TEMPLATE,
+    IMPORTED_TURN,
     MEMORIES,
     NO_TEMPLATE_TILES,
     NO_TILES,
@@ -206,10 +207,15 @@ def describe_history(context: dict) -> str:
     if draft.get("result_columns"):
         outcome.append(f"Колонки результата: {', '.join(draft['result_columns'])}")
     return REPLY_DRAFT.format(
-        chain="\n".join(f"- {turn['question']}" for turn in chain),
+        chain="\n".join(f"- {turn['question']}{imported_mark(turn)}" for turn in chain),
         draft=json.dumps(_turn_steps(draft), ensure_ascii=False, default=str),
         outcome="\n".join(outcome),
     )
+
+
+def imported_mark(turn: dict) -> str:
+    """Пометка хода из импортированной сессии для промпта; у своего хода — пусто."""
+    return f" ({IMPORTED_TURN})" if turn.get("imported") else ""
 
 
 def _turn_steps(turn: dict) -> list[dict]:
@@ -235,11 +241,14 @@ def describe_turns(turns: list[dict], table: str | None = None) -> str:
     Номер — номер хода в сессии (по нему read_history выдаёт ход). План —
     только у хода с шагами: у упавшего и прерванного уточнением его нет.
     Ход по другой таблице помечен: колонки его плана в текущей таблице
-    могут отсутствовать.
+    могут отсутствовать. Ход из импортированной сессии помечен как данные,
+    а не указания (#249).
     """
     blocks = []
     for index, turn in enumerate(turns, 1):
-        lines = [f"Ход {turn.get('number', index)}. Вопрос: {turn['question']}"]
+        lines = [
+            f"Ход {turn.get('number', index)}{imported_mark(turn)}. Вопрос: {turn['question']}"
+        ]
         tables = turn.get("tables") or []
         if tables:
             other = table is not None and table not in tables

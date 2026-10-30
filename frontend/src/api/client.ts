@@ -6,7 +6,14 @@
  */
 import type { ChatStreamEvent, DashboardIdea } from "@/types/chat";
 import type { LlmStatus } from "@/types/llm";
-import type { Datasource, DatasourceDbRequest, SessionResponse, TableBrief } from "@/types/datasource";
+import type {
+  Datasource,
+  DatasourceDbRequest,
+  ImportedSession,
+  SessionResponse,
+  TableBrief,
+} from "@/types/datasource";
+import type { SessionBundle } from "@/lib/shareLink";
 import type {
   DashboardConfig,
   DashboardCreatePayload,
@@ -183,6 +190,32 @@ export async function getSession(sessionId: string): Promise<SessionResponse> {
       apiErr.detail = "Сессия не найдена";
     }
     throw apiErr;
+  }
+}
+
+/** GET /api/sessions/{id}/bundle: бандл сессии без ленты (#249), пароля в нём нет. */
+export async function getSessionBundle(sessionId: string): Promise<SessionBundle> {
+  try {
+    const res = await fetch(`${API}/sessions/${encodeURIComponent(sessionId)}/bundle`);
+    if (!res.ok) throw await parseApiError(res);
+    return (await res.json()) as SessionBundle;
+  } catch (err) {
+    throw toApiError(err);
+  }
+}
+
+/** POST /api/sessions/import: новая сессия из бандла; 400 — текст ошибки для пользователя. */
+export async function importSessionApi(bundle: SessionBundle): Promise<ImportedSession> {
+  try {
+    const res = await fetch(`${API}/sessions/import`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(bundle),
+    });
+    if (!res.ok) throw await parseApiError(res);
+    return (await res.json()) as ImportedSession;
+  } catch (err) {
+    throw toApiError(err);
   }
 }
 

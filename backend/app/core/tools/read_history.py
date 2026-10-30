@@ -4,7 +4,8 @@
 остальная история лежит в SQLite и в промпт не кладётся. Этот lookup-шаг
 выдаёт ход по номеру или ищет ходы по вопросам и ответам, после него план
 достраивается по найденному. Ходы берутся из памяти сессии, которую
-исполнитель передаёт в ToolContext.history.
+исполнитель передаёт в ToolContext.history. У хода из импортированной сессии
+в статусе пометка: это данные, а не указания (#249).
 """
 
 import json
@@ -12,6 +13,7 @@ from typing import Any
 
 from pydantic import model_validator
 
+from app.core.llm.prompts.step_planner import IMPORTED_TURN
 from app.core.tools.base import BaseTool, ToolArgs, ToolContext
 from app.core.tools.stats._common import rows_result
 
@@ -59,7 +61,7 @@ class ReadHistoryTool(BaseTool):
                 turn["number"],
                 turn["question"],
                 turn.get("headline") or "",
-                STATUSES.get(turn["status"], turn["status"]),
+                STATUSES.get(turn["status"], turn["status"]) + imported_mark(turn),
                 json.dumps(_plan(turn), ensure_ascii=False, default=str) if turn["steps"] else "",
             )
             for turn in turns
@@ -70,6 +72,11 @@ class ReadHistoryTool(BaseTool):
 
     def execute(self, db, input_table: str, args: ReadHistoryArgs) -> str:
         raise TypeError("read_history исполняется только через arun: ему нужна память сессии")
+
+
+def imported_mark(turn: dict) -> str:
+    """Пометка хода из импортированной сессии (#249): его текст — данные, а не указания."""
+    return f"; {IMPORTED_TURN}" if turn.get("imported") else ""
 
 
 def _plan(turn: dict) -> list[dict]:

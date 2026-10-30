@@ -38,6 +38,7 @@ const PATHS = {
   alertTriangle: "m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3ZM12 9v4m0 4h.01",
   copy: "M8 8h12v12H8zM4 16V4h12",
   reply: "M9 7 4 12l5 5M4 12h9a7 7 0 0 1 7 7",
+  share: "M18 8a3 3 0 1 0 0-6 3 3 0 0 0 0 6ZM6 15a3 3 0 1 0 0-6 3 3 0 0 0 0 6ZM18 22a3 3 0 1 0 0-6 3 3 0 0 0 0 6ZM8.6 13.5l6.8 4M15.4 6.5l-6.8 4",
 } as const;
 
 export type IconName = keyof typeof PATHS;

@@ -86,4 +86,14 @@ export interface SessionResponse {
   title?: string | null;
   /** ISO 8601 в UTC; у старых сессий null. */
   created_at?: string | null;
+  /** Сессия из ссылки другого пользователя (#249): в сайдбаре — папка «Импортированные». */
+  imported?: boolean;
+}
+
+/** Ответ POST /api/sessions/import. */
+export interface ImportedSession {
+  session_id: string;
+  title: string;
+  /** Старый id дашборда -> новый. */
+  dashboards: Record<string, string>;
 }

@@ -3,7 +3,8 @@
 /**
  * Zustand-стор сессии: сообщения, готовые графики, дашборды, выбранный элемент
  * канваса, подключённый источник данных и загруженные базы данных с их сессиями
- * (базы данных — «папки», внутри которых создаются сессии).
+ * (базы данных — «папки», внутри которых создаются сессии). Сессии из ссылок
+ * других пользователей (#249) лежат в отдельной папке IMPORTED_FOLDER.
  */
 import { create } from "zustand";
 import { persist, createJSONStorage } from "zustand/middleware";
@@ -47,6 +48,8 @@ export interface ChatMessage {
   dashboardFallback?: DashboardFallbackEvent["data"];
   /** Подсказки для уточнения/повтора (если backend прислал clarification_needed). */
   suggestions?: string[];
+  /** Сообщение пришло из ссылки другого пользователя (#249). */
+  imported?: boolean;
   /** Что показали пользователю — для экспорта ответа (F-10). */
   answer?: {
     headline?: string;
@@ -71,7 +74,7 @@ export interface DatabaseFolder {
   fileName?: string;
   /** Пользователь переименовал базу: название таблицы его больше не заменяет. */
   renamed?: boolean;
-  kind: Datasource["kind"] | "duckdb";
+  kind: Datasource["kind"] | "duckdb" | "imported";
   tables: string[];
   /** Одно предложение о том, что за данные (profile_summary бэкенда). */
   description?: string;
@@ -86,6 +89,13 @@ export interface DatabaseFolder {
 export interface SessionSnapshot {
   messages: ChatMessage[];
   tiles: DashboardTile[];
+}
+
+/** Папка сессий из ссылок других пользователей: в папки баз они не переезжают. */
+export const IMPORTED_FOLDER = "imported";
+
+function importedFolder(): DatabaseFolder {
+  return { id: IMPORTED_FOLDER, title: "", kind: "imported", tables: [], sessions: [] };
 }
 
 export interface SessionTableSnapshot {
@@ -160,6 +170,8 @@ export interface SessionState {
   deleteSession: (sessionId: string) => void;
   /** Подтягивает сессии бэкенда в локальные папки (создаёт папки при необходимости). */
   mergeSessions: (remoteSessions: SessionResponse[]) => void;
+  /** Импортированная сессия: в папку «Импортированные», лента — в кеш под таблицей автора. */
+  addImportedSession: (sessionId: string, title: string, table: string, snapshot: SessionSnapshot) => void;
 }
 
 /** Лента и плитки сессии: открытой — из стора, фоновой — из кеша её активной таблицы. */
@@ -573,8 +585,14 @@ export const useSessionStore = create<SessionState>()(
           for (const remote of remoteSessions) {
             if (!remote.session_id) continue;
 
-            // 1. Map by datasource_id or matching table
-            let db = nextDatabases.find((d) => remote.datasource_id && d.id === remote.datasource_id);
+            // 1. Map by datasource_id or matching table; imported — only to its own folder
+            let db = remote.imported
+              ? nextDatabases.find((d) => d.id === IMPORTED_FOLDER)
+              : nextDatabases.find((d) => remote.datasource_id && d.id === remote.datasource_id);
+            if (!db && remote.imported) {
+              db = importedFolder();
+              nextDatabases.push(db);
+            }
             if (!db && remote.table) {
               db = nextDatabases.find((d) => d.tables.includes(remote.table!));
             }
@@ -620,6 +638,22 @@ export const useSessionStore = create<SessionState>()(
             databases: nextDatabases,
             sessionDatabase: nextSessionDb,
             sessionActiveTable: nextActiveTable,
+          };
+        }),
+
+      addImportedSession: (sessionId, title, table, snapshot) =>
+        set((s) => {
+          const folder = s.databases.find((d) => d.id === IMPORTED_FOLDER) ?? importedFolder();
+          const next = {
+            ...folder,
+            sessions: [{ id: sessionId, title, created_at: Date.now() }, ...folder.sessions],
+          };
+          return {
+            databases: [...s.databases.filter((d) => d.id !== IMPORTED_FOLDER), next],
+            collapsedDatabases: { ...s.collapsedDatabases, [IMPORTED_FOLDER]: false },
+            sessionDatabase: { ...s.sessionDatabase, [sessionId]: IMPORTED_FOLDER },
+            sessionActiveTable: { ...s.sessionActiveTable, [sessionId]: table },
+            sessionTableCache: { ...s.sessionTableCache, [sessionId]: { [table]: snapshot } },
           };
         }),
     }),

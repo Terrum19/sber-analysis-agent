@@ -124,7 +124,9 @@ function DatabaseRow({
   const startSession = useStartSession();
   const isCurrent = useSessionStore((s) => (currentSessionId ? s.sessionDatabase[currentSessionId] === database.id : false));
   const runs = useChatRunStore((s) => s.runs);
-  const description = describeDatabase(database, t);
+  const imported = database.kind === "imported";
+  const title = imported ? t("sidebar.imported") : database.title;
+  const description = imported ? t("sidebar.importedHint") : describeDatabase(database, t);
 
   const [menuAnchor, setMenuAnchor] = useState<
     | { type: "db"; rect: DOMRect }
@@ -158,11 +160,13 @@ function DatabaseRow({
         </button>
         <button
           type="button"
-          onClick={() => hasTables && startSession(database)}
-          disabled={!hasTables}
+          onClick={() => (imported ? toggleDatabase(database.id) : hasTables && startSession(database))}
+          disabled={!hasTables && !imported}
           className="flex min-w-0 flex-1 items-start gap-2 py-1.5 text-left text-[13px] disabled:opacity-50 disabled:cursor-not-allowed"
           title={
-            !hasTables
+            imported
+              ? description
+              : !hasTables
               ? t("welcome.noDataToStart")
               : [
                   t("sidebar.openNewSession", { title: database.title }),
@@ -176,7 +180,7 @@ function DatabaseRow({
           <Icon name={collapsed ? "folder" : "folderOpen"} className="mt-0.5 shrink-0 text-graphite-400" />
           <span className="min-w-0">
             <span className="flex items-center gap-1.5">
-              <span className="block truncate">{database.title}</span>
+              <span className="block truncate">{title}</span>
               {database.pinned && (
                 <Icon
                   name="pin"
@@ -189,6 +193,7 @@ function DatabaseRow({
             <span className="block truncate text-[11px] leading-4 text-graphite-500">{description}</span>
           </span>
         </button>
+        {!imported && (
         <button
           type="button"
           onClick={() => hasTables && startSession(database)}
@@ -198,6 +203,8 @@ function DatabaseRow({
         >
           <Icon name="plus" size={14} />
         </button>
+        )}
+        {!imported && (
         <button
           type="button"
           onClick={(e) => {
@@ -214,6 +221,7 @@ function DatabaseRow({
         >
           <Icon name="moreHorizontal" size={14} />
         </button>
+        )}
       </div>
 
       {!collapsed && (

@@ -45,6 +45,8 @@ class SessionOut(BaseModel):
     datasource_id: str | None = None
     title: str | None = None
     created_at: datetime | None = None
+    # Сессия из бандла другого пользователя (#249): в сайдбаре — в папке «Импортированные».
+    imported: bool = False
 
 
 MemoryText = Annotated[

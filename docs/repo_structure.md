@@ -134,6 +134,7 @@ backend/
 │   │   ├── memory/         — 4 уровня памяти (см. docs/memory.md)
 │   │   │   ├── datasource_store.py  — подключённые источники БД (SQLite, DSN без пароля)
 │   │   │   ├── session_memory.py    — (1) диалог + шаги, sliding window, SQLite
+│   │   │   ├── session_bundle.py    — бандл сессии: передать другому пользователю, импорт (#249)
 │   │   │   ├── state_cache.py       — (2) результаты в temp-таблицах DuckDB
 │   │   │   └── profile_memory.py    — (3) «паспорт данных»: профиль/названия/описания (DuckDB _meta)
 │   │   │
