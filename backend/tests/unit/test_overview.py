@@ -394,6 +394,8 @@ def test_facts_without_dates(db) -> None:
         "что у меня в данных?",
         "Что тут есть?",
         "О чём эти данные?",
+        "ЧТО ЭТО",
+        "Что это такое?",
     ],
 )
 def test_overview_questions(question: str) -> None:
@@ -408,6 +410,7 @@ def test_overview_questions(question: str) -> None:
         "Покажи в другом виде",
         "Опиши выручку по регионам",
         "Сколько продаж за март?",
+        "Что это за всплеск в марте?",
         "пожалуйста",
         "",
     ],
