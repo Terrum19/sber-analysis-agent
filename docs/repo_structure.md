@@ -120,9 +120,9 @@ backend/
 │   │   │   │   ├── revenue_analysis.py  — выручка: сумма, среднее, медиана, динамика, сегменты
 │   │   │   │   ├── product_performance.py / avg_order_value.py — метрики товаров, средний чек
 │   │   │   │   ├── conversion_funnel.py — полная воронка по пользователям
-│   │   │   │   └── trend_analysis.py / seasonal_decompose.py — тренд, сезонные индексы, разложение
+│   │   │   │   └── trend_analysis.py / seasonal_decompose.py — тренд (рост год к году, p-value), разложение; ряд по периодам строят сами (interval, function, by)
 │   │   │   └── timeseries/        — анализ временных рядов
-│   │   │       ├── seasonality.py — сезонные пики (каждый июль / 12 месяцев)
+│   │   │       ├── seasonality.py — сезонные пики: итог за каждый месяц/день/час, среднее по годам
 │   │   │       ├── period_compare.py  — один месяц/квартал/день недели по годам, отклонения от средних
 │   │   │       ├── lag_correlation.py — corr(x, y со сдвигом lag) для lag = 0..max_lag
 │   │   │       └── forecast.py    — экстраполяция линейным трендом на N периодов

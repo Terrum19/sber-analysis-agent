@@ -158,7 +158,7 @@ def test_trend_is_fitted_against_time(series_db: DuckDBManager) -> None:
         "(DATE '2024-01-02', 1.0), (DATE '2024-01-11', 10.0)) AS rows(day, value)"
     )
     rows = run(series_db, "trend_analysis", ["day", "value"], "gaps")
-    assert float(rows[0]["slope"]) == pytest.approx(1.0)
+    assert float(rows[0]["slope_per_period"]) == pytest.approx(1.0)
     assert float(rows[0]["r_squared"]) == pytest.approx(1.0)
 
 

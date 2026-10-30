@@ -20,6 +20,17 @@ def test_group_by_without_keys_gives_total(db) -> None:
     assert db.to_records(result) == [{"sum_amount": sum(range(120)) * 10}]
 
 
+def test_insight_facts_name_the_season_and_show_shared_values(db) -> None:
+    db.execute(
+        "CREATE TABLE season AS SELECT * FROM (VALUES (1, 10.0, 0.0002), (12, 30.0, 0.0002))"
+        " AS rows(month, level, p_value)"
+    )
+    facts = insight_facts(db, "season", shown=50)
+    assert "level: сумма 40.0, среднее 20.0, мин 10.0 (month = 1), макс 30.0 (month = 12)" in facts
+    assert "- p_value: 0.0002 (одно значение во всех строках)" in facts
+    assert "- month:" not in facts
+
+
 def test_insight_facts_count_whole_table(db) -> None:
     facts = insight_facts(db, "t", shown=50)
     assert "строк в результате: 120 (показано модели: 50)" in facts
@@ -80,6 +91,9 @@ def test_select_tools_keeps_core_and_matches_question() -> None:
         ("Есть ли аномальные значения возраста респондентов?", "detect_anomalies"),
         ("Есть ли выбросы в ценах?", "detect_anomalies"),
         ("Есть ли запаздывание между рекламой и выручкой?", "lag_correlation"),
+        ("Растёт ли выручка?", "trend_analysis"),
+        ("растет ли выручка в зависимости от месяца", "trend_analysis"),
+        ("Есть ли сезонность в продажах?", "seasonality"),
     ],
 )
 def test_select_tools_offers_scenario_three_tools(question: str, tool: str) -> None:

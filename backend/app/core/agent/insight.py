@@ -16,6 +16,7 @@ from app.core.llm.prompts.quality_rules import (
     INSIGHT_RULES,
     MANY_ROWS,
     NUMBER_FIX,
+    RESULT_SHAPES,
     SINGLE_ROW,
 )
 from app.core.tools.base import identifier
@@ -47,6 +48,7 @@ class InsightGenerator:
         supporting: list[tuple[str, str]] | None = None,
         steps: list[ResearchStep] | None = None,
         memories: list[str] | None = None,
+        result_tool: str = "",
     ) -> Insight:
         """Сформировать Insight по финальной таблице.
 
@@ -55,6 +57,8 @@ class InsightGenerator:
         выполненные шаги плана: без них «41» в одной строке не знает, что
         это декабрь и сумма больше 150. memories — воспоминания сессии
         («выручка — без НДС»): все включённые, применимость решает модель.
+        result_tool — тул шага с результатом: у тренда и сезонности своё
+        правило headline (RESULT_SHAPES).
         """
         from app.core.data.duckdb_manager import DuckDBManager
 
@@ -85,6 +89,7 @@ class InsightGenerator:
         # Число строк всей таблицы, а не показанных модели (их не больше SHOWN_ROWS).
         rows = db.query(f"SELECT COUNT(*) AS n FROM {identifier(result_table)}")[0]["n"]
         shape = SINGLE_ROW if rows <= 1 else MANY_ROWS.format(rows=rows)
+        shape = RESULT_SHAPES.get(result_tool, shape)
         plan = describe_steps(steps or [])
         prompt += INSIGHT_RULES.format(plan=plan, facts=facts, shape=shape)
         # Числа условий из шагов плана («> 150», «2024») и воспоминаний — тоже опора.

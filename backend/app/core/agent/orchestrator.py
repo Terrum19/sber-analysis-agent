@@ -161,6 +161,7 @@ class Execution:
     steps: list[ResearchStep] = field(default_factory=list)
     result_purpose: str = ""
     result_kind: str = "transform"
+    result_tool: str = ""
     # Что записано в воспоминания по просьбе этого хода.
     remembered: list[str] = field(default_factory=list)
 
@@ -471,6 +472,7 @@ class AgentOrchestrator:
                 supporting=execution.supporting,
                 steps=execution.steps,
                 memories=memory.context_memories(),
+                result_tool=execution.result_tool,
             )
             if confirmation:
                 insight.details.append(confirmation)
@@ -900,6 +902,7 @@ class AgentOrchestrator:
             steps=executed,
             result_purpose=shown.purpose if shown else "",
             result_kind=tool_kind(shown) if shown else "transform",
+            result_tool=shown.tool if shown else "",
         )
         try:
             values = self._distribution_values(question, shown, inputs or {})
