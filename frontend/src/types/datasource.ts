@@ -96,4 +96,22 @@ export interface ImportedSession {
   title: string;
   /** Старый id дашборда -> новый. */
   dashboards: Record<string, string>;
+  /** Таблица получателя, к которой привязана сессия; null — не нашлась. */
+  table?: string | null;
+  /** Нашлась ли таблица автора; null — в ссылке её нет. */
+  check?: TableCheck | null;
+}
+
+/**
+ * Таблица автора у получателя: found — привязана (bound); different — CSV с тем же
+ * именем, но другими данными; missing — CSV нет; no_table — база подключена, таблицы
+ * нет; not_connected — базы автора нет.
+ */
+export interface TableCheck {
+  status: "found" | "different" | "missing" | "no_table" | "not_connected";
+  kind: string;
+  table: string;
+  bound?: string | null;
+  dsn?: string | null;
+  file?: string | null;
 }

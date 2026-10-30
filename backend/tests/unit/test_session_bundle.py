@@ -6,11 +6,13 @@ import json
 import pytest
 from fastapi.testclient import TestClient
 
+from app.api.deps import get_db
 from app.config import settings
 from app.core.agent.planner import describe_history, describe_turns
 from app.core.agent.step_executor import StepExecutor
 from app.core.dashboards.models import Dashboard, DashboardTile
 from app.core.dashboards.store import DashboardStore
+from app.core.data import table_origin
 from app.core.data.connectors.clickhouse import parse_dsn as parse_clickhouse
 from app.core.data.connectors.pg_dsn import parse_dsn as parse_postgres
 from app.core.data.duckdb_manager import DuckDBManager
@@ -105,6 +107,9 @@ def test_bundle_lists_csv_files_and_has_no_result_tables(tmp_path, monkeypatch) 
         "db_schema": None,
         "tables": ["sales"],
         "files": ["sales.csv"],
+        "table": None,
+        "rows": None,
+        "hash": None,
     }
     turn = bundle["turns"][0]
     assert "result_table" not in turn
@@ -229,9 +234,17 @@ def test_imported_turns_are_marked_in_planner_prompt_and_history() -> None:
     db.close()
 
 
-def test_sessions_api_bundle_and_import() -> None:
+@pytest.fixture
+def client():
+    db = DuckDBManager(":memory:")
+    app.dependency_overrides[get_db] = lambda: db
+    yield TestClient(app)
+    app.dependency_overrides.pop(get_db, None)
+    db.close()
+
+
+def test_sessions_api_bundle_and_import(client) -> None:
     author_session()
-    client = TestClient(app)
 
     bundle = client.get("/api/sessions/author/bundle").json()
     response = client.post("/api/sessions/import", json=bundle)
@@ -245,11 +258,152 @@ def test_sessions_api_bundle_and_import() -> None:
     assert client.get("/api/sessions/missing/bundle").status_code == 404
 
 
-def test_sessions_api_rejects_unknown_format_and_garbage() -> None:
-    client = TestClient(app)
+def test_sessions_api_rejects_unknown_format_and_garbage(client) -> None:
 
     newer = client.post("/api/sessions/import", json={"manifest": {"format": 9}})
     garbage = client.post("/api/sessions/import", content=b"not json")
 
     assert newer.status_code == 400 and "обновите приложение" in newer.json()["detail"]
     assert garbage.status_code == 400
+
+
+SALES = "SELECT * FROM (VALUES ('msk', 10.5), ('spb', 7.0), ('kzn', NULL)) AS t(region, revenue)"
+
+
+def csv_table(db: DuckDBManager, name: str, select: str = SALES, file: str = "sales.csv") -> None:
+    db.execute(f"CREATE TABLE {name} AS {select}")
+    db.execute(f"COMMENT ON TABLE {name} IS 'csv:csv_abc123/{file}'")
+
+
+def db_table(db: DuckDBManager, identity: str, name: str, suffix: str = "abcdef") -> None:
+    """Представление поверх подключения <identity>_<суффикс>, как у PostgreSQL."""
+    alias = f"{identity}_{suffix}"
+    db.execute(f"ATTACH IF NOT EXISTS ':memory:' AS {alias}")
+    db.execute(f"CREATE TABLE {alias}.{name} AS SELECT 1 AS id")
+    db.execute(f"CREATE TEMP VIEW {name} AS SELECT * FROM {alias}.main.{name}")
+
+
+@pytest.fixture
+def machines():
+    """БД автора и получателя; SQLite сессий и источников у них общий."""
+    author, recipient = DuckDBManager(":memory:"), DuckDBManager(":memory:")
+    yield author, recipient
+    author.close()
+    recipient.close()
+
+
+def shared(author: DuckDBManager, recipient: DuckDBManager) -> session_bundle.Imported:
+    session = SessionMemory("csv-author")
+    session.set_meta("Продажи", None)
+    session.set_table("sales")
+    session.start_turn("Выручка?")
+    session.finish_turn("ok", "10 млн")
+    return session_bundle.load(session_bundle.build("csv-author", author), recipient)
+
+
+def test_content_hash_ignores_row_and_column_order(machines) -> None:
+    author, recipient = machines
+    csv_table(author, "sales")
+    csv_table(
+        recipient, "sales", "SELECT revenue, region FROM (" + SALES + ") ORDER BY region DESC"
+    )
+
+    assert table_origin.content_hash(author, "sales") == table_origin.content_hash(
+        recipient, "sales"
+    )
+
+
+def test_csv_bundle_carries_table_rows_and_hash(machines) -> None:
+    author, _ = machines
+    csv_table(author, "sales")
+    SessionMemory("s").set_table("sales")
+
+    source = session_bundle.build("s", author)["source"]
+
+    assert source["kind"] == "csv"
+    assert (source["table"], source["rows"], source["files"]) == ("sales", 3, ["sales.csv"])
+    assert source["hash"] == table_origin.content_hash(author, "sales")
+
+
+def test_csv_import_binds_same_data_under_other_name(machines) -> None:
+    author, recipient = machines
+    csv_table(author, "sales")
+    csv_table(recipient, "sales", "SELECT 'other' AS region, 1.0 AS revenue")
+    csv_table(recipient, "sales_1", file="sales (1).csv")
+
+    result = shared(author, recipient)
+
+    assert result.table == "sales_1"
+    assert result.check.status == "found" and result.check.bound == "sales_1"
+    assert SessionMemory(result.session_id).table == "sales_1"
+
+
+def test_csv_import_reports_other_data_and_missing_table(machines) -> None:
+    author, recipient = machines
+    csv_table(author, "sales")
+
+    missing = shared(author, recipient)
+    csv_table(recipient, "sales", "SELECT 'other' AS region, 1.0 AS revenue")
+    different = shared(author, recipient)
+
+    assert (missing.check.status, missing.check.file, missing.table) == (
+        "missing",
+        "sales.csv",
+        None,
+    )
+    assert (different.check.status, different.table) == ("different", None)
+    assert SessionMemory(different.session_id).table is None
+
+
+def test_db_import_binds_table_of_same_connected_database(machines) -> None:
+    author, recipient = machines
+    DatasourceStore().save(
+        DatasourceRecord(
+            identity="pg_0123456789",
+            kind="postgres",
+            dsn="postgresql://analyst:***@db.local/shop",
+            db_schema="public",
+        )
+    )
+    DatasourceStore().save(
+        DatasourceRecord(
+            identity="pg_9876543210",
+            kind="postgres",
+            dsn="postgresql://friend:***@DB.local:5432/shop",
+            db_schema="public",
+        )
+    )
+    db_table(author, "pg_0123456789", "sales")
+
+    not_connected = shared(author, recipient)
+    db_table(recipient, "pg_9876543210", "orders", "fedcba")
+    no_table = shared(author, recipient)
+    db_table(recipient, "pg_9876543210", "sales", "fedcba")
+    found = shared(author, recipient)
+
+    assert not_connected.check.status == "not_connected"
+    assert not_connected.check.dsn == "postgresql://analyst:***@db.local/shop"
+    assert no_table.check.status == "no_table"
+    assert (found.check.status, found.table) == ("found", "sales")
+
+
+def test_db_of_other_server_is_not_the_same_database(machines) -> None:
+    author, recipient = machines
+    DatasourceStore().save(
+        DatasourceRecord(identity="pg_0123456789", kind="postgres", dsn=PG_DSN, db_schema="public")
+    )
+    DatasourceStore().save(
+        DatasourceRecord(
+            identity="pg_9876543210",
+            kind="postgres",
+            dsn="postgresql://analyst@other.host/sales",
+            db_schema="public",
+        )
+    )
+    db_table(author, "pg_0123456789", "sales")
+    db_table(recipient, "pg_9876543210", "sales", "fedcba")
+
+    result = shared(author, recipient)
+
+    assert result.check.status == "not_connected" and result.table is None
+    assert PASSWORD not in result.check.dsn

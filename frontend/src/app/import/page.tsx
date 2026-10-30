@@ -5,7 +5,9 @@
  * Данные берутся из фрагмента ссылки (на сервер он не уходит) или из
  * вставленного текста. Бандл уходит на бэкенд — там создаётся новая сессия;
  * лента кладётся в кеш браузера, сессия появляется в папке «Импортированные».
- * При импорте ничего не выполняется.
+ * Последним сообщением ленты — нашлась ли у получателя таблица автора (CSV —
+ * по хэшу, БД — в той же базе); нашлась — сессия к ней привязана.
+ * При импорте ничего из ссылки не выполняется.
  */
 import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
@@ -14,9 +16,9 @@ import WorkspaceShell from "@/components/layout/WorkspaceShell";
 import { expand, ShareLinkError, unpack, type SharedSession } from "@/lib/shareLink";
 import { chartTile } from "@/store/chatRunStore";
 import { IMPORTED_FOLDER, useSessionStore, type ChatMessage } from "@/store/sessionStore";
-import type { ImportedSession } from "@/types/datasource";
+import type { ImportedSession, TableCheck } from "@/types/datasource";
 import type { DashboardTile } from "@/types/dashboard";
-import { useT } from "@/i18n/useT";
+import { useT, type Translate } from "@/i18n/useT";
 
 /** Лента получателя: карточки дашбордов — на новые id, плитки превью — из бандла. */
 function importedMessages(shared: SharedSession, result: ImportedSession): ChatMessage[] {
@@ -29,6 +31,23 @@ function importedMessages(shared: SharedSession, result: ImportedSession): ChatM
     const tiles = (source?.tiles ?? []).map((tile, i) => ({ ...tile, id: `${id}-${i}` }) as unknown as DashboardTile);
     return { ...rest, dashboard: { dashboard_id: id, title: dashboard.title, tiles } };
   });
+}
+
+/** Сообщение ленты: нашлась ли у получателя таблица автора. */
+function tableNotice(check: TableCheck, t: Translate): string {
+  const vars = { table: check.table, bound: check.bound ?? "", dsn: check.dsn ?? "", file: check.file ?? check.table };
+  switch (check.status) {
+    case "found":
+      return check.kind === "csv" ? t("import.foundCsv", vars) : t("import.foundDb", vars);
+    case "different":
+      return t("import.differentCsv", vars);
+    case "missing":
+      return t("import.missingCsv", vars);
+    case "no_table":
+      return t("import.noTable", vars);
+    case "not_connected":
+      return t("import.notConnected", vars);
+  }
 }
 
 export default function ImportPage() {
@@ -48,7 +67,9 @@ export default function ImportPage() {
       const result = await importSessionApi(shared.bundle);
       const messages = importedMessages(shared, result);
       const tiles = messages.filter((m) => m.chart).map((m) => chartTile(m.chart, t("chat.chartDefault")));
-      addImportedSession(result.session_id, result.title, shared.table || IMPORTED_FOLDER, { messages, tiles });
+      if (result.check) messages.push({ id: "msg-imported-table", role: "agent", content: tableNotice(result.check, t) });
+      const table = result.table || shared.table || IMPORTED_FOLDER;
+      addImportedSession(result.session_id, result.title, table, { messages, tiles });
       // Перезагрузка страницы не должна импортировать сессию второй раз
       window.history.replaceState(null, "", "/import");
       router.replace(`/session/${result.session_id}`);

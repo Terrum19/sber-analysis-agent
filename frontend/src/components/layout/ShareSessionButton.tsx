@@ -111,6 +111,7 @@ export default function ShareSessionButton({ sessionId }: { sessionId: string })
                   );
                 })}
                 {tooLong && <p className="text-[12px] text-warn">{t("share.tooLong")}</p>}
+                <p className="text-[12px] text-graphite-400">{t("share.telegram")}</p>
                 <p className="text-[12px] text-graphite-400">{t("share.dataWarning")}</p>
                 <p className="text-[12px] text-graphite-500">
                   {t("share.howToOpen", { url: `${window.location.origin}/import` })}

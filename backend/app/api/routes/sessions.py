@@ -92,12 +92,15 @@ def create_session(
 
 
 @router.post("/import", response_model=session_bundle.Imported)
-async def import_session(request: Request) -> session_bundle.Imported:
+async def import_session(
+    request: Request, db: Annotated[DuckDBManager, Depends(get_db)]
+) -> session_bundle.Imported:
     """Создать новую сессию из бандла; существующие сессии не меняются.
 
     Неизвестная версия формата и повреждённый бандл — 400 с текстом для
     пользователя, бандл больше BUNDLE_MAX_BYTES — 413. Ничего из бандла не
-    выполняется.
+    выполняется; таблица автора ищется в каталоге получателя, нашлась — сессия
+    привязывается к ней.
     """
     body = await request.body()
     if len(body) > BUNDLE_MAX_BYTES:
@@ -107,7 +110,7 @@ async def import_session(request: Request) -> session_bundle.Imported:
     except ValueError:
         raise HTTPException(status_code=400, detail="Это не сессия: данные не читаются.") from None
     try:
-        return await asyncio.to_thread(session_bundle.load, raw)
+        return await asyncio.to_thread(session_bundle.load, raw, db)
     except session_bundle.BundleFormatError as error:
         raise HTTPException(status_code=400, detail=str(error)) from None
 
@@ -138,10 +141,13 @@ def get_session(session_id: str) -> SessionOut:
 
 
 @router.get("/{session_id}/bundle")
-def get_bundle(session_id: str) -> dict:
-    """Бандл сессии без ленты: ленту добавляет фронт (#249). Пароля в нём нет."""
+def get_bundle(session_id: str, db: Annotated[DuckDBManager, Depends(get_db)]) -> dict:
+    """Бандл сессии без ленты: ленту добавляет фронт (#249). Пароля в нём нет.
+
+    У CSV-таблицы считается хэш содержимого: один проход по таблице.
+    """
     try:
-        return session_bundle.build(session_id)
+        return session_bundle.build(session_id, db)
     except KeyError:
         raise HTTPException(status_code=404, detail="Сессия не найдена.") from None
 
