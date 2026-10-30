@@ -38,6 +38,7 @@ from app.core.agent.orchestrator import (
     _arrange,
     _done,
     _elapsed_ms,
+    _ignore,
     _progress_event,
     _require_steps,
 )
@@ -316,14 +317,19 @@ class DashboardTurn:
         memory: SessionMemory,
         tile_id: int,
         tile: OutlineTile,
-        kinds: dict[str, str],
-        emit: Emit,
+        kinds: dict[str, str] | Emit | None = None,
+        emit: Emit = _ignore,
     ) -> Execution | None:
         """Шаги одной плитки; вернуть итог выполнения или None, если плитка упала.
 
         Простая плитка — шаги из её полей без LLM; не собрались или упали —
         плитку строит планировщик по её вопросу.
         """
+        if callable(kinds) and emit is _ignore:
+            emit = kinds
+            kinds = {}
+        elif kinds is None:
+            kinds = {}
 
         def tile_emit(event: dict) -> None:
             if event["type"] == "progress":
@@ -351,9 +357,19 @@ class DashboardTurn:
                 context = memory.build_context(tile.question)
                 context["next_step_id"] = start
                 context["tile"] = True
+                context["tile_id"] = tile_id
+                context["tile_title"] = tile.title
+                context["tile_intent"] = tile.intent
                 # Плитка «по регионам» на таблице заказов — через join_related (#165).
                 context["related"] = self.agent._related(memory.table, tile.question)
-                plan = await self.agent._plan(tile.question, context)
+                plan = await self.agent._plan_or_create(
+                    tile.question,
+                    context,
+                    memory.table,
+                    tile_emit,
+                    allow_empty_remember=False,
+                    tile_id=tile_id,
+                )
                 _require_steps(plan)
                 execution = await self.agent._execute_plan(
                     memory, plan, memory.table, tile.question, emit=tile_emit

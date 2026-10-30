@@ -141,7 +141,15 @@ class ProgressPayload(BaseModel):
     """
 
     stage: Literal[
-        "planning", "replanning", "step", "insight", "chart", "dashboard", "outline", "tile"
+        "planning",
+        "replanning",
+        "step",
+        "insight",
+        "chart",
+        "dashboard",
+        "outline",
+        "tile",
+        "toolgen",
     ]
     status: Literal["started", "substage", "finished", "failed", "fixing"]
     step_id: int | None = None

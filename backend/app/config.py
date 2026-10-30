@@ -121,6 +121,15 @@ class Settings(BaseSettings):
     agent_dashboard_timeout_s: int = 120
     agent_max_llm_calls: int = 6
     agent_max_steps: int = 8
+    # Самосоздание инструментов (toolgen): спека + SQL или Python в WASM.
+    toolgen_enabled: bool = True
+    toolgen_attempts: int = 2
+    toolgen_sample_rows: int = 500
+    toolgen_max_tools: int = 25
+    toolgen_max_per_turn: int = 2
+    toolgen_store: bool = True
+    toolgen_max_sql_chars: int = 4000
+    toolgen_max_code_chars: int = 6000
     # Сколько последних ходов сессии (любого статуса) видит планировщик (#197).
     context_turns: int = 5
     # Сколько последних включённых воспоминаний сессии идёт в промпты (#197).

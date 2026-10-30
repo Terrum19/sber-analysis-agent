@@ -7,6 +7,14 @@
 Запасным путём он не является: шаг без `tool` или с неизвестным тулом —
 ошибка плана, кодоген при этом не запускается.
 
+С toolgen (`TOOLGEN_ENABLED=true`) пустой план или неизвестное имя тула
+запускает создание переиспользуемого инструмента. Его Python-код тоже
+исполняется только здесь: `GeneratedPythonTool` пишет `input.csv`,
+передаёт код в `WASMSandbox` и сохраняет `result.csv` как `temp_result_vN`.
+В основной процесс бэкенда код LLM не импортируется. SQL-инструменты
+(`GeneratedSqlTool`) исполняются в DuckDB после AST-проверки; см.
+`docs/architecture.md` и `core/tools/toolgen/`.
+
 Тул виден планировщику и исполним, только если `CODEGEN_ENABLED=true` и
 рантайм установлен (`WASMSandbox.available()`, проверяется один раз на
 процесс). Иначе он скрыт, и план с ним отклоняется как «неизвестный
@@ -103,6 +111,12 @@ python3 fetch_packages.py
 | `CODEGEN_ENABLED` | `true` | показывать ли тул `run_python` планировщику |
 | `CODEGEN_ATTEMPTS` | 2 | попыток сгенерировать рабочий код |
 | `CODEGEN_MAX_ROWS` | 200000 | предел строк входной таблицы для `run_python` |
+| `TOOLGEN_ENABLED` | `true` | создавать ли инструменты автоматически |
+| `TOOLGEN_SAMPLE_ROWS` | 500 | строк выборки для smoke/reference/checks |
+| `TOOLGEN_ATTEMPTS` | 2 | попыток проектирования/исправления спеки |
+| `TOOLGEN_MAX_TOOLS` | 25 | максимум generated-инструментов |
+| `TOOLGEN_MAX_PER_TURN` | 2 | максимум созданий за один ход |
+| `TOOLGEN_STORE` | `true` | сохранять проверенные спеки в `STORAGE_DIR/tools/generated` |
 
 - Предел RSS — `WASM_MEM_MB`, но не больше свободной RAM системы
   (`MemAvailable`) на момент запуска. Бэкенд опрашивает RSS процесса

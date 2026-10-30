@@ -127,6 +127,44 @@ def test_run_python_is_visible_only_with_sandbox_and_flag(monkeypatch) -> None:
                 tool_registry.get("run_python")
 
 
+def test_generated_tool_registration_is_reversible() -> None:
+    from app.core.tools.generated import build_tool
+    from app.models.generated_tool import GeneratedToolSpec
+
+    before = set(tool_registry.names())
+    spec = GeneratedToolSpec(
+        name="unit_generated_tool",
+        description="Generated in a unit test",
+        parameters=[{"name": "column", "type": "column"}],
+        sql="SELECT {column}, COUNT(*) AS cnt FROM {input} GROUP BY {column}",
+        checks=["SELECT COUNT(*) > 0 AS ok FROM __tool_result"],
+        sample_arguments=[{"name": "column", "value": "region"}],
+    )
+    tool_registry.register_generated(build_tool(spec), spec)
+    assert "unit_generated_tool" in tool_registry.names()
+    assert "unit_generated_tool" in tool_registry.describe()
+    assert tool_registry.generated_specs()["unit_generated_tool"] == spec
+    assert tool_registry.unregister_generated(["unit_generated_tool"]) == ["unit_generated_tool"]
+    assert "unit_generated_tool" not in tool_registry.names()
+    assert set(tool_registry.names()) == before
+
+
+def test_generated_tool_cannot_shadow_builtin() -> None:
+    from app.core.tools.generated import build_tool
+    from app.models.generated_tool import GeneratedToolSpec
+
+    spec = GeneratedToolSpec(
+        name="aggregate",
+        description="Collision",
+        parameters=[{"name": "column", "type": "column"}],
+        sql="SELECT {column}, COUNT(*) AS cnt FROM {input} GROUP BY {column}",
+        checks=["SELECT COUNT(*) > 0 AS ok FROM __tool_result"],
+        sample_arguments=[{"name": "column", "value": "region"}],
+    )
+    with pytest.raises(ValueError, match="already registered"):
+        tool_registry.register_generated(build_tool(spec), spec)
+
+
 def test_run_python_requires_a_detailed_purpose(codegen_available) -> None:
     tool = tool_registry.get("run_python")
     with pytest.raises(ValueError, match="at least 20"):

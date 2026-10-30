@@ -4,6 +4,9 @@
 регистрируется здесь, оркестратор о нём не знает.
 """
 
+import threading
+from collections.abc import Iterable
+
 from app.config import settings
 from app.core.llm.prompts.quality_rules import TOOL_HINTS
 from app.core.tools.base import BaseTool
@@ -58,6 +61,7 @@ from app.core.tools.timeseries.forecast import ForecastTool
 from app.core.tools.timeseries.lag_correlation import LagCorrelationTool
 from app.core.tools.timeseries.period_compare import PeriodCompareTool
 from app.core.tools.timeseries.seasonality import SeasonalityTool
+from app.models.generated_tool import GeneratedToolSpec
 
 
 class ToolRegistry:
@@ -66,6 +70,9 @@ class ToolRegistry:
     def __init__(self) -> None:
         self._tools: dict[str, BaseTool] = {}
         self._hidden: set[str] = set()
+        # Спеки инструментов, созданных toolgen: только они сохраняются на диск.
+        self._generated: dict[str, GeneratedToolSpec] = {}
+        self._lock = threading.RLock()
 
     def register(self, tool: BaseTool, *, visible: bool = True) -> None:
         """Зарегистрировать тул под его именем.
@@ -73,11 +80,12 @@ class ToolRegistry:
         visible=False — тул исполним, но не показывается планировщику
         (дубли и совместимость со старыми планами).
         """
-        self._tools[tool.name] = tool
-        if visible:
-            self._hidden.discard(tool.name)
-        else:
-            self._hidden.add(tool.name)
+        with self._lock:
+            self._tools[tool.name] = tool
+            if visible:
+                self._hidden.discard(tool.name)
+            else:
+                self._hidden.add(tool.name)
 
     def get(self, name: str) -> BaseTool:
         """Получить тул по имени (KeyError -> recovery/rephrase).
@@ -93,6 +101,59 @@ class ToolRegistry:
         """Register an additional planner-facing name for an existing tool."""
         self._tools[alias] = self.get(tool_name)
         self._hidden.add(alias)
+
+    def register_generated(self, tool: BaseTool, spec: GeneratedToolSpec) -> None:
+        """Зарегистрировать проверенный toolgen-инструмент.
+
+        Только этот путь попадает в ``_generated`` (и сохраняется на диск).
+        Коллизия имени или превышение лимита — ValueError.
+        """
+        if not spec.feasible:
+            raise ValueError(f"tool {spec.name!r} is not feasible")
+        if tool.name != spec.name:
+            raise ValueError(f"tool name {tool.name!r} does not match spec name {spec.name!r}")
+        with self._lock:
+            if spec.name in self._tools:
+                raise ValueError(f"tool {spec.name!r} is already registered")
+            if len(self._generated) >= settings.toolgen_max_tools:
+                raise ValueError(f"generated tools limit reached ({settings.toolgen_max_tools})")
+            self._tools[spec.name] = tool
+            self._generated[spec.name] = spec
+            self._hidden.discard(spec.name)
+
+    def unregister_generated(self, names: Iterable[str] | None = None) -> list[str]:
+        """Убрать generated-инструменты (все или указанные); вернуть имена."""
+        with self._lock:
+            targets = list(self._generated) if names is None else list(names)
+            removed = []
+            for name in targets:
+                if name in self._generated:
+                    self._generated.pop(name, None)
+                    self._tools.pop(name, None)
+                    self._hidden.discard(name)
+                    removed.append(name)
+            return removed
+
+    def generated_tools(self) -> list[BaseTool]:
+        """Инструменты, созданные toolgen (в порядке регистрации)."""
+        with self._lock:
+            return [self._tools[name] for name in self._generated if name in self._tools]
+
+    def generated_specs(self) -> dict[str, GeneratedToolSpec]:
+        """Спеки generated-инструментов (копия)."""
+        with self._lock:
+            return dict(self._generated)
+
+    def names(self) -> set[str]:
+        """Все имена реестра, включая скрытые и алиасы (для проверки коллизий)."""
+        with self._lock:
+            return set(self._tools)
+
+    def load_generated(self, store=None) -> list[str]:
+        """Загрузить проверенные спеки при старте (см. toolgen.factory)."""
+        from app.core.tools.toolgen.factory import load_generated_tools
+
+        return load_generated_tools(self, store)
 
     def planner_tools(self) -> list[BaseTool]:
         """Тулы, которые видит планировщик."""

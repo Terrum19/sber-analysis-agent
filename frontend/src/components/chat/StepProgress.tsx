@@ -445,7 +445,9 @@ export default function StepProgress({ progress }: { progress: TurnProgress }) {
 
   // Название текущего активного этапа
   const activeLabel =
-    progress.planning
+    progress.toolgen || progress.stage === "toolgen"
+      ? t("progress.toolgen")
+      : progress.planning
       ? t("progress.planning")
       : progress.stage === "replanning"
       ? t("progress.replanning")
@@ -479,6 +481,7 @@ export default function StepProgress({ progress }: { progress: TurnProgress }) {
       )}
 
       {progress.outlining && <div className="animate-pulse">{t("progress.outline")}</div>}
+      {progress.toolgen && <div className="animate-pulse">{t("progress.toolgen")}</div>}
 
       {tiles && tiles.length > 0 ? (
         <ul className="space-y-1.5">

@@ -139,7 +139,8 @@ export interface ProgressPayload {
     | "chart"
     | "dashboard"
     | "outline"
-    | "tile";
+    | "tile"
+    | "toolgen";
   status: "started" | "substage" | "finished" | "failed" | "fixing";
   step_id?: number;
   tool?: string;
@@ -241,6 +242,8 @@ export interface TurnProgress {
   outlining?: boolean;
   /** Плитки из dashboard_outline; есть только в режиме дашборда. */
   tiles?: TileState[];
+  /** Агент создаёт и проверяет новый инструмент (toolgen). */
+  toolgen?: boolean;
 }
 
 /** Новая стадия в хронологии: status меняется при закрытии. */
@@ -316,7 +319,11 @@ export function applyProgress(progress: TurnProgress, event: ProgressPayload): T
     if (index >= 0) tiles[index] = tile;
     else tiles.push(tile);
     next.tiles = tiles;
+  } else if (event.stage === "toolgen") {
+    next.toolgen = event.status === "started";
+    next.planning = false;
   } else if (event.stage === "planning") {
+    next.toolgen = false;
     if (event.status === "started") {
       next.planning = true;
       next.stage = undefined;
@@ -329,6 +336,7 @@ export function applyProgress(progress: TurnProgress, event: ProgressPayload): T
       next.timeline = closeOpenStage("planning");
     }
   } else if (event.stage === "replanning") {
+    next.toolgen = false;
     if (event.status === "started") {
       next.planning = false;
       next.stage = "replanning";
@@ -370,7 +378,9 @@ export function applyProgress(progress: TurnProgress, event: ProgressPayload): T
         ? next.timeline.map((item, itemIndex) => (itemIndex === tIndex ? entry : item))
         : [...next.timeline, entry];
     next.planning = false;
+    next.toolgen = false;
   } else if (event.stage === "insight" || event.stage === "chart" || event.stage === "dashboard") {
+    next.toolgen = false;
     if (event.status === "started") {
       next.planning = false;
       next.stage = event.stage;
@@ -382,6 +392,10 @@ export function applyProgress(progress: TurnProgress, event: ProgressPayload): T
       next.timeline = closeOpenStage(event.stage);
       next.stage = undefined;
     }
+  } else {
+    next.planning = false;
+    next.toolgen = false;
+    next.stage = event.stage;
   }
   return next;
 }

@@ -8,7 +8,6 @@
 
 ## Быстрый старт
 
-<<<<<<< HEAD
 **Бюджет хода:** каждый ответ укладывается в 15 минут (`AGENT_TURN_TIMEOUT_S=870`):
 общий дедлайн, лимиты шагов/токенов/вызовов LLM, SQL-таймаут и `interrupt()`,
 быстрые пути для простых вопросов. Целевой GPU-профиль — Qwen3-30B-A3B в 4-bit
@@ -81,13 +80,6 @@ make down
 Нужны Docker Engine 25+ и Docker Compose 2.24+ (`start_interval` в healthcheck,
 `depends_on.required`, необязательный `env_file`): `docker compose version`.
 
-Без Docker:
-
-```bash
-# 1) LLM (замкнутый контур): Ollama или vLLM; контекст backend задаст сам (ниже)
-ollama serve
-# или GPU: MODEL=Qwen/Qwen2.5-Coder-14B-Instruct bash infra/vllm/serve.sh
-=======
 Нужны Docker с плагином `docker compose` и git.
 
 ```bash

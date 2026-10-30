@@ -35,6 +35,7 @@ from app.core.llm.prompts.step_planner import (
     DASHBOARD_TEMPLATE,
     EMPTY_PLAN,
     MEMORIES,
+    NEW_TOOLS,
     NO_TEMPLATE_TILES,
     NO_TILES,
     OLDER_TURNS,
@@ -194,6 +195,13 @@ class StepPlanner:
             )
             if settings.agent_quality_fixes:
                 text += PLANNER_RULES
+            created = context.get("created_tools") or []
+            if created:
+                described_tools = [
+                    f"- {item.tool.describe()}" if getattr(item, "tool", None) else f"- {item}"
+                    for item in created
+                ]
+                text += NEW_TOOLS.format(tools="\n".join(described_tools))
             if semantic_block:
                 text += "\n\nСемантический слой:\n" + semantic_block
             if is_dashboard_question(question):

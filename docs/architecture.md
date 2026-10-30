@@ -13,6 +13,12 @@
 [1] Planner (LLM + Instructor) --> ResearchPlan {steps[], final_viz, dashboard_requested,
   |        dashboard_title, template_id, dashboard_tiles[]} (план дашборда: docs/visualization.md)
   |        вход: вопрос, топ-5 релевантных колонок (semantic_select), контекст сессии
+  |        пустой план / неизвестный инструмент
+  v
+[1b] Toolgen (опц.): LLM проектирует декларативную спеку (SQL-шаблон или Python
+  |        для WASM-песочницы) -> статические проверки -> smoke/reference/checks
+  |        на выборке входной таблицы -> регистрация в ToolRegistry -> перепланирование.
+  |        Код LLM в процесс бэкенда не импортируется (docs/architecture.md, sandbox.md).
   v
 [2] StepExecutor: последовательное применение шагов
   |        тул = предзаписанный SQL/стат-тест (подстановка колонок)
@@ -44,6 +50,7 @@
 |---|---|
 | **DuckDB как единый движок** | SQL в едином диалекте к CSV/PostgreSQL/ClickHouse без предобработки |
 | **ResearchStep + реестр тулов** | расширяемость: новый тул = файл, оркестратор не меняется |
+| **Toolgen: спека, а не Python-модуль** | LLM создаёт декларативную спеку; SQL проверяется по AST DuckDB, Python исполняется только в WASM — импорт кода LLM в процесс бэкенда был бы RCE |
 | **Семантический отбор топ-5 колонок** | схема неконтролируемого размера не влезает в контекст LLM |
 | **WASM-песочница вместо Docker** | инкапсуляция кодогенерации без «жирного» контейнера |
 | **chart_morph без LLM** | «покажи в другом виде» — быстро и дёшево, не нагружая локальную модель |
@@ -98,6 +105,34 @@ P1-возможности включаются флагами (`AGENT_SEMANTIC_L
 - **Schema index** (`core/data/schema_index.py`): lexical всегда, embeddings —
   при установленном `sentence-transformers` и заданном `EMBED_MODEL`.
 
+## Toolgen: инструмент как данные
+
+Когда планировщик вернул пустой план (кроме просьбы `remember`) или сослался
+на неизвестный инструмент, оркестратор вызывает `ToolFactory`
+(`core/tools/toolgen/factory.py`). LLM возвращает `GeneratedToolSpec`:
+SQL-шаблон с `{input}`/`{param}` либо Python-код, получающий `df` и `params`.
+Спека проходит каскад:
+
+1. статические правила — имя, параметры, AST DuckDB (один SELECT, только
+   `{input}`/CTE, без DDL/DML, table functions, `SAMPLE`, `getenv`,
+   `random/now/uuid`), AST Python (импорты, опасные вызовы, `result`);
+2. сборка динамической Pydantic-модели аргументов и разбор
+   `sample_arguments`;
+3. smoke на выборке `TOOLGEN_SAMPLE_ROWS` строк: `EXPLAIN`/исполнение,
+   непустой результат (если не `allow_empty`), уникальные колонки;
+4. `reference_sql` с независимым запросом или SQL-`checks` над
+   `__tool_result` — сравнение результатов.
+
+Только после этого инструмент регистрируется
+(`ToolRegistry.register_generated`) и, при `TOOLGEN_STORE=true`, сохраняется в
+`STORAGE_DIR/tools/generated/<name>.json`; при старте проверенные спеки
+загружаются снова. SQL исполняется в DuckDB с повторной AST-проверкой при
+каждом вызове, Python — только в `WASMSandbox`. При неудаче поведение
+прежнее: `clarification_needed`; `run_python` остаётся для разовых
+вычислений. Лимиты — `TOOLGEN_MAX_TOOLS`, `TOOLGEN_MAX_PER_TURN`,
+`TOOLGEN_ATTEMPTS`, `TOOLGEN_MAX_SQL_CHARS`, `TOOLGEN_MAX_CODE_CHARS`.
+
+
 ## Память
 
 Подробности — в [memory.md](memory.md).
@@ -118,7 +153,7 @@ P1-возможности включаются флагами (`AGENT_SEMANTIC_L
 | `error` | `{message}` | сбой хода; дальше `done` |
 | `done` | `{turn_id, route, llm_calls, prompt_tokens, total_ms}` (+ `message`, `prompt_truncated`) | ход завершён; `prompt_truncated` — сколько промптов хода сервер LLM обрезал (только если > 0); `message="timeout"` — сработал жёсткий дедлайн |
 
-`ProgressPayload`: `stage` (`planning` / `replanning` / `step` / `insight` /
+`ProgressPayload`: `stage` (`planning` / `replanning` / `toolgen` / `step` / `insight` /
 `chart` / `dashboard`), `status` (`started` / `substage` / `finished` /
 `failed` / `fixing`) и необязательные `step_id`, `tool`, `purpose`,
 `total_steps`, `planned_steps`, `elapsed_ms`, `attempt`, `error`, `substage` —
@@ -127,7 +162,7 @@ P1-возможности включаются флагами (`AGENT_SEMANTIC_L
 фронт показывает `tool`; «Шаг N» формируется на клиенте через i18n.
 `substage` — реальная фаза планирования (`semantic` / `llm` / `validation`),
 фронт рисует её под активной стадией. `elapsed_ms` у этапов (`planning`,
-`replanning`, `insight`, `chart`, `dashboard`) замеряется `perf_counter()` на
+`replanning`, `toolgen`, `insight`, `chart`, `dashboard`) замеряется `perf_counter()` на
 сервере и не включает сетевую задержку.
 
 События прогресса по порядку:
@@ -137,7 +172,10 @@ P1-возможности включаются флагами (`AGENT_SEMANTIC_L
 | `planning` | `started` | — | планировщик получил вопрос |
 | `planning` | `substage` | `substage` | реальная фаза: `semantic` (отбор колонок/инструментов), `llm` (вызов модели), `validation` (проверка плана) |
 | `planning` | `failed` | `error`, `elapsed_ms` | планировщик упал (LLM недоступна), дальше `error` и `done` |
-| `planning` | `finished` | `total_steps`, `planned_steps`, `elapsed_ms` | план готов (`0` — инструментов нет, дальше `clarification_needed`) |
+| `planning` | `finished` | `total_steps`, `planned_steps`, `elapsed_ms` | план готов (`0` — инструментов нет; дальше toolgen или `clarification_needed`) |
+| `toolgen` | `started` | `purpose`, `tool?` | агент создаёт инструмент (toolgen включён и есть LLM) |
+| `toolgen` | `finished` | `tool`, `purpose`, `elapsed_ms` | инструмент проверен и зарегистрирован; дальше перепланирование |
+| `toolgen` | `failed` | `purpose`, `elapsed_ms`, `error` | создать не удалось; дальше прежнее `clarification_needed` |
 | `step` | `started` | `step_id`, `tool`, `purpose` | шаг начал выполняться |
 | `step` | `fixing` | `step_id`, `tool`, `purpose`, `attempt`, `error` | шаг упал, планировщик исправляет его |
 | `step` | `finished` | `step_id`, `tool`, `purpose`, `elapsed_ms` | шаг выполнен (время — с учётом исправлений) |
@@ -155,7 +193,7 @@ P1-возможности включаются флагами (`AGENT_SEMANTIC_L
 | `insight` / `chart` | `failed` | `error`, `elapsed_ms` | этап упал, дальше `error` и `done` |
 | `dashboard` | `failed` | `error`, `elapsed_ms` | дашборд не собран; ответ и график уже отданы, дальше `done` без `error` |
 
-`planning` приходит на новый вопрос; достройка плана после lookup-шага
+`planning` приходит на новый вопрос и на повторную попытку после toolgen (модель видит созданный инструмент); достройка плана после lookup-шага
 идёт отдельной стадией `replanning` (её `finished`/`failed` закрывает
 стадию явно, а не при старте следующего этапа), ответ на уточнение
 (`recovery_response`) перепланирует через `_plan` и тоже шлёт `step` без
@@ -203,6 +241,7 @@ P1-возможности включаются флагами (`AGENT_SEMANTIC_L
 - Хук `_check_context` не читает SSE (иначе `aread()` забуферизует поток),
   поэтому для стримингового инсайта проверка `usage.prompt_tokens` не
   выполняется: промпт ограничен `SHOWN_ROWS=50`.
+
 
 Вопрос про таблицу целиком («что передо мной?», «сколько строк и за какой
 период?», «опиши данные») тоже идёт без плана (`core/data/overview.py`):
