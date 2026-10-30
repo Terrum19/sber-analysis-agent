@@ -158,6 +158,8 @@ export interface SessionState {
   renameSession: (sessionId: string, title: string) => void;
   togglePinSession: (sessionId: string) => void;
   deleteSession: (sessionId: string) => void;
+  /** Обновляет паспорт таблицы (brief) внутри соответствующей базы данных. */
+  updateTableBrief: (table: string, brief: TableBrief) => void;
   /** Подтягивает сессии бэкенда в локальные папки (создаёт папки при необходимости). */
   mergeSessions: (remoteSessions: SessionResponse[]) => void;
 }
@@ -560,6 +562,18 @@ export const useSessionStore = create<SessionState>()(
             ...(isActiveDeleted ? { sessionId: null, messages: [], tiles: [], selectedTile: null } : {}),
           };
         }),
+      updateTableBrief: (table: string, brief: TableBrief) =>
+        set((s) => ({
+          databases: s.databases.map((d) => {
+            if (!d.tables.includes(table)) return d;
+            const prevProfiles = d.profiles || [];
+            const exists = prevProfiles.some((p) => p.table === table);
+            const nextProfiles = exists
+              ? prevProfiles.map((p) => (p.table === table ? brief : p))
+              : [...prevProfiles, brief];
+            return { ...d, profiles: nextProfiles };
+          }),
+        })),
       mergeSessions: (remoteSessions: SessionResponse[]) =>
         set((s) => {
           const nextDatabases = s.databases.map((d) => ({

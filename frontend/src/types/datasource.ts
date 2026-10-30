@@ -28,6 +28,12 @@ export interface TableBrief {
   suggested_questions?: string[];
 }
 
+/** Бизнес-глоссарий: термины пользователя для колонок таблицы (data/business_dictionary/example.json). */
+export interface Glossary {
+  note?: string | null;
+  terms: Record<string, string[]>;
+}
+
 export interface Datasource {
   datasource_id: string;
   kind: "csv" | DbKind;

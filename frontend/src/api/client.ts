@@ -6,7 +6,13 @@
  */
 import type { ChatStreamEvent, DashboardIdea } from "@/types/chat";
 import type { LlmStatus } from "@/types/llm";
-import type { Datasource, DatasourceDbRequest, SessionResponse, TableBrief } from "@/types/datasource";
+import type {
+  Datasource,
+  DatasourceDbRequest,
+  Glossary,
+  SessionResponse,
+  TableBrief,
+} from "@/types/datasource";
 import type {
   DashboardConfig,
   DashboardCreatePayload,
@@ -23,9 +29,11 @@ import {
   mockDeleteDashboard,
   mockFetchDashboard,
   mockFetchDashboards,
+  mockGetGlossary,
   mockListSessions,
   mockListTables,
   mockPatchSession,
+  mockPutGlossary,
   mockRenameSession,
   mockRecalculateDashboard,
   mockStreamChat,
@@ -272,6 +280,20 @@ export async function getTableBrief(table: string): Promise<TableBrief> {
   }
 }
 
+/** Получить бизнес-глоссарий для таблицы (GET /api/datasources/tables/{table}/glossary). */
+export async function getGlossary(table: string): Promise<Glossary> {
+  if (isMockMode()) {
+    return mockGetGlossary(table);
+  }
+  try {
+    const res = await fetch(`${API}/datasources/tables/${encodeURIComponent(table)}/glossary`);
+    if (!res.ok) throw await parseApiError(res);
+    return await res.json();
+  } catch (err) {
+    throw toApiError(err);
+  }
+}
+
 /** PATCH /api/datasources/tables/{table}: название таблицы для пользователя; имя в SQL прежнее. */
 export async function renameTableApi(table: string, displayName: string): Promise<TableBrief> {
   if (isMockMode()) {
@@ -282,6 +304,24 @@ export async function renameTableApi(table: string, displayName: string): Promis
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ display_name: displayName }),
+    });
+    if (!res.ok) throw await parseApiError(res);
+    return await res.json();
+  } catch (err) {
+    throw toApiError(err);
+  }
+}
+
+/** Сохранить бизнес-глоссарий для таблицы (PUT /api/datasources/tables/{table}/glossary). */
+export async function putGlossary(table: string, glossary: Glossary): Promise<TableBrief> {
+  if (isMockMode()) {
+    return mockPutGlossary(table, glossary);
+  }
+  try {
+    const res = await fetch(`${API}/datasources/tables/${encodeURIComponent(table)}/glossary`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(glossary),
     });
     if (!res.ok) throw await parseApiError(res);
     return await res.json();
@@ -318,7 +358,6 @@ export async function fetchDashboardIdeas(sessionId: string, exclude: string[] =
 export interface DashboardRequest {
   idea: DashboardIdea | null;
 }
-
 /**
  * Подписка на SSE-поток диалога; onEvent вызывается на каждое событие,
  * onClose — один раз, когда поток закончился, оборвался или был отменён.
