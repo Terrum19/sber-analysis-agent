@@ -108,12 +108,18 @@ _NUMERIC = {
 }
 
 
+# NULL в строках и фактах для модели: «None» она приписывала соседней строке.
+NULL_VALUE = "без значения"
+
+
 def insight_facts(db: DuckDBManager, table: str, shown: int) -> str:
     """Число строк и итоги числовых колонок результата — посчитанные SQL, а не LLM.
 
     У минимума и максимума подписана строка, где они достигаются (первая
     нечисловая колонка: период, регион, id): «лучший месяц» читается из
-    фактов, а не поиском по строкам.
+    фактов, а не поиском по строкам. Строка без подписи (NULL — например,
+    продажи без магазина) подписана «без значения»: arg_max пропускает её и
+    отдал бы подпись другой строки к чужому максимуму.
     """
     columns = db.query(f"DESCRIBE {identifier(table)}")
     numeric = [
@@ -133,8 +139,8 @@ def insight_facts(db: DuckDBManager, table: str, shown: int) -> str:
         ]
         if label is not None:
             metrics += [
-                f"arg_min({identifier(label)}, {column}) AS at_lo{i}",
-                f"arg_max({identifier(label)}, {column}) AS at_hi{i}",
+                f"arg_min_null({identifier(label)}, {column}) AS at_lo{i}",
+                f"arg_max_null({identifier(label)}, {column}) AS at_hi{i}",
             ]
     row = db.query(f"SELECT {', '.join(metrics)} FROM {identifier(table)}")[0]
     lines = [f"- строк в результате: {row['n']} (показано модели: {min(row['n'], shown)})"]
@@ -151,6 +157,8 @@ def insight_facts(db: DuckDBManager, table: str, shown: int) -> str:
 
 def format_value(value: object) -> str:
     """Значение для промпта: даты в ISO, полночь без времени, дробные — до сотых."""
+    if value is None:
+        return NULL_VALUE
     if isinstance(value, datetime):
         return (
             value.date().isoformat()

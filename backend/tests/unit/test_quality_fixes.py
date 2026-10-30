@@ -135,6 +135,24 @@ def test_insight_facts_name_the_rows_of_min_and_max(db) -> None:
     assert "макс 26484 (period = 2024-01-01)" in facts
 
 
+def test_insight_facts_label_the_null_row_of_max(db) -> None:
+    # Продажи без магазина (онлайн) — самая большая группа: arg_max пропускал
+    # её и подписывал этот максимум следующим по величине магазином.
+    db.query(
+        "CREATE TABLE stores AS SELECT * FROM (VALUES "
+        "(NULL, 2138), ('ПР-ТТ-06-01', 35), ('ПР-ТТ-30-01', 1)) AS v(store, revenue)"
+    )
+    facts = insight_facts(db, "stores", shown=50)
+    assert "макс 2138 (store = без значения)" in facts
+    assert "мин 1 (store = ПР-ТТ-30-01)" in facts
+
+
+def test_null_cells_are_shown_as_no_value() -> None:
+    from app.core.agent.quality_fixes import format_rows
+
+    assert format_rows([{"store": None, "revenue": 2138}]) == "store | revenue\nбез значения | 2138"
+
+
 def test_single_row_facts_have_no_labels(db) -> None:
     db.query("CREATE TABLE one AS SELECT 'all' AS k, 5 AS n")
     assert "(k =" not in insight_facts(db, "one", shown=50)
