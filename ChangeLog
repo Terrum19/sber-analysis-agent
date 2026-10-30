@@ -1,25 +1,56 @@
 2026-10-30  Dmitriy Yakushonok  <dmitriyyakushonok@yandex.ru>
 
-	Улучшение экспорта в Excel и PDF, устранение замечаний ревьюера.
+	Экспорт дашбордов и исследований в PDF и Excel (E-02, E-03, F-10).
+	* backend/app/core/export/pdf.py (PdfExporter.export_dashboard): Новый.
+	Экспорт целостного дашборда в PDF: фирменная шапка с датой среза и
+	названием базы данных/сессии, блок KPI с крупными числами, сетка
+	карточек плиток с векторным рендерингом Vega-Lite графиков, инсайтами
+	и подгонкой таблиц под размер страницы.  (_compute_table_col_widths_and_fontsize,
+	_build_data_table_flowable): Новые. Автоподбор шрифта и высоты таблиц.
+	(_derive_substantive_insight): Аналитически корректные инсайты (исключение
+	ID и запрет суммирования долей/margin).  (HRFlowable): Зелёная фирменная
+	линия (#088434) в шапке одиночного отчёта и дашборда.
+	* backend/app/core/export/excel.py (ExcelExporter.export_dashboard): Новый.
+	Многостраничный .xlsx: лист «Сводка» с крупными карточками KPI, источником
+	данных и оглавлением со ссылками на листы плиток; отдельные листы под плитки
+	с кнопкой возврата в Сводку, снимком данных и графиком.
+	(_detect_column_roles): Детерминированный подбор диаграмм по Vega-Lite
+	spec.encoding (x, y, theta, color) и эвристике данных (поддержка таблиц
+	только из чисел, одноколоночных таблиц и строковых чисел).
+	(_write_data_table): Новая. Единое форматирование таблиц (зебра-заливка,
+	автофильтр, freeze panes, границы, автоширина столбцов).
+	(_detect_chart_type): Поддержка bar, line, pie, area; подавление графиков
+	для табличных спецификаций (is_table_spec). Лимит строк 5000 и точек 50.
+	* backend/app/core/export/common.py: Новый. Общие функции экспорта:
+	resolve_tile_records (безопасное разрешение snapshot_data vs DuckDB),
+	extract_kpi_value, format_kpi_number, format_cell_value,
+	sanitize_excel_text и sanitize_excel_value (защита от Formula Injection
+	CWE-1236, приведение timezone-aware datetime к naive UTC, NaN -> "",
+	Infinity -> строка, сериализация JSON), extract_table_columns (защита
+	от Schema Drift).
+	* backend/app/core/export/charts.py (is_table_spec): Новая. Определение
+	чисто табличных представлений.
+	* backend/app/api/routes/dashboards.py (export_dashboard): Новый эндпоинт
+	GET /api/dashboards/{id}/export?format=xlsx|pdf с FileResponse,
+	валидацией формата, обработкой ошибок 404/500 и передачей метаданных БД.
+	* backend/app/api/routes/artifacts.py (export_artifact): Поддержка
+	экспорта дашбордов и отдельных плиток со spec.data.values / spec.data /
+	spec.values при отсутствии result_ref. Обработка ошибок в HTTPException(500).
 	* frontend/src/components/chat/AnswerExport.tsx: Разрешает экспорт
-	в Excel для плиток с данными в spec.data.values или snapshot_data
-	без явного resultTable (исправлена блокировка кнопки первой плитки).
-	* backend/app/api/routes/artifacts.py: Поддерживает spec.data как list,
-	spec.data.values и spec.values при экспорте без result_ref. Ошибки
-	генерации Excel обёрнуты в HTTPException(500).
-	* backend/app/api/routes/dashboards.py: Передаёт session_title,
-	source_name, database_name в ExcelExporter.export_dashboard.
-	Ошибки генерации Excel возвращают HTTPException(500).
-	* backend/app/core/export/excel.py: Детерминированный подбор диаграмм
-	по Vega-Lite spec.encoding (Bar/Line/Pie/Area). Защита от Formula
-	Injection (CWE-1236) во всех текстах и ячейках. Корректная обработка
-	timezone-aware datetime, NaN, Infinity и Schema Drift. Подавление
-	графиков для table spec. Лимит строк (5000) и категорий диаграмм (50).
-	Единая функция _write_data_table.
-	* backend/app/core/export/pdf.py: Зелёная фирменная линия (#088434)
-	в шапке одиночного отчета (унифицирована с дашбордом).
-	* docs/architecture.md: Документирован конвейер ExcelExporter и
-	актуализирован регламент экспорта PDF дашбордов.
+	в Excel для плиток со встроенными данными спецификации без явного
+	resultTable (исправлена блокировка кнопки первой плитки «Колонки таблицы»).
+	* frontend/src/components/canvas/Canvas.tsx: Кнопки экспорта дашборда
+	в шапке канваса и модальное окно выбора формата.
+	* frontend/src/app/dashboard/[id]/page.tsx: Кнопки экспорта дашборда.
+	* docs/architecture.md: Документирован полный конвейер ExcelExporter,
+	гарантии безопасности, типографика и актуализирован регламент PDF.
+	* docs/team_plans/final-roadmap.md: Отмечены как выполненные задачи
+	E-02, E-03 и F-10.
+	* backend/tests/unit/test_export_dashboard_pdf.py
+	* backend/tests/unit/test_export_common.py
+	* backend/tests/unit/test_export_excel.py
+	* backend/tests/unit/test_export_pdf.py: Полный набор unit-тестов
+	(101 тест, 100% покрытие кода модулей экспорта и роутов).
 
 2026-10-29  Alexander Yurits  <143354682+Terrum19@users.noreply.github.com>
 
