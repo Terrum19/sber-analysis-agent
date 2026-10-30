@@ -20,11 +20,17 @@ PLAN_COLUMNS = ("category", "user_id")
 
 # Дашборд по кнопке (#224): запрос короче стольких слов — «информации не хватает».
 DASHBOARD_MIN_WORDS = 3
+# Две простые плитки (шаги из полей, вариант quick_tiles) и две — через планировщик.
 FAKE_TILES = (
-    ("Всего записей", "Сколько всего записей", "kpi"),
-    ("Записи по категориям", "Количество записей по category", "compare"),
-    ("Записи по пользователям", "Количество записей по user_id", "compare"),
-    ("Доли категорий", "Доля записей по category", "share"),
+    ("Всего записей", "Сколько всего записей", "kpi", {"kind": "simple", "agg": "COUNT"}),
+    (
+        "Записи по категориям",
+        "Количество записей по category",
+        "compare",
+        {"kind": "simple", "agg": "COUNT", "by": "category"},
+    ),
+    ("Записи по пользователям", "Количество записей по user_id", "compare", {}),
+    ("Доли категорий", "Доля записей по category", "share", {}),
 )
 
 
@@ -102,8 +108,8 @@ def _fake_dashboard(schema: str, user: str) -> dict:
             "enough_info": True,
             "title": "Обзор данных",
             "tiles": [
-                {"title": title, "question": question, "intent": intent}
-                for title, question, intent in FAKE_TILES
+                {"title": title, "question": question, "intent": intent, **fields}
+                for title, question, intent, fields in FAKE_TILES
             ],
         }
     tile_ids = [int(found) for found in re.findall(r"--- плитка (\d+):", user)]
