@@ -71,7 +71,7 @@ from app.core.agent.budget import (
 from app.core.agent.insight import InsightGenerator
 from app.core.agent.metrics import TurnMetrics, current_metrics, set_metrics
 from app.core.agent.planner import PlanInvalid, StepPlanner, is_dashboard_question
-from app.core.agent.recovery import STEP_FIX_ATTEMPTS, fixable
+from app.core.agent.recovery import fixable
 from app.core.agent.router import Route, simple_plan
 from app.core.agent.step_executor import StepExecutor, resolve_input, tool_kind
 from app.core.agent.triage import small_talk_reply
@@ -275,9 +275,16 @@ def _fixing_event(step: ResearchStep, attempt: int, error: Exception) -> dict:
     return _step_event(step, "fixing", attempt=attempt, error=str(error))
 
 
-def _text_event(headline: str, details: list[str]) -> dict:
+def _text_event(
+    headline: str,
+    details: list[str],
+    limits: str | list[str] | None = None,
+) -> dict:
     """Вывод целиком: когда стрим выключен или сработал structured-фолбэк."""
-    return {"type": "text", "data": {"headline": headline, "details": details}}
+    data: dict = {"headline": headline, "details": details}
+    if limits:
+        data["limits"] = limits
+    return {"type": "text", "data": data}
 
 
 def _text_chunk_event(chunk: str) -> dict:
@@ -643,7 +650,7 @@ class AgentOrchestrator:
                     fast_res.details.append(confirmation)
                 insight = fast_res
                 yield _progress_event("insight", "finished", elapsed_ms=_elapsed_ms(stage_started))
-                yield _text_event(insight.headline, insight.details)
+                yield _text_event(insight.headline, insight.details, insight.limits)
             elif settings.insight_stream and callable(getattr(self.insight_gen, "stream", None)):
                 budget = current_budget()
                 if budget is not None:
@@ -704,7 +711,7 @@ class AgentOrchestrator:
                 yield _progress_event("insight", "finished", elapsed_ms=_elapsed_ms(stage_started))
                 if not streamed:
                     # Фолбэк или пустой стрим: без этого фронт не увидит вывод.
-                    yield _text_event(insight.headline, insight.details)
+                    yield _text_event(insight.headline, insight.details, insight.limits)
             else:
                 insight = await self._insight(
                     question,
@@ -714,7 +721,7 @@ class AgentOrchestrator:
                     confirmation=confirmation,
                 )
                 yield _progress_event("insight", "finished", elapsed_ms=_elapsed_ms(stage_started))
-                yield _text_event(insight.headline, insight.details)
+                yield _text_event(insight.headline, insight.details, insight.limits)
             logger.info(
                 "<<< run() инсайт: headline=%r details=%r", insight.headline, insight.details
             )

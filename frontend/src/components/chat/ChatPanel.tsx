@@ -36,6 +36,7 @@ import AnswerActions from "@/components/chat/AnswerActions";
 import ReplyQuote from "@/components/chat/ReplyQuote";
 import LlmStatusBanner from "@/components/chat/LlmStatusBanner";
 import DashboardIdeas, { type IdeasState } from "@/components/chat/DashboardIdeas";
+import MarkdownContent from "@/components/chat/MarkdownContent";
 import { useLlmStatus } from "@/hooks/useLlmStatus";
 import { useT } from "@/i18n/useT";
 import { getDatasetQuestions } from "@/lib/datasetQuestions";
@@ -48,14 +49,29 @@ const MAX_IDEA_ROUNDS = 3;
 function answerText(m: ChatMessage): string {
   const lines: string[] = [];
   if (m.answer?.headline) lines.push(m.answer.headline);
-  if (m.answer?.details?.length) lines.push(...m.answer.details.map((detail) => `• ${detail}`));
+  if (m.answer?.details?.length) lines.push(...m.answer.details.map((detail) => `- ${detail}`));
   return lines.length > 0 ? lines.join("\n") : m.content;
+}
+
+/** Очистка строки от Markdown-символов для компактной цитаты */
+function stripMarkdown(md: string): string {
+  return md
+    .replace(/^#+\s+/gm, "")
+    .replace(/\*\*([^*]+)\*\*/g, "$1")
+    .replace(/__([^_]+)__/g, "$1")
+    .replace(/\*([^*]+)\*/g, "$1")
+    .replace(/_([^_]+)_/g, "$1")
+    .replace(/`([^`]+)`/g, "$1")
+    .replace(/\[([^\]]+)\]\([^)]+\)/g, "$1")
+    .replace(/^>\s?/gm, "")
+    .replace(/^[-*•]\s+/gm, "");
 }
 
 /** Короткая выдержка ответа для цитаты (схлопнутые пробелы, обрезка по границе слова). */
 function excerptOf(m: ChatMessage, limit = 170): string {
   const raw = m.answer?.headline ?? m.chart?.caption ?? m.content ?? "";
-  const text = raw.replace(/\s+/g, " ").trim();
+  const cleaned = stripMarkdown(raw);
+  const text = cleaned.replace(/\s+/g, " ").trim();
   if (text.length <= limit) return text;
   const cut = text.slice(0, limit - 1);
   const lastSpace = cut.lastIndexOf(" ");
@@ -655,7 +671,7 @@ export default function ChatPanel({ sessionId }: Props) {
                 {/* Текст сообщения */}
                 {(m.content || m.isStreaming) && (
                   <div
-                    className={`whitespace-pre-wrap transition-opacity duration-200 ${m.progress ? "mt-2.5" : ""} ${
+                    className={`transition-opacity duration-200 ${m.progress ? "mt-2.5" : ""} ${
                       m.refusal
                         ? "border-l-2 border-warn/60 pl-3 text-graphite-300"
                         : m.dashboardFallback
@@ -663,7 +679,11 @@ export default function ChatPanel({ sessionId }: Props) {
                         : ""
                     }`}
                   >
-                    {m.content}
+                    {m.role === "agent" && !m.refusal ? (
+                      <MarkdownContent content={m.content} />
+                    ) : (
+                      <div className="whitespace-pre-wrap">{m.content}</div>
+                    )}
                     {((m.role === "agent" && streaming && i === messages.length - 1) || (m.isStreaming && streaming)) && (
                       <span
                         className="inline-block w-1.5 h-4 ml-1 bg-good/80 animate-pulse motion-reduce:animate-none align-middle rounded-[1px]"

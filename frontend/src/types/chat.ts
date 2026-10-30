@@ -71,6 +71,7 @@ export interface TextEvent {
     chunk?: string;
     headline?: string;
     details?: string[];
+    limits?: string;
   };
 }
 

@@ -138,6 +138,7 @@ def test_sse_insight_stream_off_keeps_single_text_event(fake_llm, monkeypatch):
     assert texts[0]["data"] == {
         "headline": "Исследование завершено",
         "details": ["Данные обработаны по запросу пользователя"],
+        "limits": "Результаты основаны на доступных в таблице данных",
     }
     assert "chunk" not in texts[0]["data"]
     assert [event["type"] for event in events if event["type"] != "progress"] == [
@@ -170,6 +171,7 @@ def test_sse_insight_stream_fallback_sends_headline(fake_llm, monkeypatch):
     assert texts[0]["data"] == {
         "headline": "Исследование завершено",
         "details": ["Данные обработаны по запросу пользователя"],
+        "limits": "Результаты основаны на доступных в таблице данных",
     }
     assert "chunk" not in texts[0]["data"]
     assert [event["type"] for event in events if event["type"] != "progress"] == [

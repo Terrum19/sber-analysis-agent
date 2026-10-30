@@ -272,8 +272,12 @@ export function startRun(
         if (details && Array.isArray(details)) {
           answerDetails = details.filter((d: unknown): d is string => typeof d === "string");
           if (answerDetails.length > 0) {
-            appendText("\n\n" + answerDetails.map((d: string) => `• ${d}`).join("\n"));
+            appendText("\n\n" + answerDetails.map((d: string) => `- ${d}`).join("\n"));
           }
+        }
+        const limits = event.data?.limits || raw.limits;
+        if (typeof limits === "string" && limits.trim()) {
+          appendText(`\n\n> ℹ️ **Ограничения данных:** ${limits.trim()}`);
         }
       } else if (event.type === "chart") {
         answerStarted = false;
