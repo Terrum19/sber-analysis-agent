@@ -127,6 +127,15 @@
 	Экстремум у строки без подписи — рядом лучшая подписанная строка.
 	(format_value): NULL — «без значения».  (NULL_VALUE): Новая.
 	* backend/tests/unit/test_quality_fixes.py: Тесты того же.
+	Инсайт знает, что номер недели года объединяет все годы.
+	* backend/app/core/agent/quality_fixes.py (period_number_facts): Новая.
+	Шаг с EXTRACT(WEEK/MONTH …), date_part, week() — факт: строка результата —
+	этот номер всех лет вместе, а не конкретная неделя.  (_PERIOD_OF_YEAR)
+	(_PERIOD_UNITS, _strings): Новые.
+	* backend/app/core/agent/insight.py (InsightGenerator.generate): Факт —
+	к фактам результата.
+	* backend/tests/unit/test_quality_fixes.py,
+	backend/tests/unit/test_insight_generator.py: Тесты того же.
 
 2026-10-29  Alexander Yurits  <143354682+Terrum19@users.noreply.github.com>
 

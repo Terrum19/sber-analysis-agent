@@ -11,6 +11,7 @@ from app.config import settings
 from app.core.agent.quality_fixes import (
     format_rows,
     insight_facts,
+    period_number_facts,
     plan_facts,
     ungrounded_numbers,
 )
@@ -109,6 +110,7 @@ class InsightGenerator:
         except Exception:
             logger.warning("инсайт: факты по плану не посчитались", exc_info=True)
             more, hints = [], []
+        more += period_number_facts(steps or [])
         facts = "\n".join(line for line in [facts, *more] if line) or "нет"
         # Одна строка — ответ числом; ряд — лидер, минимум или число строк, а не одно значение.
         # Число строк всей таблицы, а не показанных модели (их не больше SHOWN_ROWS).

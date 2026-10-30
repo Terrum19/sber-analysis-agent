@@ -3,7 +3,7 @@
 import pytest
 
 from app.config import settings
-from app.core.agent.quality_fixes import insight_facts
+from app.core.agent.quality_fixes import insight_facts, period_number_facts
 from app.core.data.duckdb_manager import DuckDBManager
 from app.core.tools.registry import tool_registry
 from app.models.research_step import ResearchStep
@@ -402,3 +402,39 @@ def test_partial_period_fact_needs_period_in_result(db) -> None:
     assert "- период 2026-09-28 неполный (данные по 2026-09-30)" in lines
     assert PARTIAL_HINT in hints
     assert not any("неполный" in line for line in plan_facts(db, steps, {}, profile, ["n"])[0])
+
+
+@pytest.mark.parametrize(
+    ("expression", "unit"),
+    [
+        ('EXTRACT(WEEK FROM "Дата")::INT', "недели"),
+        ("date_part('month', sold_at)", "месяца"),
+        ("week(sold_at)", "недели"),
+        ("extract(quarter from sold_at)", "квартала"),
+    ],
+)
+def test_period_number_of_the_year_is_named_as_all_years(expression: str, unit: str) -> None:
+    from app.models.research_step import ResearchStep
+
+    step = ResearchStep(
+        step_id=0, tool="create_column", arguments={"new_column": "n", "expression": expression}
+    )
+    [fact] = period_number_facts([step])
+    assert f"шаг 1 берёт номер {unit} года" in fact
+    assert "итог за все годы вместе" in fact
+
+
+def test_calendar_periods_are_not_period_numbers() -> None:
+    from app.models.research_step import ResearchStep
+
+    steps = [
+        ResearchStep(
+            step_id=0, tool="time_bucket", arguments={"date_column": "d", "interval": "week"}
+        ),
+        ResearchStep(
+            step_id=1,
+            tool="create_column",
+            arguments={"new_column": "m", "expression": "date_trunc('month', d)"},
+        ),
+    ]
+    assert period_number_facts(steps) == []

@@ -211,3 +211,28 @@ def test_threshold_without_test_is_not_grounded(db):
     llm = Headline()
     asyncio.run(InsightGenerator(llm=llm, db=db).generate("Связаны ли?", "temp_corr"))
     assert llm.calls == 2
+
+
+def test_prompt_says_a_week_number_merges_the_years(db):
+    from app.models.research_step import ResearchStep
+
+    db.execute("CREATE TABLE temp_result_v4 AS SELECT 4 AS week_number, 43.4 AS sum_revenue")
+    llm = PromptSpy()
+    steps = [
+        ResearchStep(
+            step_id=0,
+            tool="create_column",
+            arguments={"new_column": "week_number", "expression": "EXTRACT(WEEK FROM sold_at)"},
+            purpose="Номер недели года",
+        ),
+        ResearchStep(
+            step_id=1,
+            tool="group_by",
+            arguments={"by": ["week_number"], "column": "revenue", "function": "SUM"},
+            purpose="Выручка по неделям года",
+        ),
+    ]
+    asyncio.run(
+        InsightGenerator(llm=llm, db=db).generate("Какая неделя?", "temp_result_v4", steps=steps)
+    )
+    assert "шаг 1 берёт номер недели года" in llm.prompt
