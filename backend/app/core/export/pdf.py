@@ -739,7 +739,7 @@ class PdfExporter:
                     "",
                 ],
             ],
-            colWidths=[24, printable_width - 24 - 110, 110],
+            colWidths=[24, printable_width - 24 - 85, 85],
         )
         header_table.setStyle(
             TableStyle(
