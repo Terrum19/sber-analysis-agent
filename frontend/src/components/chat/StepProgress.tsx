@@ -138,11 +138,11 @@ function useNow(active: boolean): number {
 }
 
 /** «Прервано» и кнопка «Продолжить» под прогрессом остановленного хода. */
-function ResumeBar({ onResume }: { onResume: () => void }) {
+function ResumeBar({ onResume, lost }: { onResume: () => void; lost?: boolean }) {
   const t = useT();
   return (
     <div className="mt-1.5 flex flex-wrap items-center gap-2">
-      <span className="text-[12px] text-warn">{t("progress.interrupted")}</span>
+      <span className="text-[12px] text-warn">{t(lost ? "progress.lost" : "progress.interrupted")}</span>
       <button
         onClick={onResume}
         title={t("progress.resumeHint")}
@@ -180,7 +180,11 @@ export default function StepProgress({ progress, onResume }: { progress: TurnPro
           <Icon name="chevronRight" size={12} />
           {label} · {t("progress.seconds", { s: seconds(total) })}
         </button>
-        {onResume && <ResumeBar onResume={onResume} />}
+        {onResume ? (
+          <ResumeBar onResume={onResume} lost={progress.lost} />
+        ) : (
+          progress.lost && <div className="mt-1 text-[12px] text-warn">{t("progress.lost")}</div>
+        )}
       </div>
     );
   }
@@ -233,7 +237,7 @@ export default function StepProgress({ progress, onResume }: { progress: TurnPro
       )}
       {!finished && stageLabel && <div className="mt-1 animate-pulse">{stageLabel}</div>}
       {quiet && <div className="mt-1 text-warn">{t("progress.stillWorking")}</div>}
-      {finished && onResume && <ResumeBar onResume={onResume} />}
+      {finished && onResume && <ResumeBar onResume={onResume} lost={progress.lost} />}
     </div>
   );
 }

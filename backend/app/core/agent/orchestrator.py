@@ -107,6 +107,11 @@ from app.models.research_step import DashboardTilePlan, ResearchPlan, ResearchSt
 NO_TABLE_MESSAGE = "Сначала подключите данные"
 # «Продолжить» ход, у которого нет чекпоинта или который уже ответил.
 NOTHING_TO_RESUME = "Продолжить нечего: задайте вопрос заново"
+# «Продолжить» ход, который ещё считается: страница перезагрузилась, а ход на
+# бэкенде идёт дальше (прокси не обрывает запрос к бэкенду).
+STILL_RUNNING = "Ответ ещё готовится — нажмите «Продолжить» чуть позже"
+# turn_id ходов, которые сейчас идут в этом процессе: второй раз их не запускаем.
+RUNNING_TURNS: set[str] = set()
 # pending_recovery уточнения «какие данные взять?» и вопрос пользователю (#165).
 TABLE_CHOICE = "table"
 TABLE_QUESTION = "Вопрос подходит к разным данным. По каким из них ответить?"
@@ -263,6 +268,8 @@ class AgentOrchestrator:
         self.cache = cache or StateCache(self.db)
         self.profiles = ProfileMemory(self.db)
         self.vectors = TableVectors(self.db)
+        # Ход, который ведёт этот оркестратор (один на запрос): он в RUNNING_TURNS.
+        self._running: str | None = None
 
     async def run(self, request: ChatRequest) -> AsyncIterator[dict]:
         """Выполнить исследование и вернуть поток событий для фронта.
@@ -287,6 +294,7 @@ class AgentOrchestrator:
             raise
         finally:
             turn_log.close()
+            RUNNING_TURNS.discard(self._running)
 
     async def _turn(self, request: ChatRequest) -> AsyncIterator[dict]:
         """Один ход: события для фронта до done или clarification_needed."""
@@ -307,6 +315,7 @@ class AgentOrchestrator:
             memory.start_turn(request.question, reply_to=request.reply_to)
         turn_id = memory.turn_id
         set_turn_id(turn_id)
+        self._mark_running(turn_id)
         logger.info("ход начат: вопрос=%r", request.question)
 
         catalog: list[str] = []
@@ -430,14 +439,32 @@ class AgentOrchestrator:
             yield event
 
     async def _resume(self, memory: SessionMemory, request: ChatRequest) -> AsyncIterator[dict]:
-        """Продолжить ход с чекпоинта: выполненные шаги и плитки не повторяются."""
+        """Продолжить ход с чекпоинта: выполненные шаги и плитки не повторяются.
+
+        Ход уже ответил (страница перезагрузилась, и ответ до неё не дошёл) —
+        отдаётся его сохранённый ответ, без LLM и шагов.
+        """
+        if request.resume_turn in RUNNING_TURNS:
+            logger.info("ход %s ещё идёт: второй раз не запускаем", request.resume_turn)
+            yield {"type": "error", "data": {"message": STILL_RUNNING}}
+            yield {"type": "done", "data": {}}
+            return
         checkpoint = memory.resume_checkpoint(request.resume_turn)
+        answered = None if checkpoint else memory.answered_turn(request.resume_turn)
+        if answered is not None:
+            set_turn_id(answered["turn_id"])
+            logger.info("ход уже ответил: отдаём сохранённый ответ")
+            for event in self._replay(answered):
+                yield event
+            yield _done(answered["turn_id"])
+            return
         if checkpoint is None:
             logger.info("продолжать нечего: ход %s", request.resume_turn)
             yield {"type": "error", "data": {"message": NOTHING_TO_RESUME}}
             yield {"type": "done", "data": {}}
             return
         set_turn_id(memory.turn_id)
+        self._mark_running(memory.turn_id)
         logger.info("ход продолжен: вопрос=%r", memory.question)
         if checkpoint["kind"] == DASHBOARD_CHECKPOINT:
             from app.core.agent.dashboard_turn import DashboardTurn
@@ -448,6 +475,36 @@ class AgentOrchestrator:
         titles = self._titles(checkpoint["source_table"])
         async for event in self._answer(memory, request, titles, resume=checkpoint):
             yield event
+
+    def _mark_running(self, turn_id: str) -> None:
+        self._running = turn_id
+        RUNNING_TURNS.add(turn_id)
+
+    def _replay(self, turn: dict) -> list[dict]:
+        """Сохранённый ответ хода: вывод и график из его таблицы результата.
+
+        Таблицу графика уже удалила очистка — только вывод.
+        """
+        events = [
+            {
+                "type": "text",
+                "data": {"headline": turn["headline"] or "", "details": turn.get("details") or []},
+            }
+        ]
+        chart = turn.get("chart")
+        if chart is None:
+            return events
+        try:
+            records = self.cache.get(chart["result_table"], limit=SPEC_ROW_LIMIT)
+        except duckdb.Error:
+            logger.warning("таблицы графика %s уже нет: только вывод", chart["result_table"])
+            return events
+        titles = self._titles(turn["tables"][0]) if turn["tables"] else {}
+        spec = build_vega_spec(
+            chart["type"], chart["result_table"], data=records, titles=titles, title=chart["title"]
+        )
+        events.append(_chart_event(spec, chart["title"], chart["result_table"]))
+        return events
 
     def _titles(self, table: str) -> dict[str, str]:
         return column_aliases(

@@ -6,7 +6,12 @@ import pytest
 
 from app.api.schemas.chat import ChatRequest
 from app.config import settings
-from app.core.agent.orchestrator import NOTHING_TO_RESUME, AgentOrchestrator
+from app.core.agent.orchestrator import (
+    NOTHING_TO_RESUME,
+    RUNNING_TURNS,
+    STILL_RUNNING,
+    AgentOrchestrator,
+)
 from app.core.data.duckdb_manager import DuckDBManager
 from app.core.data.result_retention import collect_keep
 from app.core.memory.session_memory import SessionMemory
@@ -159,16 +164,66 @@ async def test_turn_failed_after_the_steps_continues_with_the_answer_only(db) ->
     ]
 
 
-@pytest.mark.parametrize("finished", [True, False])
-async def test_nothing_to_resume_is_an_error(db, finished: bool) -> None:
-    turn_id = "unknown"
-    if finished:
-        turn_id = (await collect(agent(db), question="выручка"))[-1]["data"]["turn_id"]
-    events = await collect(agent(db), question="", resume_turn=turn_id)
+async def test_unknown_turn_has_nothing_to_resume(db) -> None:
+    events = await collect(agent(db), question="", resume_turn="unknown")
     assert events == [
         {"type": "error", "data": {"message": NOTHING_TO_RESUME}},
         {"type": "done", "data": {}},
     ]
+
+
+async def test_answered_turn_replays_its_answer_without_llm(db) -> None:
+    """Страница перезагрузилась посреди хода, а ход ответил: ответ отдаётся из памяти."""
+    first = await collect(agent(db), question="выручка")
+    turn_id = first[-1]["data"]["turn_id"]
+    chart = next(event["data"] for event in first if event["type"] == "chart")
+
+    planner, executor, insight = TwoStepPlanner(), StoppingExecutor(db), FakeInsight()
+    events = await collect(agent(db, executor, insight, planner), question="", resume_turn=turn_id)
+    assert planner.calls == insight.calls == 0
+    assert executor.executed == []
+    assert [event["type"] for event in events] == ["text", "chart", "done"]
+    assert events[0]["data"]["headline"] == "Москва лидирует"
+    assert events[1]["data"]["result_table"] == chart["result_table"]
+    assert events[1]["data"]["spec"]["usermeta"]["chart_type"] == "bar"
+    assert events[-1]["data"]["turn_id"] == turn_id
+    assert len(SessionMemory("s1")._state["turns"]) == 1
+
+
+async def test_answered_turn_without_its_chart_table_replays_the_text(db) -> None:
+    first = await collect(agent(db), question="выручка")
+    chart = next(event["data"] for event in first if event["type"] == "chart")
+    db.execute(f"DROP TABLE {chart['result_table']}")
+    events = await collect(agent(db), question="", resume_turn=first[-1]["data"]["turn_id"])
+    assert [event["type"] for event in events] == ["text", "done"]
+
+
+async def test_answered_turn_without_a_chart_replays_the_text(db) -> None:
+    first = await collect(agent(db), question="привет")
+    events = await collect(agent(db), question="", resume_turn=first[-1]["data"]["turn_id"])
+    assert [event["type"] for event in events] == ["text", "done"]
+    assert events[0]["data"]["headline"] == first[0]["data"]["headline"]
+
+
+async def test_turn_still_running_is_not_started_twice(db) -> None:
+    """Страница перезагрузилась, а ход на бэкенде ещё идёт: второй раз его не запускаем."""
+    turn_id = await stopped_turn(db)
+    assert not RUNNING_TURNS
+    RUNNING_TURNS.add(turn_id)
+    try:
+        executor = StoppingExecutor(db)
+        events = await collect(agent(db, executor), question="", resume_turn=turn_id)
+    finally:
+        RUNNING_TURNS.discard(turn_id)
+    assert executor.executed == []
+    assert events == [
+        {"type": "error", "data": {"message": STILL_RUNNING}},
+        {"type": "done", "data": {}},
+    ]
+    # Закончился — продолжается как обычно, и после хода в списке идущих пусто.
+    events = await collect(agent(db), question="", resume_turn=turn_id)
+    assert events[-1]["data"]["turn_id"] == turn_id
+    assert not RUNNING_TURNS
 
 
 async def test_cleanup_keeps_the_tables_of_a_stopped_turn(db) -> None:

@@ -338,6 +338,15 @@ class SessionMemory:
         self._open = True
         return turn["checkpoint"]
 
+    def answered_turn(self, turn_id: str) -> dict | None:
+        """Ход, уже закончившийся ответом; None — такого нет или он не ответил.
+
+        Его ответ мог не дойти до фронта (страница перезагрузилась посреди
+        хода): «Продолжить» тогда отдаёт сохранённый ответ.
+        """
+        turn = self._find(turn_id)
+        return turn if turn is not None and turn["status"] == "ok" else None
+
     def _find(self, turn_id: str | None) -> dict | None:
         for turn in self._state["turns"]:
             if turn["turn_id"] == turn_id:

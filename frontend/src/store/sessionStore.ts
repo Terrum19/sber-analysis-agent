@@ -7,6 +7,7 @@
  */
 import { create } from "zustand";
 import { persist, createJSONStorage } from "zustand/middleware";
+import { closeInterrupted } from "@/types/chat";
 import type { DashboardTile } from "@/types/dashboard";
 import type {
   ChartEvent,
@@ -650,6 +651,17 @@ export const useSessionStore = create<SessionState>()(
           if (state.sessionTableCache) {
             delete state.sessionTableCache["demo-sales"];
             delete state.sessionTableCache["demo-kpi"];
+            // Страница загружена заново: ни один стрим хода не жив, незаконченный
+            // прогресс в ленте — оборванный ход, а не «Всё ещё работаю…» навсегда.
+            for (const tables of Object.values(state.sessionTableCache)) {
+              for (const snapshot of Object.values(tables)) {
+                snapshot.messages = snapshot.messages.map((m) =>
+                  m.progress && m.progress.finished_at === undefined
+                    ? { ...m, progress: closeInterrupted(m.progress) }
+                    : m,
+                );
+              }
+            }
           }
         }
       },

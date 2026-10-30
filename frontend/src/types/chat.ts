@@ -196,6 +196,8 @@ export interface TurnProgress {
   turn_id?: string;
   /** Ход остановлен или упал, но часть шагов или плиток готова: его можно продолжить. */
   resumable?: boolean;
+  /** Стрим хода оборвался вместе со страницей (перезагрузка): ответ до ленты не дошёл. */
+  lost?: boolean;
 }
 
 /** Готов хотя бы один шаг или плитка: остановленный ход есть с чего продолжать. */
@@ -204,6 +206,26 @@ export function hasFinishedWork(progress: TurnProgress): boolean {
     progress.steps.some((step) => step.status === "finished") ||
     (progress.tiles ?? []).some((tile) => tile.status === "finished")
   );
+}
+
+/**
+ * Прогресс хода, чей стрим оборвался вместе со страницей (перезагрузка, закрытая
+ * вкладка): ход закончен, а не «работает» вечно. Бэкенд мог его и доделать, и
+ * прервать — «Продолжить» отдаст готовый ответ или досчитает ход, поэтому кнопка
+ * есть у любого хода с turn_id.
+ */
+export function closeInterrupted(progress: TurnProgress): TurnProgress {
+  if (progress.finished_at !== undefined) return progress;
+  const resumable = Boolean(progress.turn_id);
+  return {
+    ...progress,
+    planning: false,
+    outlining: false,
+    stage: undefined,
+    finished_at: progress.last_event_at ?? progress.started_at,
+    lost: true,
+    ...(resumable ? { resumable } : {}),
+  };
 }
 
 /** Применить событие progress к прогрессу хода. */
