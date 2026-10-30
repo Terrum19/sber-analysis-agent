@@ -7,22 +7,36 @@
  * лента кладётся в кеш браузера, сессия появляется в папке «Импортированные».
  * Последним сообщением ленты — нашлась ли у получателя таблица автора (CSV —
  * по хэшу, БД — в той же базе); нашлась — сессия к ней привязана.
+ * У ответов — шаги хода из бандла. У рецепта (#250) графики без точек ждут
+ * пересчёта: их запускает плашка в чате, не импорт.
  * При импорте ничего из ссылки не выполняется.
  */
 import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { importSessionApi } from "@/api/client";
 import WorkspaceShell from "@/components/layout/WorkspaceShell";
-import { expand, ShareLinkError, unpack, type SharedSession } from "@/lib/shareLink";
+import { expand, hasValues, ShareLinkError, unpack, type SharedSession } from "@/lib/shareLink";
 import { chartTile } from "@/store/chatRunStore";
-import { IMPORTED_FOLDER, useSessionStore, type ChatMessage } from "@/store/sessionStore";
+import { IMPORTED_FOLDER, useSessionStore, type ChatMessage, type ImportedStep } from "@/store/sessionStore";
 import type { ImportedSession, TableCheck } from "@/types/datasource";
 import type { DashboardTile } from "@/types/dashboard";
 import { useT, type Translate } from "@/i18n/useT";
 
+/**
+ * Сообщение ленты с шагами хода из бандла; у рецепта (#250) график без точек
+ * ждёт пересчёта, с точками — едет с данными автора.
+ */
+function withRecipe(m: ChatMessage, shared: SharedSession): ChatMessage {
+  const turn = m.role === "agent" && m.turn_id ? shared.bundle.turns.find((x) => x.turn_id === m.turn_id) : undefined;
+  const steps = Array.isArray(turn?.steps) && turn.steps.length ? (turn.steps as unknown as ImportedStep[]) : undefined;
+  const recipe = shared.recipe && m.chart ? (hasValues(m.chart.spec) ? "author" : "pending") : undefined;
+  return { ...m, ...(steps ? { steps } : {}), ...(recipe ? { recipe } : {}) };
+}
+
 /** Лента получателя: карточки дашбордов — на новые id, плитки превью — из бандла. */
 function importedMessages(shared: SharedSession, result: ImportedSession): ChatMessage[] {
-  return shared.messages.map((m) => {
+  return shared.messages.map((message) => {
+    const m = withRecipe(message, shared);
     if (!m.dashboard) return m;
     const { dashboard, ...rest } = m;
     const id = result.dashboards[dashboard.dashboard_id];
@@ -66,7 +80,9 @@ export default function ImportPage() {
       const shared = expand(await unpack(input));
       const result = await importSessionApi(shared.bundle);
       const messages = importedMessages(shared, result);
-      const tiles = messages.filter((m) => m.chart).map((m) => chartTile(m.chart, t("chat.chartDefault")));
+      const tiles = messages
+        .filter((m) => m.chart && m.recipe !== "pending")
+        .map((m) => chartTile(m.chart, t("chat.chartDefault")));
       if (result.check) messages.push({ id: "msg-imported-table", role: "agent", content: tableNotice(result.check, t) });
       const table = result.table || shared.table || IMPORTED_FOLDER;
       addImportedSession(result.session_id, result.title, table, { messages, tiles });

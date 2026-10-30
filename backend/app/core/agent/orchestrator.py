@@ -1159,6 +1159,7 @@ class AgentOrchestrator:
             yield _failure_event()
             yield _done(memory.turn_id)
             return
+        memory.mark_overview()
         memory.finish_turn("ok", headline=headline)
         yield _done(memory.turn_id)
 

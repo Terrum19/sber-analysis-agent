@@ -110,6 +110,7 @@ def test_bundle_lists_csv_files_and_has_no_result_tables(tmp_path, monkeypatch) 
         "table": None,
         "rows": None,
         "hash": None,
+        "source_table": None,
     }
     turn = bundle["turns"][0]
     assert "result_table" not in turn

@@ -6,7 +6,8 @@ PATCH меняет таблицу по умолчанию и/или назван
 Воспоминания сессии (#197) — ``/{id}/memories``: список, добавление,
 включение и выключение записи. ``/{id}/dashboard-ideas`` — варианты
 дашборда по таблице сессии для кнопок в чате (#224). ``/{id}/bundle`` и
-``/import`` — бандл сессии и импорт его в новую сессию (#249).
+``/import`` — бандл сессии и импорт его в новую сессию (#249); ``/{id}/replay``
+— пересчёт графиков импортированной сессии по рецепту на данных получателя (#250).
 Источник правды — SQLite SessionMemory: сессии и их метаданные переживают
 перезапуск.
 """
@@ -23,6 +24,7 @@ from app.api.deps import get_db
 from app.api.schemas.chat import (
     DashboardIdeasOut,
     DashboardIdeasRequest,
+    DashboardPayload,
     MemoryCreate,
     MemoryOut,
     MemoryUpdate,
@@ -30,6 +32,7 @@ from app.api.schemas.chat import (
     SessionOut,
     SessionUpdate,
 )
+from app.core.agent.replay import Replayer, ReplayOut, ReplayRequest
 from app.core.dashboards.ideas import generate_ideas
 from app.core.data.duckdb_manager import DuckDBManager
 from app.core.memory import session_bundle
@@ -150,6 +153,37 @@ def get_bundle(session_id: str, db: Annotated[DuckDBManager, Depends(get_db)]) -
         return session_bundle.build(session_id, db)
     except KeyError:
         raise HTTPException(status_code=404, detail="Сессия не найдена.") from None
+
+
+@router.post("/{session_id}/replay", response_model=ReplayOut)
+async def replay_session(
+    session_id: str, payload: ReplayRequest, db: Annotated[DuckDBManager, Depends(get_db)]
+) -> ReplayOut:
+    """Пересчитать графики и плитки импортированной сессии на данных получателя (#250).
+
+    Таблица автора ищется заново (после подключения базы она могла появиться);
+    не нашлась — ответ с ``check`` и без графиков. Нашлась — сессия к ней
+    привязывается, шаги автора выполняются без LLM. Python-шаги не выполняются.
+    Не импортированная сессия — 400.
+    """
+    memory = existing(session_id)
+    if not memory.imported:
+        raise HTTPException(
+            status_code=400, detail="Пересчитать можно только импортированную сессию."
+        )
+    source = session_bundle.BundleSource.model_validate(memory.source or {})
+    check = await asyncio.to_thread(session_bundle.check_table, db, source)
+    if check is None or check.bound is None:
+        return ReplayOut(check=check)
+    memory = SessionMemory(session_id, db)
+    memory.set_table(check.bound)
+    out, dashboards = await Replayer(memory, db).run(payload.charts)
+    out.check = check
+    out.dashboards = [
+        DashboardPayload.from_dashboard(dashboard).model_dump(exclude_none=True)
+        for dashboard in dashboards
+    ]
+    return out
 
 
 @router.get("/{session_id}/memories", response_model=list[MemoryOut])

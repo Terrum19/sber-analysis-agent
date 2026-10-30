@@ -9,6 +9,10 @@
  * пометка, плитка с графиком из ленты — ссылка на сообщение. Числа в данных
  * округляются до 6 значащих цифр (целая часть не теряется).
  *
+ * Рецепт (#250) — та же ссылка без точек: у графиков ходов и плиток, которые
+ * получатель пересчитает у себя (`replay` в бандле), вырезаются `data.values`
+ * и снимок плитки. Графики без `replay` едут с данными автора.
+ *
  * Кодировок две, какая останется — по замерам (#244): base64url (ASCII,
  * кликается везде) и base32768 (символы Unicode, в 2,5 раза короче).
  * Распаковка узнаёт кодировку по символам.
@@ -51,6 +55,8 @@ export interface BundleDashboard {
 /** Распакованная ссылка: бандл для бэкенда и лента для браузера. */
 export interface SharedSession {
   bundle: SessionBundle;
+  /** Ссылка-рецепт: графики без точек пересчитываются у получателя. */
+  recipe: boolean;
   /** Активная таблица автора: под ней лента лежит в кеше браузера. */
   table: string | null;
   messages: ChatMessage[];
@@ -99,6 +105,24 @@ function packSpec(spec: unknown): Json {
   if (isObject(data) && "values" in data) out.data = { ...data, values: packRows(data.values) };
   else if (data !== undefined) out.data = data;
   return out;
+}
+
+/** Ужатая спека без точек данных: их пересчитает получатель. */
+function stripSpec(spec: Json): Json {
+  if (!isObject(spec) || !isObject(spec.data)) return spec;
+  const { values, ...data } = spec.data;
+  const { data: _data, ...rest } = spec;
+  return Object.keys(data).length ? { ...rest, data } : rest;
+}
+
+/** В спеке есть точки данных: у рецепта — только у графиков с данными автора. */
+export function hasValues(spec: unknown): boolean {
+  return isObject(spec) && isObject(spec.data) && Array.isArray(spec.data.values);
+}
+
+/** Ход или плитка пересчитываются у получателя: в бандле есть `replay`. */
+function replayable(item: JsonObject): boolean {
+  return isObject(item.replay);
 }
 
 function unpackSpec(spec: Json): Record<string, unknown> {
@@ -169,12 +193,18 @@ function unpackMessage(m: JsonObject, index: number): ChatMessage {
   };
 }
 
-function packTile(tile: JsonObject, charts: Map<string, number>): JsonObject {
+/** График сообщения ленты: номер сообщения и вырезаны ли у него точки. */
+type FeedChart = { index: number; stripped: boolean };
+
+function packTile(tile: JsonObject, charts: Map<string, FeedChart>, recipe: boolean): JsonObject {
   const { id, result_table, spec, snapshot_data, ...rest } = tile;
   const packed = packSpec(spec);
   const out: JsonObject = rest;
-  const message = charts.get(canonical(packed));
-  out.spec = message !== undefined ? { [MESSAGE]: message } : packed;
+  const strip = recipe && replayable(tile);
+  const chart = charts.get(canonical(packed));
+  const message = chart && chart.stripped === strip ? chart.index : undefined;
+  out.spec = message !== undefined ? { [MESSAGE]: message } : strip ? stripSpec(packed) : packed;
+  if (strip) return out;
   const values = isObject(spec) && isObject(spec.data) ? spec.data.values : undefined;
   if (snapshot_data !== undefined && snapshot_data !== null) {
     out.snapshot_data =
@@ -198,29 +228,59 @@ function unpackTile(tile: JsonObject, messages: ChatMessage[]): JsonObject {
   return out;
 }
 
-/** Бандл и лента -> ужатый JSON для сжатия. */
-export function compact(bundle: SessionBundle, table: string | null, snapshot: SessionSnapshot): JsonObject {
+/** Ходы, графики которых получатель пересчитает по рецепту. */
+function replayTurns(bundle: SessionBundle): Set<string> {
+  return new Set(bundle.turns.filter(replayable).map((turn) => String(turn.turn_id)));
+}
+
+/**
+ * Бандл и лента -> ужатый JSON для сжатия. `recipe` — ссылка-рецепт: у
+ * пересчитываемых графиков нет точек, у их плиток — снимка.
+ */
+export function compact(
+  bundle: SessionBundle,
+  table: string | null,
+  snapshot: SessionSnapshot,
+  recipe = false,
+): JsonObject {
+  const replayed = recipe ? replayTurns(bundle) : new Set<string>();
   const feed = snapshot.messages.map(packMessage).filter((m): m is JsonObject => m !== null);
-  const charts = new Map<string, number>();
+  const charts = new Map<string, FeedChart>();
   feed.forEach((m, index) => {
-    if (isObject(m.chart)) charts.set(canonical(m.chart.spec), index);
+    if (!isObject(m.chart)) return;
+    const stripped = typeof m.turn_id === "string" && replayed.has(m.turn_id);
+    charts.set(canonical(m.chart.spec), { index, stripped });
+    if (!stripped) return;
+    m.chart = { ...m.chart, spec: stripSpec(m.chart.spec) };
+    if (isObject(m.answer) && m.answer.spec !== undefined && m.answer.spec !== SAME) {
+      m.answer = { ...m.answer, spec: stripSpec(m.answer.spec) };
+    }
   });
   return {
     ...(bundle as unknown as JsonObject),
     dashboards: bundle.dashboards.map((dashboard) => ({
       ...(dashboard as unknown as JsonObject),
-      tiles: dashboard.tiles.map((tile) => packTile(tile, charts)),
+      tiles: dashboard.tiles.map((tile) => packTile(tile, charts, recipe)),
     })),
     table,
     feed,
+    ...(recipe ? { recipe: true } : {}),
   };
+}
+
+/** Сколько графиков рецепт везёт с данными автора: получатель их не пересчитает. */
+export function authorCharts(bundle: SessionBundle, snapshot: SessionSnapshot): number {
+  const replayed = replayTurns(bundle);
+  const feed = snapshot.messages.filter((m) => m.chart && !(m.turn_id && replayed.has(m.turn_id))).length;
+  const tiles = bundle.dashboards.flatMap((dashboard) => dashboard.tiles).filter((tile) => !replayable(tile));
+  return feed + tiles.length;
 }
 
 /** Ужатый JSON -> бандл для бэкенда и лента. */
 export function expand(packed: JsonObject): SharedSession {
   const feed = Array.isArray(packed.feed) ? packed.feed.filter(isObject) : [];
   const messages = feed.map(unpackMessage);
-  const { feed: _feed, table, ...bundle } = packed;
+  const { feed: _feed, table, recipe, ...bundle } = packed;
   const dashboards = Array.isArray(bundle.dashboards) ? bundle.dashboards.filter(isObject) : [];
   return {
     bundle: {
@@ -232,6 +292,7 @@ export function expand(packed: JsonObject): SharedSession {
         ),
       })),
     },
+    recipe: recipe === true,
     table: typeof table === "string" ? table : null,
     messages,
   };

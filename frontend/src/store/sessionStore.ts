@@ -50,6 +50,15 @@ export interface ChatMessage {
   suggestions?: string[];
   /** Сообщение пришло из ссылки другого пользователя (#249). */
   imported?: boolean;
+  /**
+   * График из ссылки-рецепта (#250): pending — ещё не пересчитан, replayed —
+   * пересчитан у получателя, author — едет с данными автора, failed — не
+   * пересчитался (причина в recipeError).
+   */
+  recipe?: "pending" | "replayed" | "author" | "failed";
+  recipeError?: string;
+  /** Шаги хода из бандла: получатель видит, что и как посчитал автор. */
+  steps?: ImportedStep[];
   /** Что показали пользователю — для экспорта ответа (F-10). */
   answer?: {
     headline?: string;
@@ -57,6 +66,16 @@ export interface ChatMessage {
     spec?: Record<string, unknown>;
     result_table?: string;
   };
+}
+
+/** Шаг хода из бандла импортированной сессии. */
+export interface ImportedStep {
+  step_id?: number;
+  tool?: string | null;
+  input?: string;
+  arguments?: Record<string, unknown>;
+  columns?: unknown[];
+  purpose?: string;
 }
 
 export interface SessionItem {
@@ -143,6 +162,8 @@ export interface SessionState {
   appendToLastMessage: (chunk: string, sessionId?: string) => void;
   updateLastMessage: (patch: Partial<ChatMessage>, sessionId?: string) => void;
   updateMessage: (id: string, patch: Partial<ChatMessage>, sessionId?: string) => void;
+  /** Поменять ленту и плитки сессии разом (итог пересчёта рецепта, #250). */
+  patchSnapshot: (sessionId: string, change: (snap: SessionSnapshot) => SessionSnapshot) => void;
   removeMessage: (id: string, sessionId?: string) => void;
   removeLastFailedMessage: (sessionId?: string) => void;
   addTile: (tile: DashboardTile, sessionId?: string) => void;
@@ -328,6 +349,7 @@ export const useSessionStore = create<SessionState>()(
               : snap,
           ),
         ),
+      patchSnapshot: (sessionId, change) => set((s) => patchSession(s, sessionId, change)),
       updateLastMessage: (patch, sessionId) =>
         set((s) =>
           patchSession(s, sessionId, (snap) => {

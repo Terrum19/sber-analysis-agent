@@ -248,7 +248,18 @@ class SessionMemory:
         """Ходы сессии, старые первыми."""
         return self._state["turns"]
 
-    def import_session(self, title: str, turns: list[dict], source: dict | None) -> None:
+    @property
+    def replay_tiles(self) -> dict[str, dict]:
+        """Плитка импортированного дашборда -> шаг хода, по которому она пересчитывается (#250)."""
+        return self._state.get("replay_tiles") or {}
+
+    def import_session(
+        self,
+        title: str,
+        turns: list[dict],
+        source: dict | None,
+        replay_tiles: dict[str, dict] | None = None,
+    ) -> None:
         """Заполнить новую сессию ходами из бандла; ничего из них не выполняется.
 
         Таблицы у сессии нет: на первый вопрос получателя агент сам выберет
@@ -262,8 +273,26 @@ class SessionMemory:
             imported=True,
             source=source,
             turns=turns,
+            replay_tiles=replay_tiles or {},
             created_at=datetime.now(UTC).isoformat(),
         )
+        self._persist()
+
+    def record_replay(self, results: dict[str, list[str]], charts: dict[str, str]) -> None:
+        """Запомнить таблицы, пересчитанные у получателя (#250).
+
+        ``results`` — таблицы шагов по ходам, ``charts`` — таблица графика
+        хода: по ней работают смена вида и выгрузка в Excel.
+        """
+        for turn in self._state["turns"]:
+            if turn["turn_id"] in results:
+                turn["results"] = results[turn["turn_id"]]
+            table = charts.get(turn["turn_id"])
+            if table is None:
+                continue
+            turn["result_table"] = table
+            if turn.get("chart") is not None:
+                turn["chart"]["result_table"] = table
         self._persist()
 
     def set_meta(self, title: str | None, datasource_id: str | None) -> None:
@@ -394,6 +423,10 @@ class SessionMemory:
                 "purpose": step.purpose,
             }
         )
+
+    def mark_overview(self) -> None:
+        """Ход — обзор таблицы («что передо мной?»): получатель рецепта пересобирает его (#250)."""
+        self._turn["overview"] = True
 
     def record_chart(self, chart_type: str, result_table: str, title: str = "") -> None:
         """Запомнить график текущего хода (для смены вида без LLM)."""

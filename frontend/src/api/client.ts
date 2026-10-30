@@ -10,6 +10,7 @@ import type {
   Datasource,
   DatasourceDbRequest,
   ImportedSession,
+  ReplayResult,
   SessionResponse,
   TableBrief,
 } from "@/types/datasource";
@@ -214,6 +215,27 @@ export async function importSessionApi(bundle: SessionBundle): Promise<ImportedS
     });
     if (!res.ok) throw await parseApiError(res);
     return (await res.json()) as ImportedSession;
+  } catch (err) {
+    throw toApiError(err);
+  }
+}
+
+/**
+ * POST /api/sessions/{id}/replay: пересчитать графики рецепта на данных получателя (#250).
+ * charts — спеки графиков ленты по turn_id (без точек): тип и подписи автора.
+ */
+export async function replaySessionApi(
+  sessionId: string,
+  charts: Record<string, Record<string, unknown>>,
+): Promise<ReplayResult> {
+  try {
+    const res = await fetch(`${API}/sessions/${encodeURIComponent(sessionId)}/replay`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ charts }),
+    });
+    if (!res.ok) throw await parseApiError(res);
+    return (await res.json()) as ReplayResult;
   } catch (err) {
     throw toApiError(err);
   }

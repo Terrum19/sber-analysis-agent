@@ -14,6 +14,9 @@ SOURCE = "$source"
 # где слабая модель зацикливается (#81).
 NOTE_LIMIT = 500
 NOTES_PER_PLAN = 3
+# Шаги плитки N дашборда по идее нумеруются с (N + 1) * TILE_STEP_IDS: номера
+# плиток не пересекаются, и у каждой плитки своя цепочка $prev.
+TILE_STEP_IDS = 100
 
 
 class ResearchStep(BaseModel):

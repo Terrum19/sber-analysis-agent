@@ -1,5 +1,48 @@
 2026-10-31  thebulkapro  <saitbatalovbulat200@gmail.com>
 
+	Поделиться сессией: ссылка-рецепт и пересчёт у получателя (#250).
+	* backend/app/core/agent/replay.py: Новый.  (Replayer): Шаги автора
+	на таблице получателя тем же StepExecutor, без LLM; спека — тем же
+	типом, подписями и порядком колонок.  Python-шаги не выполняются,
+	упавший шаг не прерывает пересчёт.
+	* backend/app/api/routes/sessions.py (replay_session): Новая.
+	POST /api/sessions/{id}/replay.
+	* backend/app/core/memory/session_bundle.py (Replay, BundleTile)
+	(result_steps, turn_replay, checked, chain): Новые.  У хода и плитки —
+	откуда пересчитать график.  (BundleSource.source_table): Новое.
+	(check_table): Таблица БД — по имени в самой базе.
+	(TableCheck.db_schema): Новое.
+	* backend/app/core/data/table_origin.py (view_sql, target_of)
+	(view_target, find_view): Новые.
+	* backend/app/core/memory/session_memory.py (replay_tiles)
+	(record_replay, mark_overview): Новые.  (import_session): Параметр
+	replay_tiles.
+	* backend/app/core/agent/orchestrator.py (_overview): Ход помечен
+	overview.
+	* backend/app/core/dashboards/recalculate.py (rebuild_spec): Берёт
+	спеку, а не плитку.
+	* backend/app/models/research_step.py (TILE_STEP_IDS): Перенесена из
+	core/agent/dashboard_turn.py.
+	* frontend/src/lib/shareLink.ts (compact): Параметр recipe.
+	(authorCharts, hasValues, stripSpec): Новые.
+	* frontend/src/components/chat/RecipeBanner.tsx: Новый.  Плашка
+	«Пересчитать» и форма подключения базы автора.
+	* frontend/src/components/chat/StepsList.tsx: Новый.  Шаги автора.
+	* frontend/src/components/layout/ShareSessionButton.tsx: Блок
+	«Рецепт».
+	* frontend/src/app/import/page.tsx (withRecipe): Новая.
+	* frontend/src/components/chat/ChatPanel.tsx: Плашка, шаги и пометки
+	графиков рецепта.
+	* frontend/src/store/sessionStore.ts (ChatMessage.recipe)
+	(ChatMessage.steps, patchSnapshot, ImportedStep): Новые.
+	* frontend/src/api/client.ts (replaySessionApi): Новая.
+	* frontend/src/types/datasource.ts (ReplayResult): Новый.
+	* frontend/src/i18n/dictionary.ts: Тексты рецепта.
+	* docs/memory.md, docs/repo_structure.md: Рецепт и пересчёт.
+	* backend/tests/unit/test_session_replay.py: Новый.
+
+2026-10-31  thebulkapro  <saitbatalovbulat200@gmail.com>
+
 	Импорт сессии сразу выбирает таблицу автора, если она есть (#249).
 	* backend/app/core/data/table_origin.py: Новый.  (origin): CSV или БД
 	по каталогу DuckDB.  (content_hash): Хэш CSV-таблицы без учёта порядка

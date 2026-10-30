@@ -16,8 +16,17 @@
 выключенными, дашборды и плитки получают новые id. Ссылки на ``temp_result_vN``
 обнуляются: у получателя под тем же номером лежат другие данные. Таблица
 автора ищется у получателя (``check_table``): CSV — по хэшу под любым именем,
-БД — по имени в той же базе; нашлась — сессия к ней привязывается. При
+БД — по имени таблицы в той же базе; нашлась — сессия к ней привязывается. При
 импорте ничего из бандла не выполняется — ни SQL шагов, ни LLM.
+
+Рецепт (#250): у хода с графиком и у плитки дашборда в бандле — ``replay``,
+откуда пересчитать график у получателя: шаг хода (``turn_id``, ``step_id``)
+или обзор таблицы (``overview``). Шаг находится по таблице результата автора:
+ход хранит результаты шагов по порядку (``results``). Нет ``replay`` —
+график не пересчитывается и едет с данными автора: шаг не найден, график
+построен не по результату шага (гистограмма распределения) или в цепочке
+шагов есть Python. У таблицы БД в источнике — её имя в самой базе
+(``source_table``): по нему она находится у получателя под любым именем.
 """
 
 import re
@@ -36,7 +45,7 @@ from app.core.data import table_origin
 from app.core.data.connectors import clickhouse, pg_dsn
 from app.core.memory.datasource_store import DatasourceStore
 from app.core.memory.session_memory import SessionMemory
-from app.models.research_step import NOTE_LIMIT
+from app.models.research_step import NOTE_LIMIT, TILE_STEP_IDS
 
 FORMAT = 1
 IMPORTED_SUFFIX = " (импорт)"
@@ -49,6 +58,8 @@ MAX_DASHBOARDS = 50
 MAX_TILES = 50
 KINDS = {"pg": "postgres", "ch": "clickhouse", "csv": "csv"}
 CSV_DATASOURCE = re.compile(r"csv_[0-9a-f]+")
+# Шаги с кодом Python: у получателя код автора не выполняется никогда.
+PYTHON_TOOLS = frozenset({"run_python", "run_wasm_python"})
 
 Text = Annotated[str, StringConstraints(max_length=TEXT_LIMIT)]
 Name = Annotated[str, StringConstraints(max_length=TITLE_LIMIT)]
@@ -81,6 +92,14 @@ class BundleChart(BaseModel):
     title: Text = ""
 
 
+class Replay(BaseModel):
+    """Откуда пересчитать график: шаг хода или обзор таблицы («что передо мной?»)."""
+
+    turn_id: Name | None = None
+    step_id: int | None = None
+    overview: bool = False
+
+
 class BundleTurn(BaseModel):
     turn_id: Name
     question: Text
@@ -91,6 +110,7 @@ class BundleTurn(BaseModel):
     chart: BundleChart | None = None
     status: Literal["ok", "failed", "clarification"]
     reply_to: Name | None = None
+    replay: Replay | None = None
 
 
 class BundleMemory(BaseModel):
@@ -110,13 +130,19 @@ class BundleSource(BaseModel):
     table: Text | None = None
     rows: int | None = None
     hash: Name | None = None
+    # У таблицы БД — её имя в самой базе: имя представления у получателя другое.
+    source_table: Text | None = None
+
+
+class BundleTile(DashboardTile):
+    replay: Replay | None = None
 
 
 class BundleDashboard(BaseModel):
     id: Name
     title: Text
     template_id: Name | None = None
-    tiles: list[DashboardTile] = Field(default_factory=list, max_length=MAX_TILES)
+    tiles: list[BundleTile] = Field(default_factory=list, max_length=MAX_TILES)
 
 
 class Bundle(BaseModel):
@@ -145,6 +171,7 @@ class TableCheck(BaseModel):
     table: str
     bound: str | None = None
     dsn: str | None = None
+    db_schema: str | None = None
     file: str | None = None
 
 
@@ -170,6 +197,9 @@ def build(session_id: str, db=None) -> dict:
         raise KeyError(session_id)
     store = DashboardStore()
     dashboards = [store.get(summary.id) for summary in reversed(store.list(session_id))]
+    turns = {turn["turn_id"]: turn for turn in memory.turns}
+    sources = result_steps(memory.turns)
+    replay_tiles = memory.replay_tiles
     return {
         "manifest": {
             "format": FORMAT,
@@ -180,28 +210,111 @@ def build(session_id: str, db=None) -> dict:
             "exported_at": datetime.now(UTC).isoformat(),
         },
         "source": describe_source(memory, db).model_dump(),
-        "turns": [exported_turn(turn) for turn in memory.turns],
+        "turns": [exported_turn(turn, turn_replay(turn, sources, turns)) for turn in memory.turns],
         "memories": [
             {key: item[key] for key in BundleMemory.model_fields}
             for item in memory.memories(include_disabled=True)
         ],
         "dashboards": [
-            dashboard.model_dump(mode="json", exclude={"session_id", "created_at", "updated_at"})
+            {
+                **dashboard.model_dump(
+                    mode="json", exclude={"session_id", "created_at", "updated_at", "tiles"}
+                ),
+                "tiles": [
+                    {
+                        **tile.model_dump(mode="json"),
+                        "replay": dump(
+                            checked(sources.get(tile.result_table or ""), turns)
+                            or checked(replay_tiles.get(tile.id), turns)
+                        ),
+                    }
+                    for tile in dashboard.tiles
+                ],
+            }
             for dashboard in dashboards
             if dashboard is not None
         ],
     }
 
 
-def exported_turn(turn: dict) -> dict:
+def result_steps(turns: list[dict]) -> dict[str, Replay]:
+    """Таблица результата автора -> шаг хода, который её построил.
+
+    Результаты шагов записаны в ход по порядку шагов; ход, где их число не
+    совпадает с числом шагов, пропускается.
+    """
+    found = {}
+    for turn in turns:
+        steps, results = turn.get("steps") or [], turn.get("results") or []
+        if len(steps) != len(results):
+            continue
+        for step, table in zip(steps, results, strict=True):
+            found[table] = Replay(turn_id=turn["turn_id"], step_id=step["step_id"])
+    return found
+
+
+def turn_replay(turn: dict, sources: dict[str, Replay], turns: dict[str, dict]) -> Replay | None:
+    """Откуда пересчитать график хода; None — не пересчитывается.
+
+    «Сделай таблицей» берёт шаг хода, график которого перестроил; у
+    импортированного хода — ``replay`` из его бандла.
+    """
+    if turn.get("status") != "ok":
+        return None
+    if turn.get("overview"):
+        return Replay(overview=True)
+    if turn.get("replay"):
+        return checked(Replay.model_validate(turn["replay"]), turns)
+    chart = turn.get("chart") or {}
+    return checked(sources.get(chart.get("result_table") or ""), turns)
+
+
+def checked(replay: Replay | dict | None, turns: dict[str, dict]) -> Replay | None:
+    """``replay``, если шаг есть и в его цепочке нет Python; иначе None."""
+    if isinstance(replay, dict):
+        replay = Replay.model_validate(replay)
+    if replay is None or replay.overview:
+        return replay
+    turn = turns.get(replay.turn_id or "")
+    steps = chain(turn.get("steps") or [], replay.step_id) if turn is not None else None
+    if not steps or any(step.get("tool") in PYTHON_TOOLS for step in steps):
+        return None
+    return replay
+
+
+def chain(steps: list[dict], step_id: int | None) -> list[dict] | None:
+    """Шаги, которые выполняются до шага ``step_id`` включительно; None — шага нет.
+
+    У дашборда по идее у каждой плитки своя сотня номеров и своя цепочка
+    ``$prev``: шаги других плиток в цепочку не входят.
+    """
+    if step_id is None:
+        return None
+    group = step_id // TILE_STEP_IDS
+    out = []
+    for step in steps:
+        if step.get("step_id", 0) // TILE_STEP_IDS != group:
+            continue
+        out.append(step)
+        if step.get("step_id") == step_id:
+            return out
+    return None
+
+
+def dump(replay: Replay | None) -> dict | None:
+    return replay.model_dump() if replay is not None else None
+
+
+def exported_turn(turn: dict, replay: Replay | None = None) -> dict:
     """Ход для бандла: только поля BundleTurn, у графика — без таблицы результата.
 
     Пустые поля (у старых ходов их может не быть) не пишутся: импорт подставит
-    значения по умолчанию.
+    значения по умолчанию. ``replay`` — откуда пересчитать график (рецепт).
     """
     chart = turn.get("chart")
     return {
         **{key: turn[key] for key in BundleTurn.model_fields if turn.get(key) is not None},
+        "replay": dump(replay),
         "steps": [
             {key: step[key] for key in BundleStep.model_fields if step.get(key) is not None}
             for step in turn.get("steps") or []
@@ -244,6 +357,7 @@ def describe_source(memory: SessionMemory, db=None) -> BundleSource:
             db_schema=record.db_schema,
             tables=tables,
             table=table,
+            source_table=table_origin.view_target(db, table),
         )
     datasource_id = memory.datasource_id or ""
     record = DatasourceStore().get(datasource_id) if datasource_id else None
@@ -305,23 +419,29 @@ def load(raw: Any, db=None) -> Imported:
     session_id = uuid.uuid4().hex
     title = f"{bundle.manifest.title or 'Сессия'}"[: TITLE_LIMIT - len(IMPORTED_SUFFIX)]
     title += IMPORTED_SUFFIX
+    store = DashboardStore()
+    dashboards = {}
+    replay_tiles = {}
+    for item in bundle.dashboards:
+        tiles = [imported_tile(tile) for tile in item.tiles]
+        for source, tile in zip(item.tiles, tiles, strict=True):
+            if source.replay is not None:
+                replay_tiles[tile.id] = source.replay.model_dump()
+        dashboard = Dashboard(
+            session_id=session_id,
+            title=item.title,
+            template_id=item.template_id,
+            tiles=tiles,
+        )
+        dashboards[item.id] = store.create(dashboard)
     memory = SessionMemory(session_id)
     memory.import_session(
         title,
         [imported_turn(turn) for turn in bundle.turns],
         bundle.source.model_dump(),
+        replay_tiles,
     )
     memory.import_memories([item.model_dump() for item in bundle.memories])
-    store = DashboardStore()
-    dashboards = {}
-    for item in bundle.dashboards:
-        dashboard = Dashboard(
-            session_id=session_id,
-            title=item.title,
-            template_id=item.template_id,
-            tiles=[imported_tile(tile) for tile in item.tiles],
-        )
-        dashboards[item.id] = store.create(dashboard)
     check = check_table(db, bundle.source) if db is not None else None
     if check is not None and check.bound is not None:
         memory.set_table(check.bound)
@@ -338,8 +458,9 @@ def check_table(db, source: BundleSource) -> TableCheck | None:
     """Найти у получателя таблицу автора; None — в бандле её нет.
 
     CSV — по хэшу содержимого под любым именем; таблица с тем же именем и
-    другим хэшем — different. БД — таблица с тем же именем в подключённой
-    базе с тем же хостом, портом, базой и схемой.
+    другим хэшем — different. БД — представление над той же таблицей базы
+    (``source_table``, у старых ссылок — имя представления автора) в
+    подключённой базе с тем же хостом, портом, базой и схемой.
     """
     table = source.table
     if table is None or source.kind is None:
@@ -355,7 +476,13 @@ def check_table(db, source: BundleSource) -> TableCheck | None:
         return TableCheck(status=status, kind="csv", table=table, file=file)
     if source.dsn is None:
         return None
-    check = TableCheck(status="not_connected", kind=source.kind, table=table, dsn=source.dsn)
+    check = TableCheck(
+        status="not_connected",
+        kind=source.kind,
+        table=table,
+        dsn=source.dsn,
+        db_schema=source.db_schema,
+    )
     identities = [
         identity
         for identity in table_origin.same_database(source.kind, source.dsn, source.db_schema)
@@ -363,8 +490,9 @@ def check_table(db, source: BundleSource) -> TableCheck | None:
     ]
     if not identities:
         return check
-    if table_origin.view_identity(db, table) in identities:
-        return check.model_copy(update={"status": "found", "bound": table})
+    bound = table_origin.find_view(db, identities, source.source_table or table, prefer=table)
+    if bound is not None:
+        return check.model_copy(update={"status": "found", "bound": bound})
     return check.model_copy(update={"status": "no_table"})
 
 
@@ -381,9 +509,14 @@ def imported_turn(turn: BundleTurn) -> dict:
     }
 
 
-def imported_tile(tile: DashboardTile) -> DashboardTile:
+def imported_tile(tile: BundleTile) -> DashboardTile:
     """Плитка с новым id и без таблицы результата: рисуется по спеке и снимку."""
     spec = dict(tile.spec)
     if isinstance(spec.get("usermeta"), dict):
         spec["usermeta"] = {**spec["usermeta"], "result_table": None}
-    return tile.model_copy(update={"id": uuid.uuid4().hex[:12], "result_table": None, "spec": spec})
+    return DashboardTile(
+        **tile.model_dump(exclude={"id", "result_table", "spec", "replay"}),
+        id=uuid.uuid4().hex[:12],
+        result_table=None,
+        spec=spec,
+    )

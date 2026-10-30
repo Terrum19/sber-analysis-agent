@@ -8,7 +8,10 @@ CSV-таблица — постоянная таблица с комментар
 Таблица PostgreSQL или ClickHouse — временное представление поверх
 подключения ``<identity>_<суффикс>``; по ``identity`` источник находится в
 ``DatasourceStore``. Живые данные БД хэшем не сравниваются: та же таблица —
-это таблица с тем же именем в той же базе (хост, порт, база, схема).
+это таблица с тем же именем в той же базе (хост, порт, база, схема). Имя
+берётся из самой базы (``view_target``), а не имя представления: при занятом
+имени коннектор подключает таблицу с префиксом, и у двух пользователей
+представления одной таблицы могут называться по-разному (#250).
 """
 
 import hashlib
@@ -21,6 +24,9 @@ from app.core.data.connectors.postgres import DEFAULT_SCHEMA, quote_identifier
 from app.core.memory.datasource_store import DatasourceRecord, DatasourceStore
 
 VIEW_SOURCE = re.compile(r"\b((?:pg|ch)_[0-9a-f]{10})_[0-9a-f]{6}\.")
+# DuckDB хранит имя в кавычках, только если без них нельзя: main."Sa""les".
+IDENT = r'"(?:[^"]|"")*"|[^\s.;"()]+'
+VIEW_TARGET = re.compile(rf"\b(?:pg|ch)_[0-9a-f]{{10}}_[0-9a-f]{{6}}\.(?:{IDENT})\.({IDENT})")
 POSTGRES_PORT = "5432"
 
 
@@ -49,13 +55,48 @@ def origin(db, table: str) -> Origin | None:
     return Origin(record.kind, record=record) if record is not None else None
 
 
-def view_identity(db, table: str) -> str | None:
-    """identity источника БД, через который подключено представление; None — не оно."""
+def view_sql(db, table: str) -> str:
+    """SQL временного представления; не представление — пустая строка."""
     rows = db.query(
         "SELECT sql FROM duckdb_views() WHERE temporary AND view_name = $table", {"table": table}
     )
-    match = VIEW_SOURCE.search(rows[0]["sql"] or "") if rows else None
+    return (rows[0]["sql"] or "") if rows else ""
+
+
+def view_identity(db, table: str) -> str | None:
+    """identity источника БД, через который подключено представление; None — не оно."""
+    match = VIEW_SOURCE.search(view_sql(db, table))
     return match.group(1) if match else None
+
+
+def target_of(sql: str) -> str | None:
+    """Имя таблицы в базе по SQL представления; None — представление не над БД."""
+    match = VIEW_TARGET.search(sql)
+    if match is None:
+        return None
+    name = match.group(1)
+    return name[1:-1].replace('""', '"') if name.startswith('"') else name
+
+
+def view_target(db, table: str) -> str | None:
+    """Имя таблицы в самой базе, над которой построено представление."""
+    return target_of(view_sql(db, table))
+
+
+def find_view(db, identities: list[str], target: str, prefer: str | None = None) -> str | None:
+    """Представление над таблицей ``target`` одного из источников; ``prefer`` — первым.
+
+    Имя представления не важно: у получателя оно может быть с префиксом.
+    """
+    rows = db.query("SELECT view_name, sql FROM duckdb_views() WHERE temporary ORDER BY view_name")
+    names = []
+    for row in rows:
+        sql = row["sql"] or ""
+        source = VIEW_SOURCE.search(sql)
+        if source is not None and source.group(1) in identities and target_of(sql) == target:
+            names.append(row["view_name"])
+    names.sort(key=lambda name: name != prefer)
+    return names[0] if names else None
 
 
 def content_hash(db, table: str) -> str:

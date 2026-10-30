@@ -1,6 +1,8 @@
 /**
  * Типы источников данных (дубль контракта backend/app/api/schemas/datasource.py).
  */
+import type { DashboardEvent } from "@/types/chat";
+
 export type DbKind = "postgres" | "clickhouse";
 
 export type DescriptionStatus = "none" | "pending" | "ready" | "failed";
@@ -113,5 +115,17 @@ export interface TableCheck {
   table: string;
   bound?: string | null;
   dsn?: string | null;
+  /** Схема базы автора: для формы подключения. */
+  db_schema?: string | null;
   file?: string | null;
+}
+
+/** Итог пересчёта рецепта (#250): графики по turn_id, дашборды, причины отказов. */
+export interface ReplayResult {
+  /** Таблица автора у получателя; без bound — пересчитывать не по чему. */
+  check: TableCheck | null;
+  charts: Record<string, { spec: Record<string, unknown>; result_table?: string | null }>;
+  dashboards: DashboardEvent["data"][];
+  /** turn_id или id плитки -> почему не пересчитан. */
+  failed: Record<string, string>;
 }
