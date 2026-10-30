@@ -17,6 +17,7 @@ interface Props {
   sessionId?: string;
   question?: string;
   headline?: string;
+  title?: string;
   details?: string[];
   spec?: Record<string, unknown>;
   resultTable?: string;
@@ -29,13 +30,15 @@ interface Props {
 export default function AnswerExport({
   sessionId,
   question,
-  headline,
+  headline: rawHeadline,
+  title,
   details,
   spec,
   resultTable,
   compact = false,
   inline = false,
 }: Props) {
+  const headline = rawHeadline || title;
   const t = useT();
   const [busy, setBusy] = useState<"xlsx" | "pdf" | null>(null);
   const [error, setError] = useState<string | null>(null);

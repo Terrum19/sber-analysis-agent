@@ -435,7 +435,7 @@ export default function DashboardTile({
               >
                 {tile.title}
               </h3>
-              {isEditing && (
+              {(isEditing || Boolean(onRename)) && (
                 <button
                   type="button"
                   onMouseDown={(e) => e.stopPropagation()}
@@ -443,7 +443,9 @@ export default function DashboardTile({
                     e.stopPropagation();
                     setEditingTitle(true);
                   }}
-                  className="shrink-0 text-graphite-400 hover:text-graphite-200"
+                  className={`shrink-0 text-graphite-400 hover:text-graphite-200 transition ${
+                    isEditing ? "" : "opacity-0 group-hover:opacity-100"
+                  }`}
                   title={t("tile.rename")}
                 >
                   <Icon name="pencil" size={13} />
