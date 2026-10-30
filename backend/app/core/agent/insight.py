@@ -8,7 +8,12 @@ import json
 import logging
 
 from app.config import settings
-from app.core.agent.quality_fixes import format_rows, insight_facts, ungrounded_numbers
+from app.core.agent.quality_fixes import (
+    format_rows,
+    insight_facts,
+    period_number_facts,
+    ungrounded_numbers,
+)
 from app.core.data.duckdb_manager import DuckDBManager
 from app.core.llm.client import LLMClient
 from app.core.llm.prompts.insight_summary import INSIGHT_MEMORIES, INSIGHT_SUMMARY, TILE_INSIGHT
@@ -81,6 +86,9 @@ class InsightGenerator:
             # Факты — подсказка, а не условие ответа: без них инсайт строится как раньше.
             logger.warning("инсайт: факты по %s не посчитались", result_table, exc_info=True)
             facts = "нет"
+        merged = period_number_facts(steps or [])
+        if merged:
+            facts = "\n".join([facts, *merged]) if facts != "нет" else "\n".join(merged)
         # Одна строка — ответ числом; ряд — лидер, минимум или число строк, а не одно значение.
         # Число строк всей таблицы, а не показанных модели (их не больше SHOWN_ROWS).
         rows = db.query(f"SELECT COUNT(*) AS n FROM {identifier(result_table)}")[0]["n"]

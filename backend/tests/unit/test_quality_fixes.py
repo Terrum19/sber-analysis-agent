@@ -3,7 +3,7 @@
 import pytest
 
 from app.config import settings
-from app.core.agent.quality_fixes import insight_facts
+from app.core.agent.quality_fixes import insight_facts, period_number_facts
 from app.core.data.duckdb_manager import DuckDBManager
 from app.core.tools.registry import tool_registry
 
@@ -153,3 +153,39 @@ def test_rows_are_shown_as_compact_table() -> None:
         "period | avg | day\n2024-01-01 | 542.17 | 2024-03-05\n2024-02-01 12:30:00 | 7 | 2024-03-06"
     )
     assert format_rows([]) == "пусто"
+
+
+@pytest.mark.parametrize(
+    ("expression", "unit"),
+    [
+        ('EXTRACT(WEEK FROM "Дата")::INT', "недели"),
+        ("date_part('month', sold_at)", "месяца"),
+        ("week(sold_at)", "недели"),
+        ("extract(quarter from sold_at)", "квартала"),
+    ],
+)
+def test_period_number_of_the_year_is_named_as_all_years(expression: str, unit: str) -> None:
+    from app.models.research_step import ResearchStep
+
+    step = ResearchStep(
+        step_id=0, tool="create_column", arguments={"new_column": "n", "expression": expression}
+    )
+    [fact] = period_number_facts([step])
+    assert f"шаг 1 берёт номер {unit} года" in fact
+    assert "итог за все годы вместе" in fact
+
+
+def test_calendar_periods_are_not_period_numbers() -> None:
+    from app.models.research_step import ResearchStep
+
+    steps = [
+        ResearchStep(
+            step_id=0, tool="time_bucket", arguments={"date_column": "d", "interval": "week"}
+        ),
+        ResearchStep(
+            step_id=1,
+            tool="create_column",
+            arguments={"new_column": "m", "expression": "date_trunc('month', d)"},
+        ),
+    ]
+    assert period_number_facts(steps) == []

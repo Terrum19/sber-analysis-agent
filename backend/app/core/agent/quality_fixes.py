@@ -26,6 +26,7 @@ from datetime import date, datetime
 from app.core.data.duckdb_manager import DuckDBManager
 from app.core.tools.base import identifier
 from app.core.tools.registry import tool_registry
+from app.models.research_step import ResearchStep
 
 # Число: «12345», «12 345» (разряды через пробел), «12,5», «12.5».
 _NUMBER = re.compile(r"\d{1,3}(?:[   ]\d{3})+(?:[.,]\d+)?|\d+(?:[.,]\d+)?")
@@ -147,6 +148,56 @@ def insight_facts(db: DuckDBManager, table: str, shown: int) -> str:
             f"- {name}: сумма {row[f's{i}']}, среднее {_round(row[f'a{i}'])}, {low}, {high}"
         )
     return "\n".join(lines)
+
+
+# Номер периода года в выражении шага: EXTRACT(WEEK FROM d), date_part('month', d), week(d).
+_PERIOD_NUMBER = re.compile(
+    r"extract\s*\(\s*(week|isoweek|month|quarter|doy|dayofyear)\s+from"
+    r"|date_part\s*\(\s*'(week|isoweek|month|quarter|doy|dayofyear)'"
+    r"|\b(week|weekofyear|isoweek|month|quarter|dayofyear)\s*\(",
+    re.IGNORECASE,
+)
+_PERIOD_UNITS = {
+    "week": ("недели", "неделя"),
+    "isoweek": ("недели", "неделя"),
+    "weekofyear": ("недели", "неделя"),
+    "month": ("месяца", "месяц"),
+    "quarter": ("квартала", "квартал"),
+    "doy": ("дня", "день"),
+    "dayofyear": ("дня", "день"),
+}
+
+
+def period_number_facts(steps: list[ResearchStep]) -> list[str]:
+    """Шаги, которые берут номер недели/месяца года: строка результата — все годы вместе.
+
+    «Неделя 4» с SUM — сумма 4-х недель 2025 и 2026 годов, а MIN/MAX даты группы
+    растягиваются на год: без факта модель называет её конкретной неделей.
+    """
+    lines = []
+    for number, step in enumerate(steps, 1):
+        for text in _strings([step.arguments, step.columns]):
+            found = _PERIOD_NUMBER.search(text)
+            if found is None:
+                continue
+            unit, noun = _PERIOD_UNITS[next(group for group in found.groups() if group).lower()]
+            lines.append(
+                f"- шаг {number} берёт номер {unit} года: строка результата объединяет этот "
+                f"номер всех лет данных — это не конкретная {noun} с датами одного года, а итог "
+                f"за все годы вместе; так и скажи, даты одного периода не называй"
+            )
+            break
+    return lines
+
+
+def _strings(value: object) -> list[str]:
+    if isinstance(value, str):
+        return [value]
+    if isinstance(value, dict):
+        value = list(value.values())
+    if isinstance(value, list):
+        return [text for item in value for text in _strings(item)]
+    return []
 
 
 def format_value(value: object) -> str:
