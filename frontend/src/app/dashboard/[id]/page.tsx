@@ -23,7 +23,7 @@ import Icon from "@/components/ui/Icon";
 import ZoomControl from "@/components/ui/ZoomControl";
 import ItemActionMenu from "@/components/layout/ItemActionMenu";
 import { MIN_SIZE, STACK_BELOW, applyGridLayout, isKpiTile, tileGridLayout } from "@/lib/tileLayout";
-import { CHART_TYPES, chartTypeOf, withChartType, type ChartType } from "@/lib/chartTypes";
+import { CHART_TYPES, chartTypeOf, withRebuiltChartType, type ChartType } from "@/lib/chartTypes";
 import { dashboardSnapshotAt } from "@/lib/dashboard";
 import FitGrid from "@/components/canvas/FitGrid";
 import { useOpenArtifact } from "@/hooks/useOpenArtifact";
@@ -294,9 +294,8 @@ export default function DashboardPage({ params }: { params: { id: string } }) {
   async function handleChartTypeChange(index: number, type: ChartType) {
     if (!config) return;
     const prevConfig = config;
-    const nextTiles = config.tiles.map((tile, i) =>
-      i === index ? withChartType(tile, type) : tile,
-    );
+    const changed = await withRebuiltChartType(config.tiles[index], type);
+    const nextTiles = config.tiles.map((tile, i) => (i === index ? changed : tile));
     setConfig({ ...config, tiles: nextTiles });
     try {
       await updateDashboard(params.id, { tiles: nextTiles });

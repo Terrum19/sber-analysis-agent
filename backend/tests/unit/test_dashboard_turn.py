@@ -1,5 +1,7 @@
 """Дашборд по кнопке (#224): план плиток, шаги плиток, выбор графика LLM, идеи."""
 
+import asyncio
+
 import duckdb
 import pytest
 from fastapi.testclient import TestClient
@@ -218,6 +220,50 @@ async def test_chart_choice_failure_uses_intent(db) -> None:
     assert built == {"Регионы": "bar", "Выручка": "kpi", "По дням": "line"}
 
 
+class Thinking(ScriptedLLM):
+    """Выбор графика: первые slow вызовов дольше срока, дальше — ответы по очереди."""
+
+    def __init__(self, slow: int, **answers: list) -> None:
+        super().__init__(**answers)
+        self.slow = slow
+        self.chart_calls = 0
+
+    async def complete_structured(self, system: str, user: str, schema: type) -> object:
+        if schema is ChartChoices:
+            self.chart_calls += 1
+            if self.chart_calls <= self.slow:
+                await asyncio.sleep(10)
+        return await super().complete_structured(system, user, schema)
+
+
+async def test_slow_chart_choice_is_asked_again(db, monkeypatch) -> None:
+    monkeypatch.setattr(settings, "chart_choice_timeout_s", 0.05)
+    llm = Thinking(
+        1,
+        DashboardOutline=[OUTLINE],
+        ChartChoices=[
+            choices(
+                ChartChoice(tile_id=0, chart_type="bar", x="region", y="revenue"),
+                ChartChoice(tile_id=1, chart_type="kpi"),
+                ChartChoice(tile_id=2, chart_type="bar", x="day", y="revenue"),
+            )
+        ],
+    )
+    events = await collect(agent(db, llm), question="Продажи по дням")
+    built = {tile.title: tile.spec["usermeta"]["chart_type"] for tile in saved(events).tiles}
+    assert llm.chart_calls == 2
+    assert built["По дням"] == "bar"
+
+
+async def test_chart_choice_silent_twice_uses_intent(db, monkeypatch) -> None:
+    monkeypatch.setattr(settings, "chart_choice_timeout_s", 0.05)
+    llm = Thinking(2, DashboardOutline=[OUTLINE])
+    events = await collect(agent(db, llm), question="Продажи по дням")
+    built = {tile.title: tile.spec["usermeta"]["chart_type"] for tile in saved(events).tiles}
+    assert llm.chart_calls == 2
+    assert built == {"Регионы": "bar", "Выручка": "kpi", "По дням": "line"}
+
+
 async def test_vague_request_takes_the_first_idea(db) -> None:
     llm = ScriptedLLM(
         DashboardOutline=[DashboardOutline(enough_info=False), OUTLINE],
@@ -343,12 +389,25 @@ async def test_disconnect_cancels_the_build(db) -> None:
     await stream.aclose()
 
 
-def test_focus_puts_chosen_columns_first() -> None:
-    rows = [{"a": 1, "b": "x", "c": 2}]
-    choice = ChartChoice(tile_id=0, x="b", y="c", color="missing")
-    assert list(dashboard_turn._focus(rows, choice)[0]) == ["b", "c", "a"]
-    assert dashboard_turn._focus([], choice) == []
-    assert dashboard_turn._rejection(choice, []) == "результат пуст"
+async def test_tile_is_drawn_by_the_chosen_columns(db) -> None:
+    llm = ScriptedLLM(
+        DashboardOutline=[OUTLINE],
+        ChartChoices=[
+            choices(
+                ChartChoice(tile_id=0, chart_type="bar", x="region", y="revenue", limit=2),
+                ChartChoice(tile_id=1, chart_type="kpi"),
+                ChartChoice(tile_id=2, chart_type="bar", x="day", y="revenue"),
+            )
+        ],
+    )
+    events = await collect(agent(db, llm), question="Продажи по регионам и дням")
+    tiles = {tile.title: tile for tile in saved(events).tiles}
+    regions = tiles["Регионы"]
+    # limit — топ-2 регионов по выручке в своей таблице: её и пересчитывают.
+    assert [row["region"] for row in regions.spec["data"]["values"]] == ["msk", "ekb"]
+    assert regions.result_table == regions.spec["usermeta"]["result_table"]
+    assert tiles["По дням"].spec["encoding"]["x"]["field"] == "day"
+    assert "limit — только для bar" in llm.prompts["ChartChoices"][0]
 
 
 def test_by_intent_falls_back_to_table() -> None:

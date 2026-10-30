@@ -6,6 +6,7 @@
  * и usermeta.requested_type — recalculate.rebuild_spec читает requested_type
  * первым, поэтому оба поля обязательны.
  */
+import { isMockMode, rebuildTileSpec } from "@/api/client";
 import { MIN_SIZE, isKpiTile } from "@/lib/tileLayout";
 import type { DashboardTile } from "@/types/dashboard";
 
@@ -67,4 +68,22 @@ export function withChartType(tile: DashboardTile, type: ChartType): DashboardTi
       h: Math.max(layout.h ?? min.h, min.h),
     },
   };
+}
+
+/**
+ * Смена типа с пересборкой спеки на бэкенде по данным плитки. Одна замена
+ * mark не годится: у таблицы остаются fold и оси колонок, и «столбцы»
+ * рисуются полосами по ячейкам. Бэкенд недоступен — локальная замена.
+ */
+export async function withRebuiltChartType(
+  tile: DashboardTile,
+  type: ChartType,
+): Promise<DashboardTile> {
+  const local = withChartType(tile, type);
+  if (isMockMode() || !tile.spec) return local;
+  try {
+    return { ...local, spec: await rebuildTileSpec(tile.spec, type) };
+  } catch {
+    return local;
+  }
 }

@@ -23,7 +23,7 @@
 [3] InsightGenerator (LLM) --> Insight {headline, details, limits}
   |
   v
-[4] Визуализация: chart_selector -> vega_spec_builder (Vega-Lite JSON)
+[4] Визуализация: chart_pick (LLM: шаг, вид, колонки; запасной — chart_selector) -> vega_spec_builder (Vega-Lite JSON)
   |        смена вида: chart_morph (БЕЗ нового вызова LLM, из state cache)
   v
 [5] (опц.) DashboardGenerator -> DashboardStore (SQLite: плитки, Vega, снимки данных)

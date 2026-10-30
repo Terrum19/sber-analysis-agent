@@ -23,7 +23,7 @@ import AnswerExport from "@/components/chat/AnswerExport";
 import Icon from "@/components/ui/Icon";
 import ZoomControl from "@/components/ui/ZoomControl";
 import { MIN_SIZE, STACK_BELOW, applyGridLayout, tileGridLayout } from "@/lib/tileLayout";
-import { CHART_TYPES, chartTypeOf, withChartType, type ChartType } from "@/lib/chartTypes";
+import { CHART_TYPES, chartTypeOf, withRebuiltChartType, type ChartType } from "@/lib/chartTypes";
 import { useElementSize } from "@/hooks/useElementSize";
 import FitGrid from "@/components/canvas/FitGrid";
 import ItemActionMenu from "@/components/layout/ItemActionMenu";
@@ -183,14 +183,13 @@ export default function Canvas({ sessionId }: Props) {
     }
   }
 
-  // Смена типа графика без LLM: локальный spec, PUT и (если есть данные) recalculate.
+  // Смена типа графика без LLM: спека по данным плитки, PUT и (если есть данные) recalculate.
   async function handleChartTypeChange(index: number, type: ChartType) {
     const tile = displayTiles[index];
     if (!tile) return;
     const prevTiles = displayTiles;
-    const nextTiles = displayTiles.map((item, i) =>
-      i === index ? withChartType(item, type) : item,
-    );
+    const changed = await withRebuiltChartType(tile, type);
+    const nextTiles = displayTiles.map((item, i) => (i === index ? changed : item));
     writeTiles(nextTiles);
 
     if (!dashboardId) return;
