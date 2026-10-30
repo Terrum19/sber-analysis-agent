@@ -593,7 +593,7 @@ export default function ChatPanel({ sessionId }: Props) {
                     : "w-full text-graphite-200"
                 }`}
               >
-                {m.progress && <StepProgress progress={m.progress} />}
+                {m.progress && <StepProgress progress={m.progress} sessionId={sessionId} />}
 
                 {/* Текст сообщения */}
                 {m.content && (

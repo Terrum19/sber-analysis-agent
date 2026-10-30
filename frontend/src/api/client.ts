@@ -4,7 +4,7 @@
  * или установлен ключ localStorage.sber_force_mock="true".
  * При ошибках сети или бэкенда выбрасывается ApiError.
  */
-import type { ChatStreamEvent, DashboardIdea } from "@/types/chat";
+import type { ChatStreamEvent, DashboardIdea, ResultColumn } from "@/types/chat";
 import type { LlmStatus } from "@/types/llm";
 import type { Datasource, DatasourceDbRequest, SessionResponse, TableBrief } from "@/types/datasource";
 import type {
@@ -28,6 +28,7 @@ import {
   mockPatchSession,
   mockRenameSession,
   mockRecalculateDashboard,
+  mockStepResult,
   mockStreamChat,
   mockUpdateDashboard,
 } from "./mockData";
@@ -309,6 +310,39 @@ export async function fetchDashboardIdeas(sessionId: string, exclude: string[] =
     if (!res.ok) throw await parseApiError(res);
     const body: { ideas: DashboardIdea[] } = await res.json();
     return body.ideas;
+  } catch (err) {
+    throw toApiError(err);
+  }
+}
+
+/** Страница результата шага: GET /api/sessions/{id}/results/{table}. */
+export interface StepResultPage {
+  columns: ResultColumn[];
+  rows: Record<string, unknown>[];
+  /** Сколько строк в результате всего. */
+  total: number;
+}
+
+/**
+ * Строки результата шага temp_result_vN начиная с offset (#239).
+ * 404 — результат чужой или удалён (рестарт): фронт оставляет превью из события.
+ */
+export async function getStepResult(
+  sessionId: string,
+  table: string,
+  offset = 0,
+  limit = 50,
+): Promise<StepResultPage> {
+  if (isMockMode()) {
+    return mockStepResult(table, offset, limit);
+  }
+  try {
+    const query = new URLSearchParams({ offset: String(offset), limit: String(limit) });
+    const res = await fetch(
+      `${API}/sessions/${encodeURIComponent(sessionId)}/results/${encodeURIComponent(table)}?${query}`,
+    );
+    if (!res.ok) throw await parseApiError(res);
+    return await res.json();
   } catch (err) {
     throw toApiError(err);
   }
