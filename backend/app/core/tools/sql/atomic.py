@@ -19,7 +19,7 @@ from app.core.tools.base import (
 Scalar = str | int | float | bool
 
 AggFunc = Literal["COUNT", "COUNT_DISTINCT", "SUM", "AVG", "MIN", "MAX", "MEDIAN", "STDDEV"]
-Interval = Literal["day", "week", "month", "quarter", "year"]
+Interval = Literal["hour", "day", "week", "month", "quarter", "year"]
 
 
 def _upper(value: object) -> object:
@@ -326,7 +326,7 @@ class TimeBucketArgs(MetricArgs):
 class TimeBucketTool(BaseTool):
     name = "time_bucket"
     description = (
-        "Агрегировать по периодам (day/week/month/quarter/year): function(metric_column) "
+        "Агрегировать по периодам (hour/day/week/month/quarter/year): function(metric_column) "
         "в колонке period; без metric_column — число строк n. by — доп. разрезы"
     )
     Args = TimeBucketArgs

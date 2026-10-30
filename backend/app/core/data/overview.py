@@ -4,8 +4,10 @@ describe_dataset() собирает из паспорта короткий пр�
 вызывает LLM, только если промпт изменился с прошлого раза: отпечаток
 промпта хранится рядом с описанием в _meta.table_passport. Поменялись
 профиль, названия колонок или сам промпт — поменяется и отпечаток.
-Факты (строки, колонки, период) и таблица колонок строятся из профиля
-без LLM, поэтому числа в ответе точные.
+Факты (строки, колонки, период) и заголовок обзора (headline) строятся из
+профиля без LLM, поэтому числа в ответе точные. Описание — для
+бизнес-пользователя: о чём данные и что в них можно посмотреть, без имён
+колонок и типов.
 
 Тот же вызов даёт и название таблицы для пользователя (display_name):
 LLM отвечает JSON DatasetDescription. Не разобрался JSON — описание
@@ -34,7 +36,7 @@ from app.core.data.profiling import (
     profile_table,
     quality_notes,
 )
-from app.core.data.semantic_select import column_facts, describe_columns
+from app.core.data.semantic_select import describe_columns
 from app.core.llm.client import LLMClient
 from app.core.llm.prompts.schema_describe import (
     SCHEMA_DESCRIBE,
@@ -59,15 +61,9 @@ KEY_COLUMNS = 5
 CATEGORY_MAX_DISTINCT = 50
 OVERVIEW_QUESTION = "Что передо мной?"
 
-KIND_LABELS = {
-    "numeric": "число",
-    "temporal": "дата",
-    "text": "текст",
-    "identifier": "код",
-    "other": "другое",
-}
 COLUMN_WORDS = ("колонка", "колонки", "колонок")
 ROW_WORDS = ("строка", "строки", "строк")
+RECORD_WORDS = ("запись", "записи", "записей")
 NOTE_WORDS = ("замечание", "замечания", "замечаний")
 
 _NOTE = re.compile(
@@ -79,8 +75,12 @@ _OVERVIEW = re.compile(
     "|".join(
         (
             r"что (?:это )?передо мной",
+            r"что (?:это(?: такое)?|(?:здесь|тут)(?: есть| лежит)?)",
             rf"что (?:это )?за {_DATA}",
-            rf"что (?:есть |лежит |содержится )?в {_DATA}",
+            rf"что (?:у меня |тут |здесь )?(?:есть |лежит |содержится )?в {_DATA}",
+            rf"что (?:в|у) {_DATA}(?: есть| лежит| содержится)?",
+            r"что (?:тут|здесь|там|у меня)(?: есть| лежит| за данные)?",
+            rf"о ч[её]м (?:{_DATA}|они)",
             rf"что содерж\w* {_DATA}",
             rf"(?:опиши|описание|расскажи (?:о|об|про)) {_DATA}",
             rf"за какой период(?: (?:собраны )?(?:они|{_DATA}))?",
@@ -155,6 +155,23 @@ def facts(profile: TableProfile) -> str:
         f"{text}, данные с {_value(temporal.min_date)} по {_value(temporal.max_date)} "
         f"(«{temporal.name}»)"
     )
+
+
+def headline(profile: TableProfile, name: str | None = None) -> str:
+    """Заголовок обзора для пользователя: «Продажи товаров: 2 008 записей с 01.10.2024 по …».
+
+    Без служебного имени таблицы, числа колонок и имени колонки дат: они в
+    facts() для промптов и подсказок, а человеку нужны объём и период.
+    """
+    text = f"{name or 'Данные'}: {plural(profile.row_count, RECORD_WORDS)}"
+    temporal = profile.temporal_column()
+    if temporal is None or temporal.min_date is None:
+        return text
+    return f"{text} с {_day(temporal.min_date)} по {_day(temporal.max_date)}"
+
+
+def _day(value: object) -> str:
+    return value.strftime("%d.%m.%Y") if hasattr(value, "strftime") else str(value)
 
 
 def family_key(column: ColumnStats) -> tuple[str | None, str, str]:
@@ -411,19 +428,3 @@ def starter_questions(profile: TableProfile, enrichment: list[ColumnEnrichment])
 def paragraphs(text: str) -> list[str]:
     """Описание по абзацам для details события text."""
     return [line.strip() for line in text.splitlines() if line.strip()]
-
-
-def profile_rows(profile: TableProfile, enrichment: list[ColumnEnrichment]) -> list[dict]:
-    """Таблица колонок для графика: имя, название, тип, заполненность, уникальные, значения."""
-    titles = {row.column: row.title for row in enrichment if row.title}
-    rows = []
-    for column in profile.columns:
-        row = {"Колонка": column.name}
-        if titles:
-            row["Название"] = titles.get(column.name, "")
-        row["Тип"] = KIND_LABELS.get(column.kind, column.kind)
-        row["Заполнено, %"] = None if column.null_pct is None else round(100 - column.null_pct, 1)
-        row["Уникальных"] = column.distinct
-        row["Значения"] = column_facts(column, TOP_VALUES)
-        rows.append(row)
-    return rows

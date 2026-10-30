@@ -7,6 +7,7 @@
 FakeLLM вместо реального клиента — для тестирования на CI без локальной модели.
 """
 
+import asyncio
 import json
 import logging
 import os
@@ -59,13 +60,13 @@ def _is_fatal(exc: Exception) -> bool:
     400/422 не считаем фатальными: модель или сервер могут не поддерживать
     tool_choice, и JSON-режим без tools тогда помогает.
     """
-    if isinstance(exc, openai.APIConnectionError):  # включая таймаут
+    if isinstance(exc, openai.APIConnectionError | TimeoutError):  # включая таймаут
         return True
     return isinstance(exc, openai.APIStatusError) and exc.status_code not in (400, 422)
 
 
 def _failure_kind(error: Exception) -> str:
-    if isinstance(error, openai.APITimeoutError):
+    if isinstance(error, openai.APITimeoutError | TimeoutError):
         return "таймаут"
     if isinstance(error, openai.APIConnectionError):
         return "соединение"
@@ -225,14 +226,19 @@ class LLMClient:
         )
         started_at = time.perf_counter()
         try:
-            resp = await self._client.chat.completions.create(
-                model=self.model,
-                messages=[
-                    {"role": "system", "content": system},
-                    {"role": "user", "content": user},
-                ],
-                temperature=settings.llm_temperature,
-                **kwargs,
+            # Срок на весь ответ, а не на паузу между байтами (timeout клиента):
+            # OpenRouter, пока модель думает, шлёт пробелы, и запрос висел без конца.
+            resp = await asyncio.wait_for(
+                self._client.chat.completions.create(
+                    model=self.model,
+                    messages=[
+                        {"role": "system", "content": system},
+                        {"role": "user", "content": user},
+                    ],
+                    temperature=settings.llm_temperature,
+                    **kwargs,
+                ),
+                settings.llm_timeout_s,
             )
         except Exception as error:
             self._log_failure(error, time.perf_counter() - started_at)

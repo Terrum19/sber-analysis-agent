@@ -17,7 +17,6 @@ interface Props {
   sessionId?: string;
   question?: string;
   headline?: string;
-  title?: string;
   details?: string[];
   spec?: Record<string, unknown>;
   resultTable?: string;
@@ -25,12 +24,14 @@ interface Props {
   compact?: boolean;
   /** Встроить в шапку плитки: без внешнего отступа и служебных подписей. */
   inline?: boolean;
+  /** Заголовок для экспорта. */
+  title?: string;
 }
 
 export default function AnswerExport({
   sessionId,
   question,
-  headline: rawHeadline,
+  headline,
   title,
   details,
   spec,
@@ -38,13 +39,16 @@ export default function AnswerExport({
   compact = false,
   inline = false,
 }: Props) {
-  const headline = rawHeadline || title;
   const t = useT();
   const [busy, setBusy] = useState<"xlsx" | "pdf" | null>(null);
   const [error, setError] = useState<string | null>(null);
 
-  const canExcel = Boolean(sessionId && resultTable);
-  const canPdf = Boolean(sessionId && (resultTable || headline || details?.length || spec));
+  const specData = (spec?.data as any)?.values ?? spec?.data ?? (spec as any)?.values;
+  const hasData = Boolean(
+    resultTable || (Array.isArray(specData) && specData.length > 0),
+  );
+  const canExcel = Boolean(sessionId && hasData);
+  const canPdf = Boolean(sessionId && (hasData || headline || details?.length || spec));
   if (!sessionId) return null;
 
   async function handleExport(format: "xlsx" | "pdf") {
@@ -52,7 +56,8 @@ export default function AnswerExport({
     setBusy(format);
     setError(null);
     try {
-      const fallback = safeFilename(headline || t("chat.exportFallbackName"), format);
+      const exportTitle = (title || headline || t("chat.exportFallbackName")).trim();
+      const fallback = safeFilename(exportTitle, format);
       const { blob, filename } = await exportArtifact(
         {
           session_id: sessionId,
@@ -62,6 +67,7 @@ export default function AnswerExport({
           headline,
           details,
           spec,
+          title: exportTitle,
         },
         fallback,
       );
@@ -104,13 +110,15 @@ export default function AnswerExport({
       </button>
       <button
         type="button"
-        disabled
+        onClick={() => handleExport("pdf")}
+        disabled={!canPdf || busy !== null}
         className={buttonClass}
-        title={t("chat.exportPdfSoon")}
+        title={canPdf ? t("chat.exportPdf") : t("chat.exportNoTable")}
       >
         <Icon
-          name="download"
+          name={busy === "pdf" ? "refresh" : "download"}
           size={compact ? 11 : 12}
+          className={busy === "pdf" ? "animate-spin" : ""}
         />
         <span>{t("chat.exportPdf")}</span>
       </button>

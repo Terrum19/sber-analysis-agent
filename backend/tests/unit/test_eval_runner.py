@@ -251,6 +251,47 @@ def test_answer_without_chart_after_steps_is_not_a_refusal(sales_db: DuckDBManag
     assert runner.check_turn({"refusal": False}, turn, sales_db) == [runner.Check("refusal", True)]
 
 
+def test_route_answer_needs_a_reply_without_steps(sales_db: DuckDBManager) -> None:
+    reply = make_turn(
+        [
+            {"type": "text", "data": {"headline": "Сложил выручку по месяцам"}},
+            {"type": "done", "data": {}},
+        ]
+    )
+    canned = make_turn(
+        [
+            {
+                "type": "clarification_needed",
+                "data": {"error": "Не удалось подобрать инструменты под этот вопрос."},
+            }
+        ],
+        end_s=0.5,
+    )
+    assert runner.check_turn({"route": "answer"}, reply, sales_db) == [runner.Check("route", True)]
+    # Отказ тоже без шагов, но это не ответ.
+    route = runner.check_turn({"route": "answer"}, canned, sales_db)[-1]
+    assert not route.passed and route.reason.startswith("без ответа: clarification_needed")
+    [computed] = runner.check_turn({"route": "answer"}, make_turn(ANSWER_EVENTS), sales_db)
+    assert computed == runner.Check("route", False, "посчитан шагами: aggregate")
+
+
+def test_route_data_needs_steps(sales_db: DuckDBManager) -> None:
+    reply = make_turn([{"type": "text", "data": {"headline": "Так"}}, {"type": "done", "data": {}}])
+    assert runner.check_turn({"route": "data"}, make_turn(ANSWER_EVENTS), sales_db) == [
+        runner.Check("route", True)
+    ]
+    assert runner.check_turn({"route": "data"}, reply, sales_db) == [
+        runner.Check("route", False, "шагов не было")
+    ]
+
+
+def test_explain_question_set_loads() -> None:
+    questions = runner.load_questions(REPO_ROOT / "data" / "eval" / "explain" / "questions.yaml")
+    routes = {question.expect.get("route") for question in questions}
+    assert routes == {"answer", "data", None}
+    assert all(question.dataset.startswith("t_0") for question in questions)
+
+
 @pytest.mark.parametrize(
     ("rows", "tolerance", "passed"),
     [
@@ -356,6 +397,7 @@ def test_failed_check_does_not_stop_the_run(sales_db: DuckDBManager, monkeypatch
         ({"refusal": "yes"}, "refusal должен быть true или false"),
         ({"dashboard": 1}, "dashboard должен быть true или false"),
         ({"value": {"sql": "SELECT 1", "tolerance": -1}}, "tolerance должен быть числом"),
+        ({"route": "explain"}, "route должен быть одним из answer, data"),
     ],
 )
 def test_expect_types_are_validated(expect: dict, message: str) -> None:

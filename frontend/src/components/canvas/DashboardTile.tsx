@@ -266,6 +266,10 @@ export default function DashboardTile({
   const [editingTitle, setEditingTitle] = useState(false);
   const [titleInput, setTitleInput] = useState(tile.title);
 
+  React.useEffect(() => {
+    setTitleInput(tile.title);
+  }, [tile.title]);
+
   const isKpi = isKpiTile(tile);
   const hasChart = !isKpi && tile.spec && Object.keys(tile.spec).length > 0;
   const locale = useUiStore((s) => s.locale);
@@ -430,8 +434,11 @@ export default function DashboardTile({
               <h3
                 className={`truncate font-semibold uppercase tracking-wider text-graphite-300 ${
                   large ? "text-sm" : dense ? "text-[11px]" : "text-xs"
-                }`}
+                } ${onRename ? "cursor-text" : ""}`}
                 title={tile.result_table ? `${tile.title} · ${t("tile.source")}: ${tile.result_table}` : tile.title}
+                onDoubleClick={() => {
+                  if (onRename) setEditingTitle(true);
+                }}
               >
                 {tile.title}
               </h3>

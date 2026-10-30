@@ -65,10 +65,6 @@ export default function ArtifactPage({ params }: { params: { id: string } }) {
                   <Icon name="chat" size={13} />
                   {t("dashboard.toSession")}
                 </Link>
-              </>
-            )}
-            {sessionId && (
-              <>
                 <button
                   onClick={() => askAgent(sessionId, drillQuestion(t, artifact.tile.title))}
                   className="flex w-fit items-center gap-1.5 rounded-md border border-graphite-700 px-2 py-1 text-[12px] text-graphite-300 hover:bg-graphite-800 hover:text-graphite-50 transition"

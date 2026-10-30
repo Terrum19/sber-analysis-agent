@@ -44,6 +44,26 @@ except Exception as exc:
 """
 
 
+def is_table_spec(spec: dict[str, Any] | None) -> bool:
+    """Определить, представляет ли спецификация табличный вид вместо графической визуализации."""
+    if not spec or not isinstance(spec, dict):
+        return False
+    usermeta = spec.get("usermeta")
+    if isinstance(usermeta, dict):
+        chart_type = str(usermeta.get("chart_type") or usermeta.get("requested_type") or "").lower()
+        if chart_type in ("table", "grid", "dataframe"):
+            return True
+    mark = spec.get("mark")
+    mark_type = mark.get("type") if isinstance(mark, dict) else mark
+    if mark_type == "text":
+        transforms = spec.get("transform", [])
+        if isinstance(transforms, list) and any(
+            isinstance(t, dict) and ("fold" in t or "window" in t) for t in transforms
+        ):
+            return True
+    return False
+
+
 def validate_chart_spec(spec: dict[str, Any]) -> dict[str, Any]:
     """Проверить спецификацию графика на безопасность и ограничения ресурсов.
 
@@ -102,8 +122,18 @@ def normalize_spec(spec: dict[str, Any], width: int = DEFAULT_WIDTH) -> dict[str
 
     Убирает динамические размеры браузерного контейнера ("container"),
     так как vl-convert работает вне DOM-окружения.
+    Также удаляет встроенный заголовок графика (spec["title"]),
+    поскольку заголовок графика/плитки выводится средствами документа (PDF).
     """
     normalized = copy.deepcopy(spec)
+    normalized.pop("title", None)
+    for concat_key in ("concat", "vconcat", "hconcat", "layer"):
+        if concat_key in normalized and isinstance(normalized[concat_key], list):
+            for subview in normalized[concat_key]:
+                if isinstance(subview, dict):
+                    subview.pop("title", None)
+    if "spec" in normalized and isinstance(normalized["spec"], dict):
+        normalized["spec"].pop("title", None)
 
     is_concat = any(k in normalized for k in ("concat", "vconcat", "hconcat"))
     if normalized.get("width") == "container" or ("width" not in normalized and not is_concat):
@@ -142,7 +172,7 @@ def render_chart_png(
     Returns:
         Байты PNG изображения или None в случае ошибки/отсутствия спецификации.
     """
-    if not spec or not isinstance(spec, dict):
+    if not spec or not isinstance(spec, dict) or is_table_spec(spec):
         return None
 
     try:
