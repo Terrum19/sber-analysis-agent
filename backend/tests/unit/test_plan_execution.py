@@ -698,11 +698,15 @@ def test_resume_skips_steps_done_before_the_stop(db: DuckDBManager) -> None:
     executor, events, execution = resume(db, checkpoint)
     # Первый шаг не выполняется заново, но фронт видит его готовым.
     assert executor.executed == [1]
-    assert [(e["data"]["step_id"], e["data"]["status"]) for e in events] == [
+    # План приходит снова: фронт продолжает ход в новом сообщении (#239).
+    plan, *steps = events
+    assert [step["step_id"] for step in plan["data"]["steps"]] == [0, 1]
+    assert [(e["data"]["step_id"], e["data"]["status"]) for e in steps] == [
         (0, "finished"),
         (1, "started"),
         (1, "finished"),
     ]
+    assert steps[0]["data"]["result_table"] == checkpoint["step_tables"]["0"]
     row = db.to_records(execution.result_table)[0]
     assert row["n"] == 2
     assert row["mean"] == 15.0

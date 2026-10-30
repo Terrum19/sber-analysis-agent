@@ -150,7 +150,10 @@ async def test_stopped_turn_continues_from_the_first_unfinished_step(db) -> None
     )
     assert resumed["input_table"] == "raw"
     assert resumed["rows"] == 2
-    assert resumed["preview"] == [{"region": "msk", "revenue": 12.5}, {"region": "spb", "revenue": 4.0}]
+    assert resumed["preview"] == [
+        {"region": "msk", "revenue": 12.5},
+        {"region": "spb", "revenue": 4.0},
+    ]
     assert events[-1]["data"]["turn_id"] == turn_id
     turn = last_turn()
     assert turn["status"] == "ok"
