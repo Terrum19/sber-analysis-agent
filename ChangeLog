@@ -63,6 +63,50 @@
 
 2026-10-29  Alexander Yurits  <143354682+Terrum19@users.noreply.github.com>
 
+	Переход к другим данным по смыслу вопроса — эмбеддинги (#165).
+	* backend/app/core/data/table_vectors.py: Новый.  Близость вопроса к
+	таблицам по эмбеддингам (EMBED_MODEL), векторы таблиц — в
+	_meta.table_vector по отпечатку текста.  Сбой сервера — RETRY_S только
+	по словам.
+	* backend/app/core/data/relations.py (switch_table, choose_table):
+	Параметр similarity.  Слова не назвали другие данные — решает смысл.
+	(MEANING_MARGIN, _closer_than, _closest): Новые.
+	* backend/app/core/agent/orchestrator.py (_turn, _switch): Близость по
+	смыслу; «что передо мной?» к другим данным не переходит.
+	* backend/app/core/llm/ollama_setup.py (prepare_embeddings): Новая.
+	Скачать EMBED_MODEL на ту же Ollama.  (_pull): Параметр report.
+	* backend/app/config.py (embed_model, embed_base_url, embed_api_key)
+	(embed_timeout_s): Новые.
+	* docker-compose.yml, docker-compose.release.yml, .env.example:
+	EMBED_MODEL по умолчанию bge-m3, и у backend тоже.
+	* README.md, docs/architecture.md: Переход к другим данным, событие table.
+	* backend/tests/unit/test_table_vectors.py: Новый.
+	* backend/tests/unit/test_relations.py, backend/tests/unit/test_ollama_setup.py:
+	Тесты того же.
+
+2026-10-29  Alexander Yurits  <143354682+Terrum19@users.noreply.github.com>
+
+	Агент сам переходит к другим данным посреди сессии (#165).
+	* backend/app/core/data/relations.py (switch_table): Новая.  Вопрос
+	явно про другие, несвязанные данные — таблица, к которой перейти, или
+	уточнение по названиям; продолжение остаётся на таблице сессии.
+	(SWITCH_WORDS): Новая.  (choose_table): Группы и выбор — в _groups
+	и _pick.
+	* backend/app/core/agent/orchestrator.py (_turn): Переход проверяется
+	перед каждым вопросом, кроме идеи дашборда.  (_switch): Новая.
+	Сбой каталога — остаёмся.  (_table_event): Новая.  Событие table,
+	когда агент сам взял таблицу.
+	* backend/app/api/schemas/chat.py (ChatEvent): Событие table.
+	* frontend/src/types/chat.ts (TableEvent): Новый.
+	* frontend/src/store/sessionStore.ts (followAgentTable): Новая.
+	Таблица сессии меняется, лента остаётся той же.
+	* frontend/src/store/chatRunStore.ts: Событие table — «Беру данные
+	«…»» в ленте.
+	* frontend/src/i18n/dictionary.ts (chat.tableChosen): Новая.
+	* backend/tests/unit/test_relations.py: Тесты того же.
+
+2026-10-29  Alexander Yurits  <143354682+Terrum19@users.noreply.github.com>
+
 	Дашборд по связанным таблицам (#165 + #224).
 	* backend/app/core/data/relations.py (describe_linked): Новая.
 	Связанные таблицы и их колонки для промпта идей и плана дашборда.

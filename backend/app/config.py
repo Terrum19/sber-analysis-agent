@@ -55,6 +55,14 @@ class Settings(BaseSettings):
     llm_prepare_model: bool = True
     # Символов на токен для оценки длины промпта: с запасом под кириллицу (~2,6).
     llm_chars_per_token: float = 2.5
+    # Эмбеддинги (OpenAI-совместимый /embeddings): по смыслу вопроса агент
+    # переходит к другим данным посреди сессии. Пусто — только по словам.
+    # Ollama в compose скачивает ту же EMBED_MODEL (infra/ollama/entrypoint.sh).
+    embed_model: str = ""
+    # Сервер и ключ эмбеддингов; пусто — те же, что у LLM.
+    embed_base_url: str = ""
+    embed_api_key: SecretStr | None = None
+    embed_timeout_s: int = 30
 
     log_level: Literal["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"] = "INFO"
 

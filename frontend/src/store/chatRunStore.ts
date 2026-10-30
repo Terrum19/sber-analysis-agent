@@ -226,6 +226,10 @@ export function startRun(
           store.removeMessage(progressId, sessionId);
           addMessage({ id: progressId, role: "agent", content: "", progress });
         }
+      } else if (event.type === "table") {
+        // Ход идёт дальше в той же ленте, поэтому не switchSessionTable: та завела бы ленту новой таблицы
+        store.followAgentTable(sessionId, event.data.table);
+        addMessage({ role: "agent", content: t("chat.tableChosen", { name: event.data.title || event.data.table }) });
       } else if (event.type === "progress") {
         if (!progress) {
           progress = applyProgress({ planning: false, steps: [], started_at: Date.now() }, event.data);

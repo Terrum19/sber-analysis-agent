@@ -14,7 +14,7 @@ x-ollama: &ollama
   entrypoint: ["/bin/sh", "/entrypoint.sh"]
   environment:
     LLM_MODEL: ${LLM_MODEL:-qwen2.5-coder:7b}
-    EMBED_MODEL: ${EMBED_MODEL:-}
+    EMBED_MODEL: ${EMBED_MODEL:-bge-m3}
     OLLAMA_CONTEXT_LENGTH: ${OLLAMA_CONTEXT_LENGTH:-16384}
   volumes:
     - ollama-models:/root/.ollama
@@ -61,6 +61,8 @@ services:
       LLM_MODEL: ${LLM_MODEL:-qwen2.5-coder:7b}
       # Бэкенд ждёт тот же контекст, что задан Ollama (#102).
       LLM_NUM_CTX: ${OLLAMA_CONTEXT_LENGTH:-16384}
+      # Эмбеддинги — с той же Ollama: переход к другим данным по смыслу вопроса.
+      EMBED_MODEL: ${EMBED_MODEL:-bge-m3}
     extra_hosts:
       - "host.docker.internal:host-gateway"
     ports:
