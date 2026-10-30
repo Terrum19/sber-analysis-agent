@@ -3,10 +3,12 @@
 /**
  * Свежая сводка активной таблицы с бэкенда (GET /api/datasources/tables/{table}).
  * Описание и название от LLM строятся в фоне после подключения, поэтому пока
- * summary нет, сводка перезапрашивается каждые POLL_MS, не больше POLL_ATTEMPTS раз
- * (5 мин): qwen3.8-27b с reasoning строит описание около 2 мин, локальная модель
- * на CPU — дольше.
- * LLM недоступна — опрос просто заканчивается, карточка остаётся без описания.
+ * бэкенд строит их (summary_pending), сводка перезапрашивается каждые POLL_MS, не
+ * больше POLL_ATTEMPTS раз (5 мин): qwen3.8-27b с reasoning строит описание около
+ * 2 мин, локальная модель на CPU — дольше.
+ * Описание не строится (готово, сбой, таблица подключена до перезапуска) — один
+ * запрос, без опроса: каждый ответ обновляет стор, и за ним перезапрашиваются
+ * другие данные сайдбара.
  */
 import { useEffect } from "react";
 import { getTableBrief } from "@/api/client";
@@ -30,7 +32,7 @@ export function useTableBrief(databaseId: string | undefined, table: string | un
         const brief = await getTableBrief(table!);
         if (cancelled) return;
         updateBrief(databaseId!, brief);
-        if (brief.summary) return;
+        if (brief.summary || !brief.summary_pending) return;
       } catch (err: any) {
         if (cancelled || err?.status === 404) return;
       }
