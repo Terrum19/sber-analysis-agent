@@ -87,6 +87,9 @@ class ChatRequest(BaseModel):
     # dashboard — ход строит дашборд по кнопке (#224); idea — выбранный вариант.
     mode: Literal["chat", "dashboard"] = "chat"
     idea: DashboardIdea | None = None
+    # turn_id остановленного или упавшего хода: продолжить его с чекпоинта,
+    # не повторяя выполненные шаги и плитки (question тогда не используется).
+    resume_turn: str | None = None
 
 
 class ChartPayload(BaseModel):
@@ -143,6 +146,8 @@ class ProgressPayload(BaseModel):
     ``input_step_id`` (чей результат пришёл на вход), ``result_table``,
     ``rows``, ``result_columns``, ``preview`` (первые строки) и ``code``
     на ``code_language`` (sql или python), если шаг выполнял код.
+    ``turn_id`` — в начале planning и outline: по нему фронт продолжает
+    остановленный ход (``ChatRequest.resume_turn``), ``done`` до него не дойдёт.
     """
 
     stage: Literal["planning", "step", "insight", "chart", "dashboard", "outline", "tile"]
@@ -168,6 +173,7 @@ class ProgressPayload(BaseModel):
     preview: list[dict[str, Any]] | None = None
     code: str | None = None
     code_language: Literal["sql", "python"] | None = None
+    turn_id: str | None = None
 
 
 class DashboardIdeasRequest(BaseModel):
@@ -221,5 +227,9 @@ class ExportRequest(BaseModel):
     dashboard_id: str | None = Field(default=None, max_length=64)
     question: str | None = Field(default=None, max_length=5000)
     headline: str | None = Field(default=None, max_length=3000)
+    title: str | None = Field(default=None, max_length=500)
+    session_title: str | None = Field(default=None, max_length=500)
+    database_name: str | None = Field(default=None, max_length=500)
+    source_name: str | None = Field(default=None, max_length=500)
     details: list[str] | None = Field(default=None, max_length=100)
     spec: dict[str, Any] | None = None

@@ -37,7 +37,12 @@ import LlmStatusBanner from "@/components/chat/LlmStatusBanner";
 import DashboardIdeas, { type IdeasState } from "@/components/chat/DashboardIdeas";
 import { useLlmStatus } from "@/hooks/useLlmStatus";
 import { useT } from "@/i18n/useT";
-import { RECOVERY_SKIP_STEP, type DashboardEvent, type DashboardIdea } from "@/types/chat";
+import {
+  RECOVERY_SKIP_STEP,
+  type DashboardEvent,
+  type DashboardIdea,
+  type TurnProgress,
+} from "@/types/chat";
 
 /** Сколько раз подряд просить новые варианты дашборда, если все прежние уже использованы. */
 const MAX_IDEA_ROUNDS = 3;
@@ -373,6 +378,30 @@ export default function ChatPanel({ sessionId }: Props) {
     });
   }
 
+  /**
+   * «Продолжить» остановленный или упавший ход: бэкенд досчитывает его с чекпоинта,
+   * готовые шаги и плитки не повторяются. Новый вопрос в ленту не добавляется.
+   */
+  function resumeTurn(messageId: string, progress: TurnProgress) {
+    if (streaming || !progress.turn_id) return;
+    const all = useSessionStore.getState().messages;
+    const index = all.findIndex((x) => x.id === messageId);
+    const question =
+      all
+        .slice(0, index >= 0 ? index : all.length)
+        .reverse()
+        .find((x) => x.role === "user")?.content ?? "";
+    // Кнопка у старого прогресса гаснет: ход продолжается в новом
+    useSessionStore.getState().updateMessage(messageId, { progress: { ...progress, resumable: false } });
+    startRun(sessionId, question, {
+      retryQuestion: question,
+      replyTo: null,
+      resumeTurn: progress.turn_id,
+      dashboard: progress.tiles ? { idea: null } : undefined,
+      onDashboardBuilt: (dashboardId) => router.push(`/dashboard/${dashboardId}`),
+    });
+  }
+
   // Вопрос извне (клик по графику / «Дообследовать», F-09): отправляем, когда
   // таблица сессии уже известна и агент свободен. handledQuestionRef защищает
   // от повторной отправки в StrictMode и при ре-рендерах.
@@ -436,6 +465,7 @@ export default function ChatPanel({ sessionId }: Props) {
         .slice(0, index)
         .reverse()
         .find((x) => x.role === "user")?.content;
+      const exportTitle = (msg.chart.caption || t("chat.exportFallbackName")).trim();
       const { blob, filename } = await exportArtifact(
         {
           session_id: sessionId,
@@ -445,8 +475,9 @@ export default function ChatPanel({ sessionId }: Props) {
           headline: msg.chart.caption,
           details: msg.content ? [msg.content] : undefined,
           spec: msg.chart.spec,
+          title: exportTitle,
         },
-        safeFilename(msg.chart.caption || t("chat.exportFallbackName"), "pdf"),
+        safeFilename(exportTitle, "pdf"),
       );
       downloadBlob(blob, filename);
     } catch (err: any) {
@@ -593,7 +624,17 @@ export default function ChatPanel({ sessionId }: Props) {
                     : "w-full text-graphite-200"
                 }`}
               >
-                {m.progress && <StepProgress progress={m.progress} sessionId={sessionId} />}
+                {m.progress && (
+                  <StepProgress
+                    progress={m.progress}
+                    sessionId={sessionId}
+                    onResume={
+                      m.progress.resumable && m.id && !streaming
+                        ? () => resumeTurn(m.id!, m.progress!)
+                        : undefined
+                    }
+                  />
+                )}
 
                 {/* Текст сообщения */}
                 {m.content && (

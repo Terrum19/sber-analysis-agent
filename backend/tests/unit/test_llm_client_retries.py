@@ -1,5 +1,6 @@
 """LLMClient: повторяется только невалидный ответ модели, а не 401/404 и не сеть."""
 
+import asyncio
 import json
 
 import httpx
@@ -310,3 +311,24 @@ def test_unknown_failure_is_named_by_type() -> None:
     from app.core.llm.client import _failure_kind
 
     assert _failure_kind(ValueError("x")) == "ValueError"
+
+
+async def test_answer_has_a_deadline_for_the_whole_response(monkeypatch, caplog) -> None:
+    """OpenRouter, пока модель думает, шлёт пробелы: срок — на весь ответ, не на паузу."""
+
+    async def thinking(request: httpx.Request) -> httpx.Response:
+        await asyncio.sleep(10)
+        return httpx.Response(200, json={})
+
+    monkeypatch.setattr(settings, "llm_timeout_s", 0.05)
+    llm = object.__new__(LLMClient)
+    llm._client = AsyncOpenAI(
+        base_url="http://llm.test/v1",
+        api_key="k",
+        max_retries=0,
+        http_client=httpx.AsyncClient(transport=httpx.MockTransport(thinking)),
+    )
+    llm.model = "m"
+    with pytest.raises(TimeoutError):
+        await llm.complete("s", "u")
+    assert "LLM m: сбой (таймаут)" in caplog.text

@@ -47,7 +47,9 @@ export default function ArtifactPage({ params }: { params: { id: string } }) {
               </button>
               <AnswerExport
                 sessionId={sessionId}
-                headline={artifact.tile.title}
+                title={artifact.tile.title}
+                headline={artifact.tile.insight || undefined}
+                details={artifact.tile.insight ? [artifact.tile.insight] : undefined}
                 spec={artifact.tile.spec}
                 resultTable={artifact.tile.result_table}
                 compact

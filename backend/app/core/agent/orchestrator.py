@@ -40,11 +40,21 @@ SessionMemory состояние ожидания уточнения (``pending_
 уточнение продолжает тот же ход. ``turn_id`` хода фронт получает в
 событии ``done`` (и ``clarification_needed``).
 
+После каждого шага ход пишет чекпоинт в SessionMemory (``save_checkpoint``):
+план, выполненные шаги и их таблицы. Остановленный пользователем или упавший
+ход фронт продолжает запросом с ``resume_turn``: выполненные шаги не
+повторяются, оставшиеся досчитываются, дальше обычные инсайт и график.
+
 Просьбу запомнить («запомни, что выручка — без НДС») распознаёт планировщик:
 поле плана ``remember``. Оркестратор пишет записи в воспоминания сессии и
 подтверждает их в ответе; просьба без вопроса к данным отвечается одним
 подтверждением, без шагов и инсайта. Воспоминания сессии идут в инсайт.
 Шаги получают память сессии: по ней read_history ищет прошлые ходы.
+
+Вопрос о прошлых ответах агента («как ты это посчитал?», «что значит
+p-value в ответе?») планировщик помечает маршрутом ``answer``: шагов нет,
+ответ строит agent/explainer.py по журналу ходов сессии. Туда же идёт любой
+пустой план (кроме просьбы только запомнить): ответ словами вместо отказа.
 """
 
 import asyncio
@@ -61,6 +71,8 @@ logger = logging.getLogger(__name__)
 import duckdb
 
 from app.api.schemas.chat import ChatRequest, DashboardPayload, PlanStepOut, ProgressPayload
+from app.core.agent.chart_pick import ChartPicker
+from app.core.agent.explainer import Explainer
 from app.core.agent.insight import InsightGenerator
 from app.core.agent.planner import PlanInvalid, StepPlanner, is_dashboard_question
 from app.core.agent.recovery import STEP_FIX_ATTEMPTS, fixable
@@ -73,6 +85,7 @@ from app.core.data import overview, relations
 from app.core.data.duckdb_manager import DuckDBManager
 from app.core.data.table_vectors import TableVectors
 from app.core.llm.budget import track_truncations
+from app.core.llm.client import LLMClient
 from app.core.logging_setup import set_turn_id
 from app.core.memory.profile_memory import ProfileMemory
 from app.core.memory.session_memory import SessionMemory
@@ -97,9 +110,23 @@ from app.core.viz.vega_spec_builder import (
     column_aliases,
     infer_field_types,
 )
-from app.models.research_step import DashboardTilePlan, ResearchPlan, ResearchStep
+from app.models.insight import Insight
+from app.models.research_step import (
+    PREVIOUS,
+    SOURCE,
+    DashboardTilePlan,
+    ResearchPlan,
+    ResearchStep,
+)
 
 NO_TABLE_MESSAGE = "Сначала подключите данные"
+# «Продолжить» ход, у которого нет чекпоинта или который уже ответил.
+NOTHING_TO_RESUME = "Продолжить нечего: задайте вопрос заново"
+# «Продолжить» ход, который ещё считается: страница перезагрузилась, а ход на
+# бэкенде идёт дальше (прокси не обрывает запрос к бэкенду).
+STILL_RUNNING = "Ответ ещё готовится — нажмите «Продолжить» чуть позже"
+# turn_id ходов, которые сейчас идут в этом процессе: второй раз их не запускаем.
+RUNNING_TURNS: set[str] = set()
 # pending_recovery уточнения «какие данные взять?» и вопрос пользователю (#165).
 TABLE_CHOICE = "table"
 TABLE_QUESTION = "Вопрос подходит к разным данным. По каким из них ответить?"
@@ -107,14 +134,18 @@ TABLE_QUESTION = "Вопрос подходит к разным данным. П
 FAILURE_MESSAGE = "Не удалось ответить на вопрос, попробуйте ещё раз"
 # Плитка дашборда и экспорт принимают только результаты шагов (temp_result_vN).
 RESULT_TABLE = re.compile(r"temp_result_v\d+")
+# DuckDB: колонки нет во входной таблице шага.
+MISSING_COLUMN = re.compile(r'Referenced column "([^"]+)" not found')
 
 # Подтверждение записи в воспоминания сессии (#197).
 REMEMBERED = "Запомнено: {notes}"
 
 SUMMARY_UNAVAILABLE = "Описание данных сейчас недоступно: модель не ответила."
-OVERVIEW_CAPTION = "Колонки таблицы"
 SCHEMA_CAPTION = "Связанные таблицы"
 TABLE_WORDS = ("таблица", "таблицы", "таблиц")
+# Вид чекпоинта хода: план с шагами или дашборд по кнопке.
+RESEARCH_CHECKPOINT = "research"
+DASHBOARD_CHECKPOINT = "dashboard"
 # Событие, которым кончается ход: после него поток закрывается.
 TURN_END_EVENTS = ("done", "clarification_needed")
 
@@ -162,10 +193,17 @@ class Execution:
     plan: ResearchPlan = field(default_factory=ResearchPlan)
     # Выполненные шаги: вывод знает, какие фильтры и периоды уже применены.
     steps: list[ResearchStep] = field(default_factory=list)
+    # Шаг -> его входная таблица (вторая таблица join_tables не учитывается).
+    inputs: dict[int, str] = field(default_factory=dict)
     result_purpose: str = ""
     result_kind: str = "transform"
+    result_tool: str = ""
     # Что записано в воспоминания по просьбе этого хода.
     remembered: list[str] = field(default_factory=list)
+    # Ответ по журналу ходов (маршрут answer): шагов нет.
+    reply: Insight | None = None
+    # Вопрос о таблице целиком (маршрут overview): ответ — обзор таблицы.
+    overview: bool = False
 
 
 class ClarificationNeeded(Exception):
@@ -271,6 +309,8 @@ class AgentOrchestrator:
         insight_gen: InsightGenerator | None = None,
         cache: StateCache | None = None,
         db: DuckDBManager | None = None,
+        explainer: Explainer | None = None,
+        chart_llm: LLMClient | None = None,
     ) -> None:
         # Один DuckDB на весь ход: temp_result_vN, созданные исполнителем,
         # должны читаться графиком, инсайтом и кешем из той же базы.
@@ -279,9 +319,16 @@ class AgentOrchestrator:
         self.db = shared or getattr(self.executor, "db", None) or DuckDBManager()
         self.planner = planner or StepPlanner()
         self.insight_gen = insight_gen or InsightGenerator(db=self.db)
+        # Пояснение — тем же клиентом LLM, что и вывод (у моков вывода клиента нет).
+        llm = getattr(self.insight_gen, "llm", None)
+        self.explainer = explainer or Explainer(llm=llm, db=self.db)
         self.cache = cache or StateCache(self.db)
         self.profiles = ProfileMemory(self.db)
         self.vectors = TableVectors(self.db)
+        # Модель планировщика выбирает и график; без неё — эвристика select_chart.
+        self.chart_picker = ChartPicker(chart_llm or getattr(self.planner, "llm", None), self.db)
+        # Ход, который ведёт этот оркестратор (один на запрос): он в RUNNING_TURNS.
+        self._running: str | None = None
 
     async def run(self, request: ChatRequest) -> AsyncIterator[dict]:
         """Выполнить исследование и вернуть поток событий для фронта.
@@ -306,6 +353,7 @@ class AgentOrchestrator:
             raise
         finally:
             turn_log.close()
+            RUNNING_TURNS.discard(self._running)
 
     async def _turn(self, request: ChatRequest) -> AsyncIterator[dict]:
         """Один ход: события для фронта до done или clarification_needed."""
@@ -316,11 +364,17 @@ class AgentOrchestrator:
             # иначе сессия навсегда застрянет в ожидании recovery_response.
             memory.clear_pending_recovery()
             pending = None
+        if request.resume_turn is not None:
+            # «Продолжить» остановленный ход: таблица и план уже есть в чекпоинте.
+            async for event in self._resume(memory, request):
+                yield event
+            return
         # Ответ на уточнение продолжает ход, в котором упал шаг.
         if pending is None or not memory.resume_turn(pending.get("turn_id")):
             memory.start_turn(request.question, reply_to=request.reply_to)
         turn_id = memory.turn_id
         set_turn_id(turn_id)
+        self._mark_running(turn_id)
         logger.info("ход начат: вопрос=%r", request.question)
 
         catalog: list[str] = []
@@ -422,12 +476,7 @@ class AgentOrchestrator:
                 yield event
             return
 
-        titles = column_aliases(
-            {
-                "glossary": self.profiles.load_glossary(table),
-                "titles": {row.column: row.title for row in self.profiles.load_enrichment(table)},
-            }
-        )
+        titles = self._titles(table)
 
         if pending is None and overview.is_overview_question(request.question):
             logger.info("маршрут: обзор таблицы")
@@ -445,11 +494,102 @@ class AgentOrchestrator:
                 return
 
         logger.info("маршрут: %s", "план" if pending is None else "ответ на уточнение")
+        async for event in self._answer(memory, request, titles, pending=pending, catalog=catalog):
+            yield event
+
+    async def _resume(self, memory: SessionMemory, request: ChatRequest) -> AsyncIterator[dict]:
+        """Продолжить ход с чекпоинта: выполненные шаги и плитки не повторяются.
+
+        Ход уже ответил (страница перезагрузилась, и ответ до неё не дошёл) —
+        отдаётся его сохранённый ответ, без LLM и шагов.
+        """
+        if request.resume_turn in RUNNING_TURNS:
+            logger.info("ход %s ещё идёт: второй раз не запускаем", request.resume_turn)
+            yield {"type": "error", "data": {"message": STILL_RUNNING}}
+            yield {"type": "done", "data": {}}
+            return
+        checkpoint = memory.resume_checkpoint(request.resume_turn)
+        answered = None if checkpoint else memory.answered_turn(request.resume_turn)
+        if answered is not None:
+            set_turn_id(answered["turn_id"])
+            logger.info("ход уже ответил: отдаём сохранённый ответ")
+            for event in self._replay(answered):
+                yield event
+            yield _done(answered["turn_id"])
+            return
+        if checkpoint is None:
+            logger.info("продолжать нечего: ход %s", request.resume_turn)
+            yield {"type": "error", "data": {"message": NOTHING_TO_RESUME}}
+            yield {"type": "done", "data": {}}
+            return
+        set_turn_id(memory.turn_id)
+        self._mark_running(memory.turn_id)
+        logger.info("ход продолжен: вопрос=%r", memory.question)
+        if checkpoint["kind"] == DASHBOARD_CHECKPOINT:
+            from app.core.agent.dashboard_turn import DashboardTurn
+
+            async for event in DashboardTurn(self).run(memory, request, resume=checkpoint):
+                yield event
+            return
+        titles = self._titles(checkpoint["source_table"])
+        async for event in self._answer(memory, request, titles, resume=checkpoint):
+            yield event
+
+    def _mark_running(self, turn_id: str) -> None:
+        self._running = turn_id
+        RUNNING_TURNS.add(turn_id)
+
+    def _replay(self, turn: dict) -> list[dict]:
+        """Сохранённый ответ хода: вывод и график из его таблицы результата.
+
+        Таблицу графика уже удалила очистка — только вывод.
+        """
+        events = [
+            {
+                "type": "text",
+                "data": {"headline": turn["headline"] or "", "details": turn.get("details") or []},
+            }
+        ]
+        chart = turn.get("chart")
+        if chart is None:
+            return events
+        try:
+            records = self.cache.get(chart["result_table"], limit=SPEC_ROW_LIMIT)
+        except duckdb.Error:
+            logger.warning("таблицы графика %s уже нет: только вывод", chart["result_table"])
+            return events
+        titles = self._titles(turn["tables"][0]) if turn["tables"] else {}
+        spec = build_vega_spec(
+            chart["type"], chart["result_table"], data=records, titles=titles, title=chart["title"]
+        )
+        events.append(_chart_event(spec, chart["title"], chart["result_table"]))
+        return events
+
+    def _titles(self, table: str) -> dict[str, str]:
+        return column_aliases(
+            {
+                "glossary": self.profiles.load_glossary(table),
+                "titles": {row.column: row.title for row in self.profiles.load_enrichment(table)},
+            }
+        )
+
+    async def _answer(
+        self,
+        memory: SessionMemory,
+        request: ChatRequest,
+        titles: dict[str, str],
+        *,
+        pending: dict | None = None,
+        catalog: list[str] | None = None,
+        resume: dict | None = None,
+    ) -> AsyncIterator[dict]:
+        """План и шаги (или их продолжение), затем инсайт, график и дашборд — до done."""
+        turn_id = memory.turn_id
         # План и шаги идут задачей: события прогресса, которые она шлёт
         # через emit, отдаются фронту сразу, не дожидаясь конца плана.
         events: asyncio.Queue[dict | None] = asyncio.Queue()
         task = asyncio.create_task(
-            self._research(memory, pending, request, events.put_nowait, catalog)
+            self._research(memory, pending, request, events.put_nowait, catalog, resume)
         )
         task.add_done_callback(lambda _: events.put_nowait(None))
         try:
@@ -457,7 +597,7 @@ class AgentOrchestrator:
                 yield event
             question, execution = await task
         except ClarificationNeeded as exc:
-            memory.finish_turn("clarification")
+            memory.finish_turn("clarification", reason=exc.error)
             yield {
                 "type": "clarification_needed",
                 "data": {
@@ -468,11 +608,11 @@ class AgentOrchestrator:
                 },
             }
             return
-        except Exception:
+        except Exception as exc:
             # Сбой вне шагов (планировщик, LLM недоступна): без error и done
             # фронт так и показывал бы «идёт планирование».
             logger.exception("<<< run() ход прерван")
-            memory.finish_turn("failed")
+            memory.finish_turn("failed", reason=str(exc))
             yield _failure_event()
             yield _done(turn_id)
             return
@@ -482,6 +622,21 @@ class AgentOrchestrator:
         result_table = execution.result_table
         confirmation = _confirmation(execution.remembered)
 
+        if execution.overview:
+            async for event in self._overview(memory, memory.table):
+                yield event
+            return
+
+        if execution.reply is not None:
+            # Вопрос о прошлых ответах: ответ по журналу, без инсайта и графика.
+            reply = execution.reply
+            if confirmation:
+                reply.details.append(confirmation)
+            memory.finish_turn("ok", headline=reply.headline, details=reply.details)
+            yield {"type": "text", "data": {"headline": reply.headline, "details": reply.details}}
+            yield _done(turn_id)
+            return
+
         if confirmation and not execution.steps:
             # Только просьба запомнить: вопроса к данным нет.
             memory.finish_turn("ok", headline=confirmation)
@@ -490,6 +645,8 @@ class AgentOrchestrator:
             return
 
         # --- Финальный блок: инсайт -> чарт -> дашборд -> done ---
+        # График по таблицам шагов агент выбирает, пока пишется вывод.
+        picking = self._start_chart_pick(question, execution)
         stage = "insight"
         try:
             logger.info(">>> run() генерация инсайта")
@@ -500,6 +657,9 @@ class AgentOrchestrator:
                 supporting=execution.supporting,
                 steps=execution.steps,
                 memories=memory.context_memories(),
+                result_tool=execution.result_tool,
+                source=memory.table,
+                inputs=execution.inputs,
             )
             if confirmation:
                 insight.details.append(confirmation)
@@ -512,52 +672,65 @@ class AgentOrchestrator:
             }
 
             stage = "chart"
-            records = self.db.to_records(result_table, limit=SPEC_ROW_LIMIT)
-            view = _requested_view(execution, records)
-            chart_type = select_chart(question, result_table, view, records, titles)
-            if chart_type == NO_CHART:
-                logger.info("<<< run() ответ без графика")
-                memory.finish_turn(
-                    "ok",
-                    headline=insight.headline,
-                    result_table=result_table,
-                    result_columns=self._result_columns(result_table),
-                )
-                yield _done(turn_id)
-                return
+            picked = await picking if picking is not None else None
+            if picked is not None:
+                chart_type, chart_table, records = picked.chart_type, picked.table, picked.records
+                columns = {"x": picked.x, "y": picked.y, "color": picked.color}
+                purpose = picked.purpose
+            else:
+                records = self.db.to_records(result_table, limit=SPEC_ROW_LIMIT)
+                view = _requested_view(execution, records)
+                chart_type = select_chart(question, result_table, view, records, titles)
+                if chart_type == NO_CHART:
+                    logger.info("<<< run() ответ без графика")
+                    memory.finish_turn(
+                        "ok",
+                        headline=insight.headline,
+                        result_table=result_table,
+                        result_columns=self._result_columns(result_table),
+                        details=insight.details,
+                    )
+                    yield _done(turn_id)
+                    return
+                if chart_type == "histogram":
+                    result_table, records = self._histogram_values(
+                        question, result_table, records, titles
+                    )
+                chart_table, columns, purpose = result_table, {}, execution.result_purpose
             yield _progress_event("chart", "started")
-            if chart_type == "histogram":
-                result_table, records = self._histogram_values(
-                    question, result_table, records, titles
-                )
             logger.debug(">>> run() построение графика chart_type=%s", chart_type)
             spec = build_vega_spec(
                 chart_type,
-                result_table,
+                chart_table,
                 data=records,
                 titles=titles,
-                title=execution.result_purpose or chart_title(records, titles),
+                title=purpose or chart_title(records, titles),
+                **columns,
             )
             logger.debug(
                 "<<< run() график построен: mark=%s строк=%d",
                 spec.get("mark", "?"),
                 len(spec.get("data", {}).get("values", [])),
             )
-            memory.record_chart(spec["usermeta"]["chart_type"], result_table, insight.headline)
-            yield _chart_event(spec, insight.headline, result_table)
+            memory.record_chart(spec["usermeta"]["chart_type"], chart_table, insight.headline)
+            yield _chart_event(spec, insight.headline, chart_table)
         except Exception as exc:
             logger.exception("<<< run() этап %s упал", stage)
-            memory.finish_turn("failed")
+            memory.finish_turn("failed", reason=f"{stage}: {exc}")
             yield _progress_event(stage, "failed", error=str(exc))
             yield _failure_event()
             yield _done(turn_id)
             return
+        finally:
+            # Ход упал или клиент ушёл раньше графика — выбор больше не нужен.
+            if picking is not None:
+                picking.cancel()
 
         if execution.dashboard_requested:
             fallback = DashboardTile(
                 title=spec.get("title") or insight.headline,
                 spec=spec,
-                result_table=result_table,
+                result_table=chart_table,
                 insight=insight.headline,
             )
             try:
@@ -577,10 +750,25 @@ class AgentOrchestrator:
             headline=insight.headline,
             result_table=result_table,
             result_columns=self._result_columns(result_table),
+            details=insight.details,
         )
         yield _done(turn_id)
 
     # --- Вспомогательные методы ---
+
+    def _start_chart_pick(self, question: str, execution: Execution) -> asyncio.Task | None:
+        """Задача выбора графика агентом; None — графику не нужен выбор LLM.
+
+        Без графика (final_viz=none) выбирать нечего; выборка для гистограммы
+        (_finish) — не таблица шага, её вид уже решён.
+        """
+        if execution.final_viz == NO_CHART and not execution.dashboard_requested:
+            return None
+        if execution.result_table not in execution.tables.values():
+            return None
+        return asyncio.create_task(
+            self.chart_picker.pick(question, execution.steps, execution.tables, execution.final_viz)
+        )
 
     async def _research(
         self,
@@ -589,13 +777,31 @@ class AgentOrchestrator:
         request: ChatRequest,
         emit: Emit,
         catalog: list[str] | None = None,
+        resume: dict | None = None,
     ) -> tuple[str, Execution]:
         """План и шаги хода: вопрос, на который отвечаем, и итог выполнения.
 
         catalog — таблицы-кандидаты, когда таблица сессии не выбрана и по словам
         вопроса не определилась: планировщик выбирает одну из них в input
-        первого шага, и она становится таблицей сессии.
+        первого шага, и она становится таблицей сессии. resume — чекпоинт
+        остановленного хода: план не составляется, досчитываются его шаги.
         """
+        if resume is not None:
+            plan = ResearchPlan.model_validate(resume["plan"])
+            emit(_plan_event(plan.steps))
+            tables = existing_results(
+                self.db, {int(key): value for key, value in resume["step_tables"].items()}
+            )
+            execution = await self._execute_plan(
+                memory,
+                plan,
+                resume["input_table"],
+                resume["question"],
+                step_tables=tables,
+                source_table=resume["source_table"],
+                emit=emit,
+            )
+            return memory.question or resume["question"], execution
         if pending is not None:
             # Возобновление после уточнения (pending_recovery).
             question = pending.get("question") or request.question
@@ -612,7 +818,7 @@ class AgentOrchestrator:
             context["related"] = self._related(memory.table, request.question)
             tables = [memory.table, *(item.table for item in context["related"])]
         logger.debug(">>> run() планируем шаги (planner.plan)")
-        emit(_progress_event("planning", "started", tables=tables))
+        emit(_progress_event("planning", "started", tables=tables, turn_id=memory.turn_id))
         try:
             plan = await self._plan(request.question, context)
         except Exception as exc:
@@ -632,8 +838,23 @@ class AgentOrchestrator:
         remembered = [item["text"] for text in plan.remember if (item := memory.remember(text))]
         if remembered:
             logger.info("<<< run() запомнено: %s", remembered)
-            if not plan.steps:
-                return request.question, Execution(result_table="", remembered=remembered)
+        if plan.route == "overview" and not plan.steps:
+            # Обзорный вопрос, который не узнали шаблоны is_overview_question.
+            logger.info("маршрут: обзор таблицы (от планировщика)")
+            return request.question, Execution(
+                result_table="", remembered=remembered, overview=True
+            )
+        if not plan.steps and (plan.route == "answer" or not remembered):
+            # Вопрос о прошлых ответах. Модель часто возвращает пустой план, не
+            # сменив route: пустой план — тоже ответ словами, а не отказ «не
+            # удалось подобрать инструменты». План с шагами при route=answer
+            # выполняется: в сомнении лучше посчитать, чем ответить без расчёта.
+            logger.info("маршрут: пояснение по журналу ходов (route=%s)", plan.route)
+            emit(_progress_event("insight", "started"))
+            reply = await self.explainer.answer(request.question, memory)
+            return request.question, Execution(result_table="", remembered=remembered, reply=reply)
+        if remembered and not plan.steps:
+            return request.question, Execution(result_table="", remembered=remembered)
         for s in plan.steps:
             logger.info(
                 "    шаг %d: tool=%s input=%s args=%s columns=%s purpose=%r",
@@ -692,6 +913,7 @@ class AgentOrchestrator:
         step_tables: dict[int, str] | None = None,
         source_table: str | None = None,
         emit: Emit = _ignore,
+        checkpoint: bool = True,
     ) -> Execution:
         """Последовательно выполнить шаги плана.
 
@@ -704,6 +926,10 @@ class AgentOrchestrator:
         emit). Не помогло — сохраняет pending_recovery в SessionMemory и
         выбрасывает ClarificationNeeded, чтобы вызывающий код мог выдать
         clarification_needed и прервать генератор.
+
+        Шаг, чья таблица уже есть в step_tables, не выполняется: так
+        продолжается остановленный ход. После каждого шага (и достройки плана)
+        пишется чекпоинт хода, если checkpoint (плитки дашборда пишут свой).
         """
         source = source_table or input_table
         tables = dict(step_tables or {})
@@ -714,6 +940,15 @@ class AgentOrchestrator:
         index = 0
         while index < len(steps):
             step = steps[index]
+            if step.step_id in tables:
+                # Выполнен до остановки хода: результат уже лежит в своей таблице.
+                inputs[step.step_id] = resolve_input(step, current, tables, source)
+                details = self._step_details(inputs[step.step_id], tables[step.step_id], tables)
+                emit(_step_event(step, "finished", **details))
+                if tool_kind(step) == "transform":
+                    current = tables[step.step_id]
+                index += 1
+                continue
             logger.info(
                 ">>> _execute_plan шаг %d [%s]: tool=%s input=%s args=%s columns=%s $prev=%s",
                 step.step_id,
@@ -801,6 +1036,17 @@ class AgentOrchestrator:
                     template_id=replanned.template_id or plan.template_id,
                     dashboard_tiles=replanned.dashboard_tiles or plan.dashboard_tiles,
                 )
+            if checkpoint:
+                memory.save_checkpoint(
+                    {
+                        "kind": RESEARCH_CHECKPOINT,
+                        "question": question,
+                        "plan": plan.model_copy(update={"steps": steps}).model_dump(mode="json"),
+                        "input_table": input_table,
+                        "source_table": source,
+                        "step_tables": {str(key): value for key, value in tables.items()},
+                    }
+                )
 
         logger.debug("<<< _execute_plan все шаги завершены $prev=%s", current)
         return self._finish(plan, steps, tables, fallback=current, question=question, inputs=inputs)
@@ -835,11 +1081,24 @@ class AgentOrchestrator:
             return step, await execute(step)
         except Exception as exc:  # noqa: BLE001 — решает recovery.fixable
             error = exc
+        executions = 1
+        rerouted = self._from_source(step, error, current, tables, source)
+        if rerouted is not None:
+            # Исправление через LLM видит только колонки $prev и чинить вход
+            # не догадывается: две попытки уходили впустую.
+            logger.warning(
+                "    шаг %d: колонки нет в $prev, есть в $source — беру $source", step.step_id
+            )
+            step = rerouted
+            executions += 1
+            try:
+                return step, await execute(step)
+            except Exception as exc:  # noqa: BLE001
+                error = exc
         # error — последняя ошибка выполнения: её видят фронт и пользователь.
         # feedback — что получает планировщик: та же ошибка и, если его
         # исправление отклонила валидация, этот шаг с причиной отказа.
         feedback = str(error)
-        executions = 1
         for attempt in range(1, STEP_FIX_ATTEMPTS + 1):
             if not fixable(error):
                 break
@@ -868,6 +1127,28 @@ class AgentOrchestrator:
                 error = exc
                 feedback = str(exc)
         raise _StepFailed(step, error, executions)
+
+    def _from_source(
+        self,
+        step: ResearchStep,
+        error: Exception,
+        current: str,
+        tables: dict[int, str],
+        source: str,
+    ) -> ResearchStep | None:
+        """Тот же шаг на $source, если колонки из ошибки нет в $prev, но есть в источнике.
+
+        Модель ставит второй независимый расчёт после первого без
+        "input": "$source", и он ищет исходную колонку в таблице результата
+        (группировка по «Статус» после средней суммы).
+        """
+        missing = MISSING_COLUMN.search(str(error))
+        if missing is None or step.input != PREVIOUS or current == source:
+            return None
+        rerouted = step.model_copy(update={"input": SOURCE})
+        if missing.group(1) not in self._input_columns(rerouted, current, tables, source):
+            return None
+        return rerouted
 
     def _input_columns(
         self, step: ResearchStep, current: str, tables: dict[int, str], source: str
@@ -953,8 +1234,10 @@ class AgentOrchestrator:
             tables=dict(tables),
             plan=plan,
             steps=executed,
+            inputs=dict(inputs or {}),
             result_purpose=shown.purpose if shown else "",
             result_kind=tool_kind(shown) if shown else "transform",
+            result_tool=shown.tool if shown else "",
         )
         try:
             values = self._distribution_values(question, shown, inputs or {})
@@ -972,6 +1255,7 @@ class AgentOrchestrator:
             tables=dict(tables),
             plan=plan,
             steps=executed,
+            inputs=dict(inputs or {}),
             result_purpose=shown.purpose,
         )
 
@@ -1175,12 +1459,12 @@ class AgentOrchestrator:
         )
 
     async def _overview(self, memory: SessionMemory, table: str) -> AsyncIterator[dict]:
-        """Ответ на «что передо мной?»: факты, описание и таблица колонок, без планировщика.
+        """Ответ на «что передо мной?»: объём, период и описание простыми словами.
 
         Таблица связана ключами с другими — обзор всех связанных таблиц
-        (_schema_overview). Описание не построилось (LLM недоступна) — факты и
-        таблица всё равно отдаются. Таблица колонок не становится last_chart:
-        «покажи в другом виде» относится к прошлому графику исследования.
+        (_schema_overview). Описание не построилось (LLM недоступна) — объём
+        и период всё равно отдаются. Технической таблицы колонок (типы,
+        заполненность) в ответе нет: пользователю она не нужна.
         """
         group = relations.component(relations.load(self.db), table)
         if len(group) > 1:
@@ -1191,8 +1475,6 @@ class AgentOrchestrator:
         try:
             yield _progress_event("insight", "started")
             profile = overview.passport(self.db, table)
-            enrichment = self.profiles.load_enrichment(table)
-            headline = overview.facts(profile)
             try:
                 summary = await overview.describe_dataset(
                     self.db, table, getattr(self.planner, "llm", None)
@@ -1200,15 +1482,10 @@ class AgentOrchestrator:
             except Exception:
                 logger.exception("<<< run() описание таблицы %s не построено", table)
                 summary = ""
+            # Название LLM пишет вместе с описанием (#211): читаем после него.
+            headline = overview.headline(profile, relations.table_title(self.db, table))
             details = overview.paragraphs(summary) or [SUMMARY_UNAVAILABLE]
             yield {"type": "text", "data": {"headline": headline, "details": details}}
-
-            stage = "chart"
-            yield _progress_event("chart", "started")
-            spec = build_vega_spec(
-                "table", data=overview.profile_rows(profile, enrichment), title=OVERVIEW_CAPTION
-            )
-            yield {"type": "chart", "data": {"spec": spec, "caption": OVERVIEW_CAPTION}}
         except Exception as exc:
             logger.exception("<<< run() обзор таблицы: этап %s упал", stage)
             memory.finish_turn("failed")
@@ -1216,7 +1493,7 @@ class AgentOrchestrator:
             yield _failure_event()
             yield _done(memory.turn_id)
             return
-        memory.finish_turn("ok", headline=headline)
+        memory.finish_turn("ok", headline=headline, details=details)
         yield _done(memory.turn_id)
 
     async def _schema_overview(
@@ -1353,6 +1630,14 @@ def _table_event(db, table: str, previous: str | None) -> dict:
         "type": "table",
         "data": {"table": table, "previous": previous, "title": relations.table_title(db, table)},
     }
+
+
+def existing_results(db: DuckDBManager, tables: dict[int, str]) -> dict[int, str]:
+    """Таблицы шагов из чекпоинта, которые ещё лежат в DuckDB; удалённые очисткой — пересчитать."""
+    kept = {key: table for key, table in tables.items() if db.columns(table)}
+    if len(kept) < len(tables):
+        logger.warning("чекпоинт: нет таблиц %s, шаги выполнятся заново", set(tables) - set(kept))
+    return kept
 
 
 def _next_step_id(tables: dict[int, str]) -> int:

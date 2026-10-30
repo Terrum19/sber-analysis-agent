@@ -1,9 +1,10 @@
 """Очистка устаревших temp_result_vN.
 
 Результаты шагов живут в DuckDB постоянными таблицами; без очистки файл
-DuckDB растёт с каждым вопросом. Сохраняются таблицы плиток дашбордов и
-последних графиков сессий, активных за сутки; остальные удаляются,
-когда старше ``settings.result_ttl_s``.
+DuckDB растёт с каждым вопросом. Сохраняются таблицы плиток дашбордов,
+последних графиков и чекпоинтов остановленных ходов сессий, активных за
+сутки: такой ход можно продолжить. Остальные удаляются, когда старше
+``settings.result_ttl_s``.
 """
 
 import asyncio
@@ -22,7 +23,7 @@ SESSION_KEEP_S = 24 * 3600
 
 
 def collect_keep(sqlite_path: str | None = None, session_keep_s: int = SESSION_KEEP_S) -> set[str]:
-    """Таблицы, которые нельзя удалять: result_table плиток и last_chart свежих сессий."""
+    """Таблицы, которые нельзя удалять: плитки, графики и чекпоинты ходов свежих сессий."""
     path = Path(sqlite_path or settings.sqlite_path)
     if not path.exists():
         return set()
@@ -53,7 +54,7 @@ def collect_keep(sqlite_path: str | None = None, session_keep_s: int = SESSION_K
 
 
 def _session_charts(raw_state: str) -> set[str]:
-    """result_table графиков ходов сессии (и last_chart состояния до списка ходов)."""
+    """Таблицы графиков и чекпоинтов ходов сессии (и last_chart состояния до списка ходов)."""
     try:
         state = json.loads(raw_state)
     except (TypeError, ValueError):
@@ -63,8 +64,25 @@ def _session_charts(raw_state: str) -> set[str]:
     histories = list((state.get("tables") or {}).values())
     histories.append(state)
     charts = [h.get("last_chart") for h in histories if isinstance(h, dict)]
-    charts += [t.get("chart") for t in state.get("turns") or [] if isinstance(t, dict)]
-    return {c["result_table"] for c in charts if isinstance(c, dict) and c.get("result_table")}
+    turns = [turn for turn in state.get("turns") or [] if isinstance(turn, dict)]
+    charts += [turn.get("chart") for turn in turns]
+    kept = {c["result_table"] for c in charts if isinstance(c, dict) and c.get("result_table")}
+    for turn in turns:
+        kept.update(_checkpoint_tables(turn.get("checkpoint")))
+    return kept
+
+
+def _checkpoint_tables(checkpoint: object) -> set[str]:
+    """Таблицы шагов и готовых плиток из чекпоинта остановленного хода."""
+    if not isinstance(checkpoint, dict):
+        return set()
+    tables = set((checkpoint.get("step_tables") or {}).values())
+    tables.update(
+        tile.get("result_table")
+        for tile in (checkpoint.get("built") or {}).values()
+        if isinstance(tile, dict)
+    )
+    return {table for table in tables if isinstance(table, str)}
 
 
 def cleanup(db: DuckDBManager) -> list[str]:

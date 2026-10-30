@@ -1,3 +1,162 @@
+2026-10-31  Alexander Yurits  <143354682+Terrum19@users.noreply.github.com>
+
+	Шапка PDF дашборда переносится только между частями.
+	* backend/app/core/export/pdf.py (PdfExporter): Пробелы внутри «База
+	данных: …», «Источник: …», «Всего плиток: N» — неразрывные: число плиток
+	отрывалось от подписи на следующую строку, и
+	test_export_dashboard_pdf_resolves_database_from_profile_memory падал.
+
+2026-10-31  Alexander Yurits  <143354682+Terrum19@users.noreply.github.com>
+
+	Неделя года — с датами; слабейшая неделя — не неполная крайняя.
+	* backend/app/core/tools/timeseries/seasonality.py (_week_dates): Новая.
+	У period=week колонка dates («19.01–25.01»): модель называла 4-ю неделю
+	«началом января».
+	* backend/app/core/llm/prompts/quality_rules.py (PLANNER_RULES):
+	«Какая неделя самая …» — sort_limit с limit=3: при limit=1 ответом была
+	неполная последняя неделя.  (RESULT_SHAPES): При двух периодах медиана
+	выбросов не показывает; неделю года называть датами из dates.
+	* backend/tests/unit/test_tools.py: Даты недели года.
+
+2026-10-30  Alexander Yurits  <143354682+Terrum19@users.noreply.github.com>
+
+	План без пустых аргументов, пустых планов и шагов не по той таблице
+	(из ветки test, без настроек провайдера: они остаются в test, a24f6d3).
+	* backend/app/models/research_step.py (ResearchStep, ResearchPlan):
+	В JSON-схеме обязательны tool, input, arguments, purpose и steps,
+	tool не null, template_id — только id шаблонов.
+	* backend/app/core/tools/base.py (BaseTool.signature): Обязательные
+	аргументы помечены «(обязательный)»: модель пропускала by у group_by.
+	* backend/app/core/llm/prompts/step_planner.py (STEP_PLANNER): Правило
+	обязательных аргументов; input указывать всегда, независимый расчёт —
+	"$source".  (EMPTY_PLAN): Новый.
+	* backend/app/core/agent/planner.py (StepPlanner.plan): Пустой план на
+	новый вопрос о данных переспрашивается один раз.
+	* backend/app/core/agent/orchestrator.py (AgentOrchestrator._from_source):
+	Новая.  (_run_step): Колонки из ошибки DuckDB нет в $prev, но она есть
+	в источнике — шаг повторяется на $source без вызова LLM.
+	* backend/app/core/data/overview.py (_OVERVIEW): «что это», «что это
+	такое» — обзор таблицы, а не планировщик.
+	* backend/tests/unit/test_plan_execution.py, test_planner.py,
+	test_tool_registry.py, test_overview.py: Тесты того же.
+
+	Обзор таблицы — для бизнес-пользователя, без технической таблицы колонок.
+	* backend/app/core/llm/prompts/schema_describe.py (SCHEMA_DESCRIBE): О чём
+	данные, что в них есть и что интересного посмотреть; поля по-русски по
+	смыслу, без имён колонок и типов.
+	* backend/app/core/data/overview.py (headline): Новая.  Название, объём и
+	период для человека.  (profile_rows, KIND_LABELS): Удалены.
+	(_OVERVIEW): «что в таблице есть», «что тут есть», «о чём эти данные».
+	* backend/app/models/research_step.py (ResearchPlan.route): Значение
+	overview.
+	* backend/app/core/llm/prompts/step_planner.py (STEP_PLANNER): Правило
+	маршрута overview.
+	* backend/app/core/agent/orchestrator.py (_overview): Без графика
+	колонок, заголовок — headline.  (_research, _turn): Маршрут overview
+	от планировщика.
+	* backend/app/core/llm/prompts/insight_summary.py (INSIGHT_SUMMARY)
+	* backend/app/core/llm/prompts/explainer.py (EXPLAINER): Поля по-русски,
+	без технических имён и функций.
+	* docs/architecture.md, docs/memory.md: Обзор таблицы.
+	* backend/tests/unit/test_overview.py, test_orchestrator_unit.py,
+	test_relations.py, tests/e2e/test_scenarios.py: Тесты того же.
+
+2026-10-29  Alexander Yurits  <143354682+Terrum19@users.noreply.github.com>
+
+	Пустой план — ответ словами; причина неудачного хода — в журнале.
+	* backend/app/core/agent/orchestrator.py (_research): Пустой план без
+	просьбы запомнить идёт в пояснение, а не в отказ «не удалось подобрать
+	инструменты».  (_turn): Причина уточнения и сбоя — в ход.
+	* backend/app/core/memory/session_memory.py (finish_turn): Хранит
+	reason.
+	* backend/app/core/agent/explainer.py (_columns): Новая.  Колонки
+	таблицы сессии.  (_describe_turn): Причина неудачного хода.
+	* backend/app/core/llm/prompts/explainer.py (EXPLAINER): Колонки,
+	причина неудачи, вопросы с новым расчётом.
+	* backend/tests/unit/test_orchestrator_unit.py: Пустой план отвечается
+	пояснением.
+	* backend/tests/unit/test_explain_turn.py: Тесты того же.
+
+2026-10-29  Alexander Yurits  <143354682+Terrum19@users.noreply.github.com>
+
+	Вопрос о прошлых ответах агента — ответ словами, без плана.
+	* backend/app/models/research_step.py (ResearchPlan.route): Новое
+	поле: data или answer; null и незнакомое значение — data.
+	* backend/app/core/llm/prompts/step_planner.py (STEP_PLANNER): Правило
+	и пример маршрута answer; вопросы к данным со словами «почему», «как»,
+	«объясни» — data.
+	* backend/app/core/agent/explainer.py: Новый.  Ответ по журналу ходов:
+	шаги с аргументами, строки после шага, ответ и начало результата;
+	число без опоры в журнале — один переспрос.
+	* backend/app/core/llm/prompts/explainer.py: Новый.  Промпт пояснения.
+	* backend/app/core/memory/session_memory.py (finish_turn): Хранит
+	details ответа.  (explained_turns): Новая.  Последние ходы и ход из
+	reply_to.
+	* backend/app/core/agent/orchestrator.py (_research): Маршрут answer
+	без шагов — пояснение; план с шагами выполняется.  (_turn): Ответ
+	пояснения без инсайта и графика; details ответа — в ход.
+	* scripts/eval.py (check_route): Новая.  Ключ expect.route.
+	* data/eval/explain/questions.yaml: Новый.  Набор-ловушки пояснений.
+	* docs/eval.md: Набор explain и ключ route.
+	* backend/tests/unit/test_explain_turn.py: Новый.
+	* backend/tests/unit/test_eval_runner.py: Тесты route.
+	График ответа выбирает агент по таблицам выполненных шагов (#224).
+	* backend/app/core/agent/chart_pick.py: Новый.  ChartPicker: один вызов
+	LLM по описанию таблиц шагов (кроме lookup) — шаг, вид, x, y, color,
+	limit; неподошедший выбор — один повтор с причиной, затем select_chart.
+	(ask_chart): Срок chart_choice_timeout_s на вызов, повтор, TimeoutError.
+	* backend/app/core/viz/chart_choice.py: Новый.  (rejection): Колонки есть
+	в таблице, вид подходит к данным.  (top_rows): Топ-N по y в новую
+	temp_result_vN.  (describe_columns, sample_rows): Описание для промпта.
+	* backend/app/models/chart_choice.py: Новый.  ChartPick, AnswerChart:
+	все поля обязательные, «нет» — null.
+	* backend/app/core/agent/orchestrator.py: Выбор графика параллельно с
+	инсайтом; без выбора — прежняя эвристика.
+	* backend/app/core/agent/dashboard_turn.py: Плитки — тот же rejection и
+	ask_chart; x, y, color, limit идут в спеку плитки.
+	* backend/app/core/viz/vega_spec_builder.py (build_vega_spec): Параметры
+	x, y, color; больше 12 категорий — лежащие столбцы по убыванию; color —
+	серии рядом (xOffset).  Колонки пишутся в usermeta.
+	* backend/app/core/viz/chart_selector.py (fits): Предел столбцов 50.
+	* backend/app/core/dashboards/recalculate.py (rebuild_spec): Колонки из
+	usermeta.  (respec): Новая.  Спека в другом виде по data.values.
+	* backend/app/api/routes/dashboards.py (tile_spec): Новый
+	POST /api/dashboards/tile-spec.
+	* backend/app/api/schemas/dashboard.py (TileSpecRequest): Новая.
+	* backend/app/core/llm/client.py: Срок llm_timeout_s на весь ответ, а не
+	на паузу между байтами: keep-alive OpenRouter держал запрос без конца.
+	* backend/app/config.py (chart_choice_timeout_s): Новая, 90 с.
+	* backend/app/core/llm/prompts/chart_selector.py (ANSWER_CHART, ANSWER_HINT)
+	(ANSWER_RETRY, CHART_STEP, CHART_KINDS): Новые.
+	* backend/app/core/llm/prompts/dashboard_builder.py (CHART_CHOICE): Виды
+	из CHART_KINDS, limit.
+	* frontend/src/lib/chartTypes.ts (withRebuiltChartType): Новая.  Смена
+	вида плитки пересобирает спеку на бэкенде: таблица больше не рисуется
+	полосами по ячейкам.
+	* frontend/src/store/sessionStore.ts (addTile): График из чата встаёт
+	на панель и при сохранённом дашборде.
+	* frontend/src/components/charts/ChartRenderer.tsx: Прокрутка по высоте.
+	* docs/visualization.md, docs/architecture.md, docs/prompts.md,
+	docs/repo_structure.md: Выбор графика агентом.
+	* backend/tests/unit/test_chart_pick.py, test_chart_choice.py: Новые.
+	Факты инсайта не приписывают итог пустой группы соседней строке.
+	* backend/app/core/agent/quality_fixes.py (insight_facts): Подпись
+	минимума и максимума — arg_min_null/arg_max_null: arg_max пропускал
+	строку с NULL в подписи и отдавал её максимум другой строке («2,14 млрд
+	у ПР-ТТ-06-01» вместо продаж без магазина).  (_extreme_label): Новая.
+	Экстремум у строки без подписи — рядом лучшая подписанная строка.
+	(format_value): NULL — «без значения».  (NULL_VALUE): Новая.
+	* backend/tests/unit/test_quality_fixes.py: Тесты того же.
+	Инсайт знает, что номер недели года объединяет все годы.
+	* backend/app/core/agent/quality_fixes.py (period_number_facts): Новая.
+	Шаг с EXTRACT(WEEK/MONTH …), date_part, week() — факт: строка результата —
+	этот номер всех лет вместе, а не конкретная неделя.  (_PERIOD_OF_YEAR)
+	(_PERIOD_UNITS, _strings): Новые.
+	* backend/app/core/agent/insight.py (InsightGenerator.generate): Факт —
+	к фактам результата.
+	* backend/tests/unit/test_quality_fixes.py,
+	backend/tests/unit/test_insight_generator.py: Тесты того же.
+
 2026-10-29  Alexander Yurits  <143354682+Terrum19@users.noreply.github.com>
 
 	Переход к другим данным по смыслу вопроса — эмбеддинги (#165).
@@ -41,6 +200,148 @@
 	«…»» в ленте.
 	* frontend/src/i18n/dictionary.ts (chat.tableChosen): Новая.
 	* backend/tests/unit/test_relations.py: Тесты того же.
+	«Какая неделя самая слабая» — календарная неделя, «типичная неделя
+	года» — seasonality(period=week).
+	* backend/app/core/tools/timeseries/seasonality.py (SeasonalityArgs):
+	period=week — номер недели года ISO.  (_number): Неделя по календарю.
+	(SeasonalityTool.execute): Целые годы — по всему охвату, с неполными
+	краями: два года недель давали 103 полные недели и терялся год.
+	* backend/app/core/llm/prompts/quality_rules.py (PLANNER_RULES): «Какая
+	неделя / месяц / день самый …» — time_bucket и sort_limit; номер
+	недели года с SUM по годам — нет: планировщик складывал 2025 и 2026.
+	* backend/tests/unit/test_tools.py: Неделя года, четыре целых недели.
+
+2026-10-30  Alexander Yurits  <143354682+Terrum19@users.noreply.github.com>
+
+	Сезонность: пустой час или день — ноль, пик и минимум — по медиане (#215).
+	* backend/app/core/tools/timeseries/seasonality.py (SeasonalityTool.execute):
+	При SUM/COUNT час без записей в дне с данными и день без записей в
+	неделе с данными — ноль, а не пропуск: ночь в продажах HK была завышена
+	на 20 %.  Месяц и квартал без данных — по-прежнему пропуск.  Новая
+	колонка median.  (_ZERO_WINDOWS): Новая.
+	* backend/app/core/llm/prompts/quality_rules.py (RESULT_SHAPES): Пик,
+	минимум и разница — по median; другой пик по level — назвать выбросы.
+	* docs/repo_structure.md: Медиана в сезонности.
+	* backend/tests/unit/test_tools.py: Пустой час — ноль, медиана при
+	выбросе, AVG без нулей.
+
+2026-10-30  thebulkapro  <saitbatalovbulat200@gmail.com>
+
+	Временные ряды: исправления по ревью #233.
+	* backend/app/core/tools/domain/trend_analysis.py (_fit): Тренд и
+	сезонные отклонения — одной регрессией: рост не уходит в сезонность.
+	(_seasonal_trend): Новая.  МНК по шагу ряда и номеру сезона; p_value —
+	t-тест коэффициента при шаге.
+	* backend/app/core/tools/domain/_common.py (moving_average): По
+	календарным шагам; окно с пропуском — None.  (_unit): Текстовая дата
+	«2024-01-15» — не месяц.  (_partial_edges): Метки в полночь покрывают
+	весь день, на начало часа — весь час: последний период не неполный.
+	* backend/app/core/tools/domain/seasonal_decompose.py (_decompose):
+	Пропуск в ряду — дырка, а не сдвиг соседей; без целого окна — ошибка.
+	* backend/app/core/tools/timeseries/seasonality.py (SeasonalityTool):
+	Период без данных не считается нулевым и не входит в periods.
+	* backend/tests/unit/test_tools.py: Тесты того же.
+
+2026-10-29  thebulkapro  <saitbatalovbulat200@gmail.com>
+
+	Временные ряды: сезонность по сумме за период, тренд и разложение по
+	ряду, рост год к году и p-value (#215).
+	* backend/app/core/tools/timeseries/seasonality.py (SeasonalityArgs):
+	function SUM | COUNT | AVG, по умолчанию SUM; metric_column не нужен
+	для COUNT.  (SeasonalityTool): Сначала итог за каждый конкретный
+	период (месяц, квартал, день, час), потом среднее по номеру периода.
+	Неполные крайние периоды и периоды сверх целого числа лет в расчёт
+	не входят.  Колонки <period>, level, periods, incomplete, skipped.
+	* backend/app/core/tools/domain/_common.py (series): Новая.  Ряды по
+	разрезам by; с interval строки сворачиваются function по периодам,
+	неполный крайний период помечается; без interval повтор дат — ошибка
+	с подсказкой.  Имена после time_bucket (period, sum_<колонка>)
+	узнаются.  (step_index): Новая.  Номер шага по календарю вместо дней
+	и позиции строки.  (SEASONS): Длина сезона по шагу ряда.  (trend):
+	p-value.  (time_axis, period_index, observations): Удалены.
+	* backend/app/core/tools/domain/trend_analysis.py (TrendArgs):
+	interval, function, by; seasonality_period по умолчанию по шагу
+	ряда.  (TrendAnalysisTool): slope_per_period вместо slope за день;
+	p_value по ряду без сезонных отклонений; yoy_change, yoy_change_avg,
+	yoy_p_value; incomplete.  Описание со словами «растёт», «рост».
+	* backend/app/core/tools/domain/seasonal_decompose.py (DecomposeArgs):
+	interval, function, by; seasonality_period по шагу ряда.
+	(SeasonalDecomposeTool): Неполные периоды не считаются, колонка
+	incomplete.
+	* backend/app/core/tools/sql/atomic.py (Interval): hour.
+	* backend/app/core/tools/timeseries/forecast.py (shift): Шаг в час.
+	* backend/app/core/llm/prompts/quality_rules.py (PLANNER_RULES):
+	Сезонность — seasonality с SUM/COUNT/AVG по смыслу метрики; «растёт
+	ли» — trend_analysis с interval и function, разрезы — by.
+	(RESULT_SHAPES): Новый.  Правило headline для тренда, сезонности и
+	разложения.
+	* backend/app/core/agent/insight.py (InsightGenerator.generate):
+	Аргумент result_tool.
+	* backend/app/core/agent/orchestrator.py (Execution.result_tool):
+	Новое поле.
+	* backend/app/core/agent/quality_fixes.py (insight_facts): Колонка с
+	одним значением во всех строках — само значение; номер периода
+	сезонности подписывает минимум и максимум.
+	* backend/tests/unit/test_tools.py, backend/tests/unit/test_advanced_tools.py,
+	backend/tests/unit/test_quality_fixes.py,
+	backend/tests/unit/test_insight_generator.py: Тесты того же.
+	* data/eval/questions.yaml (pharma-03),
+	data/eval/hk/questions.yaml (sales-s3-july): Эталоны — среднее по
+	годам.
+	* docs/repo_structure.md, docs/visualization.md, docs/prompts.md: То же.
+2026-10-30  Dmitriy Yakushonok  <dmitriyyakushonok@yandex.ru>
+
+	Экспорт дашбордов и исследований в PDF и Excel (E-02, E-03, F-10).
+	* backend/app/core/export/pdf.py (PdfExporter.export_dashboard): Новый.
+	Экспорт целостного дашборда в PDF: фирменная шапка с датой среза и
+	названием базы данных/сессии, блок KPI с крупными числами, сетка
+	карточек плиток с векторным рендерингом Vega-Lite графиков, инсайтами
+	и подгонкой таблиц под размер страницы.  (_compute_table_col_widths_and_fontsize,
+	_build_data_table_flowable): Новые. Автоподбор шрифта и высоты таблиц.
+	(_derive_substantive_insight): Аналитически корректные инсайты (исключение
+	ID и запрет суммирования долей/margin).  (HRFlowable): Зелёная фирменная
+	линия (#088434) в шапке одиночного отчёта и дашборда.
+	* backend/app/core/export/excel.py (ExcelExporter.export_dashboard): Новый.
+	Многостраничный .xlsx: лист «Сводка» с крупными карточками KPI, источником
+	данных и оглавлением со ссылками на листы плиток; отдельные листы под плитки
+	с кнопкой возврата в Сводку, снимком данных и графиком.
+	(_detect_column_roles): Детерминированный подбор диаграмм по Vega-Lite
+	spec.encoding (x, y, theta, color) и эвристике данных (поддержка таблиц
+	только из чисел, одноколоночных таблиц и строковых чисел).
+	(_write_data_table): Новая. Единое форматирование таблиц (зебра-заливка,
+	автофильтр, freeze panes, границы, автоширина столбцов).
+	(_detect_chart_type): Поддержка bar, line, pie, area; подавление графиков
+	для табличных спецификаций (is_table_spec). Лимит строк 5000 и точек 50.
+	* backend/app/core/export/common.py: Новый. Общие функции экспорта:
+	resolve_tile_records (безопасное разрешение snapshot_data vs DuckDB),
+	extract_kpi_value, format_kpi_number, format_cell_value,
+	sanitize_excel_text и sanitize_excel_value (защита от Formula Injection
+	CWE-1236, приведение timezone-aware datetime к naive UTC, NaN -> "",
+	Infinity -> строка, сериализация JSON), extract_table_columns (защита
+	от Schema Drift).
+	* backend/app/core/export/charts.py (is_table_spec): Новая. Определение
+	чисто табличных представлений.
+	* backend/app/api/routes/dashboards.py (export_dashboard): Новый эндпоинт
+	GET /api/dashboards/{id}/export?format=xlsx|pdf с FileResponse,
+	валидацией формата, обработкой ошибок 404/500 и передачей метаданных БД.
+	* backend/app/api/routes/artifacts.py (export_artifact): Поддержка
+	экспорта дашбордов и отдельных плиток со spec.data.values / spec.data /
+	spec.values при отсутствии result_ref. Обработка ошибок в HTTPException(500).
+	* frontend/src/components/chat/AnswerExport.tsx: Разрешает экспорт
+	в Excel для плиток со встроенными данными спецификации без явного
+	resultTable (исправлена блокировка кнопки первой плитки «Колонки таблицы»).
+	* frontend/src/components/canvas/Canvas.tsx: Кнопки экспорта дашборда
+	в шапке канваса и модальное окно выбора формата.
+	* frontend/src/app/dashboard/[id]/page.tsx: Кнопки экспорта дашборда.
+	* docs/architecture.md: Документирован полный конвейер ExcelExporter,
+	гарантии безопасности, типографика и актуализирован регламент PDF.
+	* docs/team_plans/final-roadmap.md: Отмечены как выполненные задачи
+	E-02, E-03 и F-10.
+	* backend/tests/unit/test_export_dashboard_pdf.py
+	* backend/tests/unit/test_export_common.py
+	* backend/tests/unit/test_export_excel.py
+	* backend/tests/unit/test_export_pdf.py: Полный набор unit-тестов
+	(101 тест, 100% покрытие кода модулей экспорта и роутов).
 
 2026-10-29  Alexander Yurits  <143354682+Terrum19@users.noreply.github.com>
 
@@ -125,6 +426,95 @@
 	меню во время ответа больше не блокируются; точка статуса у сессии.
 	* frontend/src/i18n/dictionary.ts (sidebar.runRunning, sidebar.runDone)
 	(sidebar.runError): Новые.  (chat.cannotSwitchWhileGenerating): Удалён.
+	Самый слабый период в ответе — полный, а не неполный крайний.
+	* backend/app/core/llm/prompts/quality_rules.py (PARTIAL_HINT): На «какой
+	период самый слабый / сильный» headline — лучший из полных периодов,
+	неполный — оговоркой в details: модель называла неделю 28.09.2026
+	(3 дня) самой слабой и только добавляла, что она неполная.
+
+2026-10-29  thebulkapro  <saitbatalovbulat200@gmail.com>
+
+	Факты инсайта о данных за результатом: пропуски, период, ничья на
+	вершине, неполный крайний период (#216, A-25.6 – A-25.9).
+	* backend/app/core/agent/quality_fixes.py (plan_facts): Новая.
+	По паспорту источника и колонкам плана — «в исходной таблице price:
+	8996 из 129971 без значения» и период данных по колонкам дат; без
+	паспорта этих фактов нет, запросов к источнику нет.  Возвращает и
+	подсказки инсайту — только к сработавшим фактам.
+	(top_tie): Новая.  Ничья на вершине sort_limit по первой колонке
+	order_by: один COUNT по входу шага, MAX при descending, иначе MIN;
+	видна и при limit=1.
+	(partial_periods, _period_start, _period_end, _day): Новые.  Первый
+	или последний период time_bucket, который данные покрывают не
+	целиком; только при колонке period в результате, неделя — с
+	понедельника, как date_trunc.
+	* backend/app/core/llm/prompts/quality_rules.py (PLANNER_RULES):
+	NULL в долях и CASE WHEN — «неизвестно», а не 0: filter_rows IS NOT
+	NULL или CASE без ELSE 0.  (INSIGHT_RULES): Место {hints}.
+	(NULLS_HINT, TIE_HINT, PARTIAL_HINT): Новые.
+	* backend/app/core/agent/insight.py (generate): Факты по плану из
+	паспорта source и входов шагов inputs дополняют факты о результате;
+	сбой фактов по плану инсайт не роняет.
+	* backend/tests/unit/test_quality_fixes.py: Пропуски в колонках плана
+	и вне его, без паспорта, период дат, ничья при limit=10 и limit=1 и
+	по минимуму, неполные неделя и первый месяц, факты в промпте.
+	* docs/prompts.md: То же.
+
+	Колонки источника, которые использует план (#216, A-25.5).
+	* backend/app/core/agent/quality_fixes.py (plan_columns, _strings):
+	Новые.  Колонка использована, если её имя — значение аргумента или
+	отдельное слово в выражении (price, но не price_eur), без учёта
+	регистра; аргументы обходятся вглубь (metrics у group_by).
+	* backend/tests/unit/test_quality_fixes.py: Планы «доля вин дороже
+	$100» и «цена/качество», price_eur, позиционные columns, имя с
+	пробелом и скобками.
+
+	Инсайт получает исходную таблицу и входы шагов (#216, A-25.4).
+	* backend/app/core/agent/orchestrator.py (Execution): Поле inputs —
+	шаг -> его входная таблица, без второй таблицы join_tables.
+	(_finish): Заполняет inputs, в том числе для гистограммы.
+	(_turn): generate получает source (таблица сессии) и inputs — и в
+	обычном ходе, и после ответа на уточнение.
+	* backend/app/core/agent/insight.py (generate): Параметры source и
+	inputs; пока не используются, поведение не меняется.
+	* backend/tests/unit/test_orchestrator_unit.py: source и inputs в
+	generate после хода и после recovery_response.
+
+	Проверка чисел инсайта: «тыс/млн/млрд» и числа из промпта (#216,
+	п. 3).
+	* backend/app/core/agent/quality_fixes.py (ungrounded_numbers):
+	Число со словом «тыс», «млн» или «млрд» сверяется и с опорными,
+	делёнными на 10³, 10⁶ или 10⁹, и с самими опорными; допуск прежний.
+	«726,9 млн» при 726930548.86 больше не вызывает переспроса.
+	(_SCALES): Новый.
+	* backend/app/core/agent/insight.py (_grounded): Опора — весь текст
+	промпта вместо строки sources: порог 0.05 из P_VALUE_RULE опорный,
+	только когда правило попало в промпт.  (generate): То же.
+	* backend/tests/unit/test_quality_fixes.py: Тысячи, миллионы,
+	миллиарды, число без слова масштаба.
+	* backend/tests/unit/test_insight_generator.py: «p < 0,05» с p_value
+	в результате — без переспроса, без p_value — с переспросом.
+	* docs/prompts.md: То же.
+
+	Блок о стат-тестах в инсайте — только когда тесты были (#216, п. 5).
+	* backend/app/core/llm/prompts/insight_summary.py (INSIGHT_SUMMARY):
+	Без блока «Сопутствующие результаты».  (INSIGHT_SUPPORTING)
+	(P_VALUE_RULE): Новые.
+	* backend/app/core/agent/insight.py (generate): Сопутствующие
+	результаты — при непустом supporting, порог p_value — при колонке
+	p_value в результате или сопутствующих таблицах; в обеих ветках
+	agent_quality_fixes.  (has_p_value, describe_supporting): Новые.
+	* backend/tests/unit/test_insight_generator.py: Промпт без тестов,
+	с p_value в результате и в сопутствующих таблицах.
+	* docs/prompts.md: То же.
+
+	Точность малых дробных чисел в промпте инсайта (#216, п. 4).
+	* backend/app/core/agent/quality_fixes.py (_round): При |x| < 1 —
+	3 значащие цифры вместо 2 знаков: доля 0,0259 больше не попадает
+	в промпт как «0.03», p-value 1e-30 — как «0.0».
+	(format_value): Docstring.
+	* backend/tests/unit/test_quality_fixes.py: Доли, p-value и сотые
+	в format_value; доля 0.0259 в промпте инсайта.
 
 2026-10-28  thebulkapro  <saitbatalovbulat200@gmail.com>
 
