@@ -35,6 +35,7 @@ import {
 import { useElementSize } from "@/hooks/useElementSize";
 import { useT } from "@/i18n/useT";
 import { isKpiTile } from "@/lib/tileLayout";
+import { chartTypeOf } from "@/lib/chartTypes";
 import { DataTable, chartKind } from "@/components/charts/ChartRenderer";
 import Icon from "@/components/ui/Icon";
 
@@ -57,6 +58,8 @@ interface Props {
   onElaborate?: (selection?: ChartSelection) => void;
   /** Меню действий плитки: anchorRect — координаты кнопки «⋯». */
   onMenu?: (anchorRect: DOMRect) => void;
+  /** Смена типа графика: anchorRect — координаты кнопки смены типа. */
+  onChangeChartType?: (anchorRect: DOMRect) => void;
   /** Маленькое превью без осей и инсайта. */
   mini?: boolean;
   /** Компактная плитка в ленте чата: график/KPI + инсайт, без действий. */
@@ -250,6 +253,7 @@ export default function DashboardTile({
   onOpen,
   onElaborate,
   onMenu,
+  onChangeChartType,
   mini = false,
   preview = false,
   dense = false,
@@ -453,6 +457,28 @@ export default function DashboardTile({
               title={t("drill.menu")}
             >
               <Icon name="sparkle" size={13} />
+            </button>
+          )}
+          {onChangeChartType && (
+            <button
+              type="button"
+              data-chart-picker-trigger="true"
+              onClick={(e) => {
+                e.stopPropagation();
+                onChangeChartType(e.currentTarget.getBoundingClientRect());
+              }}
+              className={`flex h-6 shrink-0 items-center justify-center rounded-md text-graphite-400 hover:bg-graphite-800 hover:text-graphite-100 transition ${
+                dense ? "w-6" : "gap-1 px-1.5"
+              }`}
+              title={t("canvas.chartType")}
+              aria-label={t("canvas.chartType")}
+            >
+              <Icon name="chart" size={13} />
+              {!dense && (
+                <span className="text-[11px] font-medium hidden sm:inline max-w-[80px] truncate">
+                  {t(`chartType.${chartTypeOf(tile)}` as any)}
+                </span>
+              )}
             </button>
           )}
           {isEditing && onMenu && (

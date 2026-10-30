@@ -19,6 +19,7 @@ import {
 } from "@/api/client";
 import WorkspaceShell from "@/components/layout/WorkspaceShell";
 import DashboardTile from "@/components/canvas/DashboardTile";
+import ChartTypePicker from "@/components/canvas/ChartTypePicker";
 import Icon from "@/components/ui/Icon";
 import ZoomControl from "@/components/ui/ZoomControl";
 import ItemActionMenu from "@/components/layout/ItemActionMenu";
@@ -29,6 +30,7 @@ import FitGrid from "@/components/canvas/FitGrid";
 import { useOpenArtifact } from "@/hooks/useOpenArtifact";
 import { useAskAgent } from "@/hooks/useAskAgent";
 import { useElementSize } from "@/hooks/useElementSize";
+import { useChartTypeChange } from "@/hooks/useChartTypeChange";
 import { drillQuestion, type ChartSelection } from "@/lib/chartSelection";
 import { downloadBlob } from "@/lib/download";
 import { useSessionStore } from "@/store/sessionStore";
@@ -290,33 +292,33 @@ export default function DashboardPage({ params }: { params: { id: string } }) {
     }
   }
 
-  /** Смена типа графика без LLM: PUT + recalculate (если есть result_table). */
-  async function handleChartTypeChange(index: number, type: ChartType) {
-    if (!config) return;
-    const prevConfig = config;
-    const nextTiles = config.tiles.map((tile, i) =>
-      i === index ? withChartType(tile, type) : tile,
-    );
-    setConfig({ ...config, tiles: nextTiles });
-    try {
-      await updateDashboard(params.id, { tiles: nextTiles });
-      if (nextTiles[index].result_table) {
-        const updated = await recalculateDashboard(params.id);
-        setConfig(updated);
-      } else {
-        flash(t("canvas.chartTypeLocalOnly"), 4000);
-      }
+  const {
+    pickerState,
+    openPicker,
+    closePicker,
+    setPreview,
+    changeChartType,
+    getTile,
+  } = useChartTypeChange({
+    dashboardId: params.id,
+    tiles: config?.tiles ?? [],
+    onTilesChange: (newTiles) => {
+      setConfig((prev) => (prev ? { ...prev, tiles: newTiles } : prev));
+    },
+    onDashboardUpdated: (updated) => {
+      setConfig(updated);
       setRevision(0);
-    } catch (err: any) {
-      if (isNotFound(err)) {
-        setConfig(null);
-        setNotFound(true);
-        return;
+    },
+    setSaveState: (state, err) => {
+      setSaveState(state);
+      if (state === "error") {
+        setSaveError(err ? ((err as any)?.detail || (err as any)?.message || String(err)) : null);
+      } else {
+        setSaveError(null);
       }
-      setConfig(prevConfig);
-      flash(t("canvas.saveError", { msg: err?.detail || err?.message || String(err) }), 4000);
-    }
-  }
+    },
+    onNotify: (msg) => flash(msg, 4000),
+  });
 
   async function handleExport(format: "xlsx" | "pdf") {
     if (!config) return;
@@ -632,10 +634,11 @@ export default function DashboardPage({ params }: { params: { id: string } }) {
                 >
                   {config.tiles.map((tile, i) => {
                     const dense = (gridLayout[i]?.h ?? 0) <= MIN_SIZE.chart.h;
+                    const effectiveTile = getTile(tile, i);
                     return (
                       <div key={tile.id || `tile-${i}`} className="h-full">
                         <DashboardTile
-                          tile={tile}
+                          tile={effectiveTile}
                           isEditing={isEditing}
                           draggable={!stack}
                           dense={dense}
@@ -643,6 +646,7 @@ export default function DashboardPage({ params }: { params: { id: string } }) {
                           onDelete={() => handleDeleteTile(i)}
                           onOpen={() => openArtifact(tile, config.session_id)}
                           onElaborate={(selection) => handleElaborate(i, selection)}
+                          onChangeChartType={(rect) => openPicker(i, rect)}
                           onMenu={(rect) => setMenu({ index: i, rect })}
                         />
                       </div>
@@ -664,9 +668,26 @@ export default function DashboardPage({ params }: { params: { id: string } }) {
           onClose={() => setMenu(null)}
           onRename={(newTitle) => handleRenameTile(menu.index, newTitle)}
           onDelete={() => handleDeleteTile(menu.index)}
-          onChartTypeChange={(type) => handleChartTypeChange(menu.index, type as ChartType)}
+          onOpenChartTypePicker={() => {
+            const idx = menu.index;
+            const rect = menu.rect;
+            setMenu(null);
+            openPicker(idx, rect);
+          }}
+          onChartTypeChange={(type) => changeChartType(menu.index, type as ChartType)}
           onOpen={() => openArtifact(config.tiles[menu.index], config.session_id)}
           onElaborate={() => handleElaborate(menu.index)}
+        />
+      )}
+
+      {/* Поповер выбора типа графика */}
+      {pickerState && config.tiles[pickerState.tileIndex] && (
+        <ChartTypePicker
+          anchorRect={pickerState.anchorRect}
+          currentType={chartTypeOf(config.tiles[pickerState.tileIndex])}
+          onSelect={(type) => changeChartType(pickerState.tileIndex, type)}
+          onPreview={setPreview}
+          onClose={closePicker}
         />
       )}
     </WorkspaceShell>

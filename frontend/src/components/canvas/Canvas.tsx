@@ -26,7 +26,9 @@ import { MIN_SIZE, STACK_BELOW, applyGridLayout, tileGridLayout } from "@/lib/ti
 import { CHART_TYPES, chartTypeOf, withChartType, type ChartType } from "@/lib/chartTypes";
 import { useElementSize } from "@/hooks/useElementSize";
 import FitGrid from "@/components/canvas/FitGrid";
+import ChartTypePicker from "@/components/canvas/ChartTypePicker";
 import ItemActionMenu from "@/components/layout/ItemActionMenu";
+import { useChartTypeChange } from "@/hooks/useChartTypeChange";
 import { useOpenArtifact } from "@/hooks/useOpenArtifact";
 import { useAskAgent } from "@/hooks/useAskAgent";
 import { drillQuestion, type ChartSelection } from "@/lib/chartSelection";
@@ -183,35 +185,26 @@ export default function Canvas({ sessionId }: Props) {
     }
   }
 
-  // Смена типа графика без LLM: локальный spec, PUT и (если есть данные) recalculate.
-  async function handleChartTypeChange(index: number, type: ChartType) {
-    const tile = displayTiles[index];
-    if (!tile) return;
-    const prevTiles = displayTiles;
-    const nextTiles = displayTiles.map((item, i) =>
-      i === index ? withChartType(item, type) : item,
-    );
-    writeTiles(nextTiles);
-
-    if (!dashboardId) return;
-
-    try {
-      setSaveState("saving");
-      await updateDashboard(dashboardId, { tiles: nextTiles });
-      if (nextTiles[index].result_table) {
-        const updated = await recalculateDashboard(dashboardId);
-        setTiles(updated.tiles);
-        setSaveState("saved");
-      } else {
-        setSaveState("saved");
-        setSaveStatus(tr("canvas.chartTypeLocalOnly"));
-        setTimeout(() => setSaveStatus(null), 3500);
-      }
-    } catch (err) {
-      writeTiles(prevTiles);
-      setSaveState("error", err);
-    }
-  }
+  const {
+    pickerState,
+    openPicker,
+    closePicker,
+    setPreview,
+    changeChartType,
+    getTile,
+  } = useChartTypeChange({
+    dashboardId,
+    tiles: displayTiles,
+    onTilesChange: (nextTiles) => writeTiles(nextTiles),
+    onDashboardUpdated: (updated) => {
+      if (updated?.tiles) setTiles(updated.tiles);
+    },
+    setSaveState: (state, err) => setSaveState(state, err),
+    onNotify: (msg) => {
+      setSaveStatus(msg);
+      setTimeout(() => setSaveStatus(null), 3500);
+    },
+  });
 
   // Пересчёт данных
   async function handleRecalculate() {
@@ -609,10 +602,11 @@ export default function Canvas({ sessionId }: Props) {
                   {displayTiles.map((tile, i) => {
                     const tileId = tile.id || `tile-${i}`;
                     const dense = (gridLayout[i]?.h ?? 0) <= MIN_SIZE.chart.h;
+                    const effectiveTile = getTile(tile, i);
                     return (
                       <div key={tileId} className="h-full">
                         <DashboardTile
-                          tile={tile}
+                          tile={effectiveTile}
                           isEditing={isEditing}
                           draggable={!stack}
                           dense={dense}
@@ -620,6 +614,7 @@ export default function Canvas({ sessionId }: Props) {
                           onDelete={() => removeTile(i)}
                           onOpen={() => openArtifact(tile, sessionId)}
                           onElaborate={(selection) => handleElaborate(tile, selection)}
+                          onChangeChartType={(rect) => openPicker(i, rect)}
                           onMenu={(rect) => setMenu({ index: i, rect })}
                         />
                       </div>
@@ -637,25 +632,30 @@ export default function Canvas({ sessionId }: Props) {
             <div className="space-y-4">
               {displayTiles
                 .filter((t) => !isKpiTile(t))
-                .map((tile, i) => (
-                  <div key={tile.id || i} style={{ height: Math.round(340 * zoom) }}>
-                    <DashboardTile
-                      tile={tile}
-                      actions={
-                        <AnswerExport
-                          sessionId={sessionId}
-                          headline={tile.title}
-                          spec={tile.spec}
-                          resultTable={tile.result_table}
-                          compact
-                          inline
-                        />
-                      }
-                      onOpen={() => openArtifact(tile, sessionId)}
-                      onElaborate={(selection) => handleElaborate(tile, selection)}
-                    />
-                  </div>
-                ))}
+                .map((tile) => {
+                  const origIndex = displayTiles.indexOf(tile);
+                  const effectiveTile = getTile(tile, origIndex);
+                  return (
+                    <div key={tile.id || origIndex} style={{ height: Math.round(340 * zoom) }}>
+                      <DashboardTile
+                        tile={effectiveTile}
+                        actions={
+                          <AnswerExport
+                            sessionId={sessionId}
+                            headline={tile.title}
+                            spec={tile.spec}
+                            resultTable={tile.result_table}
+                            compact
+                            inline
+                          />
+                        }
+                        onOpen={() => openArtifact(tile, sessionId)}
+                        onElaborate={(selection) => handleElaborate(tile, selection)}
+                        onChangeChartType={(rect) => openPicker(origIndex, rect)}
+                      />
+                    </div>
+                  );
+                })}
             </div>
           )
         ) : (
@@ -703,9 +703,26 @@ export default function Canvas({ sessionId }: Props) {
           onClose={() => setMenu(null)}
           onRename={(newTitle) => updateTile(menu.index, { title: newTitle })}
           onDelete={() => removeTile(menu.index)}
-          onChartTypeChange={(type) => handleChartTypeChange(menu.index, type as ChartType)}
+          onOpenChartTypePicker={() => {
+            const idx = menu.index;
+            const rect = menu.rect;
+            setMenu(null);
+            openPicker(idx, rect);
+          }}
+          onChartTypeChange={(type) => changeChartType(menu.index, type as ChartType)}
           onOpen={() => openArtifact(displayTiles[menu.index], sessionId)}
           onElaborate={() => handleElaborate(displayTiles[menu.index])}
+        />
+      )}
+
+      {/* Поповер выбора типа графика */}
+      {pickerState && displayTiles[pickerState.tileIndex] && (
+        <ChartTypePicker
+          anchorRect={pickerState.anchorRect}
+          currentType={chartTypeOf(displayTiles[pickerState.tileIndex])}
+          onSelect={(type) => changeChartType(pickerState.tileIndex, type)}
+          onPreview={setPreview}
+          onClose={closePicker}
         />
       )}
     </div>

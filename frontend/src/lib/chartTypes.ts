@@ -8,6 +8,7 @@
  */
 import { MIN_SIZE, isKpiTile } from "@/lib/tileLayout";
 import type { DashboardTile } from "@/types/dashboard";
+import type { IconName } from "@/components/ui/Icon";
 
 export const CHART_TYPES = [
   "bar",
@@ -22,6 +23,18 @@ export const CHART_TYPES = [
 ] as const;
 
 export type ChartType = (typeof CHART_TYPES)[number];
+
+export const CHART_TYPE_ICONS: Record<ChartType, IconName> = {
+  bar: "chartBar",
+  line: "chartLine",
+  area: "chartArea",
+  scatter: "chartScatter",
+  histogram: "chartHistogram",
+  box: "chartBox",
+  heatmap: "chartHeatmap",
+  table: "chartTable",
+  kpi: "chartKpi",
+};
 
 export const CHART_MARK: Record<ChartType, unknown> = {
   bar: "bar",
@@ -52,13 +65,25 @@ export function withChartType(tile: DashboardTile, type: ChartType): DashboardTi
   const current = (tile.spec?.usermeta as Record<string, unknown> | undefined) ?? {};
   const min = type === "kpi" ? MIN_SIZE.kpi : MIN_SIZE.chart;
   const layout = tile.layout ?? { x: 0, y: 0, w: min.w, h: min.h };
+  const specData = tile.spec?.data as { values?: unknown } | undefined;
+  const spec: Record<string, unknown> = {
+    ...(tile.spec ?? {}),
+    usermeta: { ...current, chart_type: type, requested_type: type },
+    mark: CHART_MARK[type],
+  };
+
+  // Если в спеке нет data.values, но в snapshot_data есть строки, подставляем их
+  // для локального превью графиков и таблиц
+  if (
+    (!specData || !Array.isArray(specData.values)) &&
+    Array.isArray(tile.snapshot_data)
+  ) {
+    spec.data = { ...(tile.spec?.data ?? {}), values: tile.snapshot_data };
+  }
+
   return {
     ...tile,
-    spec: {
-      ...(tile.spec ?? {}),
-      usermeta: { ...current, chart_type: type, requested_type: type },
-      mark: CHART_MARK[type],
-    },
+    spec,
     is_kpi: type === "kpi",
     layout: {
       x: layout.x ?? 0,

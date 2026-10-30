@@ -19,6 +19,8 @@ interface ItemActionMenuProps {
   chartType?: string;
   chartTypes?: readonly string[];
   onChartTypeChange?: (type: string) => void;
+  /** Плитка: открыть поповер смены типа графика (ChartTypePicker). */
+  onOpenChartTypePicker?: () => void;
   /** Плитка: открыть на весь экран во вкладке. */
   onOpen?: () => void;
   /** Плитка: отправить вопрос агенту по всей плитке (F-09). */
@@ -37,6 +39,7 @@ export default function ItemActionMenu({
   chartType,
   chartTypes,
   onChartTypeChange,
+  onOpenChartTypePicker,
   onOpen,
   onElaborate,
 }: ItemActionMenuProps) {
@@ -199,10 +202,16 @@ export default function ItemActionMenu({
             <span className="truncate">{renameLabel}</span>
           </button>
 
-          {onChartTypeChange && chartTypes && chartTypes.length > 0 && (
+          {(onOpenChartTypePicker || (onChartTypeChange && chartTypes && chartTypes.length > 0)) && (
             <button
               type="button"
-              onClick={() => setView("chart_type")}
+              onClick={() => {
+                if (onOpenChartTypePicker) {
+                  onOpenChartTypePicker();
+                } else {
+                  setView("chart_type");
+                }
+              }}
               className="flex w-full items-center gap-2 rounded-lg px-2.5 py-1.5 text-left text-xs text-graphite-300 hover:bg-graphite-800 hover:text-graphite-100 transition"
             >
               <Icon name="chart" size={14} className="shrink-0 text-graphite-400" />

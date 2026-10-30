@@ -272,6 +272,7 @@ const ru = {
   "canvas.saveStateRetry": "Повторить сохранение",
   "canvas.chartType": "Сменить тип графика",
   "canvas.chartTypeLocalOnly": "Тип сохранён; данные пересчитаются после обновления",
+  "canvas.chartTypeRollback": "Не удалось сменить тип графика, изменения отменены",
   "canvas.tileMenu": "Действия плитки",
 
   "chartType.bar": "Столбцы",
@@ -603,6 +604,7 @@ const en: Record<MessageKey, string> = {
   "canvas.saveStateRetry": "Retry save",
   "canvas.chartType": "Change chart type",
   "canvas.chartTypeLocalOnly": "Type saved; data will refresh later",
+  "canvas.chartTypeRollback": "Failed to change chart type, reverted changes",
   "canvas.tileMenu": "Tile actions",
 
   "chartType.bar": "Bar",
