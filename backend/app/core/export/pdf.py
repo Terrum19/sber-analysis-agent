@@ -11,6 +11,7 @@ import datetime
 import io
 import logging
 import os
+import re
 import xml.sax.saxutils
 from pathlib import Path
 from typing import Any
@@ -146,14 +147,19 @@ def truncate_text(text: Any, max_length: int) -> str:
     return s[: max_length - 3].rstrip() + "..."
 
 
-def sanitize_text(text: Any) -> str:
+def sanitize_text(text: Any, enable_basic_markup: bool = False) -> str:
     """Очистить текст от символов, не поддерживаемых базовыми TrueType шрифтами,
     и экранировать специальные XML-символы (<, >, &) для безопасной вставки в ReportLab Paragraph.
+    При enable_basic_markup=True преобразует Markdown **bold** в ReportLab тег <b>bold</b>.
     """
     if text is None:
         return ""
     s = str(text).replace("₽", "руб.").replace("\u20bd", "руб.")
-    return xml.sax.saxutils.escape(s)
+    escaped = xml.sax.saxutils.escape(s)
+    if enable_basic_markup:
+        escaped = re.sub(r"\*\*([^*]+)\*\*", r"<b>\1</b>", escaped)
+        escaped = re.sub(r"`([^`]+)`", r"<b>\1</b>", escaped)
+    return escaped
 
 
 class NumberedCanvas(canvas.Canvas):
@@ -247,9 +253,13 @@ class PdfExporter:
         records = records or []
         title = sanitize_text(truncate_text(title, MAX_TITLE_LENGTH))
         question = sanitize_text(truncate_text(question, MAX_QUESTION_LENGTH)) if question else None
-        headline = sanitize_text(truncate_text(headline, MAX_HEADLINE_LENGTH)) if headline else None
+        headline = (
+            sanitize_text(truncate_text(headline, MAX_HEADLINE_LENGTH), enable_basic_markup=True)
+            if headline
+            else None
+        )
         details = [
-            sanitize_text(truncate_text(d, MAX_DETAIL_ITEM_LENGTH))
+            sanitize_text(truncate_text(d, MAX_DETAIL_ITEM_LENGTH), enable_basic_markup=True)
             for d in (details or [])[:MAX_DETAILS_COUNT]
             if d and str(d).strip()
         ]

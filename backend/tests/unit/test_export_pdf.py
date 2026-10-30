@@ -832,3 +832,22 @@ def test_api_export_xlsx_of_a_dashboard_tile(client: TestClient) -> None:
         },
     )
     assert missing.status_code == 404
+
+
+def test_pdf_export_renders_markdown_bold(tmp_path):
+    exporter = PdfExporter()
+    pdf_path = str(tmp_path / "test_markdown.pdf")
+    exporter.export_answer(
+        path=pdf_path,
+        records=[{"col": 1}],
+        question="Тестовый вопрос",
+        headline="Выручка составила **41 млн руб.** в декабре",
+        details=["**Пик продаж:** зафиксирован **15 декабря**"],
+    )
+    assert Path(pdf_path).exists()
+    reader = pypdf.PdfReader(pdf_path)
+    all_text = "".join(page.extract_text() for page in reader.pages)
+    # В извлеченном тексте звёздочек быть не должно
+    assert "**41 млн руб.**" not in all_text
+    assert "41 млн руб." in all_text
+    assert "Пик продаж:" in all_text

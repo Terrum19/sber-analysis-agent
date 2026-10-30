@@ -477,9 +477,15 @@ class AgentOrchestrator:
             logger.info(
                 "<<< run() инсайт: headline=%r details=%r", insight.headline, insight.details
             )
+            text_data = {
+                "headline": insight.headline,
+                "details": insight.details,
+            }
+            if getattr(insight, "limits", None):
+                text_data["limits"] = insight.limits
             yield {
                 "type": "text",
-                "data": {"headline": insight.headline, "details": insight.details},
+                "data": text_data,
             }
 
             stage = "chart"
