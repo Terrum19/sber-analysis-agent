@@ -10,6 +10,7 @@ import type {
   Datasource,
   DatasourceDbRequest,
   ImportedSession,
+  ImportedSessionFile,
   ReplayResult,
   SessionResponse,
   TableBrief,
@@ -215,6 +216,40 @@ export async function importSessionApi(bundle: SessionBundle): Promise<ImportedS
     });
     if (!res.ok) throw await parseApiError(res);
     return (await res.json()) as ImportedSession;
+  } catch (err) {
+    throw toApiError(err);
+  }
+}
+
+/**
+ * POST /api/sessions/{id}/export-file: файл .session — бандл, лента и итоговые
+ * таблицы в parquet (#251); 413 — файл больше лимита импорта.
+ */
+export async function exportSessionFile(
+  sessionId: string,
+  body: { table: string | null; feed: unknown[] },
+): Promise<Blob> {
+  try {
+    const res = await fetch(`${API}/sessions/${encodeURIComponent(sessionId)}/export-file`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    if (!res.ok) throw await parseApiError(res);
+    return await res.blob();
+  } catch (err) {
+    throw toApiError(err);
+  }
+}
+
+/** POST /api/sessions/import-file: новая сессия из файла .session (#251); 400/413 — текст для пользователя. */
+export async function importSessionFile(file: File): Promise<ImportedSessionFile> {
+  const form = new FormData();
+  form.append("file", file);
+  try {
+    const res = await fetch(`${API}/sessions/import-file`, { method: "POST", body: form });
+    if (!res.ok) throw await parseApiError(res);
+    return (await res.json()) as ImportedSessionFile;
   } catch (err) {
     throw toApiError(err);
   }

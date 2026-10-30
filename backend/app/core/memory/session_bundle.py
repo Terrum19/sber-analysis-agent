@@ -27,6 +27,12 @@
 построен не по результату шага (гистограмма распределения) или в цепочке
 шагов есть Python. У таблицы БД в источнике — её имя в самой базе
 (``source_table``): по нему она находится у получателя под любым именем.
+
+Файл ``.session`` (#251) везёт итоговые таблицы ходов и плиток: в его бандле
+ссылки на ``temp_result_vN`` остаются (``build(results=True)``), а импорт
+переписывает их на новые имена у получателя (``load(tables=...)``). Ссылка на
+таблицу, которой нет в словаре, обнуляется: чужие таблицы получателя импорт
+не трогает.
 """
 
 import re
@@ -90,6 +96,7 @@ class BundleStep(BaseModel):
 class BundleChart(BaseModel):
     type: Name
     title: Text = ""
+    result_table: Name | None = None
 
 
 class Replay(BaseModel):
@@ -107,6 +114,7 @@ class BundleTurn(BaseModel):
     steps: list[BundleStep] = Field(default_factory=list, max_length=MAX_STEPS)
     result_columns: list[Text] = Field(default_factory=list)
     headline: Text | None = None
+    result_table: Name | None = None
     chart: BundleChart | None = None
     status: Literal["ok", "failed", "clarification"]
     reply_to: Name | None = None
@@ -186,11 +194,12 @@ class Imported(BaseModel):
     check: TableCheck | None = None
 
 
-def build(session_id: str, db=None) -> dict:
+def build(session_id: str, db=None, results: bool = False) -> dict:
     """Бандл сохранённой сессии; ``KeyError`` — такой сессии нет.
 
     Собирается без проверки лимитов: их проверяет импорт. Без ``db`` источник
-    берётся по ``datasource_id`` сессии, без таблицы и хэша.
+    берётся по ``datasource_id`` сессии, без таблицы и хэша. ``results`` —
+    у ходов остаются итоговые таблицы (файл ``.session``).
     """
     memory = SessionMemory(session_id)
     if not memory.exists():
@@ -210,7 +219,9 @@ def build(session_id: str, db=None) -> dict:
             "exported_at": datetime.now(UTC).isoformat(),
         },
         "source": describe_source(memory, db).model_dump(),
-        "turns": [exported_turn(turn, turn_replay(turn, sources, turns)) for turn in memory.turns],
+        "turns": [
+            exported_turn(turn, turn_replay(turn, sources, turns), results) for turn in memory.turns
+        ],
         "memories": [
             {key: item[key] for key in BundleMemory.model_fields}
             for item in memory.memories(include_disabled=True)
@@ -305,14 +316,14 @@ def dump(replay: Replay | None) -> dict | None:
     return replay.model_dump() if replay is not None else None
 
 
-def exported_turn(turn: dict, replay: Replay | None = None) -> dict:
-    """Ход для бандла: только поля BundleTurn, у графика — без таблицы результата.
+def exported_turn(turn: dict, replay: Replay | None = None, results: bool = False) -> dict:
+    """Ход для бандла: только поля BundleTurn; таблицы результата — только с ``results``.
 
     Пустые поля (у старых ходов их может не быть) не пишутся: импорт подставит
     значения по умолчанию. ``replay`` — откуда пересчитать график (рецепт).
     """
     chart = turn.get("chart")
-    return {
+    out = {
         **{key: turn[key] for key in BundleTurn.model_fields if turn.get(key) is not None},
         "replay": dump(replay),
         "steps": [
@@ -323,6 +334,11 @@ def exported_turn(turn: dict, replay: Replay | None = None) -> dict:
         if chart is None
         else {"type": chart["type"], "title": chart.get("title", "")},
     }
+    if not results:
+        out.pop("result_table", None)
+    elif chart is not None:
+        out["chart"]["result_table"] = chart.get("result_table")
+    return out
 
 
 def describe_source(memory: SessionMemory, db=None) -> BundleSource:
@@ -393,15 +409,7 @@ def csv_files(datasource_id: str) -> list[str]:
 
 def parse(raw: Any) -> Bundle:
     """Проверить бандл: сначала версию формата, потом остальное."""
-    manifest = raw.get("manifest") if isinstance(raw, dict) else None
-    version = manifest.get("format") if isinstance(manifest, dict) else None
-    if not isinstance(version, int) or isinstance(version, bool):
-        raise BundleFormatError("Это не сессия: в данных нет версии формата.")
-    if version != FORMAT:
-        newer = " более новой версией приложения — обновите приложение" if version > FORMAT else ""
-        raise BundleFormatError(
-            f"Сессия сохранена в формате {version}{newer}. Это приложение открывает формат {FORMAT}."
-        )
+    check_format(raw.get("manifest") if isinstance(raw, dict) else None)
     try:
         return Bundle.model_validate(raw)
     except ValidationError as error:
@@ -410,11 +418,26 @@ def parse(raw: Any) -> Bundle:
         raise BundleFormatError(f"Сессия повреждена: {where} — {problem['msg']}.") from None
 
 
-def load(raw: Any, db=None) -> Imported:
+def check_format(manifest: Any) -> None:
+    """Версия формата в манифесте — та, что открывает приложение; иначе BundleFormatError."""
+    version = manifest.get("format") if isinstance(manifest, dict) else None
+    if not isinstance(version, int) or isinstance(version, bool):
+        raise BundleFormatError("Это не сессия: в данных нет версии формата.")
+    if version != FORMAT:
+        newer = " более новой версией приложения — обновите приложение" if version > FORMAT else ""
+        raise BundleFormatError(
+            f"Сессия сохранена в формате {version}{newer}. Это приложение открывает формат {FORMAT}."
+        )
+
+
+def load(raw: Any, db=None, tables: dict[str, str] | None = None) -> Imported:
     """Импортировать бандл в новую сессию; существующие сессии не меняются.
 
     С ``db`` таблица автора ищется у получателя, и сессия привязывается к ней.
+    ``tables`` — таблица автора -> загруженная у получателя (файл ``.session``);
+    ссылки на остальные таблицы обнуляются.
     """
+    tables = tables or {}
     bundle = parse(raw)
     session_id = uuid.uuid4().hex
     title = f"{bundle.manifest.title or 'Сессия'}"[: TITLE_LIMIT - len(IMPORTED_SUFFIX)]
@@ -423,7 +446,7 @@ def load(raw: Any, db=None) -> Imported:
     dashboards = {}
     replay_tiles = {}
     for item in bundle.dashboards:
-        tiles = [imported_tile(tile) for tile in item.tiles]
+        tiles = [imported_tile(tile, tables) for tile in item.tiles]
         for source, tile in zip(item.tiles, tiles, strict=True):
             if source.replay is not None:
                 replay_tiles[tile.id] = source.replay.model_dump()
@@ -437,7 +460,7 @@ def load(raw: Any, db=None) -> Imported:
     memory = SessionMemory(session_id)
     memory.import_session(
         title,
-        [imported_turn(turn) for turn in bundle.turns],
+        [imported_turn(turn, tables) for turn in bundle.turns],
         bundle.source.model_dump(),
         replay_tiles,
     )
@@ -496,27 +519,35 @@ def check_table(db, source: BundleSource) -> TableCheck | None:
     return check.model_copy(update={"status": "no_table"})
 
 
-def imported_turn(turn: BundleTurn) -> dict:
-    """Ход из бандла в состоянии сессии: помечен imported, без таблиц результата."""
+def renamed(table: Any, tables: dict[str, str]) -> str | None:
+    """Имя таблицы автора у получателя; нет в словаре — None."""
+    return tables.get(table) if isinstance(table, str) else None
+
+
+def imported_turn(turn: BundleTurn, tables: dict[str, str] | None = None) -> dict:
+    """Ход из бандла в состоянии сессии: помечен imported, таблицы — по словарю ``tables``."""
+    tables = tables or {}
     chart = turn.chart.model_dump() if turn.chart is not None else None
     if chart is not None:
-        chart["result_table"] = None
+        chart["result_table"] = renamed(chart["result_table"], tables)
     return {
         **turn.model_dump(),
         "chart": chart,
-        "result_table": None,
+        "result_table": renamed(turn.result_table, tables),
         "imported": True,
     }
 
 
-def imported_tile(tile: BundleTile) -> DashboardTile:
-    """Плитка с новым id и без таблицы результата: рисуется по спеке и снимку."""
+def imported_tile(tile: BundleTile, tables: dict[str, str] | None = None) -> DashboardTile:
+    """Плитка с новым id; таблица результата — по словарю ``tables``, нет — по спеке и снимку."""
+    tables = tables or {}
     spec = dict(tile.spec)
     if isinstance(spec.get("usermeta"), dict):
-        spec["usermeta"] = {**spec["usermeta"], "result_table": None}
+        meta = spec["usermeta"]
+        spec["usermeta"] = {**meta, "result_table": renamed(meta.get("result_table"), tables)}
     return DashboardTile(
         **tile.model_dump(exclude={"id", "result_table", "spec", "replay"}),
         id=uuid.uuid4().hex[:12],
-        result_table=None,
+        result_table=renamed(tile.result_table, tables),
         spec=spec,
     )

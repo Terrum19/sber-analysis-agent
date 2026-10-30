@@ -1,5 +1,40 @@
 2026-10-31  thebulkapro  <saitbatalovbulat200@gmail.com>
 
+	Поделиться сессией: файл .session с таблицами в parquet (#251).
+	* backend/app/core/memory/session_file.py: Новый.  (write): zip из
+	манифеста, бандла с лентой и итоговых таблиц ходов и плиток в parquet;
+	таблицы, удалённые ретеншном, — в manifest.missing.  (read): Проверка
+	размера, распакованного и имён внутри zip, таблицы — в новые
+	temp_result_vN, ссылки переписываются; упал импорт — таблицы удаляются.
+	* backend/app/core/memory/session_bundle.py (build): Параметр results.
+	(load): Параметр tables.  (check_format, renamed): Новые.
+	(BundleTurn.result_table, BundleChart.result_table): Новые.
+	* backend/app/api/routes/sessions.py (export_session_file)
+	(import_session_file): Новые.  POST /api/sessions/{id}/export-file,
+	POST /api/sessions/import-file.
+	* backend/app/api/schemas/chat.py (SessionFileRequest): Новая.
+	* backend/app/core/memory/session_memory.py (last_chart): Ход из файла
+	приходит с таблицей.
+	* frontend/src/lib/importSession.ts: Новый.  (openImported): Лента и
+	папка «Импортированные» — общие для ссылки и файла.
+	* frontend/src/lib/shareLink.ts (fileFeed): Новая.  Лента без ужатия,
+	с таблицами результата.
+	* frontend/src/hooks/useSessionFileImport.ts: Новый.
+	* frontend/src/components/layout/SessionFileDrop.tsx: Новый.  Файл,
+	перетащенный в окно.
+	* frontend/src/components/layout/ShareSessionButton.tsx: Блок «Файл
+	.session» с предупреждением о данных.
+	* frontend/src/components/layout/WorkspaceShell.tsx: SessionFileDrop.
+	* frontend/src/components/layout/LeftSidebar.tsx: «Открыть файл сессии».
+	* frontend/src/app/import/page.tsx: Через openImported.
+	* frontend/src/api/client.ts (exportSessionFile, importSessionFile): Новые.
+	* frontend/src/types/datasource.ts (ImportedSessionFile): Новый.
+	* frontend/src/i18n/dictionary.ts: Тексты файла.
+	* docs/memory.md, docs/repo_structure.md: Файл .session.
+	* backend/tests/unit/test_session_file.py: Новый.
+
+2026-10-31  thebulkapro  <saitbatalovbulat200@gmail.com>
+
 	Поделиться сессией: ссылка-рецепт и пересчёт у получателя (#250).
 	* backend/app/core/agent/replay.py: Новый.  (Replayer): Шаги автора
 	на таблице получателя тем же StepExecutor, без LLM; спека — тем же

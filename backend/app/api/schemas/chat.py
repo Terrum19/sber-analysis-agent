@@ -49,6 +49,13 @@ class SessionOut(BaseModel):
     imported: bool = False
 
 
+class SessionFileRequest(BaseModel):
+    """Тело сохранения файла .session (#251): лента и активная таблица из браузера."""
+
+    table: str | None = None
+    feed: list[dict[str, Any]] = Field(default_factory=list)
+
+
 MemoryText = Annotated[
     str, StringConstraints(strip_whitespace=True, min_length=1, max_length=NOTE_LIMIT)
 ]

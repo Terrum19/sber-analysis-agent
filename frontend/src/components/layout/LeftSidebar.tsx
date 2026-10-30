@@ -28,6 +28,7 @@ import { useArtifactStore } from "@/store/artifactStore";
 import { tabHref, useUiStore } from "@/store/uiStore";
 import { useStartSession } from "@/hooks/useStartSession";
 import { useCsvUpload } from "@/hooks/useCsvUpload";
+import { useSessionFileImport } from "@/hooks/useSessionFileImport";
 import { useT } from "@/i18n/useT";
 import { describeDatabase } from "@/lib/describeDatabase";
 import Icon, { type IconName } from "@/components/ui/Icon";
@@ -458,6 +459,8 @@ export default function LeftSidebar() {
     handleCsvUpload,
     openFilePicker,
   } = useCsvUpload();
+  const sessionFile = useSessionFileImport();
+  const sessionFileRef = useRef<HTMLInputElement>(null);
 
   const [dbKind, setDbKind] = useState<DbKind>("postgres");
   const [dsn, setDsn] = useState("");
@@ -560,13 +563,34 @@ export default function LeftSidebar() {
           }}
           disabled={isBusy}
         />
+        <input
+          ref={sessionFileRef}
+          type="file"
+          accept=".session"
+          hidden
+          onChange={(e) => {
+            const file = e.target.files?.[0];
+            e.target.value = "";
+            if (file) sessionFile.importFile(file);
+          }}
+        />
+        <SidebarAction
+          icon="folder"
+          label={t("sidebar.openSessionFile")}
+          title={t("sidebar.openSessionFileHint")}
+          onClick={() => sessionFileRef.current?.click()}
+          disabled={isBusy || sessionFile.busy}
+        />
         <SidebarAction
           icon="layout"
           label={t("sidebar.allDashboards")}
           href="/dashboards"
         />
         <RecentDashboards />
-        {isBusy && <p className="px-2.5 pt-1 text-[11px] text-graphite-400 animate-pulse">{t("sidebar.processing")}</p>}
+        {(isBusy || sessionFile.busy) && (
+          <p className="px-2.5 pt-1 text-[11px] text-graphite-400 animate-pulse">{t("sidebar.processing")}</p>
+        )}
+        {sessionFile.error && <p className="px-2.5 pt-1 text-[11px] leading-tight text-bad">{sessionFile.error}</p>}
         {errorMsg && !dbModalOpen && <p className="px-2.5 pt-1 text-[11px] leading-tight text-bad">{errorMsg}</p>}
       </div>
 

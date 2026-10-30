@@ -7,7 +7,8 @@ PATCH меняет таблицу по умолчанию и/или назван
 включение и выключение записи. ``/{id}/dashboard-ideas`` — варианты
 дашборда по таблице сессии для кнопок в чате (#224). ``/{id}/bundle`` и
 ``/import`` — бандл сессии и импорт его в новую сессию (#249); ``/{id}/replay``
-— пересчёт графиков импортированной сессии по рецепту на данных получателя (#250).
+— пересчёт графиков импортированной сессии по рецепту на данных получателя (#250);
+``/{id}/export-file`` и ``/import-file`` — файл ``.session`` с таблицами (#251).
 Источник правды — SQLite SessionMemory: сессии и их метаданные переживают
 перезапуск.
 """
@@ -15,10 +16,15 @@ PATCH меняет таблицу по умолчанию и/или назван
 import asyncio
 import json
 import logging
+import os
+import tempfile
 import uuid
+from pathlib import Path
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, UploadFile
+from fastapi.responses import FileResponse
+from starlette.background import BackgroundTask
 
 from app.api.deps import get_db
 from app.api.schemas.chat import (
@@ -29,13 +35,14 @@ from app.api.schemas.chat import (
     MemoryOut,
     MemoryUpdate,
     SessionCreate,
+    SessionFileRequest,
     SessionOut,
     SessionUpdate,
 )
 from app.core.agent.replay import Replayer, ReplayOut, ReplayRequest
 from app.core.dashboards.ideas import generate_ideas
 from app.core.data.duckdb_manager import DuckDBManager
-from app.core.memory import session_bundle
+from app.core.memory import session_bundle, session_file
 from app.core.memory.session_memory import SessionMemory
 
 logger = logging.getLogger(__name__)
@@ -118,6 +125,30 @@ async def import_session(
         raise HTTPException(status_code=400, detail=str(error)) from None
 
 
+def file_error(error: session_file.SessionFileError | session_bundle.BundleFormatError):
+    """413 — файл больше лимита, 400 — остальное, с текстом для пользователя."""
+    status = 413 if isinstance(error, session_file.SessionFileTooLarge) else 400
+    return HTTPException(status_code=status, detail=str(error))
+
+
+@router.post("/import-file", response_model=session_file.ImportedFile)
+async def import_session_file(
+    file: Annotated[UploadFile, File()], db: Annotated[DuckDBManager, Depends(get_db)]
+) -> session_file.ImportedFile:
+    """Создать новую сессию из файла .session (#251); существующие сессии и таблицы не меняются.
+
+    Таблицы файла загружаются в новые temp_result_vN. Больше лимита — 413, не
+    файл сессии, лишнее внутри zip или неизвестная версия формата — 400.
+    """
+    with tempfile.TemporaryDirectory() as folder:
+        path = Path(folder, "upload.session")
+        try:
+            await asyncio.to_thread(session_file.receive, file.file, path)
+            return await asyncio.to_thread(session_file.read, path, db)
+        except (session_file.SessionFileError, session_bundle.BundleFormatError) as error:
+            raise file_error(error) from None
+
+
 @router.patch("/{session_id}", response_model=SessionOut)
 def update_session(
     session_id: str, payload: SessionUpdate, db: Annotated[DuckDBManager, Depends(get_db)]
@@ -153,6 +184,36 @@ def get_bundle(session_id: str, db: Annotated[DuckDBManager, Depends(get_db)]) -
         return session_bundle.build(session_id, db)
     except KeyError:
         raise HTTPException(status_code=404, detail="Сессия не найдена.") from None
+
+
+@router.post("/{session_id}/export-file")
+async def export_session_file(
+    session_id: str, payload: SessionFileRequest, db: Annotated[DuckDBManager, Depends(get_db)]
+) -> FileResponse:
+    """Файл .session (#251): бандл, лента из тела и итоговые таблицы в parquet.
+
+    Пароля в нём нет. Больше лимита импорта — 413: получатель его не откроет.
+    """
+    handle, name = tempfile.mkstemp(suffix=".session")
+    os.close(handle)
+    path = Path(name)
+    try:
+        await asyncio.to_thread(
+            session_file.write, session_id, db, payload.table, payload.feed, path
+        )
+    except BaseException as error:
+        path.unlink(missing_ok=True)
+        if isinstance(error, KeyError):
+            raise HTTPException(status_code=404, detail="Сессия не найдена.") from None
+        if isinstance(error, session_file.SessionFileError):
+            raise file_error(error) from None
+        raise
+    return FileResponse(
+        path,
+        media_type="application/zip",
+        filename="session.session",
+        background=BackgroundTask(path.unlink),
+    )
 
 
 @router.post("/{session_id}/replay", response_model=ReplayOut)

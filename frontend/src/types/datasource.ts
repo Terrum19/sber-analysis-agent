@@ -104,6 +104,11 @@ export interface ImportedSession {
   check?: TableCheck | null;
 }
 
+/** Ответ импорта файла .session (#251): session — бандл и лента с новыми именами таблиц. */
+export interface ImportedSessionFile extends ImportedSession {
+  session: Record<string, unknown>;
+}
+
 /**
  * Таблица автора у получателя: found — привязана (bound); different — CSV с тем же
  * именем, но другими данными; missing — CSV нет; no_table — база подключена, таблицы

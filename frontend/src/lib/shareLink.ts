@@ -16,6 +16,9 @@
  * Кодировок две, какая останется — по замерам (#244): base64url (ASCII,
  * кликается везде) и base32768 (символы Unicode, в 2,5 раза короче).
  * Распаковка узнаёт кодировку по символам.
+ *
+ * Файл `.session` (#251) везёт ленту без ужатия (`fileFeed`): спеки как есть и
+ * таблицы результата — импорт перепишет их на новые имена у получателя.
  */
 import { decode as decode32768, encode as encode32768 } from "base32768";
 import type { ChatMessage, SessionSnapshot } from "@/store/sessionStore";
@@ -33,7 +36,7 @@ const SAME = 1;
 export const TELEGRAM_LIMIT = 4096;
 
 type Json = null | boolean | number | string | Json[] | { [key: string]: Json };
-type JsonObject = { [key: string]: Json };
+export type JsonObject = { [key: string]: Json };
 
 export type Encoding = "base64url" | "base32768";
 
@@ -148,35 +151,60 @@ function canonical(value: Json): string {
   return JSON.stringify(value);
 }
 
-/** Сообщение ленты для ссылки: текст, график, карточка дашборда, ответ; служебное — нет. */
-function packMessage(m: ChatMessage): JsonObject | null {
+/**
+ * Сообщение ленты для ссылки: текст, график, карточка дашборда, ответ; служебное — нет.
+ * `file` — для файла `.session`: спеки не ужимаются, таблицы результата остаются.
+ */
+function packMessage(m: ChatMessage, file = false): JsonObject | null {
   const content = m.content || m.clarification?.error || "";
   if (!content && !m.chart && !m.dashboard) return null;
+  const spec = file ? (value: unknown) => (value ?? null) as Json : packSpec;
   const out: JsonObject = { role: m.role, content };
   if (m.turn_id) out.turn_id = m.turn_id;
   if (m.reply_to) out.reply_to = { ...m.reply_to };
   if (m.timestamp) out.timestamp = m.timestamp;
-  if (m.chart) out.chart = { caption: m.chart.caption ?? "", spec: packSpec(m.chart.spec) };
+  if (m.chart) {
+    const chart: JsonObject = { caption: m.chart.caption ?? "", spec: spec(m.chart.spec) };
+    if (file && m.chart.result_table) chart.result_table = m.chart.result_table;
+    out.chart = chart;
+  }
   if (m.dashboard) out.dashboard = { dashboard_id: m.dashboard.dashboard_id, title: m.dashboard.title ?? null };
   if (m.answer) {
     const answer: JsonObject = {};
     if (m.answer.headline) answer.headline = m.answer.headline;
     if (m.answer.details) answer.details = m.answer.details;
-    if (m.answer.spec) answer.spec = m.chart ? SAME : packSpec(m.answer.spec);
+    if (m.answer.spec) answer.spec = m.chart ? SAME : spec(m.answer.spec);
+    if (file && m.answer.result_table) answer.result_table = m.answer.result_table;
     out.answer = answer;
   }
   return out;
 }
 
+/** Лента для файла `.session` (#251): спеки как есть, с таблицами результата. */
+export function fileFeed(snapshot: SessionSnapshot): JsonObject[] {
+  return snapshot.messages.map((m) => packMessage(m, true)).filter((m): m is JsonObject => m !== null);
+}
+
+/** Таблица результата сообщения из файла `.session`; у ссылки её нет. */
+function resultTable(value: JsonObject): { result_table?: string } {
+  return typeof value.result_table === "string" ? { result_table: value.result_table } : {};
+}
+
 function unpackMessage(m: JsonObject, index: number): ChatMessage {
   const chart = isObject(m.chart)
-    ? { caption: String(m.chart.caption ?? ""), spec: unpackSpec(m.chart.spec), tile_id: `chart-imported-${index}` }
+    ? {
+        caption: String(m.chart.caption ?? ""),
+        spec: unpackSpec(m.chart.spec),
+        tile_id: `chart-imported-${index}`,
+        ...resultTable(m.chart),
+      }
     : undefined;
   const answer = isObject(m.answer)
     ? {
         headline: typeof m.answer.headline === "string" ? m.answer.headline : undefined,
         details: Array.isArray(m.answer.details) ? (m.answer.details as string[]) : undefined,
         spec: m.answer.spec === SAME ? chart?.spec : m.answer.spec ? unpackSpec(m.answer.spec) : undefined,
+        ...resultTable(m.answer),
       }
     : undefined;
   return {
@@ -244,7 +272,7 @@ export function compact(
   recipe = false,
 ): JsonObject {
   const replayed = recipe ? replayTurns(bundle) : new Set<string>();
-  const feed = snapshot.messages.map(packMessage).filter((m): m is JsonObject => m !== null);
+  const feed = snapshot.messages.map((m) => packMessage(m)).filter((m): m is JsonObject => m !== null);
   const charts = new Map<string, FeedChart>();
   feed.forEach((m, index) => {
     if (!isObject(m.chart)) return;

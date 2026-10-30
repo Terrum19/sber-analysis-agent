@@ -5,12 +5,14 @@
  * браузера -> ссылка с данными и ссылка-рецепт без точек (#250). Окно
  * показывает обе кодировки (замеры #244): длину ссылки и влезает ли она в
  * сообщение Telegram; у рецепта — сколько графиков всё же едут с данными
- * автора.
+ * автора. Файл `.session` (#251) — бандл, лента и итоговые таблицы в parquet:
+ * сохраняется по кнопке, предупреждение о данных — рядом с ней.
  */
 import { useState } from "react";
-import { getSessionBundle } from "@/api/client";
+import { exportSessionFile, getSessionBundle } from "@/api/client";
 import { copyText } from "@/lib/clipboard";
-import { authorCharts, compact, pack, shareUrl, TELEGRAM_LIMIT, type Encoding } from "@/lib/shareLink";
+import { downloadBlob, safeFilename } from "@/lib/download";
+import { authorCharts, compact, fileFeed, pack, shareUrl, TELEGRAM_LIMIT, type Encoding } from "@/lib/shareLink";
 import { sessionSnapshot, useSessionStore } from "@/store/sessionStore";
 import { useT } from "@/i18n/useT";
 import Icon from "@/components/ui/Icon";
@@ -24,16 +26,20 @@ type State =
   | { status: "closed" }
   | { status: "building" }
   | { status: "failed"; message: string }
-  | { status: "ready"; links: Record<Kind, Links>; authorData: number };
+  | { status: "ready"; links: Record<Kind, Links>; authorData: number; title: string };
+
+type Saving = { status: "idle" } | { status: "saving" } | { status: "failed"; message: string };
 
 export default function ShareSessionButton({ sessionId }: { sessionId: string }) {
   const t = useT();
   const [state, setState] = useState<State>({ status: "closed" });
   const [copied, setCopied] = useState<{ key: string; ok: boolean } | null>(null);
+  const [saving, setSaving] = useState<Saving>({ status: "idle" });
 
   async function open() {
     setState({ status: "building" });
     setCopied(null);
+    setSaving({ status: "idle" });
     try {
       const bundle = await getSessionBundle(sessionId);
       const store = useSessionStore.getState();
@@ -48,9 +54,25 @@ export default function ShareSessionButton({ sessionId }: { sessionId: string })
         status: "ready",
         links: { data: await links(false), recipe: await links(true) },
         authorData: authorCharts(bundle, snapshot),
+        title: bundle.manifest.title || t("share.fileName"),
       });
     } catch (err: any) {
       setState({ status: "failed", message: err?.detail || err?.message || String(err) });
+    }
+  }
+
+  async function saveFile(title: string) {
+    setSaving({ status: "saving" });
+    try {
+      const store = useSessionStore.getState();
+      const blob = await exportSessionFile(sessionId, {
+        table: store.sessionActiveTable[sessionId] ?? null,
+        feed: fileFeed(sessionSnapshot(store, sessionId)),
+      });
+      downloadBlob(blob, safeFilename(title, "session"));
+      setSaving({ status: "idle" });
+    } catch (err: any) {
+      setSaving({ status: "failed", message: err?.detail || err?.message || String(err) });
     }
   }
 
@@ -133,6 +155,22 @@ export default function ShareSessionButton({ sessionId }: { sessionId: string })
                 <p className="text-[12px] text-graphite-400">{t("share.recipeHint")}</p>
                 {state.authorData > 0 && (
                   <p className="text-[12px] text-warn">{t("share.recipeAuthorData", { n: state.authorData })}</p>
+                )}
+
+                <div className="flex items-center justify-between gap-2 border-t border-graphite-800 pt-3">
+                  <h4 className="text-[13px] font-semibold">{t("share.file")}</h4>
+                  <button
+                    onClick={() => saveFile(state.title)}
+                    disabled={saving.status === "saving"}
+                    className="inline-flex items-center gap-1.5 rounded-md border border-graphite-700 px-2.5 py-1 text-[12px] text-graphite-200 transition hover:bg-graphite-800 disabled:opacity-50"
+                  >
+                    <Icon name="download" size={13} />
+                    {saving.status === "saving" ? t("share.saving") : t("share.saveFile")}
+                  </button>
+                </div>
+                <p className="text-[12px] text-graphite-400">{t("share.fileWarning")}</p>
+                {saving.status === "failed" && (
+                  <p className="text-[12px] text-bad">{t("share.saveFailed", { msg: saving.message })}</p>
                 )}
 
                 <p className="border-t border-graphite-800 pt-3 text-[12px] text-graphite-400">{t("share.telegram")}</p>
