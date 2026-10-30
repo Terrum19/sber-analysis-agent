@@ -724,7 +724,8 @@ class PdfExporter:
                 meta_parts.append(f"Источник: {clean_source}")
 
         meta_parts.append(f"Всего плиток: {tile_count}")
-        meta_str = " &nbsp;•&nbsp; ".join(meta_parts)
+        # Перенос — только между частями: «Всего плиток:» не отрывается от числа.
+        meta_str = " • ".join(part.replace(" ", "&nbsp;") for part in meta_parts)
 
         header_table = Table(
             [

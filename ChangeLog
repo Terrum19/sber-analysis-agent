@@ -1,5 +1,13 @@
 2026-10-31  Alexander Yurits  <143354682+Terrum19@users.noreply.github.com>
 
+	Шапка PDF дашборда переносится только между частями.
+	* backend/app/core/export/pdf.py (PdfExporter): Пробелы внутри «База
+	данных: …», «Источник: …», «Всего плиток: N» — неразрывные: число плиток
+	отрывалось от подписи на следующую строку, и
+	test_export_dashboard_pdf_resolves_database_from_profile_memory падал.
+
+2026-10-31  Alexander Yurits  <143354682+Terrum19@users.noreply.github.com>
+
 	Неделя года — с датами; слабейшая неделя — не неполная крайняя.
 	* backend/app/core/tools/timeseries/seasonality.py (_week_dates): Новая.
 	У period=week колонка dates («19.01–25.01»): модель называла 4-ю неделю
