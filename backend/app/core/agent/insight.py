@@ -6,6 +6,7 @@
 
 import json
 import logging
+import re
 
 from app.config import settings
 from app.core.agent.quality_fixes import (
@@ -26,6 +27,7 @@ from app.core.llm.prompts.insight_summary import (
 from app.core.llm.prompts.quality_rules import (
     INSIGHT_RULES,
     MANY_ROWS,
+    NO_ANSWER_FIX,
     NUMBER_FIX,
     RESULT_SHAPES,
     SINGLE_ROW,
@@ -118,7 +120,7 @@ class InsightGenerator:
         plan = describe_steps(steps or [])
         prompt += INSIGHT_RULES.format(plan=plan, facts=facts, shape=shape, hints="".join(hints))
         # Опора — весь промпт: условия шагов плана («> 150», «2024»), воспоминания, порог 0.05.
-        return await self._grounded(prompt)
+        return await self._grounded(prompt, needs_number=bool(re.search(r"\d", shown)))
 
     async def generate_tile_insight(self, title: str, result_table: str, chart_type: str) -> str:
         from app.core.data.duckdb_manager import DuckDBManager
@@ -129,14 +131,22 @@ class InsightGenerator:
         text = await self.llm.complete("Ты — аналитик.", prompt)
         return text.strip()
 
-    async def _grounded(self, prompt: str) -> Insight:
-        """H-Q3: число в headline, которого нет в промпте, — один переспрос."""
+    async def _grounded(self, prompt: str, needs_number: bool = True) -> Insight:
+        """Один переспрос, если в headline нет ответа числом или число без опоры (H-Q3).
+
+        Без числа модель пишет «что посчитано», но не сам ответ («Средняя сумма
+        события»); проверка в коде надёжнее ещё одного правила в промпте.
+        needs_number=False — в результате нет чисел, ответ словами допустим.
+        """
         insight = await self.llm.complete_structured("Ты — аналитик.", prompt, Insight)
-        missing = ungrounded_numbers(insight.headline, prompt)
-        if not missing:
+        if needs_number and not re.search(r"\d", insight.headline):
+            logger.warning("инсайт: в headline нет числа, переспрос")
+            fix = NO_ANSWER_FIX
+        elif missing := ungrounded_numbers(insight.headline, prompt):
+            logger.warning("инсайт: числа без опоры в фактах %s, переспрос", missing)
+            fix = NUMBER_FIX.format(numbers=", ".join(missing))
+        else:
             return insight
-        logger.warning("инсайт: числа без опоры в фактах %s, переспрос", missing)
-        fix = NUMBER_FIX.format(numbers=", ".join(missing))
         return await self.llm.complete_structured("Ты — аналитик.", prompt + fix, Insight)
 
 

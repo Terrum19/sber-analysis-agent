@@ -144,9 +144,9 @@ async def test_insight_without_facts_when_they_fail(db, monkeypatch) -> None:
 
     monkeypatch.setattr(settings, "agent_quality_fixes", True)
     monkeypatch.setattr(module, "insight_facts", broken)
-    llm = _ScriptedLLM("Данных достаточно")
+    llm = _ScriptedLLM("Строк в таблице — 120")
     insight = await module.InsightGenerator(llm=llm, db=db).generate("Сколько строк?", "t")
-    assert insight.headline == "Данных достаточно"
+    assert insight.headline == "Строк в таблице — 120"
     assert len(llm.prompts) == 1
 
 
