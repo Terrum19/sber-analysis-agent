@@ -152,7 +152,12 @@ def test_progress_events_precede_the_answer(orchestrator):
         if event["type"] == "progress":
             ProgressPayload(**event["data"])
     progress = [event["data"] for event in events if event["type"] == "progress"]
-    assert progress[0] == {"stage": "planning", "status": "started", "tables": ["raw"]}
+    assert progress[0] == {
+        "stage": "planning",
+        "status": "started",
+        "tables": ["raw"],
+        "turn_id": events[-1]["data"]["turn_id"],
+    }
     assert progress[1] == {"stage": "planning", "status": "finished", "total_steps": 1}
     assert progress[2] == {
         "stage": "step",

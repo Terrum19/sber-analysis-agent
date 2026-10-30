@@ -5,6 +5,7 @@
  * (purpose, статус, время). Когда ход закончен — свёрнут в строку
  * «N шагов · X с», по клику раскрывается. В режиме дашборда (#224) вместо
  * плоского списка — плитки плана, у каждой свой статус и свои шаги.
+ * Остановленный или упавший ход с готовыми шагами — кнопка «Продолжить».
  */
 import { useEffect, useState } from "react";
 import Icon from "@/components/ui/Icon";
@@ -136,7 +137,25 @@ function useNow(active: boolean): number {
   return now;
 }
 
-export default function StepProgress({ progress }: { progress: TurnProgress }) {
+/** «Прервано» и кнопка «Продолжить» под прогрессом остановленного хода. */
+function ResumeBar({ onResume }: { onResume: () => void }) {
+  const t = useT();
+  return (
+    <div className="mt-1.5 flex flex-wrap items-center gap-2">
+      <span className="text-[12px] text-warn">{t("progress.interrupted")}</span>
+      <button
+        onClick={onResume}
+        title={t("progress.resumeHint")}
+        className="inline-flex items-center gap-1 rounded-md border border-graphite-700 px-2 py-0.5 text-[12px] text-graphite-200 hover:border-graphite-500 hover:text-graphite-50"
+      >
+        <Icon name="refresh" size={12} />
+        {t("progress.resume")}
+      </button>
+    </div>
+  );
+}
+
+export default function StepProgress({ progress, onResume }: { progress: TurnProgress; onResume?: () => void }) {
   const t = useT();
   const locale = useUiStore((s) => s.locale);
   const [expanded, setExpanded] = useState(false);
@@ -153,13 +172,16 @@ export default function StepProgress({ progress }: { progress: TurnProgress }) {
         })
       : stepsLabel(locale, progress.steps.length);
     return (
-      <button
-        onClick={() => setExpanded(true)}
-        className="inline-flex items-center gap-1 text-[12px] text-graphite-500 hover:text-graphite-300"
-      >
-        <Icon name="chevronRight" size={12} />
-        {label} · {t("progress.seconds", { s: seconds(total) })}
-      </button>
+      <div>
+        <button
+          onClick={() => setExpanded(true)}
+          className="inline-flex items-center gap-1 text-[12px] text-graphite-500 hover:text-graphite-300"
+        >
+          <Icon name="chevronRight" size={12} />
+          {label} · {t("progress.seconds", { s: seconds(total) })}
+        </button>
+        {onResume && <ResumeBar onResume={onResume} />}
+      </div>
     );
   }
 
@@ -211,6 +233,7 @@ export default function StepProgress({ progress }: { progress: TurnProgress }) {
       )}
       {!finished && stageLabel && <div className="mt-1 animate-pulse">{stageLabel}</div>}
       {quiet && <div className="mt-1 text-warn">{t("progress.stillWorking")}</div>}
+      {finished && onResume && <ResumeBar onResume={onResume} />}
     </div>
   );
 }

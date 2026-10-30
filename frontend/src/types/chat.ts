@@ -131,6 +131,8 @@ export interface ProgressPayload {
   error?: string;
   /** Плитка дашборда, к которой относится шаг или статус. */
   tile_id?: number;
+  /** Ход: приходит в начале planning и outline, по нему ход продолжают после остановки. */
+  turn_id?: string;
 }
 
 export interface ProgressEvent {
@@ -190,11 +192,24 @@ export interface TurnProgress {
   outlining?: boolean;
   /** Плитки из dashboard_outline; есть только в режиме дашборда. */
   tiles?: TileState[];
+  /** Ход на бэкенде (из progress): по нему «Продолжить» остановленный ход. */
+  turn_id?: string;
+  /** Ход остановлен или упал, но часть шагов или плиток готова: его можно продолжить. */
+  resumable?: boolean;
+}
+
+/** Готов хотя бы один шаг или плитка: остановленный ход есть с чего продолжать. */
+export function hasFinishedWork(progress: TurnProgress): boolean {
+  return (
+    progress.steps.some((step) => step.status === "finished") ||
+    (progress.tiles ?? []).some((tile) => tile.status === "finished")
+  );
 }
 
 /** Применить событие progress к прогрессу хода. */
 export function applyProgress(progress: TurnProgress, event: ProgressPayload): TurnProgress {
   const next: TurnProgress = { ...progress, steps: [...progress.steps], last_event_at: Date.now() };
+  if (event.turn_id) next.turn_id = event.turn_id;
   if (event.stage === "outline") {
     next.outlining = event.status === "started";
   } else if (event.stage === "tile" && event.tile_id !== undefined) {
