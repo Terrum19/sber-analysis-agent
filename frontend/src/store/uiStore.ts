@@ -59,6 +59,9 @@ interface UiState {
   zoom: number;
   /** Растёт, когда список таблиц на бэкенде изменился (удалён источник): шапка чата перечитывает его. */
   tablesVersion: number;
+  /** «Открыть в чате» с вкладки инсайтов (F-17): лента прокручивает к ходу. Не сохраняется. */
+  focusTurn: { turnId: string; nonce: number } | null;
+  requestFocusTurn: (turnId: string) => void;
   setTheme: (theme: Theme) => void;
   setLocale: (locale: Locale) => void;
   setDbModalOpen: (open: boolean) => void;
@@ -90,6 +93,8 @@ export const useUiStore = create<UiState>()(
       panelWidth: PANEL_WIDTH.initial,
       zoom: 1,
       tablesVersion: 0,
+      focusTurn: null,
+      requestFocusTurn: (turnId) => set({ focusTurn: { turnId, nonce: Date.now() } }),
       setTheme: (theme) => {
         // Сразу, до перерисовки: цвета графиков читаются из CSS-переменных темы
         if (typeof document !== "undefined") document.documentElement.dataset.theme = theme;

@@ -1,5 +1,29 @@
 2026-10-31  Alexander Yurits  <143354682+Terrum19@users.noreply.github.com>
 
+	Вкладка «Инсайты» — карточки «вопрос → вывод» (F-17, #259).
+	* frontend/src/lib/insights.ts (buildInsights): Новая. Карточка на ход
+	чата (всё между репликами пользователя): вопрос, headline, details,
+	инсайты плиток хода-дашборда, графики хода. Плитки панели, чьего
+	инсайта нет в ленте, — отдельными карточками.  (filterInsights,
+	markText, insightsMarkdown): Поиск, выделение чисел, выгрузка в .md.
+	* frontend/src/components/insights/InsightsView.tsx: Новый. Сетка 1–3
+	колонки по ширине панели, поиск со счётчиком, экспорт видимого списка в
+	Markdown и PDF через печать.
+	* frontend/src/components/insights/InsightCard.tsx: Новый. Свёрнутая
+	карточка и чип «График».
+	* frontend/src/components/insights/InsightDialog.tsx: Новый. Карточка
+	целиком: графики, экспорт ответа, копирование, «Открыть в чате»; ← / →
+	листают, Esc закрывает.
+	* frontend/src/store/uiStore.ts (focusTurn, requestFocusTurn): Новые.
+	* frontend/src/components/chat/ChatPanel.tsx: Прокрутка к ходу по
+	focusTurn.
+	* frontend/src/components/canvas/Canvas.tsx: Вкладка «Инсайты» — через
+	InsightsView, видна и без плиток на панели.
+	* frontend/src/app/globals.css (.insights-print): Печать только списка.
+	* frontend/src/i18n/dictionary.ts: Строки insights.*.
+
+2026-10-31  Alexander Yurits  <143354682+Terrum19@users.noreply.github.com>
+
 	Шапка PDF дашборда переносится только между частями.
 	* backend/app/core/export/pdf.py (PdfExporter): Пробелы внутри «База
 	данных: …», «Источник: …», «Всего плиток: N» — неразрывные: число плиток
