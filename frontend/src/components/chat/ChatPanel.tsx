@@ -37,6 +37,7 @@ import RecipeBanner from "@/components/chat/RecipeBanner";
 import StepsList from "@/components/chat/StepsList";
 import LlmStatusBanner from "@/components/chat/LlmStatusBanner";
 import DashboardIdeas, { type IdeasState } from "@/components/chat/DashboardIdeas";
+import MarkdownContent from "@/components/chat/MarkdownContent";
 import { useLlmStatus } from "@/hooks/useLlmStatus";
 import { useT } from "@/i18n/useT";
 import {
@@ -60,7 +61,8 @@ function answerText(m: ChatMessage): string {
 /** Короткая выдержка ответа для цитаты (схлопнутые пробелы, обрезка по границе слова). */
 function excerptOf(m: ChatMessage, limit = 170): string {
   const raw = m.answer?.headline ?? m.chart?.caption ?? m.content ?? "";
-  const text = raw.replace(/\s+/g, " ").trim();
+  // В content ответ в Markdown: в цитату — без звёздочек и обратных кавычек
+  const text = raw.replace(/\*\*|`/g, "").replace(/\s+/g, " ").trim();
   if (text.length <= limit) return text;
   const cut = text.slice(0, limit - 1);
   const lastSpace = cut.lastIndexOf(" ");
@@ -202,8 +204,9 @@ export default function ChatPanel({ sessionId }: Props) {
     if (run?.unseen) markSeen(sessionId);
   }, [run?.unseen, sessionId, markSeen]);
 
+  // Пока ответ печатается, smooth на каждый кусок дёргает ленту — прокрутка без анимации
   useEffect(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
+    messagesEndRef.current?.scrollIntoView({ behavior: streaming ? "auto" : "smooth" });
   }, [messages, streaming]);
 
   // Цитата и варианты дашборда не должны «протечь» в другую сессию или таблицу.
@@ -650,15 +653,28 @@ export default function ChatPanel({ sessionId }: Props) {
                 {/* Текст сообщения */}
                 {m.content && (
                   <div
-                    className={`whitespace-pre-wrap ${
+                    className={
                       m.refusal
-                        ? "border-l-2 border-warn/60 pl-3 text-graphite-300"
+                        ? "whitespace-pre-wrap border-l-2 border-warn/60 pl-3 text-graphite-300"
                         : m.dashboardFallback
-                        ? "rounded-lg border border-warn/30 bg-warn/10 px-3 py-2 text-graphite-200"
+                        ? "whitespace-pre-wrap rounded-lg border border-warn/30 bg-warn/10 px-3 py-2 text-graphite-200"
+                        : m.role === "user"
+                        ? "whitespace-pre-wrap"
                         : ""
-                    }`}
+                    }
                   >
-                    {m.content}
+                    {m.role === "agent" && !m.refusal && !m.dashboardFallback ? (
+                      <MarkdownContent content={m.content} />
+                    ) : (
+                      m.content
+                    )}
+                    {/* Ответ ещё печатается: курсор под последним куском */}
+                    {m.role === "agent" && !m.progress && streaming && i === messages.length - 1 && (
+                      <span
+                        aria-hidden
+                        className="ml-0.5 inline-block h-3.5 w-1.5 animate-pulse rounded-[1px] bg-graphite-400 align-middle motion-reduce:animate-none"
+                      />
+                    )}
                   </div>
                 )}
 

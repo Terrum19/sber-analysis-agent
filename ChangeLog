@@ -1,3 +1,34 @@
+2026-10-31  Alexander Yurits  <143354682+Terrum19@users.noreply.github.com>
+
+	Стрим ответа, токены по шагам и плиткам, Markdown в чате (из #266).
+	* backend/app/core/llm/usage.py: Новый.  (TurnUsage, LlmCall): Токены
+	хода и мест хода: оценка по кускам стрима, затем точные из usage.
+	(llm_scope): Место вызова LLM — этап, шаг, плитка.
+	* backend/app/core/llm/client.py (complete): В ходе — стримом
+	(LLM_STREAM_CALLS).  (complete_stream, _stream): Новые.
+	(_check_context): usage — в токены хода; стрим не дочитывается.
+	(_check_prompt): Новый, проверка обрезки и для стрима.
+	* backend/app/core/agent/insight.py (stream, _stream_once): Новые.
+	Вывод Markdown кусками; первая строка придерживается до проверки H-Q3.
+	(parse_insight_text): Новая.  (_prompt): Общий промпт generate/stream.
+	* backend/app/core/llm/prompts/insight_summary.py (INSIGHT_STRUCTURE)
+	(INSIGHT_STREAM_STRUCTURE): Новые.
+	* backend/app/core/agent/orchestrator.py (run): Ход — задачей-насосом,
+	usage уходит фронту, пока LLM пишет.  (_stream_insight): Новый.
+	(_done): Токены хода.  llm_scope у плана, шагов, вывода, графика.
+	* backend/app/core/agent/dashboard_turn.py: llm_scope у плана
+	дашборда, плиток и выбора графиков.
+	* backend/app/api/schemas/chat.py (ChatEvent): Событие usage.
+	* backend/app/config.py (insight_stream, llm_stream_calls): Новые.
+	* scripts/eval.py (answer_text): Без кусков стрима.
+	* frontend/src/components/chat/MarkdownContent.tsx: Новый.
+	* frontend/src/components/chat/StepProgress.tsx (Tokens): Токены у
+	шагов, плиток, этапов и хода.
+	* frontend/src/store/chatRunStore.ts: text {chunk}, streamed, usage.
+	* frontend/src/components/chat/ChatPanel.tsx: Markdown, курсор печати.
+	* frontend/src/types/chat.ts (UsageEvent, ScopeTokens, TurnTokens)
+	(stepTokensKey, sumTokens): Новые.
+
 2026-10-31  thebulkapro  <saitbatalovbulat200@gmail.com>
 
 	Поделиться сессией: файл .session с таблицами в parquet (#251).

@@ -214,6 +214,18 @@ export function startRun(
     (event) => {
       if (event.type === "done") {
         streamFinished = true;
+        const usage = event.data;
+        if (progress && typeof usage?.total_tokens === "number") {
+          progress = {
+            ...progress,
+            tokens: {
+              llm_calls: usage.llm_calls ?? 0,
+              prompt_tokens: usage.prompt_tokens ?? 0,
+              completion_tokens: usage.completion_tokens ?? 0,
+              total_tokens: usage.total_tokens,
+            },
+          };
+        }
         finishProgress(streamHadError);
         saveAnswerMeta(event.data?.turn_id);
         if (builtDashboardId && isViewing(sessionId)) options.onDashboardBuilt?.(builtDashboardId);
@@ -260,18 +272,37 @@ export function startRun(
         answerStarted = false;
         streamFinished = true;
         addMessage({ role: "agent", content: event.data.reason || t("chat.refusal"), refusal: event.data });
+      } else if (event.type === "usage") {
+        // Токены места хода: заменяем прежние числа этого места
+        if (progress && progress.finished_at === undefined) {
+          const { key, prompt_tokens, completion_tokens, live } = event.data;
+          progress = {
+            ...progress,
+            usage: { ...progress.usage, [key]: { prompt_tokens, completion_tokens, live } },
+            last_event_at: Date.now(),
+          };
+          store.updateMessage(progressId, { progress }, sessionId);
+        }
       } else if (event.type === "text") {
         const raw = event as any;
-        const headline = event.data?.headline || raw.headline;
+        const data = event.data ?? raw;
+        const chunk = data.chunk;
+        if (typeof chunk === "string" && chunk) {
+          // Кусок стрима: дописываем к ответу
+          appendText(chunk);
+          return;
+        }
+        const headline = data.headline;
         if (typeof headline === "string" && headline) answerHeadline = headline;
-        const content = event.data?.headline || event.data?.chunk || raw.headline || raw.chunk || "";
-        if (content) appendText(content);
-        const details = event.data?.details || raw.details;
-        if (details && Array.isArray(details)) {
+        const details = data.details;
+        if (Array.isArray(details)) {
           answerDetails = details.filter((d: unknown): d is string => typeof d === "string");
-          if (answerDetails.length > 0) {
-            appendText("\n\n" + answerDetails.map((d: string) => `• ${d}`).join("\n"));
-          }
+        }
+        // streamed — текст уже в ленте кусками, поля нужны только для копирования и PDF
+        if (data.streamed) return;
+        if (typeof headline === "string" && headline) appendText(headline);
+        if (answerDetails.length > 0) {
+          appendText("\n\n" + answerDetails.map((d: string) => `- ${d}`).join("\n"));
         }
       } else if (event.type === "chart") {
         answerStarted = false;

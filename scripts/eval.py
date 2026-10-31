@@ -465,6 +465,8 @@ def used_tools(turn: Turn) -> list[str]:
 def answer_text(turn: Turn) -> str:
     parts = []
     for data in events_of(turn, "text"):
+        if "chunk" in data:
+            continue  # кусок стрима: весь вывод есть в итоговом text {headline, details}
         parts.append(str(data.get("headline", "")))
         parts += [str(detail) for detail in data.get("details", [])]
     return "\n".join(parts)

@@ -373,9 +373,107 @@ def test_done_counts_truncated_prompts(orchestrator):
     events = collect(orchestrator, "s1")
 
     assert events[-1]["data"]["prompt_truncated"] == 2
-    # Следующий ход без обрезок — в done только turn_id.
+    # Следующий ход без обрезок — prompt_truncated в done нет.
     orchestrator.planner, orchestrator.insight_gen = FakePlanner(), FakeInsightGen()
-    assert list(collect(orchestrator, "s2")[-1]["data"]) == ["turn_id"]
+    assert "prompt_truncated" not in collect(orchestrator, "s2")[-1]["data"]
+
+
+def test_done_counts_turn_tokens(orchestrator):
+    """Токены вызовов LLM хода (и из задачи плана) суммируются в done; ход — с нуля."""
+    from app.core.llm.usage import record_usage
+
+    class CountingPlanner(FakePlanner):
+        async def plan(self, question, context):
+            record_usage({"prompt_tokens": 1000, "completion_tokens": 50})
+            return await super().plan(question, context)
+
+    class CountingInsightGen(FakeInsightGen):
+        async def generate(self, question, result_table, **kwargs):
+            record_usage({"prompt_tokens": 400, "completion_tokens": 30})
+            return await super().generate(question, result_table, **kwargs)
+
+    orchestrator.planner = CountingPlanner()
+    orchestrator.insight_gen = CountingInsightGen()
+    first = collect(orchestrator, "s1")[-1]["data"]
+    second = collect(orchestrator, "s2")[-1]["data"]
+
+    expected = {
+        "llm_calls": 2,
+        "prompt_tokens": 1400,
+        "completion_tokens": 80,
+        "total_tokens": 1480,
+    }
+    assert first["turn_id"] and {key: first[key] for key in expected} == expected
+    assert {key: second[key] for key in expected} == expected
+
+
+class StreamingInsightGen(FakeInsightGen):
+    """Вывод стримом: куски через emit, затем разобранный Insight."""
+
+    def __init__(self, chunks, streamed=True):
+        self.chunks, self.streamed = chunks, streamed
+
+    async def stream(self, question, result_table, *, emit, **kwargs):
+        from app.models.insight import Insight
+
+        for chunk in self.chunks:
+            emit(chunk)
+        return Insight(headline="Вывод", details=["Деталь"]), self.streamed
+
+
+def test_insight_streams_chunks_then_fields(orchestrator):
+    orchestrator.insight_gen = StreamingInsightGen(["Вы", "вод\n- Деталь"])
+    texts = [event["data"] for event in collect(orchestrator, "s1") if event["type"] == "text"]
+
+    assert texts == [
+        {"chunk": "Вы"},
+        {"chunk": "вод\n- Деталь"},
+        {"headline": "Вывод", "details": ["Деталь"], "streamed": True},
+    ]
+
+
+def test_insight_not_streamed_is_sent_whole(orchestrator):
+    """Стрим не дал текста (фолбэк на structured) — вывод приходит обычным text."""
+    orchestrator.insight_gen = StreamingInsightGen([], streamed=False)
+    texts = [event["data"] for event in collect(orchestrator, "s1") if event["type"] == "text"]
+
+    assert texts == [{"headline": "Вывод", "details": ["Деталь"]}]
+
+
+def test_streamed_insight_gets_remember_confirmation(orchestrator):
+    """«Запомни …» вместе с вопросом: подтверждение дописывается к стримовому выводу куском."""
+
+    class RememberingPlanner(FakePlanner):
+        async def plan(self, question, context):
+            plan = await super().plan(question, context)
+            plan.remember = ["выручка — без НДС"]
+            return plan
+
+    orchestrator.planner = RememberingPlanner()
+    orchestrator.insight_gen = StreamingInsightGen(["Вывод"])
+    texts = [event["data"] for event in collect(orchestrator, "s1") if event["type"] == "text"]
+
+    assert texts[0] == {"chunk": "Вывод"}
+    assert "выручка — без НДС" in texts[1]["chunk"] and texts[1]["chunk"].startswith("\n\n")
+    assert texts[2]["streamed"] and texts[2]["details"][-1] == texts[1]["chunk"].strip()
+
+
+def test_done_outside_turn_has_no_tokens():
+    from app.core.agent.orchestrator import _done
+    from app.core.llm import usage
+
+    usage._usage.set(None)
+    assert _done("t1") == {"type": "done", "data": {"turn_id": "t1"}}
+
+
+def test_insight_stream_off_uses_generate(orchestrator, monkeypatch):
+    from app.config import settings
+
+    monkeypatch.setattr(settings, "insight_stream", False)
+    orchestrator.insight_gen = StreamingInsightGen(["не должно прийти"])
+    texts = [event["data"] for event in collect(orchestrator, "s1") if event["type"] == "text"]
+
+    assert texts == [{"headline": "Мок инсайт", "details": ["Деталь 1"]}]
 
 
 def test_clarification_counts_truncated_prompts(orchestrator):

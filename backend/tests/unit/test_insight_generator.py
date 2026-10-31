@@ -236,3 +236,158 @@ def test_prompt_says_a_week_number_merges_the_years(db):
         InsightGenerator(llm=llm, db=db).generate("Какая неделя?", "temp_result_v4", steps=steps)
     )
     assert "шаг 1 берёт номер недели года" in llm.prompt
+
+
+class StreamingLLM(FakeLLM):
+    """Стрим из заданных кусков; boom — упасть после стольких кусков."""
+
+    def __init__(self, chunks, boom=None):
+        super().__init__()
+        self.chunks, self.boom = chunks, boom
+        self.structured = 0
+
+    async def complete_stream(self, system, user, **kwargs):
+        self.prompt = user
+        for number, chunk in enumerate(self.chunks):
+            if number == self.boom:
+                raise RuntimeError("обрыв")
+            yield chunk
+        if self.boom is not None and self.boom >= len(self.chunks):
+            raise RuntimeError("обрыв")
+
+    async def complete_structured(self, system, user, schema):
+        self.structured += 1
+        return await super().complete_structured(system, user, schema)
+
+
+def stream(gen, question="Тест", table="temp_result_v1"):
+    shown: list[str] = []
+    insight, streamed = asyncio.run(gen.stream(question, table, emit=shown.append))
+    return insight, streamed, shown
+
+
+def test_stream_emits_chunks_and_parses_markdown(db):
+    chunks = [
+        "Выручка **выросла",
+        "** на 12%\n- Лидер — **Москва**\n",
+        "- Рост с марта\n",
+        "Ограничения: нет",
+    ]
+    llm = StreamingLLM(chunks)
+    insight, streamed, shown = stream(InsightGenerator(llm=llm, db=db))
+
+    assert streamed and shown == chunks
+    assert insight.headline == "Выручка выросла на 12%"
+    assert insight.details == ["Лидер — Москва", "Рост с марта"]
+    assert insight.limits == ""
+    # Формат — Markdown вместо полей схемы, остальной промпт как у generate().
+    assert "Markdown" in llm.prompt and "headline:" not in llm.prompt
+    assert llm.structured == 0
+
+
+def test_stream_falls_back_when_no_text(db):
+    """Стрим упал до первого куска или пуст — вывод от generate(), текст не показан."""
+    for llm in (StreamingLLM([], boom=0), StreamingLLM([])):
+        insight, streamed, shown = stream(InsightGenerator(llm=llm, db=db))
+        assert not streamed and shown == []
+        assert insight.headline == "Исследование завершено"
+        assert llm.structured == 1
+
+
+def test_stream_error_after_text_is_raised(db):
+    """Текст уже показан: второй ответ дал бы дубль, поэтому ошибка, а не фолбэк."""
+    llm = StreamingLLM(["Начало\n"], boom=1)
+    with pytest.raises(RuntimeError):
+        stream(InsightGenerator(llm=llm, db=db))
+    assert llm.structured == 0
+
+
+def test_stream_error_while_headline_held_falls_back(db):
+    """Первая строка ещё не показана (придержана для H-Q3) — обрыв не виден, вывод от generate()."""
+    llm = StreamingLLM(["Начало"], boom=1)
+    insight, streamed, shown = stream(InsightGenerator(llm=llm, db=db))
+    assert not streamed and shown == []
+    assert insight.headline == "Исследование завершено" and llm.structured == 1
+
+
+def test_stream_without_client_support_uses_generate(db):
+    insight, streamed, shown = stream(InsightGenerator(llm=FakeLLM(), db=db))
+    assert not streamed and shown == []
+    assert insight.headline == "Исследование завершено"
+
+
+@pytest.mark.parametrize(
+    ("text", "headline", "details", "limits"),
+    [
+        ("Итог\n- a\n  продолжение\n- b", "Итог", ["a продолжение", "b"], ""),
+        ("- сразу список\n- второй", "", ["сразу список", "второй"], ""),
+        (
+            "Вывод: итог\n1. раз\n2) два\nОграничения: нет данных за 2023\nи за 2022",
+            "итог",
+            ["раз", "два"],
+            "нет данных за 2023 и за 2022",
+        ),
+        ("```\nИтог\n```", "Итог", [], ""),
+    ],
+)
+def test_parse_insight_text(text, headline, details, limits):
+    from app.core.agent.insight import parse_insight_text
+
+    insight = parse_insight_text(text)
+    assert (insight.headline, insight.details, insight.limits) == (headline, details, limits)
+
+
+class AnswersLLM(FakeLLM):
+    """Стрим: на каждый вызов — свой список кусков; записывает промпты и что дочитано."""
+
+    def __init__(self, *answers):
+        super().__init__()
+        self.answers = list(answers)
+        self.prompts: list[str] = []
+        self.read: list[int] = []
+
+    async def complete_stream(self, system, user, **kwargs):
+        self.prompts.append(user)
+        self.read.append(0)
+        for chunk in self.answers[len(self.prompts) - 1]:
+            self.read[-1] += 1
+            yield chunk
+
+
+def test_stream_reasks_ungrounded_headline_before_showing_it(db):
+    """H-Q3: число первой строки не из данных — стрим закрыт, пользователь видит только переспрос."""
+    llm = AnswersLLM(
+        ["Всего ", "41 строка", "\n- деталь", "\n- не должно читаться"],
+        ["Всего **2** строки", "\n- деталь"],
+    )
+    insight, streamed, shown = stream(InsightGenerator(llm=llm, db=db))
+
+    assert streamed and shown == ["Всего **2** строки", "\n- деталь"]
+    assert insight.headline == "Всего 2 строки"
+    assert "41" in llm.prompts[1] and "Перепиши ответ" in llm.prompts[1]
+    # Первый стрим закрыт сразу после первой строки, хвост не дочитывался.
+    assert llm.read[0] == 3
+
+
+def test_stream_grounded_headline_is_shown_without_reask(db):
+    llm = AnswersLLM(["В таблице **2** строки\n", "- значения 1 и 2"])
+    _, streamed, shown = stream(InsightGenerator(llm=llm, db=db))
+
+    assert streamed and shown == ["В таблице **2** строки\n", "- значения 1 и 2"]
+    assert len(llm.prompts) == 1
+
+
+def test_stream_checks_headline_without_newline(db):
+    """Ответ из одной строки проверяется по концу стрима."""
+    llm = AnswersLLM(["Итог: 999"], ["Итог: 2"])
+    _, _, shown = stream(InsightGenerator(llm=llm, db=db))
+    assert shown == ["Итог: 2"]
+
+
+def test_stream_without_quality_fixes_shows_at_once(db, monkeypatch):
+    from app.config import settings
+
+    monkeypatch.setattr(settings, "agent_quality_fixes", False)
+    llm = AnswersLLM(["Всего 41 строка", "\n- деталь"])
+    _, _, shown = stream(InsightGenerator(llm=llm, db=db))
+    assert shown == ["Всего 41 строка", "\n- деталь"] and len(llm.prompts) == 1

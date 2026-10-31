@@ -63,7 +63,7 @@ import logging
 import re
 import time
 from collections.abc import AsyncIterator, Callable
-from contextlib import aclosing
+from contextlib import aclosing, suppress
 from dataclasses import dataclass, field
 
 logger = logging.getLogger(__name__)
@@ -71,6 +71,7 @@ logger = logging.getLogger(__name__)
 import duckdb
 
 from app.api.schemas.chat import ChatRequest, DashboardPayload, PlanStepOut, ProgressPayload
+from app.config import settings
 from app.core.agent.chart_pick import ChartPicker
 from app.core.agent.explainer import Explainer
 from app.core.agent.insight import InsightGenerator
@@ -86,6 +87,7 @@ from app.core.data.duckdb_manager import DuckDBManager
 from app.core.data.table_vectors import TableVectors
 from app.core.llm.budget import track_truncations
 from app.core.llm.client import LLMClient
+from app.core.llm.usage import current_usage, llm_scope, track_usage
 from app.core.logging_setup import set_turn_id
 from app.core.memory.profile_memory import ProfileMemory
 from app.core.memory.session_memory import SessionMemory
@@ -276,6 +278,11 @@ def _fixing_event(step: ResearchStep, attempt: int, error: Exception) -> dict:
     return _step_event(step, "fixing", attempt=attempt, error=str(error))
 
 
+def _text_chunk_event(chunk: str) -> dict:
+    """Кусок вывода из стрима LLM: фронт дописывает его к ответу."""
+    return {"type": "text", "data": {"chunk": chunk}}
+
+
 def _chart_event(spec: dict, caption: str, result_table: str) -> dict:
     """График с таблицей результата: из неё фронт пересчитывает плитку и выгружает Excel.
 
@@ -292,7 +299,19 @@ def _failure_event() -> dict:
 
 
 def _done(turn_id: str) -> dict:
-    return {"type": "done", "data": {"turn_id": turn_id}}
+    """Конец хода; с токенами хода, если их считали (run())."""
+    data: dict[str, object] = {"turn_id": turn_id}
+    if (usage := current_usage()) is not None:
+        data.update(usage.as_event())
+    return {"type": "done", "data": data}
+
+
+def _text_event(insight: Insight, *, streamed: bool = False) -> dict:
+    """Вывод целиком. streamed — его текст уже пришёл кусочками: фронту только поля."""
+    data: dict[str, object] = {"headline": insight.headline, "details": insight.details}
+    if streamed:
+        data["streamed"] = True
+    return {"type": "text", "data": data}
 
 
 def _elapsed_ms(started_at: float) -> int:
@@ -337,21 +356,41 @@ class AgentOrchestrator:
         clarification_needed) несёт их число в prompt_truncated: eval (#58)
         отбрасывает такие прогоны. Обрезанный промпт чаще всего и кончается
         уточнением: модель без списка тулов строит план, шаг падает.
+
+        Ход идёт одной задачей-насосом, события — через очередь: туда же
+        счётчик токенов кладёт usage, пока ход ждёт ответа LLM. Одна задача
+        на весь ход — контекст (turn_id, счётчики) один от начала до конца.
         """
         truncations = track_truncations()
+        events: asyncio.Queue[dict | None] = asyncio.Queue()
+        track_usage(sink=events.put_nowait)
         turn_log = TurnLog(request.session_id)
+
+        async def pump() -> None:
+            try:
+                # aclosing: отмена насоса закрывает ход вместе с задачей плана.
+                async with aclosing(self._turn(request)) as turn:
+                    while (event := await turn_log.next_event(turn)) is not None:
+                        events.put_nowait(event)
+            finally:
+                events.put_nowait(None)
+
+        task = asyncio.create_task(pump())
         try:
-            # aclosing: клиент отключился — ход закрывается сразу, с отменой задачи плана.
-            async with aclosing(self._turn(request)) as events:
-                while (event := await turn_log.next_event(events)) is not None:
-                    if event["type"] in TURN_END_EVENTS and truncations:
-                        event["data"]["prompt_truncated"] = len(truncations)
-                    turn_log.observe(event)
-                    yield event
+            while (event := await events.get()) is not None:
+                if event["type"] in TURN_END_EVENTS and truncations:
+                    event["data"]["prompt_truncated"] = len(truncations)
+                turn_log.observe(event)
+                yield event
+            await task
         except Exception as error:
             turn_log.crashed(error)
             raise
         finally:
+            # Клиент отключился — ход отменяется и закрывается до конца run().
+            task.cancel()
+            with suppress(asyncio.CancelledError):
+                await task
             turn_log.close()
             RUNNING_TURNS.discard(self._running)
 
@@ -651,25 +690,33 @@ class AgentOrchestrator:
         try:
             logger.info(">>> run() генерация инсайта")
             yield _progress_event("insight", "started")
-            insight = await self.insight_gen.generate(
-                question,
-                result_table,
-                supporting=execution.supporting,
-                steps=execution.steps,
-                memories=memory.context_memories(),
-                result_tool=execution.result_tool,
-                source=memory.table,
-                inputs=execution.inputs,
-            )
+            insight_args = (question, result_table)
+            insight_kwargs = {
+                "supporting": execution.supporting,
+                "steps": execution.steps,
+                "memories": memory.context_memories(),
+                "result_tool": execution.result_tool,
+                "source": memory.table,
+                "inputs": execution.inputs,
+            }
+            streamed = False
+            if settings.insight_stream and callable(getattr(self.insight_gen, "stream", None)):
+                async for event in self._stream_insight(insight_args, insight_kwargs):
+                    if isinstance(event, tuple):
+                        insight, streamed = event
+                    else:
+                        yield event
+            else:
+                with llm_scope(stage="insight"):
+                    insight = await self.insight_gen.generate(*insight_args, **insight_kwargs)
             if confirmation:
                 insight.details.append(confirmation)
+                if streamed:
+                    yield _text_chunk_event(f"\n\n{confirmation}")
             logger.info(
                 "<<< run() инсайт: headline=%r details=%r", insight.headline, insight.details
             )
-            yield {
-                "type": "text",
-                "data": {"headline": insight.headline, "details": insight.details},
-            }
+            yield _text_event(insight, streamed=streamed)
 
             stage = "chart"
             picked = await picking if picking is not None else None
@@ -734,9 +781,10 @@ class AgentOrchestrator:
                 insight=insight.headline,
             )
             try:
-                event = await self._build_dashboard(
-                    request.session_id, question, execution, titles, fallback
-                )
+                with llm_scope(stage="dashboard"):
+                    event = await self._build_dashboard(
+                        request.session_id, question, execution, titles, fallback
+                    )
             except Exception as exc:
                 # Ответ и график уже у пользователя: ход не провален, нет
                 # только дашборда — без error, дальше обычный done.
@@ -756,6 +804,28 @@ class AgentOrchestrator:
 
     # --- Вспомогательные методы ---
 
+    async def _stream_insight(
+        self, args: tuple, kwargs: dict
+    ) -> AsyncIterator[dict | tuple[Insight, bool]]:
+        """Куски вывода — событиями text {chunk}, последним — (Insight, показан ли текст).
+
+        Вывод пишется задачей, а куски идут через очередь: так они уходят
+        фронту сразу, как в _answer() события плана. Клиент ушёл — задача
+        отменяется и закрывает стрим LLM.
+        """
+        chunks: asyncio.Queue[str | None] = asyncio.Queue()
+        with llm_scope(stage="insight"):
+            task = asyncio.create_task(
+                self.insight_gen.stream(*args, **kwargs, emit=chunks.put_nowait)
+            )
+        task.add_done_callback(lambda _: chunks.put_nowait(None))
+        try:
+            while (chunk := await chunks.get()) is not None:
+                yield _text_chunk_event(chunk)
+            yield await task
+        finally:
+            task.cancel()
+
     def _start_chart_pick(self, question: str, execution: Execution) -> asyncio.Task | None:
         """Задача выбора графика агентом; None — графику не нужен выбор LLM.
 
@@ -766,9 +836,12 @@ class AgentOrchestrator:
             return None
         if execution.result_table not in execution.tables.values():
             return None
-        return asyncio.create_task(
-            self.chart_picker.pick(question, execution.steps, execution.tables, execution.final_viz)
-        )
+        with llm_scope(stage="chart"):
+            return asyncio.create_task(
+                self.chart_picker.pick(
+                    question, execution.steps, execution.tables, execution.final_viz
+                )
+            )
 
     async def _research(
         self,
@@ -820,7 +893,8 @@ class AgentOrchestrator:
         logger.debug(">>> run() планируем шаги (planner.plan)")
         emit(_progress_event("planning", "started", tables=tables, turn_id=memory.turn_id))
         try:
-            plan = await self._plan(request.question, context)
+            with llm_scope(stage="planning"):
+                plan = await self._plan(request.question, context)
         except Exception as exc:
             emit(_progress_event("planning", "failed", error=str(exc)))
             raise
@@ -851,7 +925,8 @@ class AgentOrchestrator:
             # выполняется: в сомнении лучше посчитать, чем ответить без расчёта.
             logger.info("маршрут: пояснение по журналу ходов (route=%s)", plan.route)
             emit(_progress_event("insight", "started"))
-            reply = await self.explainer.answer(request.question, memory)
+            with llm_scope(stage="insight"):
+                reply = await self.explainer.answer(request.question, memory)
             return request.question, Execution(result_table="", remembered=remembered, reply=reply)
         if remembered and not plan.steps:
             return request.question, Execution(result_table="", remembered=remembered)
@@ -962,7 +1037,8 @@ class AgentOrchestrator:
             emit(_step_event(step, "started"))
             started_at = time.perf_counter()
             try:
-                step, table = await self._run_step(step, current, tables, source, emit, memory)
+                with llm_scope(step_id=step.step_id):
+                    step, table = await self._run_step(step, current, tables, source, emit, memory)
             except _StepFailed as failed:
                 emit(
                     _step_event(
@@ -1305,7 +1381,8 @@ class AgentOrchestrator:
         context["executed"] = _describe_executed(executed, tables, observed)
         context["next_step_id"] = _next_step_id(tables)
         logger.info(">>> _replan_after_lookup после шага %d", executed[-1].step_id)
-        plan = await self._plan(question, context)
+        with llm_scope(stage="planning"):
+            plan = await self._plan(question, context)
         return _renumber(plan, context["next_step_id"])
 
     async def _build_dashboard(
@@ -1476,9 +1553,10 @@ class AgentOrchestrator:
             yield _progress_event("insight", "started")
             profile = overview.passport(self.db, table)
             try:
-                summary = await overview.describe_dataset(
-                    self.db, table, getattr(self.planner, "llm", None)
-                )
+                with llm_scope(stage="insight"):
+                    summary = await overview.describe_dataset(
+                        self.db, table, getattr(self.planner, "llm", None)
+                    )
             except Exception:
                 logger.exception("<<< run() описание таблицы %s не построено", table)
                 summary = ""
@@ -1514,9 +1592,10 @@ class AgentOrchestrator:
             for number, name in enumerate(order, 1):
                 profile = overview.passport(self.db, name)
                 try:
-                    summary = await overview.describe_dataset(
-                        self.db, name, getattr(self.planner, "llm", None)
-                    )
+                    with llm_scope(stage="insight"):
+                        summary = await overview.describe_dataset(
+                            self.db, name, getattr(self.planner, "llm", None)
+                        )
                 except Exception:
                     logger.exception("<<< run() описание таблицы %s не построено", name)
                     summary = ""

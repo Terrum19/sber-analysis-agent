@@ -63,6 +63,7 @@ from app.core.llm.prompts.dashboard_builder import (
     OUTLINE_RETRY,
 )
 from app.core.llm.prompts.system_analyst import SYSTEM_ANALYST
+from app.core.llm.usage import llm_scope
 from app.core.memory.session_memory import SessionMemory
 from app.core.viz.chart_choice import describe_columns, rejection, sample_rows, top_rows
 from app.core.viz.chart_selector import fits, is_single_number
@@ -174,7 +175,8 @@ class DashboardTurn:
         done: dict[int, tuple[str, list[ResearchStep]]] = {}
         if resume is None:
             described = describe_table(self.db, table, request.question)
-            outline = await self._outline_for(request, table, described, emit)
+            with llm_scope(stage="outline"):
+                outline = await self._outline_for(request, table, described, emit)
             tiles = outline.tiles[:MAX_TILES]
             title = outline.title.strip() or DASHBOARD_TITLE
         else:
@@ -249,7 +251,8 @@ class DashboardTurn:
             tile_id: self.db.to_records(result, limit=SPEC_ROW_LIMIT)
             for tile_id, (_, result) in built.items()
         }
-        choices = await self._choose_charts(built, records)
+        with llm_scope(stage="chart"):
+            choices = await self._choose_charts(built, records)
         emit(_progress_event("chart", "finished", elapsed_ms=_elapsed_ms(started_at)))
 
         emit(_progress_event("dashboard", "started"))
@@ -381,12 +384,15 @@ class DashboardTurn:
             context["tile"] = True
             # Плитка «по регионам» на таблице заказов — через join_related (#165).
             context["related"] = self.agent._related(memory.table, tile.question)
-            plan = await self.agent._plan(tile.question, context)
-            _require_steps(plan)
-            tile_emit(_plan_event(plan.steps))
-            execution = await self.agent._execute_plan(
-                memory, plan, memory.table, tile.question, emit=tile_emit, checkpoint=False
-            )
+            # Токены плитки: её план и её шаги (step_id внутри — свой счёт).
+            with llm_scope(tile_id=tile_id):
+                with llm_scope(stage="planning"):
+                    plan = await self.agent._plan(tile.question, context)
+                _require_steps(plan)
+                tile_emit(_plan_event(plan.steps))
+                execution = await self.agent._execute_plan(
+                    memory, plan, memory.table, tile.question, emit=tile_emit, checkpoint=False
+                )
         except Exception as exc:
             if isinstance(exc, ClarificationNeeded):
                 # Уточнять у пользователя нечего: плитка просто не строится.

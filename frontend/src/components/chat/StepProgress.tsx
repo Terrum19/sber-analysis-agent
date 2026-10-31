@@ -5,7 +5,7 @@
  * пронумерованными строками (purpose, статус, время): «в очереди» → «идёт» →
  * «готово» или «упал». Строка раскрывается по клику — что шаг сделал с данными
  * и что получилось (StepDetails, #239). Когда ход закончен — свёрнут в строку
- * «N шагов · X с», по клику раскрывается. В режиме дашборда (#224) вместо
+ * «N шагов · X с · N токенов», по клику раскрывается. В режиме дашборда (#224) вместо
  * плоского списка — плитки плана, у каждой свой статус и свои шаги.
  * Остановленный или упавший ход с готовыми шагами — кнопка «Продолжить».
  */
@@ -15,7 +15,15 @@ import Icon from "@/components/ui/Icon";
 import { useT, type Translate } from "@/i18n/useT";
 import { tableTitle, useSessionDatabase } from "@/store/sessionStore";
 import { useUiStore, type Locale } from "@/store/uiStore";
-import type { StepState, TileIntent, TileState, TurnProgress } from "@/types/chat";
+import {
+  stepTokensKey,
+  sumTokens,
+  type ScopeTokens,
+  type StepState,
+  type TileIntent,
+  type TileState,
+  type TurnProgress,
+} from "@/types/chat";
 
 /** Тишина дольше этого — показываем «Всё ещё работаю…». */
 const QUIET_MS = 20_000;
@@ -38,6 +46,40 @@ function stepsLabel(locale: Locale, count: number): string {
   return `${count} шагов`;
 }
 
+function tokensLabel(locale: Locale, count: number): string {
+  const number = count.toLocaleString(locale === "en" ? "en-US" : "ru-RU");
+  if (locale === "en") return `${number} ${count === 1 ? "token" : "tokens"}`;
+  const mod10 = count % 10;
+  const mod100 = count % 100;
+  if (mod10 === 1 && mod100 !== 11) return `${number} токен`;
+  if (mod10 >= 2 && mod10 <= 4 && (mod100 < 12 || mod100 > 14)) return `${number} токена`;
+  return `${number} токенов`;
+}
+
+/**
+ * Токены места хода (шаг, плитка, этап) или всего хода: промпт + ответ.
+ * Пока LLM пишет — «~N» с пульсом: ответ считается по пришедшим кускам, промпт
+ * станет известен в конце вызова.
+ */
+function Tokens({ tokens, separated = false }: { tokens?: ScopeTokens; separated?: boolean }) {
+  const t = useT();
+  const locale = useUiStore((s) => s.locale);
+  if (!tokens) return null;
+  const total = tokens.prompt_tokens + tokens.completion_tokens;
+  if (total <= 0) return null;
+  const title = t(tokens.live ? "progress.tokensLive" : "progress.tokensHint", {
+    prompt: tokens.prompt_tokens.toLocaleString(),
+    completion: tokens.completion_tokens.toLocaleString(),
+  });
+  return (
+    <span title={title} className={`shrink-0 tabular-nums text-graphite-500 ${tokens.live ? "animate-pulse" : ""}`}>
+      {separated && " · "}
+      {tokens.live && "~"}
+      {tokensLabel(locale, total)}
+    </span>
+  );
+}
+
 function seconds(ms: number): string {
   return `${(ms / 1000).toFixed(ms < 10000 ? 1 : 0)}`;
 }
@@ -58,6 +100,7 @@ function StepRow({
   open,
   onToggle,
   details,
+  tokens,
 }: {
   step: StepState;
   number: number;
@@ -65,6 +108,7 @@ function StepRow({
   open: boolean;
   onToggle: () => void;
   details: ReactNode;
+  tokens?: ScopeTokens;
 }) {
   const t = useT();
   const icon =
@@ -114,6 +158,7 @@ function StepRow({
             {note}
           </span>
         )}
+        <Tokens tokens={tokens} />
         {step.elapsed_ms !== undefined && step.status !== "fixing" && (
           <span className="shrink-0 tabular-nums text-graphite-500">{duration(t, step.elapsed_ms)}</span>
         )}
@@ -129,12 +174,14 @@ function TileRow({
   open,
   onToggle,
   renderStep,
+  tokens,
 }: {
   tile: TileState;
   steps: StepState[];
   open: boolean;
   onToggle: () => void;
   renderStep: (step: StepState) => ReactNode;
+  tokens?: ScopeTokens;
 }) {
   const t = useT();
   // Шаги идущей плитки видны сразу, готовой — по клику
@@ -167,6 +214,7 @@ function TileRow({
         </span>
         {tile.status === "queued" && <span className="shrink-0 text-graphite-500">{t("progress.tileQueued")}</span>}
         {tile.status === "failed" && <span className="shrink-0 text-bad">{t("progress.failed")}</span>}
+        <Tokens tokens={tokens} />
         {tile.elapsed_ms !== undefined && tile.status !== "started" && (
           <span className="shrink-0 tabular-nums text-graphite-500">{duration(t, tile.elapsed_ms)}</span>
         )}
@@ -235,6 +283,10 @@ export default function StepProgress({
   const now = useNow(!finished);
   const tiles = progress.tiles;
   const steps = progress.steps;
+  // Ход закончен — точный итог из done, пока идёт — сумма мест хода
+  const turnTokens: ScopeTokens | undefined = progress.tokens
+    ? { prompt_tokens: progress.tokens.prompt_tokens, completion_tokens: progress.tokens.completion_tokens, live: false }
+    : sumTokens(progress.usage);
 
   // Номер шага в его списке (в плитке — свой счёт): step_id продолжают прошлые ходы
   const numbers = useMemo(() => {
@@ -280,6 +332,7 @@ export default function StepProgress({
       anchor={anchor(step.step_id)}
       open={openSteps.has(step.step_id)}
       onToggle={() => setOpenSteps((set) => toggle(set, step.step_id))}
+      tokens={progress.usage?.[stepTokensKey(step)]}
       details={
         <StepDetails
           step={step}
@@ -308,6 +361,7 @@ export default function StepProgress({
         >
           <Icon name="chevronRight" size={12} />
           {label} · {t("progress.seconds", { s: seconds(total) })}
+          <Tokens tokens={turnTokens} separated />
         </button>
         {onResume ? (
           <ResumeBar onResume={onResume} lost={progress.lost} />
@@ -339,13 +393,27 @@ export default function StepProgress({
         >
           <Icon name="chevronDown" size={12} />
           {stepsLabel(locale, progress.steps.length)}
+          <Tokens tokens={turnTokens} separated />
         </button>
       )}
       {!finished && (
-        <div className="mb-1 tabular-nums text-graphite-500">{t("progress.seconds", { s: Math.floor((now - progress.started_at) / 1000) })}</div>
+        <div className="mb-1 tabular-nums text-graphite-500">
+          {t("progress.seconds", { s: Math.floor((now - progress.started_at) / 1000) })}
+          <Tokens tokens={turnTokens} separated />
+        </div>
       )}
-      {progress.outlining && <div className="animate-pulse">{t("progress.outline")}</div>}
-      {progress.planning && !tiles && <div className="animate-pulse">{t("progress.planning")}</div>}
+      {progress.outlining && (
+        <div>
+          <span className="animate-pulse">{t("progress.outline")}</span>{" "}
+          <Tokens tokens={progress.usage?.outline} />
+        </div>
+      )}
+      {progress.planning && !tiles && (
+        <div>
+          <span className="animate-pulse">{t("progress.planning")}</span>{" "}
+          <Tokens tokens={progress.usage?.planning} />
+        </div>
+      )}
       {tiles && tiles.length > 0 && (
         <ul className="space-y-1.5">
           {tiles.map((tile) => (
@@ -356,12 +424,18 @@ export default function StepProgress({
               open={openTiles.has(tile.tile_id)}
               onToggle={() => setOpenTiles((set) => toggle(set, tile.tile_id))}
               renderStep={renderStep}
+              tokens={sumTokens(progress.usage, `tile:${tile.tile_id}`)}
             />
           ))}
         </ul>
       )}
       {!tiles && steps.length > 0 && <ul className="space-y-1">{steps.map(renderStep)}</ul>}
-      {!finished && stageLabel && <div className="mt-1 animate-pulse">{stageLabel}</div>}
+      {!finished && stageLabel && (
+        <div className="mt-1">
+          <span className="animate-pulse">{stageLabel}</span>{" "}
+          <Tokens tokens={progress.stage ? progress.usage?.[progress.stage] : undefined} />
+        </div>
+      )}
       {quiet && <div className="mt-1 text-warn">{t("progress.stillWorking")}</div>}
       {finished && onResume && <ResumeBar onResume={onResume} lost={progress.lost} />}
     </div>

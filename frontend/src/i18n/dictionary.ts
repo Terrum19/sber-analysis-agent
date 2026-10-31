@@ -189,6 +189,8 @@ const ru = {
   "progress.resume": "Продолжить",
   "progress.resumeHint": "Досчитать оставшиеся шаги, не повторяя готовые",
   "progress.lost": "Страница перезагрузилась, ответ не дошёл",
+  "progress.tokensHint": "Промпт: {prompt} · ответ: {completion}",
+  "progress.tokensLive": "LLM пишет: ответ ~{completion} (по пришедшим кускам, с рассуждениями), промпт: {prompt}",
 
   "step.operation": "Операция",
   "step.input": "Вход",
@@ -691,6 +693,8 @@ const en: Record<MessageKey, string> = {
   "progress.resume": "Continue",
   "progress.resumeHint": "Finish the remaining steps without redoing the finished ones",
   "progress.lost": "The page reloaded before the answer arrived",
+  "progress.tokensHint": "Prompt: {prompt} · answer: {completion}",
+  "progress.tokensLive": "LLM is writing: answer ~{completion} (chunks so far, incl. reasoning), prompt: {prompt}",
 
   "step.operation": "Operation",
   "step.input": "Input",
