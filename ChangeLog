@@ -1,5 +1,26 @@
 2026-10-31  thebulkapro  <saitbatalovbulat200@gmail.com>
 
+	ClickHouse переподключается после рестарта бэкенда.  Раньше его
+	представления пропадали вместе с соединением DuckDB, и сессии над
+	таблицей ClickHouse падали с «таблица не найдена».
+	* backend/app/core/data/restore.py (PASSWORD_VARIABLES): Новый.
+	(RESTORED_KINDS): Добавлен clickhouse.  (password_for): Параметр
+	kind, пароль ClickHouse — из CLICKHOUSE_PASSWORD__<identity> или
+	CLICKHOUSE_PASSWORD.  (connection_string): DSN ClickHouse с паролем.
+	(restore_saved_sources): В предупреждении — переменная своего kind.
+	* backend/app/core/data/connectors/clickhouse.py
+	(ClickHouseDsn.with_password): Новый.
+	* backend/app/core/memory/datasource_store.py: Docstring.
+	* backend/tests/unit/test_datasource_restore.py,
+	backend/tests/unit/test_connectors_clickhouse.py,
+	backend/tests/integration/test_clickhouse_connector.py: Восстановление
+	ClickHouse, отдельная переменная пароля, тот же identity, рестарт на
+	живом сервере.
+	* .env.example: CLICKHOUSE_PASSWORD.
+	* docs/data_connectors.md, docs/memory.md: Восстановление ClickHouse.
+
+2026-10-31  thebulkapro  <saitbatalovbulat200@gmail.com>
+
 	Поделиться сессией: файл .session с таблицами в parquet (#251).
 	* backend/app/core/memory/session_file.py: Новый.  (write): zip из
 	манифеста, бандла с лентой и итоговых таблиц ходов и плиток в parquet;

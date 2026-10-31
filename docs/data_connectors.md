@@ -482,6 +482,23 @@ HTTP-клиент отсутствуют. Лимит строк коннекто
 - `DB_MAX_TABLES` ограничивает количество создаваемых представлений, но не
   количество строк в удалённых таблицах.
 
+### Восстановление после перезапуска
+
+Как у PostgreSQL (раздел выше): источник запоминается в `datasources`
+(`dsn` — `ClickHouseDsn.masked()`, `db_schema` пустой, база — в пути DSN) и
+при старте переподключается тем же `restore_saved_sources` и `ingest.restore`.
+Пароль берётся из `CLICKHOUSE_PASSWORD__<identity>` (например,
+`CLICKHOUSE_PASSWORD__ch_1a2b3c4d5e`), иначе из общей `CLICKHOUSE_PASSWORD`;
+переменные PostgreSQL для ClickHouse не используются. Строку с паролем
+собирает `ClickHouseDsn.with_password`: `identity` у неё тот же, что у
+исходного источника. Таймаут — общий `POSTGRES_RESTORE_TIMEOUT_S`.
+
+Ограничения: у native-подключения нет своего таймаута, поэтому если сервер
+молча не отвечает, поток с `ATTACH` после истечения
+`POSTGRES_RESTORE_TIMEOUT_S` продолжает держать `DuckDBManager.lock`, пока
+не вернёт ошибку сеть. Восстановление идёт один раз при старте: если
+ClickHouse поднялся позже бэкенда, источник нужно подключить заново.
+
 ### API
 
 `POST /api/datasources/db`:
