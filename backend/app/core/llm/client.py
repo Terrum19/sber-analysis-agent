@@ -63,13 +63,13 @@ def _is_fatal(exc: Exception) -> bool:
     400/422 не считаем фатальными: модель или сервер могут не поддерживать
     tool_choice, и JSON-режим без tools тогда помогает.
     """
-    if isinstance(exc, openai.APIConnectionError):  # включая таймаут
+    if isinstance(exc, openai.APIConnectionError | TimeoutError):  # включая таймаут
         return True
     return isinstance(exc, openai.APIStatusError) and exc.status_code not in (400, 422)
 
 
 def _failure_kind(error: Exception) -> str:
-    if isinstance(error, openai.APITimeoutError):
+    if isinstance(error, openai.APITimeoutError | TimeoutError):
         return "таймаут"
     if isinstance(error, openai.APIConnectionError):
         return "соединение"

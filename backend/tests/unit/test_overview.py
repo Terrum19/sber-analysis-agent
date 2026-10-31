@@ -354,6 +354,22 @@ def test_plural(count: int, text: str) -> None:
     assert overview.plural(count, overview.ROW_WORDS) == text
 
 
+def test_headline_is_for_people(db) -> None:
+    db.execute(
+        "CREATE TABLE sold AS SELECT * FROM (VALUES (DATE '2024-10-01', 1), "
+        "(DATE '2026-09-30', 2)) AS rows(order_date, order_id)"
+    )
+    memory = ProfileMemory(db)
+    memory.save_profile(profile_table(db, "sold"))
+    profile = memory.load_profile("sold")
+
+    text = overview.headline(profile, "Продажи товаров")
+
+    # Без служебного имени таблицы, числа колонок и имени колонки дат.
+    assert text == "Продажи товаров: 2 записи с 01.10.2024 по 30.09.2026"
+    assert overview.headline(profile) == "Данные: 2 записи с 01.10.2024 по 30.09.2026"
+
+
 def test_facts_without_dates(db) -> None:
     db.execute("CREATE TABLE plain AS SELECT 1 AS id")
     profile = profile_table(db, "plain")
@@ -465,6 +481,10 @@ def test_profile_rows(db) -> None:
         "ЧТО ЭТО",
         "Что это такое?",
         "что тут есть?",
+        "Что в таблице есть",
+        "что у меня в данных?",
+        "Что тут есть?",
+        "О чём эти данные?",
     ],
 )
 def test_overview_questions(question: str) -> None:

@@ -381,9 +381,7 @@ async def test_no_chart_is_ignored_when_dashboard_is_requested(db) -> None:
     agent = agent_with(db, planner)
     raw_events = [
         event
-        async for event in agent.run(
-            ChatRequest(session_id="s1", question="Выручка по регионам")
-        )
+        async for event in agent.run(ChatRequest(session_id="s1", question="Выручка по регионам"))
     ]
     events = [event for event in raw_events if event["type"] != "progress"]
     assert [event["type"] for event in events] == ["text", "chart", "dashboard", "done"]

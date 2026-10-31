@@ -141,13 +141,20 @@ _NUMERIC = {
 }
 
 
+# NULL в строках и фактах для модели: «None» она приписывала соседней строке.
+NULL_VALUE = "без значения"
+
+
 def insight_facts(db: DuckDBManager, table: str, shown: int) -> str:
     """Число строк и итоги числовых колонок результата — посчитанные SQL, а не LLM.
 
     У минимума и максимума подписана строка, где они достигаются (первая
     нечисловая колонка: период, регион, id; у сезонности — номер месяца):
     «лучший месяц» читается из фактов, а не поиском по строкам. Колонка с
-    одним значением во всех строках (p_value тренда) — само значение.
+    одним значением во всех строках (p_value тренда) — само значение. Строка
+    без подписи (NULL — например, продажи без магазина) подписана «без
+    значения»: arg_max пропускает её и отдал бы подпись другой строки к
+    чужому максимуму.
     """
     columns = db.query(f"DESCRIBE {identifier(table)}")
     numeric = [
@@ -168,9 +175,15 @@ def insight_facts(db: DuckDBManager, table: str, shown: int) -> str:
             f"MAX({column}) AS hi{i}",
         ]
         if label is not None:
+            named = f"FILTER (WHERE {identifier(label)} IS NOT NULL)"
             metrics += [
-                f"arg_min({identifier(label)}, {column}) AS at_lo{i}",
-                f"arg_max({identifier(label)}, {column}) AS at_hi{i}",
+                f"arg_min_null({identifier(label)}, {column}) AS at_lo{i}",
+                f"arg_max_null({identifier(label)}, {column}) AS at_hi{i}",
+                # arg_min/arg_max пропускают NULL в подписи — это лучшие подписанные строки.
+                f"MIN({column}) {named} AS named_lo{i}",
+                f"MAX({column}) {named} AS named_hi{i}",
+                f"arg_min({identifier(label)}, {column}) AS named_at_lo{i}",
+                f"arg_max({identifier(label)}, {column}) AS named_at_hi{i}",
             ]
     row = db.query(f"SELECT {', '.join(metrics)} FROM {identifier(table)}")[0]
     lines = [f"- строк в результате: {row['n']} (показано модели: {min(row['n'], shown)})"]
@@ -180,8 +193,8 @@ def insight_facts(db: DuckDBManager, table: str, shown: int) -> str:
             continue
         low, high = f"мин {row[f'lo{i}']}", f"макс {row[f'hi{i}']}"
         if label is not None and row["n"] > 1:
-            low += f" ({label} = {format_value(row[f'at_lo{i}'])})"
-            high += f" ({label} = {format_value(row[f'at_hi{i}'])})"
+            low += _extreme_label(row, label, "lo", i, "мин")
+            high += _extreme_label(row, label, "hi", i, "макс")
         lines.append(
             f"- {name}: сумма {row[f's{i}']}, среднее {_round(row[f'a{i}'])}, {low}, {high}"
         )
@@ -202,6 +215,46 @@ def plan_columns(steps: list[ResearchStep], columns: list[str]) -> list[str]:
         for name in columns
         if any(re.search(rf"(?<!\w){re.escape(name)}(?!\w)", text, re.IGNORECASE) for text in texts)
     ]
+
+
+# Номер периода года в выражении шага: EXTRACT(WEEK FROM d), date_part('month', d), week(d).
+_PERIOD_OF_YEAR = re.compile(
+    r"extract\s*\(\s*(week|isoweek|month|quarter|doy|dayofyear)\s+from"
+    r"|date_part\s*\(\s*'(week|isoweek|month|quarter|doy|dayofyear)'"
+    r"|\b(week|weekofyear|isoweek|month|quarter|dayofyear)\s*\(",
+    re.IGNORECASE,
+)
+_PERIOD_UNITS = {
+    "week": ("недели", "неделя"),
+    "isoweek": ("недели", "неделя"),
+    "weekofyear": ("недели", "неделя"),
+    "month": ("месяца", "месяц"),
+    "quarter": ("квартала", "квартал"),
+    "doy": ("дня", "день"),
+    "dayofyear": ("дня", "день"),
+}
+
+
+def period_number_facts(steps: list[ResearchStep]) -> list[str]:
+    """Шаги, которые берут номер недели/месяца года: строка результата — все годы вместе.
+
+    «Неделя 4» с SUM — сумма 4-х недель 2025 и 2026 годов, а MIN/MAX даты группы
+    растягиваются на год: без факта модель называет её конкретной неделей.
+    """
+    lines = []
+    for number, step in enumerate(steps, 1):
+        for text in _strings([step.arguments, step.columns]):
+            found = _PERIOD_OF_YEAR.search(text)
+            if found is None:
+                continue
+            unit, noun = _PERIOD_UNITS[next(group for group in found.groups() if group).lower()]
+            lines.append(
+                f"- шаг {number} берёт номер {unit} года: строка результата объединяет этот "
+                f"номер всех лет данных — это не конкретная {noun} с датами одного года, а итог "
+                f"за все годы вместе; так и скажи, даты одного периода не называй"
+            )
+            break
+    return lines
 
 
 def _strings(value: object) -> list[str]:
@@ -332,12 +385,27 @@ def _period_end(start: date, interval: str) -> date:
     return date(start.year + years, month + 1, 1) - timedelta(days=1)
 
 
+def _extreme_label(row: dict, label: str, side: str, i: int, word: str) -> str:
+    """Подпись экстремума; у строки без подписи — ещё и лучшая подписанная строка.
+
+    Иначе при максимуме у NULL (продажи без магазина) лучший магазин модель
+    угадывает по первым показанным строкам.
+    """
+    text = f" ({label} = {format_value(row[f'at_{side}{i}'])})"
+    if row[f"at_{side}{i}"] is None and row[f"named_at_{side}{i}"] is not None:
+        named = format_value(row[f"named_at_{side}{i}"])
+        text += f"; среди строк с {label} {word} {row[f'named_{side}{i}']} ({label} = {named})"
+    return text
+
+
 def format_value(value: object) -> str:
     """Значение для промпта: даты в ISO, полночь без времени, дробные — до сотых.
 
     Дробные меньше 1 по модулю — 3 значащие цифры: доля 0.0259 не становится
     «0.03», p-value 1e-30 — «0.0».
     """
+    if value is None:
+        return NULL_VALUE
     if isinstance(value, datetime):
         return (
             value.date().isoformat()

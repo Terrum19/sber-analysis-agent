@@ -683,9 +683,15 @@ def test_overview_describes_linked_tables_by_priority(shop) -> None:
     assert events[-1]["type"] == "done"
 
 
-def test_overview_of_a_lone_table_stays_as_before(two_sources) -> None:
+def test_overview_of_a_lone_table_has_a_column_table(two_sources) -> None:
     SessionMemory("lone").set_table("weather")
     events, _ = ask(two_sources, SpyPlanner(llm=SummaryLLM()), "lone", "Что передо мной?")
+    # Обзор одной таблицы — текст-описание и таблица колонок.
+    assert [event["type"] for event in events if event["type"] != "progress"] == [
+        "text",
+        "chart",
+        "done",
+    ]
     chart = next(event["data"] for event in events if event["type"] == "chart")
     assert chart["caption"] == "Колонки таблицы"
 

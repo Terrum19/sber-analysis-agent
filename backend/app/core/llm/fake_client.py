@@ -94,6 +94,9 @@ class FakeLLM:
             )
         if schema.__name__ in ("DashboardIdeas", "DashboardOutline", "ChartChoices"):
             return schema.model_validate(_fake_dashboard(schema.__name__, user))
+        if schema.__name__ == "AnswerChart":
+            # Без выбора шага: график ответа строит эвристика select_chart.
+            return schema(step_id=None, chart_type="table", x=None, y=None, color=None, limit=None)
         if schema.__name__ == "Insight":
             return schema(
                 headline="Исследование завершено",

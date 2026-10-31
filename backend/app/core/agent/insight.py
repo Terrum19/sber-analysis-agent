@@ -17,6 +17,7 @@ from app.core.agent.quality_fixes import (
     format_rows,
     format_value,
     insight_facts,
+    period_number_facts,
     plan_facts,
     ungrounded_numbers,
 )
@@ -198,7 +199,9 @@ class InsightGenerator:
         if not settings.agent_quality_fixes:
             prompt = INSIGHT_SUMMARY.format(question=question, result=materials.shown)
             prompt += describe_supporting(materials.supporting, materials.tested)
-            return await self.llm.complete_structured("Ты — аналитик.", prompt + materials.notes, Insight)
+            return await self.llm.complete_structured(
+                "Ты — аналитик.", prompt + materials.notes, Insight
+            )
         prompt = INSIGHT_SUMMARY.format(question=question, result=materials.shown)
         prompt += describe_supporting(materials.supporting, materials.tested)
         prompt += materials.notes
@@ -254,7 +257,10 @@ class InsightGenerator:
         )
         if settings.agent_quality_fixes:
             prompt += INSIGHT_RULES.format(
-                plan=materials.plan, facts=materials.facts, shape=materials.shape, hints=materials.hints
+                plan=materials.plan,
+                facts=materials.facts,
+                shape=materials.shape,
+                hints=materials.hints,
             )
 
         chunks: list[str] = []
@@ -340,7 +346,9 @@ class InsightGenerator:
         ]
         notes = describe_memories(memories or [])
         tested = has_p_value([result, *(rows for _, rows in supporting_records)])
-        extra = "\n".join(f"- {purpose}:\n{format_rows(rows)}" for purpose, rows in supporting_records)
+        extra = "\n".join(
+            f"- {purpose}:\n{format_rows(rows)}" for purpose, rows in supporting_records
+        )
         if not settings.agent_quality_fixes:
             extra_plain = "\n".join(f"- {purpose}: {rows}" for purpose, rows in supporting_records)
             return _Materials(
@@ -368,9 +376,14 @@ class InsightGenerator:
             more, hints = plan_facts(db, steps or [], inputs or {}, profile, columns)
         except Exception:
             logger.warning("инсайт: факты по плану не посчитались", exc_info=True)
-            more = []
+            more, hints = [], []
+        more += period_number_facts(steps or [])
         facts_str = "\n".join(line for line in [facts, *more] if line) or "нет"
-        rows = (await db.query_async(f"SELECT COUNT(*) AS n FROM {identifier(result_table)}"))[0]["n"]
+        # Одна строка — ответ числом; ряд — лидер, минимум или число строк, а не одно значение.
+        # Число строк всей таблицы, а не показанных модели (их не больше SHOWN_ROWS).
+        rows = (await db.query_async(f"SELECT COUNT(*) AS n FROM {identifier(result_table)}"))[0][
+            "n"
+        ]
         shape = SINGLE_ROW if rows <= 1 else MANY_ROWS.format(rows=rows)
         shape = RESULT_SHAPES.get(result_tool, shape)
         plan = describe_steps(steps or [])

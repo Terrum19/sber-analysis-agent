@@ -114,14 +114,15 @@ def rename_table(
 def brief(db: DuckDBManager, profile: TableProfile, warnings: list[str]) -> TableBrief:
     memory = ProfileMemory(db)
     table = profile.table
+    summary = overview.cached_summary(db, table)
     return TableBrief.from_profile(
         profile,
         memory.load_description_status(table),
         warnings,
-        overview.cached_summary(db, table),
+        summary,
         memory.load_display_name(table),
         memory.load_enrichment(table),
-    )
+    ).model_copy(update={"summary_pending": summary is None and ingest.summarizing(table)})
 
 
 def too_large(name: str) -> HTTPException:

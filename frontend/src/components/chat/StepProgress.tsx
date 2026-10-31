@@ -5,6 +5,7 @@
  * SQL-шаги, перепланирование, инсайт) с таймерами и активной стадией.
  * В свёрнутом виде: «N шагов · X с» (или «N из M плиток · X с»), при раскрытии видна детальная разбивка по времени.
  * В режиме дашборда (#224) вместо плоского списка — плитки плана, у каждой свой статус и свои шаги.
+ * Остановленный или упавший ход с готовыми шагами — кнопка «Продолжить».
  */
 import { useEffect, useState } from "react";
 import Icon from "@/components/ui/Icon";
@@ -377,7 +378,25 @@ function TileRow({ tile, steps }: { tile: TileState; steps: StepState[] }) {
   );
 }
 
-export default function StepProgress({ progress }: { progress: TurnProgress }) {
+/** «Прервано» и кнопка «Продолжить» под прогрессом остановленного хода. */
+function ResumeBar({ onResume, lost }: { onResume: () => void; lost?: boolean }) {
+  const t = useT();
+  return (
+    <div className="mt-1.5 flex flex-wrap items-center gap-2">
+      <span className="text-[12px] text-warn">{t(lost ? "progress.lost" : "progress.interrupted")}</span>
+      <button
+        onClick={onResume}
+        title={t("progress.resumeHint")}
+        className="inline-flex items-center gap-1 rounded-md border border-graphite-700 px-2 py-0.5 text-[12px] text-graphite-200 hover:border-graphite-500 hover:text-graphite-50"
+      >
+        <Icon name="refresh" size={12} />
+        {t("progress.resume")}
+      </button>
+    </div>
+  );
+}
+
+export default function StepProgress({ progress, onResume }: { progress: TurnProgress; onResume?: () => void }) {
   const t = useT();
   const locale = useUiStore((s) => s.locale);
   const [expanded, setExpanded] = useState(false);
@@ -430,16 +449,23 @@ export default function StepProgress({ progress }: { progress: TurnProgress }) {
 
   if (finished && !expanded) {
     return (
-      <button
-        type="button"
-        onClick={() => setExpanded(true)}
-        className="inline-flex items-center gap-1.5 text-[12px] text-graphite-500 hover:text-graphite-300 hover:bg-graphite-800/40 px-1.5 py-0.5 -ml-1.5 rounded transition-all"
-      >
-        <Icon name="chevronRight" size={12} className="shrink-0" />
-        <span>{collapsedLabel}</span>
-        <span>·</span>
-        <span className="tabular-nums">{t("progress.seconds", { s: seconds(totalElapsed) })}</span>
-      </button>
+      <div>
+        <button
+          type="button"
+          onClick={() => setExpanded(true)}
+          className="inline-flex items-center gap-1.5 text-[12px] text-graphite-500 hover:text-graphite-300 hover:bg-graphite-800/40 px-1.5 py-0.5 -ml-1.5 rounded transition-all"
+        >
+          <Icon name="chevronRight" size={12} className="shrink-0" />
+          <span>{collapsedLabel}</span>
+          <span>·</span>
+          <span className="tabular-nums">{t("progress.seconds", { s: seconds(totalElapsed) })}</span>
+        </button>
+        {onResume ? (
+          <ResumeBar onResume={onResume} lost={progress.lost} />
+        ) : (
+          progress.lost && <div className="mt-1 text-[12px] text-warn">{t("progress.lost")}</div>
+        )}
+      </div>
     );
   }
 
@@ -543,6 +569,7 @@ export default function StepProgress({ progress }: { progress: TurnProgress }) {
       )}
 
       {quiet && <div className="mt-1 text-warn">{t("progress.stillWorking")}</div>}
+      {finished && onResume && <ResumeBar onResume={onResume} lost={progress.lost} />}
     </div>
   );
 }

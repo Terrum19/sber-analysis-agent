@@ -1,5 +1,7 @@
 """Дашборд по кнопке (#224): план плиток, шаги плиток, выбор графика LLM, идеи."""
 
+import asyncio
+
 import duckdb
 import pytest
 from fastapi.testclient import TestClient
@@ -220,6 +222,50 @@ async def test_chart_choice_failure_uses_intent(db) -> None:
     assert built == {"Регионы": "bar", "Выручка": "kpi", "По дням": "line"}
 
 
+class Thinking(ScriptedLLM):
+    """Выбор графика: первые slow вызовов дольше срока, дальше — ответы по очереди."""
+
+    def __init__(self, slow: int, **answers: list) -> None:
+        super().__init__(**answers)
+        self.slow = slow
+        self.chart_calls = 0
+
+    async def complete_structured(self, system: str, user: str, schema: type) -> object:
+        if schema is ChartChoices:
+            self.chart_calls += 1
+            if self.chart_calls <= self.slow:
+                await asyncio.sleep(10)
+        return await super().complete_structured(system, user, schema)
+
+
+async def test_slow_chart_choice_is_asked_again(db, monkeypatch) -> None:
+    monkeypatch.setattr(settings, "chart_choice_timeout_s", 0.05)
+    llm = Thinking(
+        1,
+        DashboardOutline=[OUTLINE],
+        ChartChoices=[
+            choices(
+                ChartChoice(tile_id=0, chart_type="bar", x="region", y="revenue"),
+                ChartChoice(tile_id=1, chart_type="kpi"),
+                ChartChoice(tile_id=2, chart_type="bar", x="day", y="revenue"),
+            )
+        ],
+    )
+    events = await collect(agent(db, llm), question="Продажи по дням")
+    built = {tile.title: tile.spec["usermeta"]["chart_type"] for tile in saved(events).tiles}
+    assert llm.chart_calls == 2
+    assert built["По дням"] == "bar"
+
+
+async def test_chart_choice_silent_twice_uses_intent(db, monkeypatch) -> None:
+    monkeypatch.setattr(settings, "chart_choice_timeout_s", 0.05)
+    llm = Thinking(2, DashboardOutline=[OUTLINE])
+    events = await collect(agent(db, llm), question="Продажи по дням")
+    built = {tile.title: tile.spec["usermeta"]["chart_type"] for tile in saved(events).tiles}
+    assert llm.chart_calls == 2
+    assert built == {"Регионы": "bar", "Выручка": "kpi", "По дням": "line"}
+
+
 async def test_vague_request_takes_the_first_idea(db) -> None:
     llm = ScriptedLLM(
         DashboardOutline=[DashboardOutline(enough_info=False), OUTLINE],
@@ -405,12 +451,25 @@ async def test_disconnect_cancels_the_build(db) -> None:
     await stream.aclose()
 
 
-def test_focus_puts_chosen_columns_first() -> None:
-    rows = [{"a": 1, "b": "x", "c": 2}]
-    choice = ChartChoice(tile_id=0, x="b", y="c", color="missing")
-    assert list(dashboard_turn._focus(rows, choice)[0]) == ["b", "c", "a"]
-    assert dashboard_turn._focus([], choice) == []
-    assert dashboard_turn._rejection(choice, []) == "результат пуст"
+async def test_tile_is_drawn_by_the_chosen_columns(db) -> None:
+    llm = ScriptedLLM(
+        DashboardOutline=[OUTLINE],
+        ChartChoices=[
+            choices(
+                ChartChoice(tile_id=0, chart_type="bar", x="region", y="revenue", limit=2),
+                ChartChoice(tile_id=1, chart_type="kpi"),
+                ChartChoice(tile_id=2, chart_type="bar", x="day", y="revenue"),
+            )
+        ],
+    )
+    events = await collect(agent(db, llm), question="Продажи по регионам и дням")
+    tiles = {tile.title: tile for tile in saved(events).tiles}
+    regions = tiles["Регионы"]
+    # limit — топ-2 регионов по выручке в своей таблице: её и пересчитывают.
+    assert [row["region"] for row in regions.spec["data"]["values"]] == ["msk", "ekb"]
+    assert regions.result_table == regions.spec["usermeta"]["result_table"]
+    assert tiles["По дням"].spec["encoding"]["x"]["field"] == "day"
+    assert "limit — только для bar" in llm.prompts["ChartChoices"][0]
 
 
 def test_by_intent_falls_back_to_table() -> None:
@@ -766,6 +825,8 @@ async def test_retry_tells_the_model_what_was_wrong(db) -> None:
     events = await collect(agent(db, llm), question="Продажи", idea=idea)
     assert "ключ tiles пропущен или пуст" in llm.prompts["DashboardOutline"][1]
     assert "dashboard" in kinds(events)
+
+
 # --- Вариант rich_tiles: формула показателя и дополнительные показатели.
 
 
@@ -850,3 +911,62 @@ def test_tile_metric_fields_are_normalized() -> None:
     assert (tile.extra_metrics, tile.expression) == ([], None)
     odd = OutlineTile(title="t", question="q", extra_metrics=[{"agg": "mode", "metric": ""}])
     assert (odd.extra_metrics[0].agg, odd.extra_metrics[0].metric) == ("SUM", None)
+
+
+class StoppingPlanner(SqlPlanner):
+    """План плиток; на вопросе stop_at ход останавливается (кнопка «Стоп»)."""
+
+    def __init__(self, llm: ScriptedLLM, stop_at: str | None = None) -> None:
+        super().__init__(llm)
+        self.stop_at = stop_at
+        self.questions: list[str] = []
+
+    async def plan(self, question: str, context: dict) -> ResearchPlan:
+        if question == self.stop_at:
+            raise asyncio.CancelledError
+        self.questions.append(question)
+        return await super().plan(question, context)
+
+
+def stopping_agent(db, llm: ScriptedLLM, stop_at: str | None = None):
+    planner = StoppingPlanner(llm, stop_at)
+    planner.fix_step = _no_fix
+    orchestrator = AgentOrchestrator(
+        planner=planner, executor=SqlExecutor(db), insight_gen=NoInsight(), db=db
+    )
+    return orchestrator, planner
+
+
+async def test_stopped_dashboard_continues_without_rebuilding_ready_tiles(db) -> None:
+    orchestrator, _ = stopping_agent(
+        db, ScriptedLLM(DashboardOutline=[OUTLINE]), stop_at="Выручка по дням"
+    )
+    events: list[dict] = []
+    with pytest.raises(asyncio.CancelledError):
+        async for event in orchestrator.run(
+            ChatRequest(session_id="s1", mode="dashboard", question="Продажи")
+        ):
+            events.append(event)
+    turn_id = stages(events, "outline")[0]["turn_id"]
+    checkpoint = SessionMemory("s1")._state["turns"][-1]["checkpoint"]
+    assert checkpoint["title"] == "Продажи"
+    assert checkpoint["built"].keys() == {"0", "1"}
+
+    # План дашборда не запрашивается: в ScriptedLLM нет DashboardOutline.
+    llm = ScriptedLLM(ChartChoices=[RuntimeError("timeout")])
+    orchestrator, planner = stopping_agent(db, llm)
+    events = await collect(orchestrator, question="", resume_turn=turn_id)
+
+    assert planner.questions == ["Выручка по дням", "Сломанная плитка"]
+    assert kinds(events) == ["dashboard_outline", "dashboard", "text", "done"]
+    assert [(tile["tile_id"], tile["status"]) for tile in stages(events, "tile")][:2] == [
+        (0, "finished"),
+        (1, "finished"),
+    ]
+    built = {tile.title: tile.spec["usermeta"]["chart_type"] for tile in saved(events).tiles}
+    assert built == {"Регионы": "bar", "Выручка": "kpi", "По дням": "line"}
+    text = next(event["data"] for event in events if event["type"] == "text")
+    assert any(detail.startswith("Регионы: ") for detail in text["details"])
+    turn = SessionMemory("s1")._state["turns"][-1]
+    assert turn["status"] == "ok"
+    assert "checkpoint" not in turn

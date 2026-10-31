@@ -220,9 +220,10 @@ class StepPlanner:
         logger.debug("    промпт=%r", prompt)
         substage("llm")
         plan = await self._ask(prompt, start, template, schema_override)
-        if not plan.steps and start == 0:
+        if not plan.steps and start == 0 and plan.route == "data" and not plan.remember:
             # Без размышлений модель отдаёт пустой план и на вопросы о данных
             # («что с выручкой каждый июль?»); второй шанс — один вызов.
+            # Вопрос о прошлом ответе (route=answer), обзор и «запомни» — не переспрашиваем.
             logger.warning("    план пустой, переспрос")
             substage("llm")
             plan = await self._ask(prompt + EMPTY_PLAN, start, template, schema_override)

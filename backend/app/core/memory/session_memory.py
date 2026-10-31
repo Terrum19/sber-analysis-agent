@@ -5,6 +5,12 @@
 закрывает его ответом и статусом (ok / failed / clarification). Ответ
 на уточнение продолжает тот же ход (``resume_turn``).
 
+Ход с шагами пишет чекпоинт (``save_checkpoint``) после каждого шага или
+плитки дашборда: план, выполненные шаги и их temp_result_vN. Ход,
+остановленный пользователем или упавший, по чекпоинту продолжается с места
+остановки (``resume_checkpoint``), а не считается заново. Успешный ход
+чекпоинт удаляет.
+
 В контекст планировщика идут последние ``settings.context_turns`` ходов
 любого статуса: вопрос и ответ, у успешных — ещё шаги с аргументами и
 колонки результата. Шаги упавших и прерванных уточнением ходов в контекст
@@ -305,6 +311,42 @@ class SessionMemory:
         self._open = True
         return True
 
+    @property
+    def question(self) -> str | None:
+        """Вопрос текущего хода (None — ход не начат)."""
+        return self._turn["question"] if self._turn is not None else None
+
+    def save_checkpoint(self, checkpoint: dict) -> None:
+        """Сохранить, докуда дошёл текущий ход: остановленный ход продолжится отсюда.
+
+        Пишется сразу вместе с шагами хода: остановка или падение процесса
+        до finish_turn их не теряет.
+        """
+        self._turn["checkpoint"] = checkpoint
+        self._persist()
+
+    def resume_checkpoint(self, turn_id: str) -> dict | None:
+        """Продолжить незавершённый ход с его чекпоинта; None — продолжать нечего.
+
+        Продолжается только ход, не закончившийся ответом (статус failed):
+        остановленный пользователем, оборванный или упавший.
+        """
+        turn = self._find(turn_id)
+        if turn is None or turn["status"] != "failed" or not turn.get("checkpoint"):
+            return None
+        self._turn = turn
+        self._open = True
+        return turn["checkpoint"]
+
+    def answered_turn(self, turn_id: str) -> dict | None:
+        """Ход, уже закончившийся ответом; None — такого нет или он не ответил.
+
+        Его ответ мог не дойти до фронта (страница перезагрузилась посреди
+        хода): «Продолжить» тогда отдаёт сохранённый ответ.
+        """
+        turn = self._find(turn_id)
+        return turn if turn is not None and turn["status"] == "ok" else None
+
     def _find(self, turn_id: str | None) -> dict | None:
         for turn in self._state["turns"]:
             if turn["turn_id"] == turn_id:
@@ -378,11 +420,22 @@ class SessionMemory:
         headline: str | None = None,
         result_table: str | None = None,
         result_columns: list[str] | None = None,
+        details: list[str] | None = None,
+        reason: str | None = None,
     ) -> None:
-        """Закрыть текущий ход ответом и статусом: ok, failed или clarification."""
+        """Закрыть текущий ход ответом и статусом: ok, failed или clarification.
+
+        details — пункты ответа под headline, reason — почему ход не дал ответа:
+        по ним агент потом объясняет вывод или неудачу. Ход с ответом продолжать
+        больше не нужно: его чекпоинт удаляется.
+        """
+        if status == "ok":
+            self._turn.pop("checkpoint", None)
         self._turn.update(
             status=status,
             headline=headline,
+            details=list(details or []),
+            reason=reason,
             result_table=result_table,
             result_columns=list(result_columns or []),
         )
@@ -410,6 +463,19 @@ class SessionMemory:
     def recent_turns(self) -> list[dict]:
         """Последние ``settings.context_turns`` ходов любого статуса, старые первыми."""
         return self._past_turns()[-settings.context_turns :] if settings.context_turns else []
+
+    def explained_turns(self) -> list[dict]:
+        """Ходы для пояснения прошлых ответов: последние ходы и ход, на который отвечает текущий.
+
+        Ход из reply_to старше окна последних ходов добавляется в начало;
+        у него и только у него ``focus`` — True.
+        """
+        reply_to = self._turn.get("reply_to") if self._turn is not None else None
+        turns = self.recent_turns()
+        if reply_to is not None and all(turn["turn_id"] != reply_to for turn in turns):
+            target = [turn for turn in self._past_turns() if turn["turn_id"] == reply_to]
+            turns = target + turns
+        return [{**turn, "focus": turn["turn_id"] == reply_to} for turn in turns]
 
     def find_turns(self, query: str | None = None, number: int | None = None) -> list[dict]:
         """Прошлые ходы для read_history: ход по номеру или поиск по вопросам и ответам.

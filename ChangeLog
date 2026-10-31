@@ -1,3 +1,287 @@
+2026-10-31  Alexander Yurits  <143354682+Terrum19@users.noreply.github.com>
+
+	Шапка PDF дашборда переносится только между частями.
+	* backend/app/core/export/pdf.py (PdfExporter): Пробелы внутри «База
+	данных: …», «Источник: …», «Всего плиток: N» — неразрывные: число плиток
+	отрывалось от подписи на следующую строку, и
+	test_export_dashboard_pdf_resolves_database_from_profile_memory падал.
+
+2026-10-31  Alexander Yurits  <143354682+Terrum19@users.noreply.github.com>
+
+	Неделя года — с датами; слабейшая неделя — не неполная крайняя.
+	* backend/app/core/tools/timeseries/seasonality.py (_week_dates): Новая.
+	У period=week колонка dates («19.01–25.01»): модель называла 4-ю неделю
+	«началом января».
+	* backend/app/core/llm/prompts/quality_rules.py (PLANNER_RULES):
+	«Какая неделя самая …» — sort_limit с limit=3: при limit=1 ответом была
+	неполная последняя неделя.  (RESULT_SHAPES): При двух периодах медиана
+	выбросов не показывает; неделю года называть датами из dates.
+	* backend/tests/unit/test_tools.py: Даты недели года.
+
+2026-10-30  Alexander Yurits  <143354682+Terrum19@users.noreply.github.com>
+
+	План без пустых аргументов, пустых планов и шагов не по той таблице
+	(из ветки test, без настроек провайдера: они остаются в test, a24f6d3).
+	* backend/app/models/research_step.py (ResearchStep, ResearchPlan):
+	В JSON-схеме обязательны tool, input, arguments, purpose и steps,
+	tool не null, template_id — только id шаблонов.
+	* backend/app/core/tools/base.py (BaseTool.signature): Обязательные
+	аргументы помечены «(обязательный)»: модель пропускала by у group_by.
+	* backend/app/core/llm/prompts/step_planner.py (STEP_PLANNER): Правило
+	обязательных аргументов; input указывать всегда, независимый расчёт —
+	"$source".  (EMPTY_PLAN): Новый.
+	* backend/app/core/agent/planner.py (StepPlanner.plan): Пустой план на
+	новый вопрос о данных переспрашивается один раз.
+	* backend/app/core/agent/orchestrator.py (AgentOrchestrator._from_source):
+	Новая.  (_run_step): Колонки из ошибки DuckDB нет в $prev, но она есть
+	в источнике — шаг повторяется на $source без вызова LLM.
+	* backend/app/core/data/overview.py (_OVERVIEW): «что это», «что это
+	такое» — обзор таблицы, а не планировщик.
+	* backend/tests/unit/test_plan_execution.py, test_planner.py,
+	test_tool_registry.py, test_overview.py: Тесты того же.
+
+	Обзор таблицы — для бизнес-пользователя, без технической таблицы колонок.
+	* backend/app/core/llm/prompts/schema_describe.py (SCHEMA_DESCRIBE): О чём
+	данные, что в них есть и что интересного посмотреть; поля по-русски по
+	смыслу, без имён колонок и типов.
+	* backend/app/core/data/overview.py (headline): Новая.  Название, объём и
+	период для человека.  (profile_rows, KIND_LABELS): Удалены.
+	(_OVERVIEW): «что в таблице есть», «что тут есть», «о чём эти данные».
+	* backend/app/models/research_step.py (ResearchPlan.route): Значение
+	overview.
+	* backend/app/core/llm/prompts/step_planner.py (STEP_PLANNER): Правило
+	маршрута overview.
+	* backend/app/core/agent/orchestrator.py (_overview): Без графика
+	колонок, заголовок — headline.  (_research, _turn): Маршрут overview
+	от планировщика.
+	* backend/app/core/llm/prompts/insight_summary.py (INSIGHT_SUMMARY)
+	* backend/app/core/llm/prompts/explainer.py (EXPLAINER): Поля по-русски,
+	без технических имён и функций.
+	* docs/architecture.md, docs/memory.md: Обзор таблицы.
+	* backend/tests/unit/test_overview.py, test_orchestrator_unit.py,
+	test_relations.py, tests/e2e/test_scenarios.py: Тесты того же.
+
+2026-10-29  Alexander Yurits  <143354682+Terrum19@users.noreply.github.com>
+
+	Пустой план — ответ словами; причина неудачного хода — в журнале.
+	* backend/app/core/agent/orchestrator.py (_research): Пустой план без
+	просьбы запомнить идёт в пояснение, а не в отказ «не удалось подобрать
+	инструменты».  (_turn): Причина уточнения и сбоя — в ход.
+	* backend/app/core/memory/session_memory.py (finish_turn): Хранит
+	reason.
+	* backend/app/core/agent/explainer.py (_columns): Новая.  Колонки
+	таблицы сессии.  (_describe_turn): Причина неудачного хода.
+	* backend/app/core/llm/prompts/explainer.py (EXPLAINER): Колонки,
+	причина неудачи, вопросы с новым расчётом.
+	* backend/tests/unit/test_orchestrator_unit.py: Пустой план отвечается
+	пояснением.
+	* backend/tests/unit/test_explain_turn.py: Тесты того же.
+
+2026-10-29  Alexander Yurits  <143354682+Terrum19@users.noreply.github.com>
+
+	Вопрос о прошлых ответах агента — ответ словами, без плана.
+	* backend/app/models/research_step.py (ResearchPlan.route): Новое
+	поле: data или answer; null и незнакомое значение — data.
+	* backend/app/core/llm/prompts/step_planner.py (STEP_PLANNER): Правило
+	и пример маршрута answer; вопросы к данным со словами «почему», «как»,
+	«объясни» — data.
+	* backend/app/core/agent/explainer.py: Новый.  Ответ по журналу ходов:
+	шаги с аргументами, строки после шага, ответ и начало результата;
+	число без опоры в журнале — один переспрос.
+	* backend/app/core/llm/prompts/explainer.py: Новый.  Промпт пояснения.
+	* backend/app/core/memory/session_memory.py (finish_turn): Хранит
+	details ответа.  (explained_turns): Новая.  Последние ходы и ход из
+	reply_to.
+	* backend/app/core/agent/orchestrator.py (_research): Маршрут answer
+	без шагов — пояснение; план с шагами выполняется.  (_turn): Ответ
+	пояснения без инсайта и графика; details ответа — в ход.
+	* scripts/eval.py (check_route): Новая.  Ключ expect.route.
+	* data/eval/explain/questions.yaml: Новый.  Набор-ловушки пояснений.
+	* docs/eval.md: Набор explain и ключ route.
+	* backend/tests/unit/test_explain_turn.py: Новый.
+	* backend/tests/unit/test_eval_runner.py: Тесты route.
+	График ответа выбирает агент по таблицам выполненных шагов (#224).
+	* backend/app/core/agent/chart_pick.py: Новый.  ChartPicker: один вызов
+	LLM по описанию таблиц шагов (кроме lookup) — шаг, вид, x, y, color,
+	limit; неподошедший выбор — один повтор с причиной, затем select_chart.
+	(ask_chart): Срок chart_choice_timeout_s на вызов, повтор, TimeoutError.
+	* backend/app/core/viz/chart_choice.py: Новый.  (rejection): Колонки есть
+	в таблице, вид подходит к данным.  (top_rows): Топ-N по y в новую
+	temp_result_vN.  (describe_columns, sample_rows): Описание для промпта.
+	* backend/app/models/chart_choice.py: Новый.  ChartPick, AnswerChart:
+	все поля обязательные, «нет» — null.
+	* backend/app/core/agent/orchestrator.py: Выбор графика параллельно с
+	инсайтом; без выбора — прежняя эвристика.
+	* backend/app/core/agent/dashboard_turn.py: Плитки — тот же rejection и
+	ask_chart; x, y, color, limit идут в спеку плитки.
+	* backend/app/core/viz/vega_spec_builder.py (build_vega_spec): Параметры
+	x, y, color; больше 12 категорий — лежащие столбцы по убыванию; color —
+	серии рядом (xOffset).  Колонки пишутся в usermeta.
+	* backend/app/core/viz/chart_selector.py (fits): Предел столбцов 50.
+	* backend/app/core/dashboards/recalculate.py (rebuild_spec): Колонки из
+	usermeta.  (respec): Новая.  Спека в другом виде по data.values.
+	* backend/app/api/routes/dashboards.py (tile_spec): Новый
+	POST /api/dashboards/tile-spec.
+	* backend/app/api/schemas/dashboard.py (TileSpecRequest): Новая.
+	* backend/app/core/llm/client.py: Срок llm_timeout_s на весь ответ, а не
+	на паузу между байтами: keep-alive OpenRouter держал запрос без конца.
+	* backend/app/config.py (chart_choice_timeout_s): Новая, 90 с.
+	* backend/app/core/llm/prompts/chart_selector.py (ANSWER_CHART, ANSWER_HINT)
+	(ANSWER_RETRY, CHART_STEP, CHART_KINDS): Новые.
+	* backend/app/core/llm/prompts/dashboard_builder.py (CHART_CHOICE): Виды
+	из CHART_KINDS, limit.
+	* frontend/src/lib/chartTypes.ts (withRebuiltChartType): Новая.  Смена
+	вида плитки пересобирает спеку на бэкенде: таблица больше не рисуется
+	полосами по ячейкам.
+	* frontend/src/store/sessionStore.ts (addTile): График из чата встаёт
+	на панель и при сохранённом дашборде.
+	* frontend/src/components/charts/ChartRenderer.tsx: Прокрутка по высоте.
+	* docs/visualization.md, docs/architecture.md, docs/prompts.md,
+	docs/repo_structure.md: Выбор графика агентом.
+	* backend/tests/unit/test_chart_pick.py, test_chart_choice.py: Новые.
+	Факты инсайта не приписывают итог пустой группы соседней строке.
+	* backend/app/core/agent/quality_fixes.py (insight_facts): Подпись
+	минимума и максимума — arg_min_null/arg_max_null: arg_max пропускал
+	строку с NULL в подписи и отдавал её максимум другой строке («2,14 млрд
+	у ПР-ТТ-06-01» вместо продаж без магазина).  (_extreme_label): Новая.
+	Экстремум у строки без подписи — рядом лучшая подписанная строка.
+	(format_value): NULL — «без значения».  (NULL_VALUE): Новая.
+	* backend/tests/unit/test_quality_fixes.py: Тесты того же.
+	Инсайт знает, что номер недели года объединяет все годы.
+	* backend/app/core/agent/quality_fixes.py (period_number_facts): Новая.
+	Шаг с EXTRACT(WEEK/MONTH …), date_part, week() — факт: строка результата —
+	этот номер всех лет вместе, а не конкретная неделя.  (_PERIOD_OF_YEAR)
+	(_PERIOD_UNITS, _strings): Новые.
+	* backend/app/core/agent/insight.py (InsightGenerator.generate): Факт —
+	к фактам результата.
+	* backend/tests/unit/test_quality_fixes.py,
+	backend/tests/unit/test_insight_generator.py: Тесты того же.
+
+2026-10-29  Alexander Yurits  <143354682+Terrum19@users.noreply.github.com>
+
+	Агент сам переходит к другим данным посреди сессии (#165).
+	* backend/app/core/data/relations.py (switch_table): Новая.  Вопрос
+	явно про другие, несвязанные данные — таблица, к которой перейти, или
+	уточнение по названиям; продолжение остаётся на таблице сессии.
+	(SWITCH_WORDS): Новая.  (choose_table): Группы и выбор — в _groups
+	и _pick.
+	* backend/app/core/agent/orchestrator.py (_turn): Переход проверяется
+	перед каждым вопросом, кроме идеи дашборда.  (_switch): Новая.
+	Сбой каталога — остаёмся.  (_table_event): Новая.  Событие table,
+	когда агент сам взял таблицу.
+	* backend/app/api/schemas/chat.py (ChatEvent): Событие table.
+	* frontend/src/types/chat.ts (TableEvent): Новый.
+	* frontend/src/store/sessionStore.ts (followAgentTable): Новая.
+	Таблица сессии меняется, лента остаётся той же.
+	* frontend/src/store/chatRunStore.ts: Событие table — «Беру данные
+	«…»» в ленте.
+	* frontend/src/i18n/dictionary.ts (chat.tableChosen): Новая.
+	* backend/tests/unit/test_relations.py: Тесты того же.
+	«Какая неделя самая слабая» — календарная неделя, «типичная неделя
+	года» — seasonality(period=week).
+	* backend/app/core/tools/timeseries/seasonality.py (SeasonalityArgs):
+	period=week — номер недели года ISO.  (_number): Неделя по календарю.
+	(SeasonalityTool.execute): Целые годы — по всему охвату, с неполными
+	краями: два года недель давали 103 полные недели и терялся год.
+	* backend/app/core/llm/prompts/quality_rules.py (PLANNER_RULES): «Какая
+	неделя / месяц / день самый …» — time_bucket и sort_limit; номер
+	недели года с SUM по годам — нет: планировщик складывал 2025 и 2026.
+	* backend/tests/unit/test_tools.py: Неделя года, четыре целых недели.
+
+2026-10-30  Alexander Yurits  <143354682+Terrum19@users.noreply.github.com>
+
+	Сезонность: пустой час или день — ноль, пик и минимум — по медиане (#215).
+	* backend/app/core/tools/timeseries/seasonality.py (SeasonalityTool.execute):
+	При SUM/COUNT час без записей в дне с данными и день без записей в
+	неделе с данными — ноль, а не пропуск: ночь в продажах HK была завышена
+	на 20 %.  Месяц и квартал без данных — по-прежнему пропуск.  Новая
+	колонка median.  (_ZERO_WINDOWS): Новая.
+	* backend/app/core/llm/prompts/quality_rules.py (RESULT_SHAPES): Пик,
+	минимум и разница — по median; другой пик по level — назвать выбросы.
+	* docs/repo_structure.md: Медиана в сезонности.
+	* backend/tests/unit/test_tools.py: Пустой час — ноль, медиана при
+	выбросе, AVG без нулей.
+
+2026-10-29  Alexander Yurits  <143354682+Terrum19@users.noreply.github.com>
+
+	Ответ агента не обрывается при уходе из чата; статус хода точкой у сессии.
+	* frontend/src/store/chatRunStore.ts: Новый.  Ход агента (стрим
+	/chat, в том числе в режиме дашборда) живёт вне ChatPanel и пишет в
+	ленту своей сессии, где бы ни был пользователь.  (startRun, stopRun)
+	(forgetRuns): Запуск, отмена, отмена при удалении сессии.  Собранный
+	дашборд открывается, только если пользователь всё ещё в этой сессии.
+	(chartTile): Перенесена из ChatPanel.  Пока идёт хоть один ход,
+	перезагрузка вкладки переспрашивает.
+	* frontend/src/store/sessionStore.ts (patchSession, sessionSnapshot):
+	Новые.  addMessage, updateMessage и др. принимают sessionId: фоновая
+	сессия пишется в свой кеш, канвас трогает только открытая.
+	(activeStreamingSessionId, setStreamingSessionId): Удалены.
+	* frontend/src/components/chat/ChatPanel.tsx: Стрим, повтор (с режимом
+	дашборда) и уточнение берутся из chatRunStore; размонтирование ход не
+	обрывает.
+	* frontend/src/components/layout/RunDot.tsx: Новый.  Жёлтая точка —
+	агент отвечает, синяя — ответ готов и не открыт, красная — ошибка.
+	* frontend/src/components/layout/LeftSidebar.tsx,
+	frontend/src/components/layout/TopHeader.tsx: Навигация, вкладки и
+	меню во время ответа больше не блокируются; точка статуса у сессии.
+	* frontend/src/i18n/dictionary.ts (sidebar.runRunning, sidebar.runDone)
+	(sidebar.runError): Новые.  (chat.cannotSwitchWhileGenerating): Удалён.
+	Самый слабый период в ответе — полный, а не неполный крайний.
+	* backend/app/core/llm/prompts/quality_rules.py (PARTIAL_HINT): На «какой
+	период самый слабый / сильный» headline — лучший из полных периодов,
+	неполный — оговоркой в details: модель называла неделю 28.09.2026
+	(3 дня) самой слабой и только добавляла, что она неполная.
+
+2026-10-28  Alexander Yurits  <143354682+Terrum19@users.noreply.github.com>
+
+	DuckDB не останавливает loop сервера (#189).
+	* backend/app/api/routes/chat.py (iterate_in_thread): Новая.  Ход
+	агента идёт в своём потоке и loop, loop сервера только пересылает
+	события: запрос DuckDB или ожидание db.lock, который держит загрузка
+	CSV, больше не останавливают пинги SSE, /health и другие запросы.
+	(chat): Импорт и создание оркестратора — в потоке хода.
+	* backend/app/core/tools/base.py (BaseTool.arun): SQL тула — через
+	asyncio.to_thread: события шагов уходят, пока идёт запрос.
+	* backend/app/api/routes/datasources.py (describe_tables): Синхронная,
+	в потоке пула со своим loop.
+	* backend/tests/unit/test_chat_api.py, backend/tests/unit/test_tools.py:
+	Тесты того же.
+
+2026-10-22  mb6ockatf  <smokenmirror@tutamail.com>
+
+	Smoke-тест чистого запуска в CI (#79).
+	* scripts/smoke.sh: Новый.  Ждёт /health, загружает demo_events.csv,
+	создаёт сессию над tables[0] из ответа, читает SSE чата до done
+	(error, обрыв или таймаут — провал), проверяет GET / фронтенда.
+	* docker-compose.ci.yml: Новый.  USE_FAKE_LLM=true для backend.
+	* .github/workflows/smoke.yml: Новый.  Compose без профиля с
+	docker-compose.ci.yml и smoke.sh на каждый PR и push в dev/main.
+	* backend/app/core/llm/fake_client.py (FakeLLM.complete_structured):
+	План агрегирует по category или, если её нет в промпте, по user_id,
+	чтобы фейковый план работал и на demo_events.
+	* Makefile (smoke): Новая цель.
+	* CONTRIBUTING.md: Smoke-тест чистого запуска.
+
+	Ollama с моделью в docker compose (#78).
+	* docker-compose.yml (ollama-cpu, ollama-gpu): Новые сервисы Ollama
+	(ollama/ollama:0.35.1) в профилях cpu и gpu, оба с сетевым именем
+	ollama и общим томом ollama-models.  Healthcheck ждёт, пока модель
+	LLM_MODEL появится в ollama list; start_period — час, на первое
+	скачивание модели.  OLLAMA_CONTEXT_LENGTH по умолчанию 16384 (#102).
+	(backend): LLM_BASE_URL — http://ollama:11434/v1, LLM_MODEL — тот же,
+	что у Ollama; ждёт healthy Ollama из активного профиля, без профиля
+	стартует без неё.
+	* docker-compose.release.yml: Те же сервисы Ollama для запуска из
+	архива релиза.
+	* infra/ollama/entrypoint.sh: Новый.  Сервер Ollama, скачивание
+	LLM_MODEL и EMBED_MODEL, если их ещё нет в томе, корректная остановка.
+	* Makefile (up): Профиль cpu.  (up-gpu): Новая цель: профиль gpu и
+	модель LLM_MODEL_GPU.  (down): Останавливает и сервисы Ollama.
+	* .env.example: LLM_BASE_URL и LLM_MODEL заполнены; новые
+	LLM_MODEL_GPU, OLLAMA_CONTEXT_LENGTH, EMBED_MODEL, OLLAMA_PORT.
+	* README.md: Запуск в Docker.
+	* docs/repo_structure.md: infra/ollama, make up-gpu.
+
 2026-10-30  Dmitriy Yakushonok  <dmitriyyakushonok@yandex.ru>
 
 	Экспорт дашбордов и исследований в PDF и Excel (E-02, E-03, F-10).
@@ -780,7 +1064,7 @@
 	и ветвей для owns_result, record_step, record_chart и set_table.
 	* docs/repo_structure.md, docs/roadmap.md, docs/architecture.md:
 	Актуализация документации по экспорту и конвейеру генерации PDF.
-  
+
 2026-10-28  mb6ockatf  <smokenmirror@tutamail.com>
 
 	Логи агента: ход целиком в docker compose logs (#202).
@@ -1177,6 +1461,7 @@
 	* backend/tests/unit/test_step_chaining.py: Тест шага select_columns
 	с arguments.columns.
 	* docs/architecture.md: То же.
+
 2026-10-26  Alexander Yurits  <143354682+Terrum19@users.noreply.github.com>
 
 	Очистка CSV: исправления по ревью #161.
@@ -2120,6 +2405,7 @@
 	экземпляром приложения, видна в другом; список, лимит, сброс
 	datasource_id, временные представления, список таблиц.
 	* docs/memory.md: Метаданные и список сессий.
+
 2026-10-22  mb6ockatf  <smokenmirror@tutamail.com>
 
 	Очистка устаревших temp_result_vN (#55).
@@ -2199,6 +2485,7 @@
 	* backend/tests: Тесты оркестратора выбирают таблицу raw явно через
 	сессию; API-тесты подменяют get_db.
 	* docs/memory.md, docs/visualization.md: Таблица сессии.
+
 2026-10-20  Alexander Yurits  <terruwork@gmail.com>
 
 	Отклонённое исправление шага больше не подменяет ошибку шага (#39).

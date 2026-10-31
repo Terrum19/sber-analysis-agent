@@ -72,6 +72,10 @@ class Settings(BaseSettings):
     # С размышлениями часть провайдеров ломает json_schema-план; None — выбирает
     # OpenRouter. Ollama/vLLM параметр не понимают.
     llm_provider: str | None = None
+    # Срок одного вызова модели на выбор графика (ответ в чате, плитки
+    # дашборда), с. Не уложилась — повторный вызов, и снова нет — вид без LLM,
+    # а не ход на двадцать минут (OpenRouter держит запрос пробелами).
+    chart_choice_timeout_s: float = 90
     # Исправления качества плана и инсайта (app/core/agent/quality_fixes.py).
     agent_quality_fixes: bool = True
     # Стриминг финального вывода: text {chunk} в SSE вместо одного text {headline}.

@@ -14,7 +14,13 @@ import { useUiStore } from "@/store/uiStore";
 import { translate } from "@/i18n/useT";
 import type { MessageKey } from "@/i18n/dictionary";
 import type { DashboardTile } from "@/types/dashboard";
-import { applyOutline, applyProgress, type DashboardEvent, type TurnProgress } from "@/types/chat";
+import {
+  applyOutline,
+  applyProgress,
+  hasFinishedWork,
+  type DashboardEvent,
+  type TurnProgress,
+} from "@/types/chat";
 
 export interface ChatRun {
   status: "running" | "done" | "error";
@@ -114,6 +120,8 @@ export function startRun(
     recoveryResponse?: string;
     replyTo: string | null;
     dashboard?: DashboardRequest;
+    /** «Продолжить» остановленный ход: turn_id из его прогресса, вопрос пользователя уже в ленте. */
+    resumeTurn?: string;
     /** Дашборд хода собран: открыть его вкладку, если пользователь всё ещё в этой сессии. */
     onDashboardBuilt?: (dashboardId: string) => void;
   },
@@ -141,7 +149,8 @@ export function startRun(
   // Прогресс хода живёт в отдельном сообщении над ответом
   let progress: TurnProgress | null = null;
   const progressId = `msg-progress-${Date.now().toString(36)}`;
-  const finishProgress = (failed = false) => {
+  // interrupted — ход остановлен, упал или оборвался: если часть готова, его можно продолжить
+  const finishProgress = (interrupted = false) => {
     if (progress && progress.finished_at === undefined) {
       const now = Date.now();
       const timeline = progress.timeline?.map((item) => {
@@ -150,10 +159,16 @@ export function startRun(
           ...item,
           finished_at: now,
           elapsed_ms: Math.max(1, now - item.started_at),
-          status: failed ? ("failed" as const) : ("finished" as const),
+          status: interrupted ? ("failed" as const) : ("finished" as const),
         };
       });
-      progress = { ...progress, finished_at: now, ...(timeline ? { timeline } : {}) };
+      const resumable = interrupted && Boolean(progress.turn_id) && hasFinishedWork(progress);
+      progress = {
+        ...progress,
+        finished_at: now,
+        ...(timeline ? { timeline } : {}),
+        ...(resumable ? { resumable } : {}),
+      };
       store.updateMessage(progressId, { progress }, sessionId);
     }
   };
@@ -214,7 +229,7 @@ export function startRun(
     (event) => {
       if (event.type === "done") {
         streamFinished = true;
-        finishProgress();
+        finishProgress(streamHadError);
         saveAnswerMeta(event.data?.turn_id);
         if (builtDashboardId && isViewing(sessionId)) options.onDashboardBuilt?.(builtDashboardId);
       } else if (event.type === "dashboard_outline") {
@@ -333,7 +348,7 @@ export function startRun(
       }
     },
     (error) => {
-      finishProgress(true);
+      finishProgress(Boolean(error) || !streamFinished || streamHadError);
       if (error) {
         fail();
         addMessage({
@@ -361,7 +376,7 @@ export function startRun(
         unseen: !cancelled && !isViewing(sessionId),
       });
     },
-    { recoveryResponse, replyTo: options.replyTo, dashboard },
+    { recoveryResponse, replyTo: options.replyTo, dashboard, resumeTurn: options.resumeTurn },
   );
   stoppers.set(sessionId, () => {
     finishProgress(true);

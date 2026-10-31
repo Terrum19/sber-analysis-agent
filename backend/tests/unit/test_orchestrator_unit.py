@@ -31,6 +31,15 @@ class FakeInsightGen:
         )
 
 
+class FakeExplainer:
+    """МOCK пояснения по журналу ходов."""
+
+    async def answer(self, question, memory):
+        from app.models.insight import Insight
+
+        return Insight(headline="Мок пояснение")
+
+
 class FakePlanner:
     """МOCK планировщика."""
 
@@ -63,6 +72,7 @@ def orchestrator():
         executor=FakeExecutor(),
         insight_gen=FakeInsightGen(),
         db=db,
+        explainer=FakeExplainer(),
     )
 
 
@@ -186,7 +196,12 @@ def test_progress_events_precede_the_answer(orchestrator):
         if event["type"] == "progress":
             ProgressPayload(**event["data"])
     progress = [event["data"] for event in events if event["type"] == "progress"]
-    assert progress[0] == {"stage": "planning", "status": "started", "tables": ["raw"]}
+    assert progress[0] == {
+        "stage": "planning",
+        "status": "started",
+        "tables": ["raw"],
+        "turn_id": events[-1]["data"]["turn_id"],
+    }
     planned = ProgressPayload(**progress[1]).planned_steps
     assert planned is not None and planned[0].tool == "aggregate"
     assert progress[1]["stage"] == "planning"
@@ -259,7 +274,7 @@ def test_failed_step_reports_progress(orchestrator):
     assert failed["elapsed_ms"] >= 1
 
 
-def test_empty_plan_reports_zero_steps(orchestrator):
+def test_empty_plan_is_answered_in_words(orchestrator):
     from app.models.research_step import ResearchPlan
 
     class EmptyPlanner:
@@ -269,8 +284,16 @@ def test_empty_plan_reports_zero_steps(orchestrator):
     orchestrator.planner = EmptyPlanner()
     events = collect(orchestrator, "s1")
 
-    assert stages(events) == ["planning:started", "planning:finished", "clarification_needed"]
+    # Пустой план — не отказ «не удалось подобрать инструменты», а пояснение.
+    assert stages(events) == [
+        "planning:started",
+        "planning:finished",
+        "insight:started",
+        "text",
+        "done",
+    ]
     assert events[1]["data"]["total_steps"] == 0
+    assert events[3]["data"]["headline"] == "Мок пояснение"
 
 
 def test_planner_failure_ends_the_stream(orchestrator):
@@ -452,16 +475,16 @@ def test_done_counts_truncated_prompts(orchestrator):
 
 
 def test_clarification_counts_truncated_prompts(orchestrator):
+    from app.core.agent.planner import PlanInvalid
     from app.core.llm.budget import report_truncation
-    from app.models.research_step import ResearchPlan
 
-    class TruncatedEmptyPlanner:
+    class TruncatedInvalidPlanner:
         async def plan(self, question, context):
             # Обрезанный промпт: модель без списка тулов не построила план — ход кончится уточнением.
             report_truncation(12_000, 4096, "упёрся в контекст")
-            return ResearchPlan(steps=[], final_viz="bar", dashboard_requested=False)
+            raise PlanInvalid(["шаг 0: инструмента nope нет"])
 
-    orchestrator.planner = TruncatedEmptyPlanner()
+    orchestrator.planner = TruncatedInvalidPlanner()
     events = collect(orchestrator, "s1")
 
     assert events[-1]["type"] == "clarification_needed"
@@ -515,8 +538,9 @@ def test_overview_question_skips_planner(orchestrator):
     events = ask(orchestrator, "Что передо мной?")
 
     assert stages(events) == OVERVIEW_STAGES
+    # Заголовок — название от LLM и объём, без служебного имени таблицы и колонок.
     assert events[2]["data"] == {
-        "headline": "Обзор датасета «raw»",
+        "headline": "Числа: 2 записи",
         "details": [
             "**Размер и период:** 2 строки, 1 колонка, колонок с датами нет — период не определить",
             "**Что это:** Передо мной числа.",
@@ -530,6 +554,25 @@ def test_overview_question_skips_planner(orchestrator):
     assert stages(ask(orchestrator, "Что перед тобой?")) == OVERVIEW_STAGES
     assert llm.calls == 1
     assert SessionMemory("s1").last_chart() is None
+
+
+def test_overview_route_from_the_planner(orchestrator):
+    from app.models.research_step import ResearchPlan
+
+    class OverviewPlanner:
+        def __init__(self, llm) -> None:
+            self.llm = llm
+
+        async def plan(self, question, context):
+            return ResearchPlan(route="overview")
+
+    orchestrator.planner = OverviewPlanner(OverviewLLM())
+    # Формулировку шаблоны не узнают — обзор выбирает планировщик.
+    events = ask(orchestrator, "Расскажи вкратце, с чем мне тут работать")
+
+    assert stages(events)[-len(OVERVIEW_STAGES) :] == OVERVIEW_STAGES
+    text = next(event for event in events if event["type"] == "text")
+    assert text["data"]["headline"] == "Числа: 2 записи"
 
 
 def test_overview_without_llm_still_answers(orchestrator):

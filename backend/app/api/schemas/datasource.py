@@ -39,6 +39,8 @@ class TableBrief(BaseModel):
     period_to: str | None = None
     description_status: Literal["none", "pending", "ready", "failed"] = "none"
     summary: str | None = None
+    # Описание строится в фоне: фронт перезапрашивает сводку только пока True.
+    summary_pending: bool = False
     warnings: list[str] = Field(default_factory=list)
     entities: list[str] = Field(default_factory=list)
     metrics: list[str] = Field(default_factory=list)

@@ -157,7 +157,14 @@ def run_sales(db: DuckDBManager, name: str, table: str = "sales", **arguments) -
 def test_seasonality_sums_each_month_then_averages_years(sales: DuckDBManager) -> None:
     rows = run_sales(sales, "seasonality", date_column="sold_at", metric_column="amount")
     assert len(rows) == 12
-    assert rows[0] == {"month": 1, "level": 93.0, "periods": 2, "incomplete": 0, "skipped": 0}
+    assert rows[0] == {
+        "month": 1,
+        "level": 93.0,
+        "median": 93.0,
+        "periods": 2,
+        "incomplete": 0,
+        "skipped": 0,
+    }
     assert rows[11]["level"] == 279.0
 
 
@@ -317,6 +324,82 @@ def test_seasonality_skips_a_month_without_data() -> None:
     assert (by_month[6]["level"], by_month[6]["periods"]) == (300.0, 3)
     assert (by_month[7]["level"], by_month[7]["periods"]) == (310.0, 2)
     manager.close()
+
+
+@pytest.fixture
+def nights() -> DuckDBManager:
+    """Четыре недели: продажи по 10 в 12:00 каждый день, ночью (3:00) — только по понедельникам."""
+    manager = DuckDBManager(":memory:")
+    manager.execute(
+        "CREATE TABLE nights AS "
+        "SELECT day::TIMESTAMP + INTERVAL 12 HOUR AS sold_at, 10.0::DOUBLE AS amount "
+        "FROM range(DATE '2024-01-01', DATE '2024-01-29', INTERVAL 1 DAY) AS days(day) "
+        "UNION ALL SELECT day::TIMESTAMP + INTERVAL 3 HOUR, 7.0 "
+        "FROM range(DATE '2024-01-01', DATE '2024-01-29', INTERVAL 7 DAY) AS days(day)"
+    )
+    yield manager
+    manager.close()
+
+
+def test_seasonality_counts_an_empty_hour_as_zero(nights: DuckDBManager) -> None:
+    # Час без продаж — 0 ₽: иначе ночь — среднее только по понедельникам, 7 вместо 0,7.
+    # 01.01 3:00 — сверх целых суток (skipped), остаются 27 ночей с 02.01 по 28.01.
+    rows = run_sales(
+        nights,
+        "seasonality",
+        "nights",
+        date_column="sold_at",
+        metric_column="amount",
+        period="hour",
+    )
+    by_hour = {row["hour"]: row for row in rows}
+    assert by_hour[3]["periods"] == 27
+    assert by_hour[3]["level"] == pytest.approx(21.0 / 27)
+    assert by_hour[3]["median"] == 0.0
+    assert by_hour[12]["level"] == 10.0
+
+
+def test_seasonality_median_exposes_an_outlier_day(nights: DuckDBManager) -> None:
+    # Среды 03.01, 10.01, 17.01, 24.01: четыре недели охвата — четыре целых недели.
+    nights.execute("INSERT INTO nights VALUES (TIMESTAMP '2024-01-10 12:00', 1000.0)")
+    rows = run_sales(
+        nights,
+        "seasonality",
+        "nights",
+        date_column="sold_at",
+        metric_column="amount",
+        period="dayofweek",
+    )
+    wednesday = rows[2]
+    assert wednesday["dayofweek"] == 3
+    assert wednesday["level"] == 260.0
+    assert wednesday["median"] == 10.0
+
+
+def test_seasonality_by_week_of_year_averages_years(sales: DuckDBManager) -> None:
+    # Первая и последняя недели неполные, но два года охвата — два целых года, а не один.
+    rows = run_sales(
+        sales, "seasonality", date_column="sold_at", metric_column="amount", period="week"
+    )
+    by_week = {row["week"]: row for row in rows}
+    assert sum(row["skipped"] for row in rows) == 0
+    assert (by_week[10]["level"], by_week[10]["periods"]) == (21.0, 2)
+    # Даты — последнего учтённого года: 10-я неделя 2024 года — 04.03–10.03.
+    assert by_week[10]["dates"] == "04.03–10.03"
+
+
+def test_seasonality_average_keeps_empty_periods_out(nights: DuckDBManager) -> None:
+    rows = run_sales(
+        nights,
+        "seasonality",
+        "nights",
+        date_column="sold_at",
+        metric_column="amount",
+        period="hour",
+        function="AVG",
+    )
+    by_hour = {row["hour"]: row for row in rows}
+    assert (by_hour[3]["level"], by_hour[3]["periods"]) == (7.0, 3)
 
 
 def test_trend_reads_text_days_as_days_not_months() -> None:

@@ -15,7 +15,7 @@ REGIONS = [{"region": "msk", "revenue": 12.5}, {"region": "spb", "revenue": 4.0}
 SAMPLES = [{"amount": float(value)} for value in range(25)]
 PAIRS = [{"price": value, "demand": 100 - value} for value in range(5)]
 ORDERS = [{"order_id": value, "price": value % 7 * 10.0, "qty": value % 3} for value in range(25)]
-MANY_CATEGORIES = [{"sku": f"sku-{value}", "sold": value} for value in range(50)]
+MANY_CATEGORIES = [{"sku": f"sku-{value}", "sold": value} for value in range(60)]
 
 
 def test_explicit_request_wins_without_records() -> None:

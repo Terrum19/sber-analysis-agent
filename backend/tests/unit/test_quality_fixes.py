@@ -3,7 +3,7 @@
 import pytest
 
 from app.config import settings
-from app.core.agent.quality_fixes import insight_facts
+from app.core.agent.quality_fixes import insight_facts, period_number_facts
 from app.core.data.duckdb_manager import DuckDBManager
 from app.core.tools.registry import tool_registry
 from app.models.research_step import ResearchStep
@@ -86,9 +86,7 @@ def test_ungrounded_numbers_accepts_dd_mm_dates() -> None:
     from app.core.agent.quality_fixes import ungrounded_numbers
 
     sources = "период: 2006-09-01 – 2011-11-22; потребление 120.5"
-    assert ungrounded_numbers("К 01.09 потребление 120.5, к 22.11 — 130.7", sources) == [
-        "130.7"
-    ]
+    assert ungrounded_numbers("К 01.09 потребление 120.5, к 22.11 — 130.7", sources) == ["130.7"]
 
 
 def test_time_bucket_avg_without_metric_fails_validation() -> None:
@@ -181,6 +179,27 @@ def test_insight_facts_name_the_rows_of_min_and_max(db) -> None:
     facts = insight_facts(db, "m", shown=50)
     assert "мин 19362 (period = 2024-08-01)" in facts
     assert "макс 26484 (period = 2024-01-01)" in facts
+
+
+def test_insight_facts_label_the_null_row_of_max(db) -> None:
+    # Продажи без магазина (онлайн) — самая большая группа: arg_max пропускал
+    # её и подписывал этот максимум следующим по величине магазином.
+    db.query(
+        "CREATE TABLE stores AS SELECT * FROM (VALUES "
+        "(NULL, 2138), ('ПР-ТТ-06-01', 35), ('ПР-ТТ-30-01', 1)) AS v(store, revenue)"
+    )
+    facts = insight_facts(db, "stores", shown=50)
+    assert (
+        "макс 2138 (store = без значения); среди строк с store макс 35 (store = ПР-ТТ-06-01)"
+        in facts
+    )
+    assert "мин 1 (store = ПР-ТТ-30-01)," in facts
+
+
+def test_null_cells_are_shown_as_no_value() -> None:
+    from app.core.agent.quality_fixes import format_rows
+
+    assert format_rows([{"store": None, "revenue": 2138}]) == "store | revenue\nбез значения | 2138"
 
 
 def test_single_row_facts_have_no_labels(db) -> None:
@@ -403,3 +422,39 @@ def test_partial_period_fact_needs_period_in_result(db) -> None:
     assert "- период 2026-09-28 неполный (данные по 2026-09-30)" in lines
     assert PARTIAL_HINT in hints
     assert not any("неполный" in line for line in plan_facts(db, steps, {}, profile, ["n"])[0])
+
+
+@pytest.mark.parametrize(
+    ("expression", "unit"),
+    [
+        ('EXTRACT(WEEK FROM "Дата")::INT', "недели"),
+        ("date_part('month', sold_at)", "месяца"),
+        ("week(sold_at)", "недели"),
+        ("extract(quarter from sold_at)", "квартала"),
+    ],
+)
+def test_period_number_of_the_year_is_named_as_all_years(expression: str, unit: str) -> None:
+    from app.models.research_step import ResearchStep
+
+    step = ResearchStep(
+        step_id=0, tool="create_column", arguments={"new_column": "n", "expression": expression}
+    )
+    [fact] = period_number_facts([step])
+    assert f"шаг 1 берёт номер {unit} года" in fact
+    assert "итог за все годы вместе" in fact
+
+
+def test_calendar_periods_are_not_period_numbers() -> None:
+    from app.models.research_step import ResearchStep
+
+    steps = [
+        ResearchStep(
+            step_id=0, tool="time_bucket", arguments={"date_column": "d", "interval": "week"}
+        ),
+        ResearchStep(
+            step_id=1,
+            tool="create_column",
+            arguments={"new_column": "m", "expression": "date_trunc('month', d)"},
+        ),
+    ]
+    assert period_number_facts(steps) == []

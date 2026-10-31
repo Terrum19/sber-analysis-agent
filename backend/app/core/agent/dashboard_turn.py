@@ -5,11 +5,17 @@
 без LLM (core/dashboards/quick_tiles.py). Сложная плитка, или простая, чьи
 поля не подошли к таблице или чьи шаги упали, — обычный планировщик по её
 вопросу. Плитки идут по очереди (локальная модель держит один запрос за
-раз), упавшая пропускается. Вид графика
+раз), упавшая пропускается. Вид графика и колонки осей
 выбирает LLM одним вызовом на все плитки, когда их результаты готовы;
-выбор проверяется fits, неподошедший — один повтор, дальше вид по intent.
+выбор проверяется по данным (viz/chart_choice.py), неподошедший — один
+повтор, дальше вид по intent.
 
 Каждый этап шлёт событие: фронт показывает, что происходит, на каждом шаге.
+
+После плана и каждой построенной плитки ход пишет чекпоинт: план и таблицы
+готовых плиток. Остановленный или упавший ход продолжается с него
+(``resume``): план не составляется заново, готовые плитки не пересчитываются,
+строятся только остальные.
 
 Сейчас сравниваем три варианта сборки плиток с одним контрактом событий:
 - plan_per_tile (feature/B-07-dashboard-buttons) — на каждую плитку свой
@@ -30,7 +36,9 @@ from collections.abc import AsyncIterator
 
 from app.api.schemas.chat import ChatRequest, DashboardPayload
 from app.core.agent.budget import BudgetExceeded
+from app.core.agent.chart_pick import ask_chart
 from app.core.agent.orchestrator import (
+    DASHBOARD_CHECKPOINT,
     NO_TABLE_MESSAGE,
     AgentOrchestrator,
     ClarificationNeeded,
@@ -42,6 +50,7 @@ from app.core.agent.orchestrator import (
     _ignore,
     _progress_event,
     _require_steps,
+    existing_results,
 )
 from app.core.dashboards.explain import explain_tile
 from app.core.dashboards.generator import DashboardGenerator
@@ -50,6 +59,7 @@ from app.core.dashboards.models import DashboardTile
 from app.core.dashboards.quick_tiles import quick_plan
 from app.core.data import overview
 from app.core.llm.client import LLMClient
+from app.core.llm.prompts.chart_selector import CHART_KINDS
 from app.core.llm.prompts.dashboard_builder import (
     CHART_CHOICE,
     CHART_RETRY,
@@ -63,13 +73,13 @@ from app.core.llm.prompts.dashboard_builder import (
 )
 from app.core.llm.prompts.system_analyst import SYSTEM_ANALYST
 from app.core.memory.session_memory import SessionMemory
+from app.core.viz.chart_choice import describe_columns, rejection, sample_rows, top_rows
 from app.core.viz.chart_selector import fits, is_single_number
 from app.core.viz.vega_spec_builder import (
     SPEC_ROW_LIMIT,
     build_vega_spec,
     column_aliases,
     infer_field_types,
-    to_json_value,
 )
 from app.models.dashboard_plan import (
     MAX_TILES,
@@ -80,6 +90,7 @@ from app.models.dashboard_plan import (
     DashboardOutline,
     OutlineTile,
 )
+from app.models.research_step import ResearchStep
 
 logger = logging.getLogger(__name__)
 
@@ -90,8 +101,6 @@ DASHBOARD_VARIANT = "rich_tiles"
 TILE_STEP_IDS = 100
 # Меньше плиток — это уже не дашборд.
 MIN_BUILT_TILES = 2
-# Строк результата в промпте выбора графика.
-CHART_SAMPLE_ROWS = 10
 
 # Выбор графика LLM не удался или не подошёл — вид по тому, что плитка показывает.
 INTENT_CHARTS = {
@@ -122,10 +131,15 @@ class DashboardTurn:
         self.db = agent.db
         self.llm = getattr(agent.planner, "llm", None) or LLMClient()
 
-    async def run(self, memory: SessionMemory, request: ChatRequest) -> AsyncIterator[dict]:
-        """События хода до done; сборка идёт задачей, её события отдаются сразу."""
+    async def run(
+        self, memory: SessionMemory, request: ChatRequest, resume: dict | None = None
+    ) -> AsyncIterator[dict]:
+        """События хода до done; сборка идёт задачей, её события отдаются сразу.
+
+        resume — чекпоинт остановленного хода: сборка продолжается с него.
+        """
         events: asyncio.Queue[dict | None] = asyncio.Queue()
-        task = asyncio.create_task(self._build(memory, request, events.put_nowait))
+        task = asyncio.create_task(self._build(memory, request, events.put_nowait, resume))
         task.add_done_callback(lambda _: events.put_nowait(None))
         try:
             while (event := await events.get()) is not None:
@@ -147,7 +161,9 @@ class DashboardTurn:
             memory.finish_turn("ok", headline=headline)
         yield _done(memory.turn_id)
 
-    async def _build(self, memory: SessionMemory, request: ChatRequest, emit: Emit) -> str | None:
+    async def _build(
+        self, memory: SessionMemory, request: ChatRequest, emit: Emit, resume: dict | None = None
+    ) -> str | None:
         """Собрать дашборд; None — ошибка уже отправлена событием error."""
         table = memory.table
         if table is None:
@@ -161,14 +177,30 @@ class DashboardTurn:
                 },
             }
         )
-        described = describe_table(self.db, table, request.question)
         kinds = {column.name: column.kind for column in overview.passport(self.db, table).columns}
         logger.info("дашборд: вариант=%s", DASHBOARD_VARIANT)
 
-        emit(_progress_event("outline", "started"))
+        emit(_progress_event("outline", "started", turn_id=memory.turn_id))
         started_at = time.perf_counter()
-        outline = await self._outline_for(request, table, described, emit)
-        tiles = outline.tiles[:MAX_TILES]
+        # Готовые плитки: таблица результата и выполненные шаги.
+        done: dict[int, tuple[str, list[ResearchStep]]] = {}
+        if resume is None:
+            described = describe_table(self.db, table, request.question)
+            outline = await self._outline_for(request, table, described, emit)
+            tiles = outline.tiles[:MAX_TILES]
+            title = outline.title.strip() or DASHBOARD_TITLE
+        else:
+            tiles = [OutlineTile.model_validate(tile) for tile in resume["tiles"]]
+            title = resume["title"]
+            saved = {int(key): tile for key, tile in resume["built"].items()}
+            kept = existing_results(
+                self.db, {key: tile["result_table"] for key, tile in saved.items()}
+            )
+            done = {
+                key: (table_name, [ResearchStep.model_validate(s) for s in saved[key]["steps"]])
+                for key, table_name in kept.items()
+            }
+            logger.info("дашборд продолжен: готовы плитки %s из %d", sorted(done), len(tiles))
         emit(
             _progress_event(
                 "outline",
@@ -177,7 +209,6 @@ class DashboardTurn:
                 elapsed_ms=_elapsed_ms(started_at),
             )
         )
-        title = outline.title.strip() or DASHBOARD_TITLE
         emit(
             {
                 "type": "dashboard_outline",
@@ -191,16 +222,33 @@ class DashboardTurn:
             }
         )
 
+        def checkpoint() -> None:
+            memory.save_checkpoint(
+                {
+                    "kind": DASHBOARD_CHECKPOINT,
+                    "title": title,
+                    "tiles": [tile.model_dump(mode="json") for tile in tiles],
+                    "built": {
+                        str(tile_id): {
+                            "result_table": result,
+                            "steps": [step.model_dump(mode="json") for step in steps],
+                        }
+                        for tile_id, (result, steps) in done.items()
+                    },
+                }
+            )
+
+        checkpoint()
         # По одной: локальная модель всё равно обрабатывает запросы последовательно
-        executions = [
-            await self._tile(memory, tile_id, tile, kinds, emit)
-            for tile_id, tile in enumerate(tiles)
-        ]
-        built = {
-            tile_id: (tiles[tile_id], execution.result_table)
-            for tile_id, execution in enumerate(executions)
-            if execution is not None
-        }
+        for tile_id, tile in enumerate(tiles):
+            if tile_id in done:
+                emit(_progress_event("tile", "finished", tile_id=tile_id, purpose=tile.title))
+                continue
+            execution = await self._tile(memory, tile_id, tile, kinds, emit)
+            if execution is not None:
+                done[tile_id] = (execution.result_table, execution.steps)
+                checkpoint()
+        built = {tile_id: (tiles[tile_id], done[tile_id][0]) for tile_id in sorted(done)}
         # Одна плитка — не полноценный дашборд, но если модель спланировала
         # только её, собираем одну, а не теряем уже посчитанный результат.
         required = max(1, min(MIN_BUILT_TILES, len(tiles)))
@@ -223,9 +271,18 @@ class DashboardTurn:
         dashboard_tiles = []
         for tile_id, (tile, result) in built.items():
             choice = choices[tile_id]
-            data = _focus(records[tile_id], choice)
+            data = records[tile_id]
+            if (shown := top_rows(self.db, result, choice)) != result:
+                result, data = shown, self.db.to_records(shown, limit=SPEC_ROW_LIMIT)
             spec = build_vega_spec(
-                choice.chart_type, result, data=data, titles=titles, title=tile.title
+                choice.chart_type,
+                result,
+                data=data,
+                titles=titles,
+                title=tile.title,
+                x=choice.x,
+                y=choice.y,
+                color=choice.color,
             )
             dashboard_tiles.append(
                 DashboardTile(
@@ -252,7 +309,7 @@ class DashboardTurn:
             details_note = ""
         headline = f"Дашборд «{title}» готов: плиток {len(built)}. Что и как посчитано:"
         details = [
-            f"{tile.title}: {explain_tile(executions[tile_id].steps, titles, records[tile_id])}."
+            f"{tile.title}: {explain_tile(done[tile_id][1], titles, records[tile_id])}."
             for tile_id, (tile, _) in built.items()
         ]
         if details_note:
@@ -386,7 +443,12 @@ class DashboardTurn:
                 logger.info("    плитка %d %r: шаги из полей плана", tile_id, tile.title)
                 try:
                     execution = await self.agent._execute_plan(
-                        memory, quick, memory.table, tile.question, emit=tile_emit
+                        memory,
+                        quick,
+                        memory.table,
+                        tile.question,
+                        emit=tile_emit,
+                        checkpoint=False,
                     )
                 except Exception:
                     logger.exception("    плитка %d: шаги из полей упали, планировщик", tile_id)
@@ -409,10 +471,16 @@ class DashboardTurn:
                     tile_emit,
                     allow_empty_remember=False,
                     tile_id=tile_id,
+                    turn_id=memory.turn_id,
                 )
                 _require_steps(plan)
                 execution = await self.agent._execute_plan(
-                    memory, plan, memory.table, tile.question, emit=tile_emit
+                    memory,
+                    plan,
+                    memory.table,
+                    tile.question,
+                    emit=tile_emit,
+                    checkpoint=False,
                 )
         except Exception as exc:
             if isinstance(exc, ClarificationNeeded):
@@ -462,6 +530,7 @@ class DashboardTurn:
                 else ""
             )
             prompt = CHART_CHOICE.format(
+                kinds=CHART_KINDS,
                 tiles="\n".join(
                     _describe_tile(tile_id, tile, records[tile_id])
                     for tile_id, (tile, _) in pending.items()
@@ -469,7 +538,10 @@ class DashboardTurn:
                 retry=retry,
             )
             try:
-                answer = await self.llm.complete_structured(SYSTEM_ANALYST, prompt, ChartChoices)
+                answer = await ask_chart(self.llm, prompt, ChartChoices)
+            except TimeoutError:
+                logger.warning("    выбор графика: модель не ответила и на повтор — вид по intent")
+                break
             except Exception:
                 logger.exception("    выбор графика: модель не ответила")
                 break
@@ -477,7 +549,7 @@ class DashboardTurn:
             for choice in answer.charts:
                 if choice.tile_id not in pending:
                     continue
-                why = _rejection(choice, records[choice.tile_id])
+                why = rejection(choice, records[choice.tile_id])
                 if why is None:
                     chosen[choice.tile_id] = choice
                     rejected.pop(choice.tile_id, None)
@@ -499,43 +571,14 @@ def _idea_request(idea: DashboardIdea) -> str:
 
 
 def _describe_tile(tile_id: int, tile: OutlineTile, records: list[dict]) -> str:
-    types = infer_field_types(records)
-    columns = ", ".join(
-        f"{column} ({kind}, уникальных {len({repr(row.get(column)) for row in records})})"
-        for column, kind in types.items()
-    )
-    sample = [
-        {key: to_json_value(value) for key, value in row.items()}
-        for row in records[:CHART_SAMPLE_ROWS]
-    ]
     return CHART_TILE.format(
         tile_id=tile_id,
         title=tile.title,
         intent=tile.intent,
         rows=len(records),
-        columns=columns,
-        sample=sample,
+        columns=describe_columns(records),
+        sample=sample_rows(records),
     )
-
-
-def _rejection(choice: ChartChoice, records: list[dict]) -> str | None:
-    """Почему выбор не подходит к строкам результата; None — подходит."""
-    if not records:
-        return "результат пуст"
-    known = set(records[0])
-    for name in (choice.x, choice.y, choice.color):
-        if name is not None and name not in known:
-            return f"колонки {name!r} нет в результате"
-    if choice.chart_type == "kpi":
-        return None if is_single_number(records) else "kpi — только когда результат одно число"
-    data = _focus(records, choice)
-    types = infer_field_types(data)
-    column = (choice.y or choice.x) if choice.chart_type == "histogram" else None
-    if column is not None and types.get(column) != "quantitative":
-        column = None
-    if fits(choice.chart_type, data, types, column):
-        return None
-    return f"{choice.chart_type} не подходит к {len(records)} строкам с колонками {list(types)}"
 
 
 def _by_intent(tile_id: int, tile: OutlineTile, records: list[dict]) -> ChartChoice:
@@ -546,16 +589,3 @@ def _by_intent(tile_id: int, tile: OutlineTile, records: list[dict]) -> ChartCho
     if records and fits(chart_type, records, types):
         return ChartChoice(tile_id=tile_id, chart_type=chart_type, reason="по intent")
     return ChartChoice(tile_id=tile_id, chart_type="table", reason="ничего не подошло")
-
-
-def _focus(records: list[dict], choice: ChartChoice) -> list[dict]:
-    """Колонки x, y, color — первыми: построитель спеки берёт первые категорию и число."""
-    if not records:
-        return records
-    first = [
-        name
-        for name in dict.fromkeys((choice.x, choice.y, choice.color))
-        if name is not None and name in records[0]
-    ]
-    order = [*first, *(column for column in records[0] if column not in first)]
-    return [{column: row.get(column) for column in order} for row in records]

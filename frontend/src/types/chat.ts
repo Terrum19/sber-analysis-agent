@@ -155,6 +155,8 @@ export interface ProgressPayload {
   planned_steps?: PlannedStepSummary[];
   /** Плитка дашборда, к которой относится шаг или статус. */
   tile_id?: number;
+  /** Ход: приходит в начале planning и outline, по нему ход продолжают после остановки. */
+  turn_id?: string;
 }
 
 export interface ProgressEvent {
@@ -245,6 +247,40 @@ export interface TurnProgress {
   tiles?: TileState[];
   /** Агент создаёт и проверяет новый инструмент (toolgen). */
   toolgen?: boolean;
+  /** Ход на бэкенде (из progress): по нему «Продолжить» остановленный ход. */
+  turn_id?: string;
+  /** Ход остановлен или упал, но часть шагов или плиток готова: его можно продолжить. */
+  resumable?: boolean;
+  /** Стрим хода оборвался вместе со страницей (перезагрузка): ответ до ленты не дошёл. */
+  lost?: boolean;
+}
+
+/** Готов хотя бы один шаг или плитка: остановленный ход есть с чего продолжать. */
+export function hasFinishedWork(progress: TurnProgress): boolean {
+  return (
+    progress.steps.some((step) => step.status === "finished") ||
+    (progress.tiles ?? []).some((tile) => tile.status === "finished")
+  );
+}
+
+/**
+ * Прогресс хода, чей стрим оборвался вместе со страницей (перезагрузка, закрытая
+ * вкладка): ход закончен, а не «работает» вечно. Бэкенд мог его и доделать, и
+ * прервать — «Продолжить» отдаст готовый ответ или досчитает ход, поэтому кнопка
+ * есть у любого хода с turn_id.
+ */
+export function closeInterrupted(progress: TurnProgress): TurnProgress {
+  if (progress.finished_at !== undefined) return progress;
+  const resumable = Boolean(progress.turn_id);
+  return {
+    ...progress,
+    planning: false,
+    outlining: false,
+    stage: undefined,
+    finished_at: progress.last_event_at ?? progress.started_at,
+    lost: true,
+    ...(resumable ? { resumable } : {}),
+  };
 }
 
 /** Новая стадия в хронологии: status меняется при закрытии. */
@@ -269,6 +305,7 @@ export function applyProgress(progress: TurnProgress, event: ProgressPayload): T
   const timeline = progress.timeline ? [...progress.timeline] : [];
   const steps = [...progress.steps];
   const next: TurnProgress = { ...progress, steps, timeline, last_event_at: now };
+  if (event.turn_id) next.turn_id = event.turn_id;
 
   /** Закрыть открытые стадии. Возвращает новый массив: объекты из прошлого
    *  состояния не мутируются (важно для memo и DevTools). */

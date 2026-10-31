@@ -4,8 +4,10 @@ describe_dataset() собирает из паспорта короткий пр�
 вызывает LLM, только если промпт изменился с прошлого раза: отпечаток
 промпта хранится рядом с описанием в _meta.table_passport. Поменялись
 профиль, названия колонок или сам промпт — поменяется и отпечаток.
-Факты (строки, колонки, период) и таблица колонок строятся из профиля
-без LLM, поэтому числа в ответе точные.
+Факты (строки, колонки, период) и заголовок обзора (headline) строятся из
+профиля без LLM, поэтому числа в ответе точные. Описание — для
+бизнес-пользователя: о чём данные и что в них можно посмотреть, без имён
+колонок и типов.
 
 Тот же вызов даёт и название таблицы для пользователя (display_name):
 LLM отвечает JSON DatasetDescription. Не разобрался JSON — описание
@@ -66,8 +68,10 @@ KIND_LABELS = {
     "identifier": "код",
     "other": "другое",
 }
+
 COLUMN_WORDS = ("колонка", "колонки", "колонок")
 ROW_WORDS = ("строка", "строки", "строк")
+RECORD_WORDS = ("запись", "записи", "записей")
 NOTE_WORDS = ("замечание", "замечания", "замечаний")
 
 _NOTE = re.compile(
@@ -84,7 +88,10 @@ _OVERVIEW = re.compile(
             r"что (?:это )?передо мной",
             r"что (?:это(?: такое)?|(?:здесь|тут)(?: есть| лежит)?)",
             rf"что (?:это )?за {_DATA}",
-            rf"что (?:есть |лежит |содержится )?в {_DATA}",
+            rf"что (?:у меня |тут |здесь )?(?:есть |лежит |содержится )?в {_DATA}",
+            rf"что (?:в|у) {_DATA}(?: есть| лежит| содержится)?",
+            r"что (?:тут|здесь|там|у меня)(?: есть| лежит| за данные)?",
+            rf"о ч[её]м (?:{_DATA}|они)",
             rf"что содерж\w* {_DATA}",
             rf"(?:опиши|описание|расскажи (?:о|об|про)) {_DATA}",
             rf"за какой период(?: (?:собраны )?(?:они|{_DATA}))?",
@@ -174,6 +181,23 @@ def facts(profile: TableProfile) -> str:
 def facts_line(profile: TableProfile) -> str:
     """Строка «Размер и период» без имени таблицы: имя уходит в headline обзора."""
     return f"**Размер и период:** {facts(profile).removeprefix(f'{profile.table}: ')}"
+
+
+def headline(profile: TableProfile, name: str | None = None) -> str:
+    """Заголовок обзора для пользователя: «Продажи товаров: 2 008 записей с 01.10.2024 по …».
+
+    Без служебного имени таблицы, числа колонок и имени колонки дат: они в
+    facts() для промптов и подсказок, а человеку нужны объём и период.
+    """
+    text = f"{name or 'Данные'}: {plural(profile.row_count, RECORD_WORDS)}"
+    temporal = profile.temporal_column()
+    if temporal is None or temporal.min_date is None:
+        return text
+    return f"{text} с {_day(temporal.min_date)} по {_day(temporal.max_date)}"
+
+
+def _day(value: object) -> str:
+    return value.strftime("%d.%m.%Y") if hasattr(value, "strftime") else str(value)
 
 
 def family_key(column: ColumnStats) -> tuple[str | None, str, str]:

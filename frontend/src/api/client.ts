@@ -363,6 +363,7 @@ export interface DashboardRequest {
  * onClose — один раз, когда поток закончился, оборвался или был отменён.
  * replyTo — turn_id из события done: вопрос продолжает конкретный прошлый ход (#166).
  * dashboard — ход строит дашборд (mode: "dashboard", #224).
+ * resumeTurn — turn_id остановленного хода: бэкенд продолжает его с чекпоинта.
  */
 export function streamChat(
   sessionId: string,
@@ -370,7 +371,7 @@ export function streamChat(
   onEvent: (event: ChatStreamEvent) => void,
   onClose?: (error?: string) => void,
   optionsOrRecoveryResponse?:
-    | { recoveryResponse?: string; replyTo?: string | null; dashboard?: DashboardRequest }
+    | { recoveryResponse?: string; replyTo?: string | null; dashboard?: DashboardRequest; resumeTurn?: string }
     | string,
 ): () => void {
   const options =
@@ -396,6 +397,7 @@ export function streamChat(
           reply_to: options?.replyTo ?? null,
           mode: options?.dashboard ? "dashboard" : "chat",
           idea: options?.dashboard?.idea ?? null,
+          resume_turn: options?.resumeTurn ?? null,
         }),
         signal: controller.signal,
       });
@@ -609,6 +611,23 @@ export async function recalculateDashboard(id: string): Promise<DashboardConfig>
   } catch (err) {
     throw toApiError(err);
   }
+}
+
+/**
+ * Спека плитки в другом виде по её же данным (data.values): бэкенд строит её
+ * тем же построителем, что и график ответа. Без SQL и LLM, дашборд не нужен.
+ */
+export async function rebuildTileSpec(
+  spec: Record<string, unknown>,
+  chartType: string,
+): Promise<Record<string, unknown>> {
+  const res = await fetch(`${API}/dashboards/tile-spec`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ spec, chart_type: chartType }),
+  });
+  if (!res.ok) throw await parseApiError(res);
+  return await res.json();
 }
 
 /** Выгрузка артефактов (Excel / PDF). */

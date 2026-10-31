@@ -40,7 +40,12 @@ import MarkdownContent from "@/components/chat/MarkdownContent";
 import { useLlmStatus } from "@/hooks/useLlmStatus";
 import { useT } from "@/i18n/useT";
 import { getDatasetQuestions } from "@/lib/datasetQuestions";
-import { RECOVERY_SKIP_STEP, type DashboardEvent, type DashboardIdea } from "@/types/chat";
+import {
+  RECOVERY_SKIP_STEP,
+  type DashboardEvent,
+  type DashboardIdea,
+  type TurnProgress,
+} from "@/types/chat";
 
 /** Сколько раз подряд просить новые варианты дашборда, если все прежние уже использованы. */
 const MAX_IDEA_ROUNDS = 3;
@@ -428,6 +433,30 @@ export default function ChatPanel({ sessionId }: Props) {
     });
   }
 
+  /**
+   * «Продолжить» остановленный или упавший ход: бэкенд досчитывает его с чекпоинта,
+   * готовые шаги и плитки не повторяются. Новый вопрос в ленту не добавляется.
+   */
+  function resumeTurn(messageId: string, progress: TurnProgress) {
+    if (streaming || !progress.turn_id) return;
+    const all = useSessionStore.getState().messages;
+    const index = all.findIndex((x) => x.id === messageId);
+    const question =
+      all
+        .slice(0, index >= 0 ? index : all.length)
+        .reverse()
+        .find((x) => x.role === "user")?.content ?? "";
+    // Кнопка у старого прогресса гаснет: ход продолжается в новом
+    useSessionStore.getState().updateMessage(messageId, { progress: { ...progress, resumable: false } });
+    startRun(sessionId, question, {
+      retryQuestion: question,
+      replyTo: null,
+      resumeTurn: progress.turn_id,
+      dashboard: progress.tiles ? { idea: null } : undefined,
+      onDashboardBuilt: (dashboardId) => router.push(`/dashboard/${dashboardId}`),
+    });
+  }
+
   // Вопрос извне (клик по графику / «Дообследовать», F-09): отправляем, когда
   // таблица сессии уже известна и агент свободен. handledQuestionRef защищает
   // от повторной отправки в StrictMode и при ре-рендерах.
@@ -668,7 +697,16 @@ export default function ChatPanel({ sessionId }: Props) {
                     : "w-full text-graphite-200"
                 }`}
               >
-                {m.progress && <StepProgress progress={m.progress} />}
+                {m.progress && (
+                  <StepProgress
+                    progress={m.progress}
+                    onResume={
+                      m.progress.resumable && m.id && !streaming
+                        ? () => resumeTurn(m.id!, m.progress!)
+                        : undefined
+                    }
+                  />
+                )}
 
                 {/* Текст сообщения */}
                 {(m.content || m.isStreaming) && (

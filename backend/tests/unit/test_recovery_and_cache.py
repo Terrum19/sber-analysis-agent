@@ -136,7 +136,7 @@ async def test_wrong_column_is_fixed_by_planner(db) -> None:
         if event["type"] == "progress":
             ProgressPayload(**event["data"])
     prompt = llm.prompts["ResearchStep"][0]
-    assert ("колонки 'revenu' нет" in prompt or "Candidate bindings" in prompt)
+    assert "колонки 'revenu' нет" in prompt or "Candidate bindings" in prompt
     assert "revenue: DECIMAL(3,1)" in prompt
     assert SessionMemory("s1").get_pending_recovery() is None
     step = SessionMemory("s1").recent_turns()[-1]["steps"][0]
@@ -173,7 +173,7 @@ async def test_invalid_fix_counts_as_attempt(db) -> None:
     # Вторая попытка получает и ошибку выполнения, и отклонённый вариант
     # с причиной отказа.
     prompt = llm.prompts["ResearchStep"][1]
-    assert ("колонки 'revenu' нет" in prompt or 'Referenced column "revenu" not found' in prompt)
+    assert "колонки 'revenu' нет" in prompt or 'Referenced column "revenu" not found' in prompt
     assert '"tool": "no_such_tool"' in prompt
     assert "неизвестный инструмент 'no_such_tool'" in prompt
 
