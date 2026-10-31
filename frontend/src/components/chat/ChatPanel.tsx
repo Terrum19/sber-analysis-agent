@@ -170,7 +170,7 @@ export default function ChatPanel({ sessionId }: Props) {
         })
         .catch((err) => {
           if (err?.status === 404) {
-            setTableError(t("chat.tableNotFound"));
+            setTableError(t("chat.sessionGone"));
           }
         });
     }
@@ -188,7 +188,8 @@ export default function ChatPanel({ sessionId }: Props) {
       }
     } catch (err: any) {
       if (err?.status === 404) {
-        setTableError(t("chat.tableNotFound"));
+        // 404 — нет таблицы или самой сессии: текст бэкенда говорит, чего именно
+        setTableError(err?.detail || t("chat.tableNotFound"));
       } else {
         setTableError(err?.detail || err?.message || t("chat.tableNotFound"));
       }

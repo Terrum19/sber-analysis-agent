@@ -325,9 +325,13 @@ export function startRun(
         addMessage({ role: "agent", content: t("chat.error", { msg }), failed: true, failedQuestion: q, ...failDashboard });
       }
     },
-    (error) => {
+    (error, status) => {
       finishProgress(Boolean(error) || !streamFinished || streamHadError);
-      if (error) {
+      if (status === 404) {
+        // Сессию удалили на сервере: повтор упадёт так же, нужна новая сессия
+        fail();
+        addMessage({ role: "agent", content: t("chat.sessionGone"), failed: true, ...failDashboard });
+      } else if (error) {
         fail();
         addMessage({
           role: "agent",

@@ -454,7 +454,7 @@ export function streamChat(
   sessionId: string,
   question: string,
   onEvent: (event: ChatStreamEvent) => void,
-  onClose?: (error?: string) => void,
+  onClose?: (error?: string, status?: number) => void,
   optionsOrRecoveryResponse?:
     | { recoveryResponse?: string; replyTo?: string | null; dashboard?: DashboardRequest; resumeTurn?: string }
     | string,
@@ -525,7 +525,7 @@ export function streamChat(
       }
       const apiErr = toApiError(err);
       console.error("[SberClient] Ошибка обращения к бэкенду:", apiErr);
-      onClose?.(apiErr.detail || apiErr.message);
+      onClose?.(apiErr.detail || apiErr.message, apiErr.status);
     }
   })();
 
