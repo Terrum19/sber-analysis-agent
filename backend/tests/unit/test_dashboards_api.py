@@ -289,6 +289,7 @@ def test_tile_spec_rebuilds_the_view_without_a_dashboard(client: TestClient) -> 
     unknown = client.post("/api/dashboards/tile-spec", json={"spec": table, "chart_type": "pie"})
     assert unknown.status_code == 422
 
+
 def test_copy_keeps_origin_and_source(client: TestClient, db: DuckDBManager) -> None:
     source = create(client, tiles=[chart_tile(db)])
     original = source["tiles"][0]
