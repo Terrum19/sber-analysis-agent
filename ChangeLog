@@ -341,29 +341,6 @@
 
 2026-10-29  Alexander Yurits  <143354682+Terrum19@users.noreply.github.com>
 
-	Переход к другим данным по смыслу вопроса — эмбеддинги (#165).
-	* backend/app/core/data/table_vectors.py: Новый.  Близость вопроса к
-	таблицам по эмбеддингам (EMBED_MODEL), векторы таблиц — в
-	_meta.table_vector по отпечатку текста.  Сбой сервера — RETRY_S только
-	по словам.
-	* backend/app/core/data/relations.py (switch_table, choose_table):
-	Параметр similarity.  Слова не назвали другие данные — решает смысл.
-	(MEANING_MARGIN, _closer_than, _closest): Новые.
-	* backend/app/core/agent/orchestrator.py (_turn, _switch): Близость по
-	смыслу; «что передо мной?» к другим данным не переходит.
-	* backend/app/core/llm/ollama_setup.py (prepare_embeddings): Новая.
-	Скачать EMBED_MODEL на ту же Ollama.  (_pull): Параметр report.
-	* backend/app/config.py (embed_model, embed_base_url, embed_api_key)
-	(embed_timeout_s): Новые.
-	* docker-compose.yml, docker-compose.release.yml, .env.example:
-	EMBED_MODEL по умолчанию bge-m3, и у backend тоже.
-	* README.md, docs/architecture.md: Переход к другим данным, событие table.
-	* backend/tests/unit/test_table_vectors.py: Новый.
-	* backend/tests/unit/test_relations.py, backend/tests/unit/test_ollama_setup.py:
-	Тесты того же.
-
-2026-10-29  Alexander Yurits  <143354682+Terrum19@users.noreply.github.com>
-
 	Агент сам переходит к другим данным посреди сессии (#165).
 	* backend/app/core/data/relations.py (switch_table): Новая.  Вопрос
 	явно про другие, несвязанные данные — таблица, к которой перейти, или
@@ -406,6 +383,140 @@
 	* docs/repo_structure.md: Медиана в сезонности.
 	* backend/tests/unit/test_tools.py: Пустой час — ноль, медиана при
 	выбросе, AVG без нулей.
+
+2026-10-29  Alexander Yurits  <143354682+Terrum19@users.noreply.github.com>
+
+	Ответ агента не обрывается при уходе из чата; статус хода точкой у сессии.
+	* frontend/src/store/chatRunStore.ts: Новый.  Ход агента (стрим
+	/chat, в том числе в режиме дашборда) живёт вне ChatPanel и пишет в
+	ленту своей сессии, где бы ни был пользователь.  (startRun, stopRun)
+	(forgetRuns): Запуск, отмена, отмена при удалении сессии.  Собранный
+	дашборд открывается, только если пользователь всё ещё в этой сессии.
+	(chartTile): Перенесена из ChatPanel.  Пока идёт хоть один ход,
+	перезагрузка вкладки переспрашивает.
+	* frontend/src/store/sessionStore.ts (patchSession, sessionSnapshot):
+	Новые.  addMessage, updateMessage и др. принимают sessionId: фоновая
+	сессия пишется в свой кеш, канвас трогает только открытая.
+	(activeStreamingSessionId, setStreamingSessionId): Удалены.
+	* frontend/src/components/chat/ChatPanel.tsx: Стрим, повтор (с режимом
+	дашборда) и уточнение берутся из chatRunStore; размонтирование ход не
+	обрывает.
+	* frontend/src/components/layout/RunDot.tsx: Новый.  Жёлтая точка —
+	агент отвечает, синяя — ответ готов и не открыт, красная — ошибка.
+	* frontend/src/components/layout/LeftSidebar.tsx,
+	frontend/src/components/layout/TopHeader.tsx: Навигация, вкладки и
+	меню во время ответа больше не блокируются; точка статуса у сессии.
+	* frontend/src/i18n/dictionary.ts (sidebar.runRunning, sidebar.runDone)
+	(sidebar.runError): Новые.  (chat.cannotSwitchWhileGenerating): Удалён.
+	Самый слабый период в ответе — полный, а не неполный крайний.
+	* backend/app/core/llm/prompts/quality_rules.py (PARTIAL_HINT): На «какой
+	период самый слабый / сильный» headline — лучший из полных периодов,
+	неполный — оговоркой в details: модель называла неделю 28.09.2026
+	(3 дня) самой слабой и только добавляла, что она неполная.
+
+2026-10-28  Alexander Yurits  <143354682+Terrum19@users.noreply.github.com>
+
+	DuckDB не останавливает loop сервера (#189).
+	* backend/app/api/routes/chat.py (iterate_in_thread): Новая.  Ход
+	агента идёт в своём потоке и loop, loop сервера только пересылает
+	события: запрос DuckDB или ожидание db.lock, который держит загрузка
+	CSV, больше не останавливают пинги SSE, /health и другие запросы.
+	(chat): Импорт и создание оркестратора — в потоке хода.
+	* backend/app/core/tools/base.py (BaseTool.arun): SQL тула — через
+	asyncio.to_thread: события шагов уходят, пока идёт запрос.
+	* backend/app/api/routes/datasources.py (describe_tables): Синхронная,
+	в потоке пула со своим loop.
+	* backend/tests/unit/test_chat_api.py, backend/tests/unit/test_tools.py:
+	Тесты того же.
+
+2026-10-22  mb6ockatf  <smokenmirror@tutamail.com>
+
+	Smoke-тест чистого запуска в CI (#79).
+	* scripts/smoke.sh: Новый.  Ждёт /health, загружает demo_events.csv,
+	создаёт сессию над tables[0] из ответа, читает SSE чата до done
+	(error, обрыв или таймаут — провал), проверяет GET / фронтенда.
+	* docker-compose.ci.yml: Новый.  USE_FAKE_LLM=true для backend.
+	* .github/workflows/smoke.yml: Новый.  Compose без профиля с
+	docker-compose.ci.yml и smoke.sh на каждый PR и push в dev/main.
+	* backend/app/core/llm/fake_client.py (FakeLLM.complete_structured):
+	План агрегирует по category или, если её нет в промпте, по user_id,
+	чтобы фейковый план работал и на demo_events.
+	* Makefile (smoke): Новая цель.
+	* CONTRIBUTING.md: Smoke-тест чистого запуска.
+
+	Ollama с моделью в docker compose (#78).
+	* docker-compose.yml (ollama-cpu, ollama-gpu): Новые сервисы Ollama
+	(ollama/ollama:0.35.1) в профилях cpu и gpu, оба с сетевым именем
+	ollama и общим томом ollama-models.  Healthcheck ждёт, пока модель
+	LLM_MODEL появится в ollama list; start_period — час, на первое
+	скачивание модели.  OLLAMA_CONTEXT_LENGTH по умолчанию 16384 (#102).
+	(backend): LLM_BASE_URL — http://ollama:11434/v1, LLM_MODEL — тот же,
+	что у Ollama; ждёт healthy Ollama из активного профиля, без профиля
+	стартует без неё.
+	* docker-compose.release.yml: Те же сервисы Ollama для запуска из
+	архива релиза.
+	* infra/ollama/entrypoint.sh: Новый.  Сервер Ollama, скачивание
+	LLM_MODEL и EMBED_MODEL, если их ещё нет в томе, корректная остановка.
+	* Makefile (up): Профиль cpu.  (up-gpu): Новая цель: профиль gpu и
+	модель LLM_MODEL_GPU.  (down): Останавливает и сервисы Ollama.
+	* .env.example: LLM_BASE_URL и LLM_MODEL заполнены; новые
+	LLM_MODEL_GPU, OLLAMA_CONTEXT_LENGTH, EMBED_MODEL, OLLAMA_PORT.
+	* README.md: Запуск в Docker.
+	* docs/repo_structure.md: infra/ollama, make up-gpu.
+
+2026-10-30  Dmitriy Yakushonok  <dmitriyyakushonok@yandex.ru>
+
+	Экспорт дашбордов и исследований в PDF и Excel (E-02, E-03, F-10).
+	* backend/app/core/export/pdf.py (PdfExporter.export_dashboard): Новый.
+	Экспорт целостного дашборда в PDF: фирменная шапка с датой среза и
+	названием базы данных/сессии, блок KPI с крупными числами, сетка
+	карточек плиток с векторным рендерингом Vega-Lite графиков, инсайтами
+	и подгонкой таблиц под размер страницы.  (_compute_table_col_widths_and_fontsize,
+	_build_data_table_flowable): Новые. Автоподбор шрифта и высоты таблиц.
+	(_derive_substantive_insight): Аналитически корректные инсайты (исключение
+	ID и запрет суммирования долей/margin).  (HRFlowable): Зелёная фирменная
+	линия (#088434) в шапке одиночного отчёта и дашборда.
+	* backend/app/core/export/excel.py (ExcelExporter.export_dashboard): Новый.
+	Многостраничный .xlsx: лист «Сводка» с крупными карточками KPI, источником
+	данных и оглавлением со ссылками на листы плиток; отдельные листы под плитки
+	с кнопкой возврата в Сводку, снимком данных и графиком.
+	(_detect_column_roles): Детерминированный подбор диаграмм по Vega-Lite
+	spec.encoding (x, y, theta, color) и эвристике данных (поддержка таблиц
+	только из чисел, одноколоночных таблиц и строковых чисел).
+	(_write_data_table): Новая. Единое форматирование таблиц (зебра-заливка,
+	автофильтр, freeze panes, границы, автоширина столбцов).
+	(_detect_chart_type): Поддержка bar, line, pie, area; подавление графиков
+	для табличных спецификаций (is_table_spec). Лимит строк 5000 и точек 50.
+	* backend/app/core/export/common.py: Новый. Общие функции экспорта:
+	resolve_tile_records (безопасное разрешение snapshot_data vs DuckDB),
+	extract_kpi_value, format_kpi_number, format_cell_value,
+	sanitize_excel_text и sanitize_excel_value (защита от Formula Injection
+	CWE-1236, приведение timezone-aware datetime к naive UTC, NaN -> "",
+	Infinity -> строка, сериализация JSON), extract_table_columns (защита
+	от Schema Drift).
+	* backend/app/core/export/charts.py (is_table_spec): Новая. Определение
+	чисто табличных представлений.
+	* backend/app/api/routes/dashboards.py (export_dashboard): Новый эндпоинт
+	GET /api/dashboards/{id}/export?format=xlsx|pdf с FileResponse,
+	валидацией формата, обработкой ошибок 404/500 и передачей метаданных БД.
+	* backend/app/api/routes/artifacts.py (export_artifact): Поддержка
+	экспорта дашбордов и отдельных плиток со spec.data.values / spec.data /
+	spec.values при отсутствии result_ref. Обработка ошибок в HTTPException(500).
+	* frontend/src/components/chat/AnswerExport.tsx: Разрешает экспорт
+	в Excel для плиток со встроенными данными спецификации без явного
+	resultTable (исправлена блокировка кнопки первой плитки «Колонки таблицы»).
+	* frontend/src/components/canvas/Canvas.tsx: Кнопки экспорта дашборда
+	в шапке канваса и модальное окно выбора формата.
+	* frontend/src/app/dashboard/[id]/page.tsx: Кнопки экспорта дашборда.
+	* docs/architecture.md: Документирован полный конвейер ExcelExporter,
+	гарантии безопасности, типографика и актуализирован регламент PDF.
+	* docs/team_plans/final-roadmap.md: Отмечены как выполненные задачи
+	E-02, E-03 и F-10.
+	* backend/tests/unit/test_export_dashboard_pdf.py
+	* backend/tests/unit/test_export_common.py
+	* backend/tests/unit/test_export_excel.py
+	* backend/tests/unit/test_export_pdf.py: Полный набор unit-тестов
+	(101 тест, 100% покрытие кода модулей экспорта и роутов).
 
 2026-10-30  thebulkapro  <saitbatalovbulat200@gmail.com>
 
@@ -471,59 +582,73 @@
 	data/eval/hk/questions.yaml (sales-s3-july): Эталоны — среднее по
 	годам.
 	* docs/repo_structure.md, docs/visualization.md, docs/prompts.md: То же.
-2026-10-30  Dmitriy Yakushonok  <dmitriyyakushonok@yandex.ru>
 
-	Экспорт дашбордов и исследований в PDF и Excel (E-02, E-03, F-10).
-	* backend/app/core/export/pdf.py (PdfExporter.export_dashboard): Новый.
-	Экспорт целостного дашборда в PDF: фирменная шапка с датой среза и
-	названием базы данных/сессии, блок KPI с крупными числами, сетка
-	карточек плиток с векторным рендерингом Vega-Lite графиков, инсайтами
-	и подгонкой таблиц под размер страницы.  (_compute_table_col_widths_and_fontsize,
-	_build_data_table_flowable): Новые. Автоподбор шрифта и высоты таблиц.
-	(_derive_substantive_insight): Аналитически корректные инсайты (исключение
-	ID и запрет суммирования долей/margin).  (HRFlowable): Зелёная фирменная
-	линия (#088434) в шапке одиночного отчёта и дашборда.
-	* backend/app/core/export/excel.py (ExcelExporter.export_dashboard): Новый.
-	Многостраничный .xlsx: лист «Сводка» с крупными карточками KPI, источником
-	данных и оглавлением со ссылками на листы плиток; отдельные листы под плитки
-	с кнопкой возврата в Сводку, снимком данных и графиком.
-	(_detect_column_roles): Детерминированный подбор диаграмм по Vega-Lite
-	spec.encoding (x, y, theta, color) и эвристике данных (поддержка таблиц
-	только из чисел, одноколоночных таблиц и строковых чисел).
-	(_write_data_table): Новая. Единое форматирование таблиц (зебра-заливка,
-	автофильтр, freeze panes, границы, автоширина столбцов).
-	(_detect_chart_type): Поддержка bar, line, pie, area; подавление графиков
-	для табличных спецификаций (is_table_spec). Лимит строк 5000 и точек 50.
-	* backend/app/core/export/common.py: Новый. Общие функции экспорта:
-	resolve_tile_records (безопасное разрешение snapshot_data vs DuckDB),
-	extract_kpi_value, format_kpi_number, format_cell_value,
-	sanitize_excel_text и sanitize_excel_value (защита от Formula Injection
-	CWE-1236, приведение timezone-aware datetime к naive UTC, NaN -> "",
-	Infinity -> строка, сериализация JSON), extract_table_columns (защита
-	от Schema Drift).
-	* backend/app/core/export/charts.py (is_table_spec): Новая. Определение
-	чисто табличных представлений.
-	* backend/app/api/routes/dashboards.py (export_dashboard): Новый эндпоинт
-	GET /api/dashboards/{id}/export?format=xlsx|pdf с FileResponse,
-	валидацией формата, обработкой ошибок 404/500 и передачей метаданных БД.
-	* backend/app/api/routes/artifacts.py (export_artifact): Поддержка
-	экспорта дашбордов и отдельных плиток со spec.data.values / spec.data /
-	spec.values при отсутствии result_ref. Обработка ошибок в HTTPException(500).
-	* frontend/src/components/chat/AnswerExport.tsx: Разрешает экспорт
-	в Excel для плиток со встроенными данными спецификации без явного
-	resultTable (исправлена блокировка кнопки первой плитки «Колонки таблицы»).
-	* frontend/src/components/canvas/Canvas.tsx: Кнопки экспорта дашборда
-	в шапке канваса и модальное окно выбора формата.
-	* frontend/src/app/dashboard/[id]/page.tsx: Кнопки экспорта дашборда.
-	* docs/architecture.md: Документирован полный конвейер ExcelExporter,
-	гарантии безопасности, типографика и актуализирован регламент PDF.
-	* docs/team_plans/final-roadmap.md: Отмечены как выполненные задачи
-	E-02, E-03 и F-10.
-	* backend/tests/unit/test_export_dashboard_pdf.py
-	* backend/tests/unit/test_export_common.py
-	* backend/tests/unit/test_export_excel.py
-	* backend/tests/unit/test_export_pdf.py: Полный набор unit-тестов
-	(101 тест, 100% покрытие кода модулей экспорта и роутов).
+2026-10-30  Cline AI  <cline@local>
+
+	Самосоздание инструментов агентом (toolgen): декларативная спека + SQL + Python в WASM.
+	* backend/app/models/generated_tool.py: Новый.  GeneratedToolSpec и параметры;
+	  имя, типы, границы, enum, sample_arguments.
+	* backend/app/core/tools/generated.py: Новый.  GeneratedSqlTool/GeneratedPythonTool:
+	  динамическая Args-модель, безопасная подстановка identifier/literal, повторная
+	  проверка SQL/кода при вызове; Python — только WASMSandbox.
+	* backend/app/core/tools/toolgen/: Новый.  validator.py (AST DuckDB, запреты,
+	  smoke на выборке, reference SQL и checks), factory.py (LLM -> спека -> проверка
+	  -> регистрация, TOOLGEN_ATTEMPTS, загрузка), store.py (атомарный JSON).
+	* backend/app/core/llm/prompts/toolgen.py: Новый.  Промпты проектирования,
+	  исправления и контекста плитки; step_planner.py — NEW_TOOLS и правило пустого плана.
+	* backend/app/core/agent/orchestrator.py: NoSuitableTool, _plan_or_create,
+	  toolgen-события, лимит TOOLGEN_MAX_PER_TURN; dashboard_turn.py — плитка после toolgen.
+	* backend/app/core/tools/registry.py: register_generated/unregister_generated,
+	  generated_tools, names, load_generated; main.py — загрузка спек при старте.
+	* backend/app/config.py, .env.example: TOOLGEN_* настройки.
+	* backend/app/api/schemas/chat.py, frontend: этап progress/toolgen.
+	* backend/tests/unit/test_generated_tools.py, test_toolgen_validator.py,
+	  test_toolgen_factory.py, test_toolgen_flow.py: Новые; обновлены registry/config.
+	* docs/architecture.md, prompts.md, repo_structure.md, sandbox.md, roadmap.md.
+
+2026-10-29  Alexander Yurits  <143354682+Terrum19@users.noreply.github.com>
+
+	Переход к другим данным по смыслу вопроса — эмбеддинги (#165).
+	* backend/app/core/data/table_vectors.py: Новый.  Близость вопроса к
+	таблицам по эмбеддингам (EMBED_MODEL), векторы таблиц — в
+	_meta.table_vector по отпечатку текста.  Сбой сервера — RETRY_S только
+	по словам.
+	* backend/app/core/data/relations.py (switch_table, choose_table):
+	Параметр similarity.  Слова не назвали другие данные — решает смысл.
+	(MEANING_MARGIN, _closer_than, _closest): Новые.
+	* backend/app/core/agent/orchestrator.py (_turn, _switch): Близость по
+	смыслу; «что передо мной?» к другим данным не переходит.
+	* backend/app/core/llm/ollama_setup.py (prepare_embeddings): Новая.
+	Скачать EMBED_MODEL на ту же Ollama.  (_pull): Параметр report.
+	* backend/app/config.py (embed_model, embed_base_url, embed_api_key)
+	(embed_timeout_s): Новые.
+	* docker-compose.yml, docker-compose.release.yml, .env.example:
+	EMBED_MODEL по умолчанию bge-m3, и у backend тоже.
+	* README.md, docs/architecture.md: Переход к другим данным, событие table.
+	* backend/tests/unit/test_table_vectors.py: Новый.
+	* backend/tests/unit/test_relations.py, backend/tests/unit/test_ollama_setup.py:
+	Тесты того же.
+
+2026-10-29  Alexander Yurits  <143354682+Terrum19@users.noreply.github.com>
+
+	Агент сам переходит к другим данным посреди сессии (#165).
+	* backend/app/core/data/relations.py (switch_table): Новая.  Вопрос
+	явно про другие, несвязанные данные — таблица, к которой перейти, или
+	уточнение по названиям; продолжение остаётся на таблице сессии.
+	(SWITCH_WORDS): Новая.  (choose_table): Группы и выбор — в _groups
+	и _pick.
+	* backend/app/core/agent/orchestrator.py (_turn): Переход проверяется
+	перед каждым вопросом, кроме идеи дашборда.  (_switch): Новая.
+	Сбой каталога — остаёмся.  (_table_event): Новая.  Событие table,
+	когда агент сам взял таблицу.
+	* backend/app/api/schemas/chat.py (ChatEvent): Событие table.
+	* frontend/src/types/chat.ts (TableEvent): Новый.
+	* frontend/src/store/sessionStore.ts (followAgentTable): Новая.
+	Таблица сессии меняется, лента остаётся той же.
+	* frontend/src/store/chatRunStore.ts: Событие table — «Беру данные
+	«…»» в ленте.
+	* frontend/src/i18n/dictionary.ts (chat.tableChosen): Новая.
+	* backend/tests/unit/test_relations.py: Тесты того же.
 
 2026-10-29  Alexander Yurits  <143354682+Terrum19@users.noreply.github.com>
 
@@ -608,11 +733,6 @@
 	меню во время ответа больше не блокируются; точка статуса у сессии.
 	* frontend/src/i18n/dictionary.ts (sidebar.runRunning, sidebar.runDone)
 	(sidebar.runError): Новые.  (chat.cannotSwitchWhileGenerating): Удалён.
-	Самый слабый период в ответе — полный, а не неполный крайний.
-	* backend/app/core/llm/prompts/quality_rules.py (PARTIAL_HINT): На «какой
-	период самый слабый / сильный» headline — лучший из полных периодов,
-	неполный — оговоркой в details: модель называла неделю 28.09.2026
-	(3 дня) самой слабой и только добавляла, что она неполная.
 
 2026-10-29  thebulkapro  <saitbatalovbulat200@gmail.com>
 
@@ -697,6 +817,52 @@
 	(format_value): Docstring.
 	* backend/tests/unit/test_quality_fixes.py: Доли, p-value и сотые
 	в format_value; доля 0.0259 в промпте инсайта.
+
+2026-10-29  matthew78  <abc@mail.com>
+
+	Надёжный прогресс хода и анимация печати ответа.
+	* backend/app/api/schemas/chat.py (PlannedStep): Новая типизированная
+	схема шага плана.  (ProgressPayload.planned_steps): list[PlannedStep]
+	вместо list[dict].  (ProgressPayload.substage): реальные фазы planning и
+	replanning, status="substage".
+	* backend/app/core/agent/planner.py (plan): Колбэк on_substage сообщает
+	реальные фазы semantic -> llm -> validation; без таймерных догадок.
+	* backend/app/core/agent/orchestrator.py (_planned_steps): Общий helper
+	вместо двух копий сборки; purpose без выдуманного «Шаг N».
+	planning/replanning шлют elapsed_ms и substage, а insight/chart/dashboard
+	— finished (или failed) с elapsed_ms.  (_finish): result_step на
+	inspect_temp_table в смешанном плане отдаёт вход осмотренной таблицы.
+	* backend/app/core/tools/inspect_temp_table.py (_sample_values): Примеры
+	значений всех колонок одним UNION ALL запросом вместо N+1.
+	(_replan_after_lookup): После inspect-шага планировщик дополнительно
+	видит строки входной таблицы — связь «регион ↔ категория ↔ сумма».
+	* frontend/src/types/chat.ts (TimelineStage): status/error; applyProgress
+	больше не мутирует объекты прошлого состояния, labelKey типизирован.
+	* frontend/src/components/chat/ChatPanel.tsx: Анимация печати пишет в
+	сообщение ответа по id; flushTextQueue на error; finishProgress(true)
+	на clarification_needed/refusal; курсор только на печатающемся
+	agent-сообщении своей сессии; автоскролл не дёргает smooth на каждый
+	чанк и не уводит ленту, если пользователь выше.
+	* frontend/src/components/chat/StepProgress.tsx: Упавшие этапы — x и
+	text-bad с tooltip; нумерация запланированных шагов по индексу;
+	раскрытие — button с aria-expanded; таймер останавливается без
+	активной стадии; реальные фазы planning/replanning semantic -> llm ->
+	validation под активной стадией; «N из M шагов» в свёрнутой строке.
+	Шаги из плана не дублируются отдельными step-строками: их статус,
+	время и ошибка показываются в раскрытом плане; план открыт по
+	умолчанию и шаги появляются по одному (план приходит одним
+	structured-ответом LLM).
+	* frontend/src/store/sessionStore.ts (appendToMessage): Дописывание
+	текста в сообщение по id.
+	* frontend/src/i18n/dictionary.ts: Удалены неиспользуемые
+	progress.stepItem и старые таймерные progress.*.substage*; добавлены
+	progress.substage.semantic/llm/validation.
+	* backend/tests/unit/test_orchestrator_unit.py,
+	test_plan_execution.py, test_planner.py: Тесты на finished/elapsed_ms
+	этапов, planned_steps, реальные фазы planning/replanning, replanning/failed
+	и смешанный inspect-план.
+	* docs/architecture.md, docs/visualization.md: Контракт progress и
+	поведение result_step на inspect_temp_table.
 
 2026-10-28  thebulkapro  <saitbatalovbulat200@gmail.com>
 
@@ -901,6 +1067,55 @@
 
 2026-10-28  Alexander Yurits  <143354682+Terrum19@users.noreply.github.com>
 
+	Тестовый конфиг: размышления low, провайдер DeepInfra обязателен.
+	* .env.example: LLM_REASONING_EFFORT=low и LLM_PROVIDER=deepinfra в
+	строках тестового конфига вместо none.
+	* docs/eval.md (Тестовый конфиг): Почему с размышлениями (3 из 15
+	проверок без них, 11 из 15 с ними) и почему провайдер закреплён.
+
+	Провайдер OpenRouter закрепляется флагом LLM_PROVIDER.
+	* backend/app/config.py (Settings.llm_provider),
+	backend/app/core/llm/client.py (LLMClient.complete): Список
+	провайдеров через запятую уходит в provider.only; без значения
+	параметр не передаётся.  С размышлениями JSON плана держит DeepInfra,
+	Near AI и Modal его ломают.
+	* .env.example: Строка LLM_PROVIDER, закомментирована.
+	* docs/eval.md (Тестовый конфиг): Замер 28.10: 3 из 15 без
+	размышлений, 11 из 15 с ними и DeepInfra; конфиг для оценки качества.
+	* backend/tests/unit/test_llm_client_retries.py
+	(test_provider_goes_to_request): Новый тест.
+
+	План без пустых аргументов, пустых планов и шагов не по той таблице.
+	* backend/app/models/research_step.py (ResearchStep, ResearchPlan):
+	В JSON-схеме обязательны tool, input, arguments, purpose и steps,
+	tool не null, template_id — только id шаблонов (97c10fc, thebulkapro,
+	дополнено полем input).
+	* backend/app/core/tools/base.py (BaseTool.signature): Обязательные
+	аргументы помечены «(обязательный)»: модель пропускала by у group_by.
+	* backend/app/core/llm/prompts/step_planner.py (STEP_PLANNER): Правило
+	обязательных аргументов; input указывать всегда, независимый расчёт —
+	"$source".  (EMPTY_PLAN): Новый.
+	* backend/app/core/agent/planner.py (StepPlanner.plan): Пустой план на
+	новый вопрос переспрашивается один раз.
+	* backend/app/core/agent/orchestrator.py (AgentOrchestrator._from_source):
+	Новая.  (_run_step): Колонки из ошибки DuckDB нет в $prev, но она есть
+	в источнике — шаг повторяется на $source без вызова LLM.
+	* backend/app/core/data/overview.py (_OVERVIEW): «что это», «что это
+	такое», «что тут есть» — обзор таблицы, а не планировщик.
+	* backend/tests/unit/test_plan_execution.py, test_planner.py,
+	test_tool_registry.py, test_overview.py: Тесты того же.
+
+	Тестовый конфиг команды: qwen3.8-27b в OpenRouter без размышлений.
+	* backend/app/config.py (Settings.llm_reasoning_effort),
+	backend/app/core/llm/client.py (LLMClient.complete): Флаг
+	LLM_REASONING_EFFORT из testing/first_test (thebulkapro): none
+	передаёт OpenRouter reasoning.enabled=false, low/medium/high —
+	reasoning.effort, без значения параметр не передаётся.
+	* .env.example: Строки тестового конфига, закомментированы.
+	* docs/eval.md (Тестовый конфиг): Конфиг и почему без размышлений.
+	* backend/tests/unit/test_llm_client_retries.py
+	(test_reasoning_effort_goes_to_request): Новый тест.
+
 	DuckDB не останавливает loop сервера (#189).
 	* backend/app/api/routes/chat.py (iterate_in_thread): Новая.  Ход
 	агента идёт в своём потоке и loop, loop сервера только пересылает
@@ -1031,7 +1246,7 @@
 	и ветвей для owns_result, record_step, record_chart и set_table.
 	* docs/repo_structure.md, docs/roadmap.md, docs/architecture.md:
 	Актуализация документации по экспорту и конвейеру генерации PDF.
-  
+
 2026-10-28  mb6ockatf  <smokenmirror@tutamail.com>
 
 	Логи агента: ход целиком в docker compose logs (#202).
@@ -1246,6 +1461,43 @@
 	* docs/eval.md: Новый.  Запуск, проверки, recall отбора, формат отчёта.
 	* README.md (Eval агента), docs/repo_structure.md: То же кратко.
 
+2026-10-27  Cline  <cline@users.noreply.github.com>
+
+	Стриминг финального инсайта по дельтам в SSE (F-12 / #135).
+	* backend/app/config.py (Settings.insight_stream): Новый флаг
+	(env INSIGHT_STREAM, по умолчанию true); false — прежний контракт
+	одного text {headline, details}.
+	* backend/app/core/llm/client.py (LLMClient.complete_stream): Новый.
+	Дельты chat.completions.create(stream=True); пустые и usage-чанки
+	пропускаются, finish_reason=length логируется.
+	(LLMClient._check_context): SSE-ответы и запросы со stream=true
+	не читаются хуком — aread() забуферизовал бы поток.
+	* backend/app/core/llm/fake_client.py (FakeLLM.complete_stream):
+	Новый.  INSIGHT_TEXT отдаётся кусками для CI без модели.
+	* backend/app/core/llm/prompts/insight_summary.py (INSIGHT_STREAM):
+	Новый текстовый промпт: headline, "- " details, Ограничения.
+	* backend/app/core/agent/insight.py (InsightGenerator.stream):
+	Новый.  Стрим через emit, structured-фолбэк до первой дельты,
+	разбор текста и headline из первой строки.
+	(parse_insight_text, _first_sentence, _clean_line): Новые.
+	(_Materials, InsightGenerator._materials): Новые.  Общая подготовка
+	промпта для generate() и stream().
+	(InsightGenerator.generate): Промпт собирается из _materials.
+	* backend/app/core/agent/orchestrator.py (_text_event)
+	(_text_chunk_event): Новые.  (AgentOrchestrator._turn): Стрим инсайта
+	идёт задачей с очередью; финальный text не дублируется, при отмене
+	SSE задача отменяется.
+	* backend/app/api/routes/chat.py (ClosingStreamingResponse): Новый.
+	Закрывает body_iterator при обрыве клиента, чтобы отмена дошла до LLM.
+	* backend/tests/unit/test_insight_stream.py
+	backend/tests/unit/test_llm_stream.py
+	backend/tests/unit/test_orchestrator_unit.py
+	backend/tests/unit/test_fake_llm_env.py
+	backend/tests/unit/test_config_env.py
+	backend/tests/contract/test_sse_serialization.py: Тесты стрима,
+	парсера, фолбэка, SSE и отмены.
+	* .env.example, docs/architecture.md, docs/prompts.md: То же.
+
 2026-10-26  Alexander Yurits  <143354682+Terrum19@users.noreply.github.com>
 
 	Графики: тренд линией, гистограмма по колонке из вопроса (#176).
@@ -1391,6 +1643,7 @@
 	* backend/tests/unit/test_step_chaining.py: Тест шага select_columns
 	с arguments.columns.
 	* docs/architecture.md: То же.
+
 2026-10-26  Alexander Yurits  <143354682+Terrum19@users.noreply.github.com>
 
 	Очистка CSV: исправления по ревью #161.
@@ -1953,6 +2206,15 @@
 	* Makefile (smoke): Новая цель.
 	* CONTRIBUTING.md: Smoke-тест чистого запуска.
 
+	README для жюри, первая часть (#80).
+	* README.md: Разделы в порядке #80: что это, быстрый старт в три
+	команды (make up / make up-gpu), требования к железу и выбор модели,
+	данные (CSV, PostgreSQL, датасеты хакатона), шесть сценариев с
+	примерами вопросов на датасетах хакатона, архитектура, ограничения,
+	результаты eval.  Скриншоты, итоги #58 и ссылка на отчёт eval
+	отмечены TODO-комментариями.
+
+2026-10-22  mb6ockatf  <smokenmirror@tutamail.com>
 	Ollama с моделью в docker compose (#78).
 	* docker-compose.yml (ollama-cpu, ollama-gpu): Новые сервисы Ollama
 	(ollama/ollama:0.35.1) в профилях cpu и gpu, оба с сетевым именем
@@ -2325,6 +2587,7 @@
 	экземпляром приложения, видна в другом; список, лимит, сброс
 	datasource_id, временные представления, список таблиц.
 	* docs/memory.md: Метаданные и список сессий.
+
 2026-10-22  mb6ockatf  <smokenmirror@tutamail.com>
 
 	Очистка устаревших temp_result_vN (#55).
@@ -2404,6 +2667,7 @@
 	* backend/tests: Тесты оркестратора выбирают таблицу raw явно через
 	сессию; API-тесты подменяют get_db.
 	* docs/memory.md, docs/visualization.md: Таблица сессии.
+
 2026-10-20  Alexander Yurits  <terruwork@gmail.com>
 
 	Отклонённое исправление шага больше не подменяет ошибку шага (#39).

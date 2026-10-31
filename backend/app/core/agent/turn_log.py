@@ -2,6 +2,7 @@ import logging
 import time
 from collections.abc import AsyncIterator
 
+from app.core.agent.metrics import current_metrics
 from app.core.logging_setup import TurnContext, bound_turn
 from app.models.research_step import ResearchPlan
 
@@ -13,7 +14,7 @@ STATUS_CLARIFICATION = "clarification"
 STATUS_DISCONNECTED = "disconnected"
 START_STAGE = "start"
 DISCONNECT_REASON = "клиент отключился"
-NOT_FATAL_STAGES = ("dashboard",)
+NOT_FATAL_STAGES = ("dashboard", "toolgen")
 TIMED_STAGES = {"text": ("insight", "инсайт"), "chart": ("chart", "график")}
 
 
@@ -99,7 +100,14 @@ class TurnLog:
         self.finished = True
         status = self.status or STATUS_OK
         elapsed = time.perf_counter() - self.started_at
-        message = f"итог хода: {status} за {elapsed:.1f} с"
+        metrics = current_metrics()
+        message = (
+            f"итог хода: {status} за {elapsed:.1f} с"
+            f", route={metrics.route if metrics else 'unknown'}"
+            f", llm_calls={metrics.llm_calls if metrics else 0}"
+            f", prompt_tokens={metrics.prompt_tokens if metrics else 0}"
+            f", total_ms={int(elapsed * 1000)}"
+        )
         if status != STATUS_OK:
             reason = " ".join(str(self.reason).split())
             message += f", этап {self.failed_stage or self.stage}: {reason}"

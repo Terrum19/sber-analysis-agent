@@ -5,6 +5,8 @@
 диалектом. Результаты шагов — temp-таблицы (state cache, память ур. 2).
 """
 
+import asyncio
+import logging
 import threading
 import time
 from collections import OrderedDict
@@ -16,6 +18,8 @@ import duckdb
 
 from app.config import settings
 from app.core.data.connectors.csv import load_csv
+
+logger = logging.getLogger(__name__)
 
 # Код результатов, которые ещё не забрал оркестратор: результаты не шагов
 # (гистограмма, кеш) никто не забирает, старые вытесняются.
@@ -34,16 +38,43 @@ class DuckDBManager:
         self.lock = threading.RLock()
         self._step_code: OrderedDict[str, tuple[str, str]] = OrderedDict()
 
-    def query(self, sql: str, params: dict | None = None) -> list[dict]:
-        """Выполнить SELECT и вернуть список словарей."""
-        with self.lock:
+    def _timeout(self, timeout_s: float | None) -> float | None:
+        """Таймаут запроса: явный или SQL_TIMEOUT_S; 0/None — без таймаута."""
+        value = settings.sql_timeout_s if timeout_s is None else timeout_s
+        return float(value) if value and value > 0 else None
+
+    @contextmanager
+    def _interrupt_after(self, timeout_s: float | None) -> Iterator[None]:
+        """Прервать запрос по таймауту через duckdb.interrupt().
+
+        Таймер — отдельный поток: сам SQL выполняется в вызывающем (обычно
+        рабочем ``asyncio.to_thread``), event loop не блокируется. После
+        ``interrupt`` соединение остаётся живым, следующий запрос работает.
+        """
+        timer: threading.Timer | None = None
+        timeout = self._timeout(timeout_s)
+        if timeout is not None:
+            timer = threading.Timer(timeout, self.interrupt)
+            timer.daemon = True
+            timer.start()
+        try:
+            yield
+        finally:
+            if timer is not None:
+                timer.cancel()
+
+    def query(
+        self, sql: str, params: dict | None = None, timeout_s: float | None = None
+    ) -> list[dict]:
+        """Выполнить SELECT и вернуть список словарей (с таймаутом SQL)."""
+        with self.lock, self._interrupt_after(timeout_s):
             cur = self._con.execute(sql, params or {})
             cols = [column[0] for column in cur.description]
             return [dict(zip(cols, row)) for row in cur.fetchall()]
 
-    def execute(self, sql: str, params: dict | None = None) -> None:
-        """Выполнить DDL/DML без возврата строк."""
-        with self.lock:
+    def execute(self, sql: str, params: dict | None = None, timeout_s: float | None = None) -> None:
+        """Выполнить DDL/DML без возврата строк (с таймаутом SQL)."""
+        with self.lock, self._interrupt_after(timeout_s):
             self._con.execute(sql, params or {})
 
     @contextmanager
@@ -62,6 +93,7 @@ class DuckDBManager:
         self,
         source_table: str,
         sql: str,
+        timeout_s: float | None = None,
         *,
         code: str | None = None,
         language: str | None = "sql",
@@ -80,6 +112,9 @@ class DuckDBManager:
         на который ссылается прошлый график этой или другой сессии.
         Время создания пишется в ``_meta.result_meta`` — по нему
         ``cleanup_results`` удаляет устаревшие результаты.
+
+        Таймер прерывает CREATE TABLE AS SELECT: тяжёлый шаг не держит
+        ход до конца бюджета даже при недоступном прогрессе.
         """
         with self.lock:
             self._ensure_result_meta()
@@ -88,12 +123,18 @@ class DuckDBManager:
                 self._step_counter += 1
                 target = f"temp_result_v{self._step_counter}"
                 try:
-                    self._con.execute(f"CREATE TABLE {target} AS SELECT * FROM ({sql})")
+                    with self._interrupt_after(timeout_s):
+                        self._con.execute(f"CREATE TABLE {target} AS SELECT * FROM ({sql})")
                 except duckdb.CatalogException as exc:
                     # Имя успел занять параллельный запрос с другим соединением.
                     if "already exists" not in str(exc):
                         raise
                     continue
+                except duckdb.InterruptException:
+                    # Прерванный CREATE мог оставить частичную таблицу: убираем.
+                    with self.lock:
+                        self._con.execute(f"DROP TABLE IF EXISTS {target}")
+                    raise
                 self._con.execute(
                     "INSERT OR REPLACE INTO _meta.result_meta VALUES ($name, $created_at)",
                     {"name": target, "created_at": time.time()},
@@ -103,6 +144,13 @@ class DuckDBManager:
                     while len(self._step_code) > STEP_CODE_LIMIT:
                         self._step_code.popitem(last=False)
                 return target
+
+    def interrupt(self) -> None:
+        """Прервать выполняющийся запрос (вызывается из таймера)."""
+        try:
+            self._con.interrupt()
+        except Exception:  # соединение уже закрыто
+            logger.debug("DuckDB interrupt: соединение уже закрыто", exc_info=True)
 
     def step_code(self, table: str) -> tuple[str, str] | None:
         """Забрать код, которым построен результат: (язык, код) или None."""
@@ -189,6 +237,20 @@ class DuckDBManager:
             {"table": table},
         )
         return [row["column_name"] for row in rows]
+
+    async def query_async(
+        self, sql: str, params: dict | None = None, timeout_s: float | None = None
+    ) -> list[dict]:
+        """SELECT в рабочем потоке: event loop и SSE-пинги не блокируются."""
+        return await asyncio.to_thread(self.query, sql, params, timeout_s)
+
+    async def columns_async(self, table: str) -> list[str]:
+        """Колонки таблицы без блокировки event loop."""
+        return await asyncio.to_thread(self.columns, table)
+
+    async def to_records_async(self, table: str, limit: int = 100) -> list[dict]:
+        """Выгрузить таблицу в список словарей без блокировки event loop."""
+        return await asyncio.to_thread(self.to_records, table, limit)
 
     def user_tables(self) -> list[str]:
         """Таблицы и представления пользователя по алфавиту.

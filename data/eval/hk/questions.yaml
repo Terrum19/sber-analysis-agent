@@ -1,7 +1,7 @@
 # Eval-набор по датасетам организаторов (gitverse.ru/kban/HK_Datasets).
 # Сценарии 1–10 — из README организаторов, 0 — «неудобные» (тех. критерий 8).
 # Формат и проверки — data/eval/hk/README.md. Эталоны gold.sql считаются
-# по сырым CSV (scripts/eval_gold.py), не по базе агента.
+# по сырым CSV (scripts/eval_gold.py, scripts/eval/gold.py), не по базе агента.
 
 # --- 1. Первичное знакомство ---
 

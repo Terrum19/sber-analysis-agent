@@ -26,6 +26,7 @@ export interface ChatMessage {
   id?: string;
   role: "user" | "agent";
   content: string;
+  isStreaming?: boolean;
   /** turn_id хода, к которому относится ответ (из события done). */
   turn_id?: string;
   /** Цитата, на которую отвечает пользователь (для ленты и повтора запроса). */
@@ -159,8 +160,10 @@ export interface SessionState {
    * Лента и плитки: sessionId — сессия, в которую пишем (по умолчанию открытая).
    * Ход агента продолжается в фоне, поэтому пишет в свою сессию, где бы ни был пользователь.
    */
-  addMessage: (msg: ChatMessage, sessionId?: string) => void;
+  addMessage: (msg: ChatMessage, sessionId?: string) => string;
   appendToLastMessage: (chunk: string, sessionId?: string) => void;
+  /** Дописать текст в сообщение по id (анимация печати не зависит от порядка ленты). */
+  appendToMessage: (id: string, chunk: string, sessionId?: string) => void;
   updateLastMessage: (patch: Partial<ChatMessage>, sessionId?: string) => void;
   updateMessage: (id: string, patch: Partial<ChatMessage>, sessionId?: string) => void;
   /** Поменять ленту и плитки сессии разом (итог пересчёта рецепта, #250). */
@@ -190,6 +193,8 @@ export interface SessionState {
   renameSession: (sessionId: string, title: string) => void;
   togglePinSession: (sessionId: string) => void;
   deleteSession: (sessionId: string) => void;
+  /** Обновляет паспорт таблицы (brief) внутри соответствующей базы данных. */
+  updateTableBrief: (table: string, brief: TableBrief) => void;
   /** Подтягивает сессии бэкенда в локальные папки (создаёт папки при необходимости). */
   mergeSessions: (remoteSessions: SessionResponse[]) => void;
   /** Импортированная сессия: в папку «Импортированные», лента — в кеш под таблицей автора. */
@@ -309,21 +314,22 @@ export const useSessionStore = create<SessionState>()(
             selectedTile: null,
           };
         }),
-      addMessage: (msg, sessionId) =>
+      addMessage: (msg, sessionId) => {
+        const assignedId = msg.id || `msg-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+        const newMsg: ChatMessage = {
+          ...msg,
+          id: assignedId,
+          timestamp:
+            msg.timestamp || new Date().toLocaleTimeString("ru-RU", { hour: "2-digit", minute: "2-digit" }),
+        };
         set((s) =>
           patchSession(s, sessionId, (snap) => ({
             ...snap,
-            messages: [
-              ...snap.messages,
-              {
-                ...msg,
-                id: msg.id || `msg-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
-                timestamp:
-                  msg.timestamp || new Date().toLocaleTimeString("ru-RU", { hour: "2-digit", minute: "2-digit" }),
-              },
-            ],
+            messages: [...snap.messages, newMsg],
           })),
-        ),
+        );
+        return assignedId;
+      },
       removeMessage: (id, sessionId) =>
         set((s) =>
           patchSession(s, sessionId, (snap) => ({ ...snap, messages: snap.messages.filter((m) => m.id !== id) })),
@@ -340,6 +346,17 @@ export const useSessionStore = create<SessionState>()(
             const last = snap.messages[snap.messages.length - 1];
             if (!last) return snap;
             return { ...snap, messages: [...snap.messages.slice(0, -1), { ...last, content: last.content + chunk }] };
+          }),
+        ),
+      appendToMessage: (id, chunk, sessionId) =>
+        set((s) =>
+          patchSession(s, sessionId, (snap) => {
+            const index = snap.messages.findIndex((m) => m.id === id);
+            if (index < 0) return snap;
+            return {
+              ...snap,
+              messages: snap.messages.map((m) => (m.id === id ? { ...m, content: (m.content || "") + chunk } : m)),
+            };
           }),
         ),
       updateMessage: (id, patch, sessionId) =>
@@ -597,6 +614,18 @@ export const useSessionStore = create<SessionState>()(
             ...(isActiveDeleted ? { sessionId: null, messages: [], tiles: [], selectedTile: null } : {}),
           };
         }),
+      updateTableBrief: (table: string, brief: TableBrief) =>
+        set((s) => ({
+          databases: s.databases.map((d) => {
+            if (!d.tables.includes(table)) return d;
+            const prevProfiles = d.profiles || [];
+            const exists = prevProfiles.some((p) => p.table === table);
+            const nextProfiles = exists
+              ? prevProfiles.map((p) => (p.table === table ? brief : p))
+              : [...prevProfiles, brief];
+            return { ...d, profiles: nextProfiles };
+          }),
+        })),
       mergeSessions: (remoteSessions: SessionResponse[]) =>
         set((s) => {
           const nextDatabases = s.databases.map((d) => ({

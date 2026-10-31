@@ -5,7 +5,9 @@
 агентный цикл на CI без Ollama/vLLM.
 """
 
+import asyncio
 import re
+from collections.abc import AsyncIterator
 from typing import Any, TypeVar
 
 import instructor
@@ -20,11 +22,25 @@ PLAN_COLUMNS = ("category", "user_id")
 
 # Дашборд по кнопке (#224): запрос короче стольких слов — «информации не хватает».
 DASHBOARD_MIN_WORDS = 3
+# Две простые плитки (шаги из полей, вариант quick_tiles) и две — через планировщик.
 FAKE_TILES = (
-    ("Всего записей", "Сколько всего записей", "kpi"),
-    ("Записи по категориям", "Количество записей по category", "compare"),
-    ("Записи по пользователям", "Количество записей по user_id", "compare"),
-    ("Доли категорий", "Доля записей по category", "share"),
+    ("Всего записей", "Сколько всего записей", "kpi", {"kind": "simple", "agg": "COUNT"}),
+    (
+        "Записи по категориям",
+        "Количество записей по category",
+        "compare",
+        {"kind": "simple", "agg": "COUNT", "by": "category"},
+    ),
+    ("Записи по пользователям", "Количество записей по user_id", "compare", {}),
+    ("Доли категорий", "Доля записей по category", "share", {}),
+)
+
+# Тот же текст, что отдаёт structured-Insight FakeLLM: контрактные тесты
+# сравнивают стрим и не-стрим по склеенному результату.
+INSIGHT_TEXT = (
+    "Исследование завершено\n"
+    "- Данные обработаны по запросу пользователя\n"
+    "Ограничения: Результаты основаны на доступных в таблице данных"
 )
 
 
@@ -47,7 +63,13 @@ class FakeLLM:
         """Возвращает фиксированную строку-ответ."""
         return "Fake LLM response"
 
-    async def complete_structured(self, system: str, user: str, schema: type[T]) -> T:
+    async def complete_stream(self, system: str, user: str, **kwargs: Any) -> AsyncIterator[str]:
+        """Отдаёт заготовленный текстовый вывод кусками — CI без модели."""
+        for chunk in re.findall(r"\S+\s*", INSIGHT_TEXT):
+            await asyncio.sleep(0)  # даём event loop переключаться между чанками
+            yield chunk
+
+    async def complete_structured(self, system: str, user: str, schema: type[T], **_: object) -> T:
         """Генерирует объект по схеме с фиксированными значениями.
 
         - ResearchPlan: 1 шаг (aggregate) + final_viz=bar
@@ -105,8 +127,8 @@ def _fake_dashboard(schema: str, user: str) -> dict:
             "enough_info": True,
             "title": "Обзор данных",
             "tiles": [
-                {"title": title, "question": question, "intent": intent}
-                for title, question, intent in FAKE_TILES
+                {"title": title, "question": question, "intent": intent, **fields}
+                for title, question, intent, fields in FAKE_TILES
             ],
         }
     tile_ids = [int(found) for found in re.findall(r"--- плитка (\d+):", user)]

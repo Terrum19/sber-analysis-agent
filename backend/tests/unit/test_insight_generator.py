@@ -213,6 +213,40 @@ def test_threshold_without_test_is_not_grounded(db):
     assert llm.calls == 2
 
 
+def test_headline_without_number_is_asked_again(db):
+    from app.models.insight import Insight
+
+    class Scripted(PromptSpy):
+        def __init__(self):
+            super().__init__()
+            self.prompts = []
+
+        async def complete_structured(self, system, user, schema):
+            self.prompts.append(user)
+            headline = "Средняя сумма события" if len(self.prompts) == 1 else "Средняя — 1.5"
+            return Insight(headline=headline, details=[])
+
+    llm = Scripted()
+    insight = asyncio.run(InsightGenerator(llm=llm, db=db).generate("Средняя?", "temp_result_v1"))
+    assert insight.headline == "Средняя — 1.5"
+    assert "нет ни одного числа" in llm.prompts[1]
+
+
+def test_headline_without_number_is_fine_for_a_result_without_numbers(db):
+    from app.models.insight import Insight
+
+    class Scripted(PromptSpy):
+        calls = 0
+
+        async def complete_structured(self, system, user, schema):
+            self.calls += 1
+            return Insight(headline="Данных нет", details=[])
+
+    llm = Scripted()
+    asyncio.run(InsightGenerator(llm=llm, db=db).generate("Что там?", "temp_result_v2"))
+    assert llm.calls == 1
+
+
 def test_prompt_says_a_week_number_merges_the_years(db):
     from app.models.research_step import ResearchStep
 

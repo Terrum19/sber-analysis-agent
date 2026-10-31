@@ -12,7 +12,7 @@ import os
 import pytest
 
 from app.core.llm.client import LLMClient
-from app.core.llm.fake_client import FakeLLM
+from app.core.llm.fake_client import INSIGHT_TEXT, FakeLLM
 from app.models.insight import Insight
 from app.models.research_step import ResearchPlan
 
@@ -57,3 +57,15 @@ def test_fakellm_complete_returns_string() -> None:
     result = asyncio.run(client.complete("sys", "q"))
     assert isinstance(result, str)
     assert result == "Fake LLM response"
+
+
+def test_fakellm_complete_stream_returns_text_chunks() -> None:
+    """FakeLLM.complete_stream склеивается в тот же текст, что structured-инсайт."""
+    client = LLMClient()
+
+    async def _collect():
+        return [chunk async for chunk in client.complete_stream("sys", "q")]
+
+    chunks = asyncio.run(_collect())
+    assert len(chunks) > 1
+    assert "".join(chunks) == INSIGHT_TEXT

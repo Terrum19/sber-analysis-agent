@@ -2,7 +2,8 @@
 
 /**
  * Панель диалога (Chat):
- * - Стриминг ответов агента (текст, инсайты)
+ * - Анимация печати ответа агента (текст, инсайты): бэкенд присылает
+ *   инсайт одним событием, поэтому это клиентский эффект, не сетевой стриминг
  * - Графики и дашборды в ленту не выводятся: они уходят на правую панель,
  *   а в сообщении остаётся ссылка «Показать на панели» / «Открыть во вкладке»
  * - Режим дашборда (#224): переключатель под строкой ввода, варианты по кнопке
@@ -37,8 +38,10 @@ import RecipeBanner from "@/components/chat/RecipeBanner";
 import StepsList from "@/components/chat/StepsList";
 import LlmStatusBanner from "@/components/chat/LlmStatusBanner";
 import DashboardIdeas, { type IdeasState } from "@/components/chat/DashboardIdeas";
+import MarkdownContent from "@/components/chat/MarkdownContent";
 import { useLlmStatus } from "@/hooks/useLlmStatus";
 import { useT } from "@/i18n/useT";
+import { getDatasetQuestions } from "@/lib/datasetQuestions";
 import {
   RECOVERY_SKIP_STEP,
   type DashboardEvent,
@@ -49,18 +52,35 @@ import {
 /** Сколько раз подряд просить новые варианты дашборда, если все прежние уже использованы. */
 const MAX_IDEA_ROUNDS = 3;
 
+/** Очистка строки от Markdown-символов для компактной цитаты */
+function stripMarkdown(md: string): string {
+  return md
+    .replace(/^#+\s+/gm, "")
+    .replace(/\*\*([^*]+)\*\*/g, "$1")
+    .replace(/__([^_]+)__/g, "$1")
+    .replace(/\*([^*]+)\*/g, "$1")
+    .replace(/_([^_]+)_/g, "$1")
+    .replace(/`([^`]+)`/g, "$1")
+    .replace(/\[([^\]]+)\]\([^)]+\)/g, "$1")
+    .replace(/^>\s?/gm, "")
+    .replace(/^[-*•]\s+/gm, "");
+}
+
 /** Текст ответа для буфера обмена: инсайт и детали, иначе — реплика из ленты. */
 function answerText(m: ChatMessage): string {
   const lines: string[] = [];
   if (m.answer?.headline) lines.push(m.answer.headline);
-  if (m.answer?.details?.length) lines.push(...m.answer.details.map((detail) => `• ${detail}`));
+  if (m.answer?.details?.length) {
+    lines.push(...m.answer.details.map((detail) => `- ${stripMarkdown(detail)}`));
+  }
   return lines.length > 0 ? lines.join("\n") : m.content;
 }
 
 /** Короткая выдержка ответа для цитаты (схлопнутые пробелы, обрезка по границе слова). */
 function excerptOf(m: ChatMessage, limit = 170): string {
   const raw = m.answer?.headline ?? m.chart?.caption ?? m.content ?? "";
-  const text = raw.replace(/\s+/g, " ").trim();
+  const cleaned = stripMarkdown(raw);
+  const text = cleaned.replace(/\s+/g, " ").trim();
   if (text.length <= limit) return text;
   const cut = text.slice(0, limit - 1);
   const lastSpace = cut.lastIndexOf(" ");
@@ -88,9 +108,11 @@ export default function ChatPanel({ sessionId }: Props) {
   const [dashboardMode, setDashboardMode] = useState(false);
   const [ideas, setIdeas] = useState<IdeasState | null>(null);
   const ideasRequestRef = useRef(0);
-  // Сообщение с карточкой уточнения, на которую ещё можно ответить
   const activeClarificationId = run?.clarificationId ?? null;
   const messagesEndRef = useRef<HTMLDivElement | null>(null);
+  const messagesListRef = useRef<HTMLDivElement | null>(null);
+  // Пользователь у нижней границы ленты — только тогда догоняем новый текст.
+  const stickToBottomRef = useRef(true);
   const inputRef = useRef<HTMLTextAreaElement | null>(null);
   // Ответ, на который пользователь отвечает: уходит в reply_to (F-12).
   const [replyTarget, setReplyTarget] = useState<{ turn_id: string; excerpt: string } | null>(null);
@@ -161,20 +183,29 @@ export default function ChatPanel({ sessionId }: Props) {
 
   useEffect(() => {
     if (!activeTable && sessionId) {
-      getSession(sessionId)
-        .then((sess) => {
-          if (sess.table) {
-            const dbId = useSessionStore.getState().sessionDatabase[sessionId] || sess.datasource_id || "";
-            bindSession(sessionId, dbId, sess.table);
-          }
-        })
-        .catch((err) => {
-          if (err?.status === 404) {
-            setTableError(t("chat.tableNotFound"));
-          }
-        });
+      if (availableTables.length > 0) {
+        const defaultTable = availableTables[0];
+        switchSessionTable(sessionId, defaultTable);
+        if (database) {
+          bindSession(sessionId, database.id, defaultTable);
+        }
+      } else {
+        getSession(sessionId)
+          .then((sess) => {
+            if (sess.table) {
+              const dbId = useSessionStore.getState().sessionDatabase[sessionId] || sess.datasource_id || "";
+              bindSession(sessionId, dbId, sess.table);
+              switchSessionTable(sessionId, sess.table);
+            }
+          })
+          .catch((err) => {
+            if (err?.status === 404) {
+              setTableError(t("chat.tableNotFound"));
+            }
+          });
+      }
     }
-  }, [sessionId, activeTable, bindSession, t]);
+  }, [sessionId, activeTable, availableTables, database, bindSession, switchSessionTable, t]);
 
   async function handleTableChange(nextTable: string) {
     if (!nextTable || nextTable === activeTable || isTableSwitching || streaming) return;
@@ -202,9 +233,33 @@ export default function ChatPanel({ sessionId }: Props) {
     if (run?.unseen) markSeen(sessionId);
   }, [run?.unseen, sessionId, markSeen]);
 
+  // Автоскролл: не дёргаем smooth-анимацию на каждый чанк печати и не уводим
+  // ленту вниз, если пользователь читает историю выше.
   useEffect(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
+    if (!stickToBottomRef.current) return;
+    messagesEndRef.current?.scrollIntoView({ behavior: streaming ? "auto" : "smooth" });
   }, [messages, streaming]);
+
+  useEffect(() => {
+    if (!streaming) return;
+    const handleBeforeUnload = (e: BeforeUnloadEvent) => {
+      e.preventDefault();
+      e.returnValue = "";
+    };
+    window.addEventListener("beforeunload", handleBeforeUnload);
+    return () => window.removeEventListener("beforeunload", handleBeforeUnload);
+  }, [streaming]);
+
+  useEffect(() => {
+    stickToBottomRef.current = true;
+    messagesEndRef.current?.scrollIntoView({ behavior: "auto" });
+  }, [sessionId, activeTable]);
+
+  function handleMessagesScroll() {
+    const list = messagesListRef.current;
+    if (!list) return;
+    stickToBottomRef.current = list.scrollHeight - list.scrollTop - list.clientHeight < 80;
+  }
 
   // Цитата и варианты дашборда не должны «протечь» в другую сессию или таблицу.
   useEffect(() => {
@@ -547,7 +602,11 @@ export default function ChatPanel({ sessionId }: Props) {
       </div>
 
       {/* Лента сообщений */}
-      <div className="flex-1 space-y-5 overflow-y-auto px-4 py-6 md:px-8">
+      <div
+        ref={messagesListRef}
+        onScroll={handleMessagesScroll}
+        className="flex-1 space-y-5 overflow-y-auto px-4 py-6 md:px-8"
+      >
         {/* Ссылка-рецепт: графики без точек пересчитываются по кнопке (#250) */}
         <RecipeBanner sessionId={sessionId} messages={messages} />
         {messages.length === 0 ? (
@@ -598,18 +657,32 @@ export default function ChatPanel({ sessionId }: Props) {
                 <TableBriefCard brief={activeBrief} />
               </div>
             )}
-            <div className="mt-6 flex flex-col items-start gap-1">
-              {suggestions.map((q) => (
-                <button
-                  key={q}
-                  onClick={() => sendQuestion(q)}
-                  disabled={!activeTable}
-                  className="rounded-lg px-2 py-1 -mx-2 text-[13px] text-graphite-300 hover:bg-graphite-800 hover:text-graphite-50 transition disabled:opacity-50 disabled:cursor-not-allowed"
-                >
-                  {t("chat.quoted", { q })}
-                </button>
-              ))}
-            </div>
+            {(() => {
+              const chips = activeBrief?.suggested_questions?.length
+                ? activeBrief.suggested_questions
+                : getDatasetQuestions(
+                    activeTable,
+                    database?.title,
+                    activeBrief?.summary || database?.description
+                  );
+              return (
+                <div className="mt-6 flex flex-col items-start gap-1.5">
+                  <span className="text-[11px] font-medium text-graphite-400 uppercase tracking-wider mb-1">
+                    Релевантные вопросы к датасету:
+                  </span>
+                  {chips.map((q) => (
+                    <button
+                      key={q}
+                      onClick={() => sendQuestion(q)}
+                      disabled={!activeTable}
+                      className="rounded-lg px-2.5 py-1.5 -mx-2.5 text-left text-[13px] text-graphite-300 hover:bg-graphite-800 hover:text-graphite-50 transition disabled:opacity-50 disabled:cursor-not-allowed"
+                    >
+                      {t("chat.quoted", { q })}
+                    </button>
+                  ))}
+                </div>
+              );
+            })()}
           </div>
         ) : (
           messages.map((m, i) => (
@@ -648,9 +721,9 @@ export default function ChatPanel({ sessionId }: Props) {
                 )}
 
                 {/* Текст сообщения */}
-                {m.content && (
+                {(m.content || m.isStreaming) && (
                   <div
-                    className={`whitespace-pre-wrap ${
+                    className={`transition-opacity duration-200 ${m.progress ? "mt-2.5" : ""} ${
                       m.refusal
                         ? "border-l-2 border-warn/60 pl-3 text-graphite-300"
                         : m.dashboardFallback
@@ -658,7 +731,17 @@ export default function ChatPanel({ sessionId }: Props) {
                         : ""
                     }`}
                   >
-                    {m.content}
+                    {m.role === "agent" && !m.refusal ? (
+                      <MarkdownContent content={m.content} />
+                    ) : (
+                      <div className="whitespace-pre-wrap">{m.content}</div>
+                    )}
+                    {((m.role === "agent" && streaming && i === messages.length - 1) || (m.isStreaming && streaming)) && (
+                      <span
+                        className="inline-block w-1.5 h-4 ml-1 bg-good/80 animate-pulse motion-reduce:animate-none align-middle rounded-[1px]"
+                        aria-label="Генерация ответа"
+                      />
+                    )}
                   </div>
                 )}
 
@@ -842,7 +925,6 @@ export default function ChatPanel({ sessionId }: Props) {
                   !m.failed &&
                   !m.progress &&
                   !m.clarification &&
-                  !m.refusal &&
                   !(streaming && i === messages.length - 1) &&
                   (m.turn_id || m.answer || m.chart) && (
                     <AnswerActions

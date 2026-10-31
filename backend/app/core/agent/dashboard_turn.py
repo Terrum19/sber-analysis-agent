@@ -1,9 +1,11 @@
 """Ход дашборда по кнопке (#224): план плиток -> шаги плиток -> выбор графика LLM.
 
 Запрос пользователя (или выбранная идея) превращается в план из 4–5 плиток.
-Каждая плитка — отдельный маленький вопрос: обычный планировщик и исполнитель
-шагов, плитки идут по очереди (локальная модель держит один запрос за раз).
-Упавшая плитка пропускается. Вид графика и колонки осей
+Простая плитка приходит в плане с полями расчёта, и её шаги собирает код
+без LLM (core/dashboards/quick_tiles.py). Сложная плитка, или простая, чьи
+поля не подошли к таблице или чьи шаги упали, — обычный планировщик по её
+вопросу. Плитки идут по очереди (локальная модель держит один запрос за
+раз), упавшая пропускается. Вид графика и колонки осей
 выбирает LLM одним вызовом на все плитки, когда их результаты готовы;
 выбор проверяется по данным (viz/chart_choice.py), неподошедший — один
 повтор, дальше вид по intent.
@@ -15,12 +17,15 @@
 (``resume``): план не составляется заново, готовые плитки не пересчитываются,
 строятся только остальные.
 
-Сейчас сравниваем два варианта сборки плиток с одним контрактом событий:
-- plan_per_tile (эта ветка, feature/B-07-dashboard-buttons) — на каждую
-  плитку свой вызов планировщика;
+Сейчас сравниваем три варианта сборки плиток с одним контрактом событий:
+- plan_per_tile (feature/B-07-dashboard-buttons) — на каждую плитку свой
+  вызов планировщика;
 - quick_tiles (feature/B-07-dashboard-quick-tiles) — план дашборда сразу
   отдаёт поля простых плиток (показатель, агрегат, разрез, период), шаги
-  собирает код, планировщик — только для сложных плиток.
+  собирает код, планировщик — только для сложных плиток;
+- rich_tiles (эта ветка, feature/B-07-dashboard-rich-tiles) — как
+  quick_tiles, плюс формула показателя и 1–2 дополнительных показателя у
+  простой плитки: выручка, маржа и сравнение показателей без планировщика.
 Вариант пишется в лог хода (DASHBOARD_VARIANT), чтобы сравнивать прогоны.
 """
 
@@ -30,6 +35,7 @@ import time
 from collections.abc import AsyncIterator
 
 from app.api.schemas.chat import ChatRequest, DashboardPayload
+from app.core.agent.budget import BudgetExceeded
 from app.core.agent.chart_pick import ask_chart
 from app.core.agent.orchestrator import (
     DASHBOARD_CHECKPOINT,
@@ -41,7 +47,7 @@ from app.core.agent.orchestrator import (
     _arrange,
     _done,
     _elapsed_ms,
-    _plan_event,
+    _ignore,
     _progress_event,
     _require_steps,
     existing_results,
@@ -50,6 +56,8 @@ from app.core.dashboards.explain import explain_tile
 from app.core.dashboards.generator import DashboardGenerator
 from app.core.dashboards.ideas import describe_table, generate_ideas
 from app.core.dashboards.models import DashboardTile
+from app.core.dashboards.quick_tiles import quick_plan
+from app.core.data import overview
 from app.core.llm.client import LLMClient
 from app.core.llm.prompts.chart_selector import CHART_KINDS
 from app.core.llm.prompts.dashboard_builder import (
@@ -57,6 +65,7 @@ from app.core.llm.prompts.dashboard_builder import (
     CHART_RETRY,
     CHART_TILE,
     DASHBOARD_OUTLINE,
+    OUTLINE_FEW_TILES,
     OUTLINE_FORCED,
     OUTLINE_NO_TILES,
     OUTLINE_NOT_ENOUGH,
@@ -86,7 +95,7 @@ from app.models.research_step import TILE_STEP_IDS, ResearchStep
 logger = logging.getLogger(__name__)
 
 # Какой вариант сборки плиток сравниваем (см. docstring модуля).
-DASHBOARD_VARIANT = "plan_per_tile"
+DASHBOARD_VARIANT = "rich_tiles"
 
 # Меньше плиток — это уже не дашборд.
 MIN_BUILT_TILES = 2
@@ -166,6 +175,7 @@ class DashboardTurn:
                 },
             }
         )
+        kinds = {column.name: column.kind for column in overview.passport(self.db, table).columns}
         logger.info("дашборд: вариант=%s", DASHBOARD_VARIANT)
 
         emit(_progress_event("outline", "started", turn_id=memory.turn_id))
@@ -232,12 +242,15 @@ class DashboardTurn:
             if tile_id in done:
                 emit(_progress_event("tile", "finished", tile_id=tile_id, purpose=tile.title))
                 continue
-            execution = await self._tile(memory, tile_id, tile, emit)
+            execution = await self._tile(memory, tile_id, tile, kinds, emit)
             if execution is not None:
                 done[tile_id] = (execution.result_table, execution.steps)
                 checkpoint()
         built = {tile_id: (tiles[tile_id], done[tile_id][0]) for tile_id in sorted(done)}
-        if len(built) < MIN_BUILT_TILES:
+        # Одна плитка — не полноценный дашборд, но если модель спланировала
+        # только её, собираем одну, а не теряем уже посчитанный результат.
+        required = max(1, min(MIN_BUILT_TILES, len(tiles)))
+        if len(built) < required:
             message = TOO_FEW_TILES.format(built=len(built), total=len(tiles))
             emit(_progress_event("dashboard", "failed", error=message))
             emit({"type": "error", "data": {"message": message}})
@@ -285,11 +298,20 @@ class DashboardTurn:
         emit({"type": "dashboard", "data": payload.model_dump(exclude_none=True)})
 
         failed = [tile.title for tile_id, tile in enumerate(tiles) if tile_id not in built]
+        if len(tiles) < MIN_BUILT_TILES:
+            details_note = (
+                f"Модель предложила плиток: {len(tiles)} — меньше обычного, "
+                "дашборд собран из того, что удалось построить."
+            )
+        else:
+            details_note = ""
         headline = f"Дашборд «{title}» готов: плиток {len(built)}. Что и как посчитано:"
         details = [
             f"{tile.title}: {explain_tile(done[tile_id][1], titles, records[tile_id])}."
             for tile_id, (tile, _) in built.items()
         ]
+        if details_note:
+            details.append(details_note)
         if failed:
             details.append("Не удалось построить: " + ", ".join(failed) + ".")
         emit({"type": "text", "data": {"headline": headline, "details": details}})
@@ -331,12 +353,38 @@ class DashboardTurn:
         )
         outline = await self._ask_outline(prompt)
         if forced and len(outline.tiles) < MIN_BUILT_TILES:
-            logger.warning("дашборд: план по идее без плиток, переспрос с ошибкой")
-            problem = OUTLINE_NO_TILES if outline.enough_info else OUTLINE_NOT_ENOUGH
+            logger.warning(
+                "дашборд: план по идее неполный (%d плиток), переспрос", len(outline.tiles)
+            )
+            if not outline.tiles:
+                problem = OUTLINE_NOT_ENOUGH if not outline.enough_info else OUTLINE_NO_TILES
+            else:
+                problem = OUTLINE_FEW_TILES.format(
+                    count=len(outline.tiles), min_tiles=MIN_TILES, max_tiles=MAX_TILES
+                )
             retry = OUTLINE_RETRY.format(problem=problem, min_tiles=MIN_TILES, max_tiles=MAX_TILES)
-            outline = await self._ask_outline(prompt + retry)
-            if len(outline.tiles) < MIN_BUILT_TILES:
+            first = outline
+            try:
+                outline = await self._ask_outline(prompt + retry)
+            except (BudgetExceeded, TimeoutError, ValueError) as exc:
+                # Переспрос не удался, но первый ответ был разбираемым:
+                # лучше собрать по нему, чем потерять уже готовый план.
+                logger.warning("дашборд: переспрос не удался (%s), оставляем первый план", exc)
+                return first
+            if not outline.tiles:
+                if first.tiles:
+                    logger.warning("дашборд: переспрос вернул пустой план, оставляем первый")
+                    return first
                 raise ValueError("Модель не составила план дашборда")
+            if len(outline.tiles) < MIN_BUILT_TILES:
+                # Пусть лучше будет дашборд из одной осмысленной плитки, чем
+                # ошибка после уже показанного плана: результат не теряем.
+                logger.warning(
+                    "дашборд: модель вернула %d плиток вместо %d–%d, собираем что есть",
+                    len(outline.tiles),
+                    MIN_TILES,
+                    MAX_TILES,
+                )
         logger.info(
             "дашборд: план %r enough_info=%s плитки=%s",
             outline.title,
@@ -364,9 +412,19 @@ class DashboardTurn:
         memory: SessionMemory,
         tile_id: int,
         tile: OutlineTile,
-        emit: Emit,
+        kinds: dict[str, str] | Emit | None = None,
+        emit: Emit = _ignore,
     ) -> Execution | None:
-        """Шаги одной плитки; вернуть итог выполнения или None, если плитка упала."""
+        """Шаги одной плитки; вернуть итог выполнения или None, если плитка упала.
+
+        Простая плитка — шаги из её полей без LLM; не собрались или упали —
+        плитку строит планировщик по её вопросу.
+        """
+        if callable(kinds) and emit is _ignore:
+            emit = kinds
+            kinds = {}
+        elif kinds is None:
+            kinds = {}
 
         def tile_emit(event: dict) -> None:
             if event["type"] == "progress":
@@ -375,18 +433,53 @@ class DashboardTurn:
 
         emit(_progress_event("tile", "started", tile_id=tile_id, purpose=tile.title))
         started_at = time.perf_counter()
+        start = (tile_id + 1) * TILE_STEP_IDS
         try:
-            context = memory.build_context(tile.question)
-            context["next_step_id"] = (tile_id + 1) * TILE_STEP_IDS
-            context["tile"] = True
-            # Плитка «по регионам» на таблице заказов — через join_related (#165).
-            context["related"] = self.agent._related(memory.table, tile.question)
-            plan = await self.agent._plan(tile.question, context)
-            _require_steps(plan)
-            tile_emit(_plan_event(plan.steps))
-            execution = await self.agent._execute_plan(
-                memory, plan, memory.table, tile.question, emit=tile_emit, checkpoint=False
-            )
+            execution = None
+            quick = quick_plan(tile, kinds, start)
+            if quick is not None:
+                logger.info("    плитка %d %r: шаги из полей плана", tile_id, tile.title)
+                try:
+                    execution = await self.agent._execute_plan(
+                        memory,
+                        quick,
+                        memory.table,
+                        tile.question,
+                        emit=tile_emit,
+                        checkpoint=False,
+                    )
+                except Exception:
+                    logger.exception("    плитка %d: шаги из полей упали, планировщик", tile_id)
+                    memory.clear_pending_recovery()
+                    start += TILE_STEP_IDS // 2
+            if execution is None:
+                logger.info("    плитка %d %r: планировщик", tile_id, tile.title)
+                context = memory.build_context(tile.question)
+                context["next_step_id"] = start
+                context["tile"] = True
+                context["tile_id"] = tile_id
+                context["tile_title"] = tile.title
+                context["tile_intent"] = tile.intent
+                # Плитка «по регионам» на таблице заказов — через join_related (#165).
+                context["related"] = self.agent._related(memory.table, tile.question)
+                plan = await self.agent._plan_or_create(
+                    tile.question,
+                    context,
+                    memory.table,
+                    tile_emit,
+                    allow_empty_remember=False,
+                    tile_id=tile_id,
+                    turn_id=memory.turn_id,
+                )
+                _require_steps(plan)
+                execution = await self.agent._execute_plan(
+                    memory,
+                    plan,
+                    memory.table,
+                    tile.question,
+                    emit=tile_emit,
+                    checkpoint=False,
+                )
         except Exception as exc:
             if isinstance(exc, ClarificationNeeded):
                 # Уточнять у пользователя нечего: плитка просто не строится.

@@ -71,6 +71,16 @@ services:
       LLM_NUM_CTX: ${OLLAMA_CONTEXT_LENGTH:-16384}
       # Эмбеддинги — с той же Ollama: переход к другим данным по смыслу вопроса.
       EMBED_MODEL: ${EMBED_MODEL:-bge-m3}
+      # Ограничение генерации и бюджет хода: без них запрос может идти до конца контекста.
+      LLM_MAX_TOKENS: ${LLM_MAX_TOKENS:-1536}
+      # Повтор обрезанного рассуждением ответа с увеличенным лимитом.
+      LLM_LENGTH_RETRY_TOKENS: ${LLM_LENGTH_RETRY_TOKENS:-4096}
+      # Размышления и провайдер OpenRouter (пусто — параметры не передаются;
+      # Ollama/vLLM их не понимают). Значения — из .env.
+      LLM_REASONING_EFFORT: ${LLM_REASONING_EFFORT:-}
+      LLM_PROVIDER: ${LLM_PROVIDER:-}
+      AGENT_TURN_TIMEOUT_S: ${AGENT_TURN_TIMEOUT_S:-870}
+      AGENT_MAX_STEPS: ${AGENT_MAX_STEPS:-8}
     # На Linux host.docker.internal есть только с этой записью (на Mac/Windows — всегда).
     extra_hosts:
       - "host.docker.internal:host-gateway"

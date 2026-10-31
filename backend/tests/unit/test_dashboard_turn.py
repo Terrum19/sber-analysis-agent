@@ -10,8 +10,10 @@ from app.api.schemas.chat import ChatRequest
 from app.config import settings
 from app.core.agent import dashboard_turn
 from app.core.agent.orchestrator import NO_TABLE_MESSAGE, AgentOrchestrator
+from app.core.agent.step_executor import StepExecutor
 from app.core.dashboards import ideas
 from app.core.dashboards.explain import explain_tile
+from app.core.dashboards.quick_tiles import quick_plan
 from app.core.dashboards.store import DashboardStore
 from app.core.data import relations
 from app.core.data.duckdb_manager import DuckDBManager
@@ -180,8 +182,9 @@ async def test_idea_builds_dashboard_with_llm_chart_choice(db) -> None:
         (3, "failed")
     ) == 1
     assert all(step["tile_id"] in range(4) for step in stages(events, "step"))
-    # План каждой плитки приходит строками со своим tile_id (#239).
-    plans = stages(events, "planning")
+    # План каждой плитки приходит строками со своим tile_id (#239); до него —
+    # planning/started без шагов.
+    plans = [plan for plan in stages(events, "planning") if plan["status"] == "finished"]
     assert plans and all(plan["tile_id"] in range(4) and plan["steps"] for plan in plans)
 
     dashboard = saved(events)
@@ -308,6 +311,66 @@ async def test_outline_without_tiles_for_an_idea_is_asked_again_then_fails(db) -
     assert len(llm.prompts["DashboardOutline"]) == 2
     assert kinds(events) == ["error", "done"]
     assert stages(events, "dashboard")[-1]["status"] == "failed"
+
+
+async def test_outline_with_one_tile_builds_a_dashboard(db) -> None:
+    one = DashboardOutline(
+        title="Цены",
+        tiles=[OutlineTile(title="Регионы", question="Выручка по регионам", intent="compare")],
+    )
+    llm = ScriptedLLM(DashboardOutline=[one, one], ChartChoices=[RuntimeError("timeout")])
+    events = await collect(agent(db, llm), question="Цены", idea=DashboardIdea(title="Цены"))
+
+    assert "error" not in kinds(events)
+    dashboard = next(event for event in events if event["type"] == "dashboard")
+    assert len(dashboard["data"]["tiles"]) == 1
+    text = next(event for event in events if event["type"] == "text")
+    assert "меньше обычного" in " ".join(text["data"]["details"])
+
+
+async def test_retry_reports_the_actual_number_of_tiles(db) -> None:
+    one = DashboardOutline(
+        title="Цены",
+        tiles=[OutlineTile(title="Регионы", question="Выручка по регионам", intent="compare")],
+    )
+    llm = ScriptedLLM(DashboardOutline=[one, OUTLINE], ChartChoices=[RuntimeError("timeout")])
+    await collect(agent(db, llm), question="Цены", idea=DashboardIdea(title="Цены"))
+
+    second = llm.prompts["DashboardOutline"][1]
+    assert "в плане плиток: 1" in second
+    assert "нужно от 4 до 5" in second
+
+
+async def test_failed_retry_keeps_the_first_outline(db) -> None:
+    one = DashboardOutline(
+        title="Цены",
+        tiles=[OutlineTile(title="Регионы", question="Выручка по регионам", intent="compare")],
+    )
+    llm = ScriptedLLM(
+        DashboardOutline=[one, ValueError("LLM не вернул валидный JSON")],
+        ChartChoices=[RuntimeError("timeout")],
+    )
+    events = await collect(agent(db, llm), question="Цены", idea=DashboardIdea(title="Цены"))
+
+    assert "error" not in kinds(events)
+    dashboard = next(event for event in events if event["type"] == "dashboard")
+    assert len(dashboard["data"]["tiles"]) == 1
+
+
+async def test_empty_retry_keeps_the_first_outline(db) -> None:
+    one = DashboardOutline(
+        title="Цены",
+        tiles=[OutlineTile(title="Регионы", question="Выручка по регионам", intent="compare")],
+    )
+    llm = ScriptedLLM(
+        DashboardOutline=[one, DashboardOutline()],
+        ChartChoices=[RuntimeError("timeout")],
+    )
+    events = await collect(agent(db, llm), question="Цены", idea=DashboardIdea(title="Цены"))
+
+    assert "error" not in kinds(events)
+    dashboard = next(event for event in events if event["type"] == "dashboard")
+    assert len(dashboard["data"]["tiles"]) == 1
 
 
 async def test_dashboard_needs_a_table() -> None:
@@ -505,6 +568,140 @@ def test_ideas_endpoint(db, monkeypatch) -> None:
         app.dependency_overrides.clear()
 
 
+# --- Вариант quick_tiles: шаги простых плиток из полей плана, без планировщика.
+
+KINDS = {"region": "text", "day": "temporal", "amount": "numeric"}
+
+
+class HybridExecutor(SqlExecutor):
+    """Шаги планировщика-заглушки — по SQL, шаги из полей плитки — настоящими тулами."""
+
+    def __init__(self, db: DuckDBManager) -> None:
+        super().__init__(db)
+        self.tools = StepExecutor(db)
+
+    async def execute(self, step: ResearchStep, input_table: str, **kwargs: object) -> str:
+        if "sql" in step.arguments:
+            return await super().execute(step, input_table)
+        return await self.tools.execute(step, input_table, **kwargs)
+
+
+def quick_agent(db, llm: ScriptedLLM) -> tuple[AgentOrchestrator, SqlPlanner]:
+    planner = SqlPlanner(llm)
+    planner.fix_step = _no_fix
+    orchestrator = AgentOrchestrator(
+        planner=planner, executor=HybridExecutor(db), insight_gen=NoInsight(), db=db
+    )
+    return orchestrator, planner
+
+
+def simple(title: str, **fields: object) -> OutlineTile:
+    return OutlineTile(title=title, question="Выручка по регионам", kind="simple", **fields)
+
+
+async def test_simple_tiles_skip_the_planner(db) -> None:
+    outline = DashboardOutline(
+        title="Продажи",
+        tiles=[
+            simple("Выручка", metric="amount", agg="SUM"),
+            simple("Топ регионов", metric="amount", agg="SUM", by="region", top=2),
+            simple("По дням", agg="COUNT", period="day", date_column="day"),
+            simple(
+                "Москва", metric="amount", agg="AVG", filter_column="region", filter_value="msk"
+            ),
+            OutlineTile(title="Сложная", question="Выручка по дням", kind="complex"),
+        ],
+    )
+    llm = ScriptedLLM(DashboardOutline=[outline], ChartChoices=[RuntimeError("timeout")])
+    orchestrator, planner = quick_agent(db, llm)
+    events = await collect(orchestrator, question="Продажи по регионам и дням")
+
+    assert kinds(events) == ["dashboard_outline", "dashboard", "text", "done"]
+    # Планировщик позван только для сложной плитки.
+    assert [context["next_step_id"] for context in planner.contexts] == [500]
+    tiles = {tile.title: tile for tile in saved(events).tiles}
+    assert len(tiles) == 5
+    top = db.query(f"SELECT * FROM {tiles['Топ регионов'].result_table}")
+    assert top == [{"region": "msk", "sum_amount": 12.5}, {"region": "ekb", "sum_amount": 7.0}]
+    assert tiles["Выручка"].spec["usermeta"]["chart_type"] == "kpi"
+    assert tiles["Москва"].snapshot_data is not None
+
+
+async def test_failed_simple_tile_falls_back_to_the_planner(db) -> None:
+    # Фильтр числа строкой падает в DuckDB — плитку строит планировщик.
+    broken = simple("Сломано", agg="COUNT", filter_column="amount", filter_value="много")
+    outline = DashboardOutline(
+        title="x", tiles=[broken, simple("Выручка", metric="amount", agg="SUM")]
+    )
+    llm = ScriptedLLM(DashboardOutline=[outline], ChartChoices=[RuntimeError("timeout")])
+    orchestrator, planner = quick_agent(db, llm)
+    events = await collect(orchestrator, question="Продажи по регионам и дням")
+    assert [context["next_step_id"] for context in planner.contexts] == [150]
+    assert len(saved(events).tiles) == 2
+
+
+def test_quick_plan_builds_steps_from_fields() -> None:
+    tile = simple(
+        "t",
+        metric="amount",
+        agg="SUM",
+        by="region",
+        top=3,
+        filter_column="day",
+        filter_value="2024-01-01",
+    )
+    plan = quick_plan(tile, KINDS, start=100)
+    assert [(step.step_id, step.tool, step.input) for step in plan.steps] == [
+        (100, "filter_rows", "$source"),
+        (101, "group_by", "$prev"),
+        (102, "sort_limit", "$prev"),
+    ]
+    assert plan.steps[2].arguments["order_by"] == "sum_amount"
+    assert plan.result_step == 102
+    trend = quick_plan(
+        simple("t", agg="COUNT", by="region", period="month", date_column="day"), KINDS, 0
+    )
+    assert trend.steps[0].arguments["by"] == ["region"]
+
+
+@pytest.mark.parametrize(
+    "fields",
+    [
+        {"kind": "complex", "agg": "COUNT"},
+        {"agg": None},
+        {"agg": "COUNT", "by": "nope"},
+        {"agg": "SUM"},
+        {"agg": "SUM", "metric": "region"},
+        {"agg": "COUNT", "period": "month", "date_column": "region"},
+        {"agg": "COUNT", "filter_column": "region"},
+        {"agg": "COUNT", "by": "region", "top": 0},
+    ],
+)
+def test_quick_plan_rejects_fields_that_do_not_fit(fields) -> None:
+    tile = OutlineTile(title="t", question="q", **{"kind": "simple", **fields})
+    plan = quick_plan(tile, KINDS, 0)
+    # top=0 — не ошибка: поле отбрасывается, sort_limit не добавляется.
+    if fields.get("top") == 0:
+        assert [step.tool for step in plan.steps] == ["group_by"]
+    else:
+        assert plan is None
+
+
+def test_tile_fields_are_normalized() -> None:
+    tile = OutlineTile(
+        title="t", question="q", kind="Simple", agg="sum", period="Month", by=" ", top=500
+    )
+    assert (tile.kind, tile.agg, tile.period, tile.by, tile.top) == (
+        "simple",
+        "SUM",
+        "month",
+        None,
+        None,
+    )
+    odd = OutlineTile(title="t", question="q", kind="tricky", agg="mode", period="decade")
+    assert (odd.kind, odd.agg, odd.period) == ("complex", None, None)
+
+
 def step(tool: str, **arguments: object) -> ResearchStep:
     return ResearchStep(tool=tool, arguments=arguments, purpose=f"цель {tool}")
 
@@ -632,6 +829,92 @@ async def test_retry_tells_the_model_what_was_wrong(db) -> None:
     events = await collect(agent(db, llm), question="Продажи", idea=idea)
     assert "ключ tiles пропущен или пуст" in llm.prompts["DashboardOutline"][1]
     assert "dashboard" in kinds(events)
+
+
+# --- Вариант rich_tiles: формула показателя и дополнительные показатели.
+
+
+async def test_formula_and_extra_metrics_skip_the_planner(db) -> None:
+    revenue = {"metric": "revenue", "expression": "amount * 2"}
+    outline = DashboardOutline(
+        title="Продажи",
+        tiles=[
+            simple("Выручка", agg="SUM", **revenue),
+            simple(
+                "Регионы",
+                agg="SUM",
+                by="region",
+                top=2,
+                **revenue,
+                extra_metrics=[{"agg": "COUNT"}],
+            ),
+            simple(
+                "По дням",
+                agg="SUM",
+                period="day",
+                date_column="day",
+                **revenue,
+                extra_metrics=[{"metric": "amount", "agg": "AVG"}],
+            ),
+            simple(
+                "Средняя выручка",
+                agg="AVG",
+                **revenue,
+                extra_metrics=[{"metric": "revenue", "agg": "MAX"}],
+            ),
+        ],
+    )
+    llm = ScriptedLLM(DashboardOutline=[outline], ChartChoices=[RuntimeError("timeout")])
+    orchestrator, planner = quick_agent(db, llm)
+    events = await collect(orchestrator, question="Продажи по регионам и дням")
+
+    assert planner.contexts == []
+    tiles = {tile.title: tile for tile in saved(events).tiles}
+    assert db.query(f"SELECT * FROM {tiles['Выручка'].result_table}") == [{"sum_revenue": 47.0}]
+    assert db.query(f"SELECT * FROM {tiles['Регионы'].result_table}") == [
+        {"region": "msk", "sum_revenue": 25.0, "n": 2},
+        {"region": "ekb", "sum_revenue": 14.0, "n": 1},
+    ]
+    by_day = db.query(f"SELECT * FROM {tiles['По дням'].result_table}")
+    assert list(by_day[0]) == ["period", "sum_revenue", "avg_amount"]
+    assert len(by_day) == 4
+    text = next(event["data"] for event in events if event["type"] == "text")
+    assert any(
+        "новый показатель «revenue» = amount * 2; разбивка по дням («day»); "
+        "сумма «revenue», среднее «amount» по «период»" in line
+        for line in text["details"]
+    )
+
+
+@pytest.mark.parametrize(
+    "fields",
+    [
+        {"agg": "SUM", "expression": "amount * 2"},
+        {"agg": "SUM", "metric": "amount", "expression": "amount * 2"},
+        {"agg": "SUM", "metric": "amount", "extra_metrics": [{"metric": "nope"}]},
+        {"agg": "SUM", "metric": "amount", "extra_metrics": [{"agg": "AVG"}]},
+        {"agg": "SUM", "metric": "amount", "extra_metrics": [{"metric": "region", "agg": "AVG"}]},
+    ],
+)
+def test_rich_fields_that_do_not_fit_go_to_the_planner(fields) -> None:
+    assert (
+        quick_plan(OutlineTile(title="t", question="q", kind="simple", **fields), KINDS, 0) is None
+    )
+
+
+def test_period_column_clash_goes_to_the_planner() -> None:
+    tile = simple(
+        "t", agg="COUNT", period="month", date_column="day", extra_metrics=[{"metric": "amount"}]
+    )
+    assert quick_plan(tile, {**KINDS, "period": "text"}, 0) is None
+    assert quick_plan(tile, KINDS, 0) is not None
+
+
+def test_tile_metric_fields_are_normalized() -> None:
+    tile = OutlineTile(title="t", question="q", extra_metrics=None, expression=" ")
+    assert (tile.extra_metrics, tile.expression) == ([], None)
+    odd = OutlineTile(title="t", question="q", extra_metrics=[{"agg": "mode", "metric": ""}])
+    assert (odd.extra_metrics[0].agg, odd.extra_metrics[0].metric) == ("SUM", None)
 
 
 class StoppingPlanner(SqlPlanner):

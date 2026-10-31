@@ -6,9 +6,19 @@
 вопрос пользователя
   |
   v
+[0] Router (правила, <10 мс) --> простой вопрос: шаблонный план без LLM
+  |        «сколько строк», «общая сумма», «топ-N», «по месяцам», «распределение»
+  |
+  v
 [1] Planner (LLM + Instructor) --> ResearchPlan {steps[], final_viz, dashboard_requested,
   |        dashboard_title, template_id, dashboard_tiles[]} (план дашборда: docs/visualization.md)
   |        вход: вопрос, топ-5 релевантных колонок (semantic_select), контекст сессии
+  |        пустой план / неизвестный инструмент
+  v
+[1b] Toolgen (опц.): LLM проектирует декларативную спеку (SQL-шаблон или Python
+  |        для WASM-песочницы) -> статические проверки -> smoke/reference/checks
+  |        на выборке входной таблицы -> регистрация в ToolRegistry -> перепланирование.
+  |        Код LLM в процесс бэкенда не импортируется (docs/architecture.md, sandbox.md).
   v
 [2] StepExecutor: последовательное применение шагов
   |        тул = предзаписанный SQL/стат-тест (подстановка колонок)
@@ -17,10 +27,11 @@
   |        нет тула -> WASM-песочница (кодогенерация LLM)
   |        каждый шаг -> temp_result_vN в DuckDB (state cache)
   |        устаревшие temp_result_vN удаляются по RESULT_TTL_S (docs/memory.md)
+  |        SQL выполняется в рабочем потоке с SQL_TIMEOUT_S и interrupt()
   |        сбой -> recovery: планировщик исправляет шаг по тексту ошибки
-  |        (до 2 раз, событие progress/fixing) -> уточнение у пользователя
+  |        (AGENT_STEP_FIX_ATTEMPTS) -> уточнение у пользователя
   v
-[3] InsightGenerator (LLM) --> Insight {headline, details, limits}
+[3] InsightGenerator (LLM или шаблон для одной ячейки) --> Insight {headline, details, limits}
   |
   v
 [4] Визуализация: chart_pick (LLM: шаг, вид, колонки; запасной — chart_selector) -> vega_spec_builder (Vega-Lite JSON)
@@ -28,7 +39,7 @@
   v
 [5] (опц.) DashboardGenerator -> DashboardStore (SQLite: плитки, Vega, снимки данных)
   |        плитки — из dashboard_tiles плана: по плитке на шаг, вывод LLM — только
-  |        у insight_needed; плиток нет — одна плитка с графиком ответа
+  |        у insight_needed; плитки считаются параллельно (AGENT_MAX_PARALLEL_LLM)
   v
 [6] (опц.) Экспорт: ExcelExporter (.xlsx) / PDFExporter (.pdf)
 ```
@@ -39,6 +50,7 @@
 |---|---|
 | **DuckDB как единый движок** | SQL в едином диалекте к CSV/PostgreSQL/ClickHouse без предобработки |
 | **ResearchStep + реестр тулов** | расширяемость: новый тул = файл, оркестратор не меняется |
+| **Toolgen: спека, а не Python-модуль** | LLM создаёт декларативную спеку; SQL проверяется по AST DuckDB, Python исполняется только в WASM — импорт кода LLM в процесс бэкенда был бы RCE |
 | **Семантический отбор топ-5 колонок** | схема неконтролируемого размера не влезает в контекст LLM |
 | **WASM-песочница вместо Docker** | инкапсуляция кодогенерации без «жирного» контейнера |
 | **chart_morph без LLM** | «покажи в другом виде» — быстро и дёшево, не нагружая локальную модель |
@@ -46,6 +58,92 @@
 | **4 уровня памяти** | сессия (последние 3 хода) / кеш результатов (DuckDB) / паспорт данных (DuckDB `_meta`) / реестр дашбордов |
 | **Замкнутый контур** | Ollama/vLLM локально; интернет — только к разрешённым доменам (HuggingFace, пакеты) |
 | **Контекст LLM на сервере, проверка в клиенте** | Ollama молча обрезает начало длинного промпта, а `options.num_ctx` в `/v1` не действует (0.24, 0.35.1). Контекст задаёт сервер (`LLM_NUM_CTX` = `OLLAMA_CONTEXT_LENGTH` / `--max-model-len`); клиент сверяет `usage.prompt_tokens` с контекстом сервера (0.24 упирается в него) и с оценкой по символам вместе со схемой тулов (0.35.1 оставляет ~половину контекста); контекст сервера спрашивается при старте бэкенда и переспрашивается, пока сервер его не назовёт; бюджет промпта — `core/llm/budget.py` |
+
+## Бюджет хода и деградация
+
+Общий дедлайн хода `AGENT_TURN_TIMEOUT_S` по умолчанию выключен (`0`): упор
+на качество, и ход идёт столько, сколько нужно для задачи. Если задать
+положительное значение, ход ограничен этим дедлайном (раньше был 870 с =
+14.5 мин). `TurnBudget` (`core/agent/budget.py`) хранит общий остаток,
+лимиты этапов (`planning`, `steps`, `insight`, `chart`, `dashboard`) и
+счётчик вызовов LLM. При выключенном общем дедлайне лимит этапа `steps`
+не задаётся: каждый шаг всё равно ограничен `AGENT_STEP_TIMEOUT_S`.
+
+От зависаний и бесконечных циклов защищают не общий таймер, а явные
+ограничители: `AGENT_MAX_STEPS` (длина плана), `AGENT_MAX_REPLANS` (достройка
+после lookup), `AGENT_STEP_FIX_ATTEMPTS` (исправления шага),
+`TOOLGEN_MAX_PER_TURN` (создание инструментов), один переспрос планировщика,
+`MAX_TILES` у дашборда и `AGENT_MAX_LLM_CALLS` (вызовы LLM за ход).
+Плюс таймауты отдельных операций: LLM, шаг, инсайт, дашборд.
+
+| Что закончилось | Поведение |
+|---|---|
+| Общий дедлайн (если задан) | `error` с текстом «Не удалось завершить ход за N минут» + `done{message:"timeout"}`; задача плана отменяется. По умолчанию дедлайна нет |
+| Бюджет планирования | `clarification_needed`: попросить уточнить/сузить вопрос |
+| Бюджет шага/SQL | шаг прерывается (`interrupt()`), recovery не тратит больше `AGENT_STEP_FIX_ATTEMPTS` |
+| Бюджет инсайта | шаблонный `fallback_insight`: результат уже есть, LLM не вызывается |
+| Бюджет дашборда | дашборд пропускается, текст и график остаются у пользователя |
+| Лимит `AGENT_MAX_LLM_CALLS` | следующий `LLMClient.complete` поднимает `BudgetExceeded` до сети |
+
+Лимиты: `AGENT_TURN_TIMEOUT_S=0` (без общего дедлайна), `AGENT_MAX_STEPS=8`,
+`AGENT_MAX_LLM_CALLS=24`, `LLM_MAX_TOKENS=1536`, `AGENT_MAX_REPLANS=1`,
+`SQL_TIMEOUT_S=60`. Простые вопросы обслуживает `core/agent/router.py` без
+планировщика; одна числовая ячейка получает шаблонный инсайт без LLM.
+Метрики хода (`route`, `llm_calls`, `prompt_tokens`, `total_ms`, этапы) есть в
+`done`, в итоговой строке лога и в SQLite (`GET /api/metrics/turns`, `/summary`).
+
+## P1: semantic layer, DAG, typed schema, pool, cache
+
+P1-возможности включаются флагами (`AGENT_SEMANTIC_LAYER`, `AGENT_DAG_EXECUTOR`,
+`AGENT_TYPED_SCHEMA`, `AGENT_PLAN_CACHE`, `AGENT_RESULT_CACHE`), по умолчанию
+выключены, чтобы не менять поведение P0.
+
+- **Semantic layer** (`models/semantic.py`, `core/data/semantic_model.py`):
+  метрики/измерения/joins хранятся в `_meta.semantic_model`, API —
+  `GET/PUT/DELETE /api/datasources/tables/{table}/semantic-model`.
+  `SemanticPlanner` маппит вопрос на метрики и время, `SemanticCompiler`
+  собирает обычный `ResearchPlan` или SQL для dry-run.
+- **DAG**: `ResearchStep.depends_on`, `PlanGraph` выводит зависимости из
+  `$prev`/`$step_N`, `ParallelPlanExecutor` выполняет независимые слои
+  параллельно; ошибка узла не запускает dependents.
+- **Typed schema**: `core/tools/schema.py` строит `oneOf` по top-k тулам или
+  компактный `tool.enum` для полного списка; `LLMClient.complete_structured`
+  принимает `schema_override`.
+- **Dry-run**: `DryRunValidator` проверяет SQL шагов через `EXPLAIN` до выполнения.
+- **Model pool** (`core/llm/profiles.py`): роли planner/fast/sql/fallback,
+  переопределения `LLM_MODEL_PLANNER/FAST/SQL` и `LLM_BASE_URL_FAST/SQL`.
+- **Caches** (`core/cache/`): exact-match планы и результаты по
+  question/schema/model/data_version, TTL и инвалидация по таблице.
+- **Schema index** (`core/data/schema_index.py`): lexical всегда, embeddings —
+  при установленном `sentence-transformers` и заданном `EMBED_MODEL`.
+
+## Toolgen: инструмент как данные
+
+Когда планировщик вернул пустой план (кроме просьбы `remember`) или сослался
+на неизвестный инструмент, оркестратор вызывает `ToolFactory`
+(`core/tools/toolgen/factory.py`). LLM возвращает `GeneratedToolSpec`:
+SQL-шаблон с `{input}`/`{param}` либо Python-код, получающий `df` и `params`.
+Спека проходит каскад:
+
+1. статические правила — имя, параметры, AST DuckDB (один SELECT, только
+   `{input}`/CTE, без DDL/DML, table functions, `SAMPLE`, `getenv`,
+   `random/now/uuid`), AST Python (импорты, опасные вызовы, `result`);
+2. сборка динамической Pydantic-модели аргументов и разбор
+   `sample_arguments`;
+3. smoke на выборке `TOOLGEN_SAMPLE_ROWS` строк: `EXPLAIN`/исполнение,
+   непустой результат (если не `allow_empty`), уникальные колонки;
+4. `reference_sql` с независимым запросом или SQL-`checks` над
+   `__tool_result` — сравнение результатов.
+
+Только после этого инструмент регистрируется
+(`ToolRegistry.register_generated`) и, при `TOOLGEN_STORE=true`, сохраняется в
+`STORAGE_DIR/tools/generated/<name>.json`; при старте проверенные спеки
+загружаются снова. SQL исполняется в DuckDB с повторной AST-проверкой при
+каждом вызове, Python — только в `WASMSandbox`. При неудаче поведение
+прежнее: `clarification_needed`; `run_python` остаётся для разовых
+вычислений. Лимиты — `TOOLGEN_MAX_TOOLS`, `TOOLGEN_MAX_PER_TURN`,
+`TOOLGEN_ATTEMPTS`, `TOOLGEN_MAX_SQL_CHARS`, `TOOLGEN_MAX_CODE_CHARS`.
+
 
 ## Память
 
@@ -58,46 +156,76 @@
 
 | type | data | когда |
 |---|---|---|
-| `progress` | `ProgressPayload` (ниже) | по ходу хода: план, шаги, начало инсайта и графика |
+| `progress` | `ProgressPayload` (ниже) | по ходу хода: план, шаги, перепланирование, инсайт, график, дашборд |
 | `table` | `{table, previous, title}` | агент сам взял таблицу под вопрос до плана: у сессии её не было (`previous: null`) или вопрос явно про другие, несвязанные данные. `title` — название таблицы (#211) или `null`. Фронт переносит ленту на эту таблицу и пишет «Беру данные «…»» |
-| `text` | `{headline, details}` | инсайт готов |
+| `text` | `{chunk}` — дельта текста при `INSIGHT_STREAM=true`; `{headline, details}` — вывод целиком, когда стрим выключен или сработал фолбэк | инсайт готов / стримится |
 | `chart` | `{spec, caption, result_table?}` | Vega-Lite спека (нет, если план выбрал `final_viz: "none"`); `result_table` — `temp_result_vN` ответа (нет, если ответ без шагов): по нему плитка пересчитывается, а результат выгружается в Excel |
 | `dashboard` | `DashboardPayload {dashboard_id, title, tiles}` | дашборд собран по запросу; приходит после `chart` (график и инсайт ответа отдаются и при запросе дашборда) |
 | `clarification_needed` | `{step_id, error, suggestions}`, может быть `prompt_truncated` | шаг не выполнился, ждём `recovery_response`; `prompt_truncated` — как в `done` |
 | `error` | `{message}` | сбой хода; дальше `done` |
-| `done` | `{}` или `{prompt_truncated}` | ход завершён; `prompt_truncated` — сколько промптов хода сервер LLM обрезал (только если > 0) |
+| `done` | `{turn_id, route, llm_calls, prompt_tokens, total_ms}` (+ `message`, `prompt_truncated`) | ход завершён; `prompt_truncated` — сколько промптов хода сервер LLM обрезал (только если > 0); `message="timeout"` — сработал жёсткий дедлайн |
 
-`ProgressPayload`: `stage` (`planning` / `step` / `insight` / `chart` /
-`dashboard`), `status` (`started` / `finished` / `failed` / `fixing`) и
-необязательные `step_id`, `tool`, `purpose`, `total_steps`, `elapsed_ms`,
-`attempt`, `error`, а также план и детали шага (#239, ниже) — пустые поля в
-событие не попадают.
+`ProgressPayload`: `stage` (`planning` / `replanning` / `toolgen` / `step` / `insight` /
+`chart` / `dashboard`), `status` (`started` / `substage` / `finished` /
+`failed` / `fixing`) и необязательные `step_id`, `tool`, `purpose`,
+`total_steps`, `planned_steps`, `steps`, `elapsed_ms`, `attempt`, `error`,
+`substage`, а также детали шага (#239, ниже) — пустые поля в событие не
+попадают. `planned_steps` — типизированный список `{step_id, purpose?, tool?}`:
+`purpose` — назначение от модели, если его нет, фронт показывает `tool`;
+«Шаг N» формируется на клиенте через i18n. `substage` — реальная фаза
+планирования (`semantic` / `llm` / `validation`), фронт рисует её под активной
+стадией. `elapsed_ms` у этапов (`planning`, `replanning`, `toolgen`, `insight`,
+`chart`, `dashboard`) замеряется `perf_counter()` на сервере и не включает
+сетевую задержку.
 
 События прогресса по порядку:
 
 | stage | status | поля | когда |
 |---|---|---|---|
 | `planning` | `started` | — | планировщик получил вопрос |
-| `planning` | `failed` | `error` | планировщик упал (LLM недоступна), дальше `error` и `done` |
-| `planning` | `finished` | `total_steps`, `steps` | план готов (`0` — инструментов нет, дальше `clarification_needed`) |
+| `planning` | `substage` | `substage` | реальная фаза: `semantic` (отбор колонок/инструментов), `llm` (вызов модели), `validation` (проверка плана) |
+| `planning` | `failed` | `error`, `elapsed_ms` | планировщик упал (LLM недоступна), дальше `error` и `done` |
+| `planning` | `finished` | `total_steps`, `planned_steps`, `steps`, `elapsed_ms` | план готов (`0` — инструментов нет; дальше toolgen или `clarification_needed`) |
+| `toolgen` | `started` | `purpose`, `tool?` | агент создаёт инструмент (toolgen включён и есть LLM) |
+| `toolgen` | `finished` | `tool`, `purpose`, `elapsed_ms` | инструмент проверен и зарегистрирован; дальше перепланирование |
+| `toolgen` | `failed` | `purpose`, `elapsed_ms`, `error` | создать не удалось; дальше прежнее `clarification_needed` |
 | `step` | `started` | `step_id`, `tool`, `purpose`, `input`, `arguments` | шаг начал выполняться |
 | `step` | `fixing` | то же, `attempt`, `error` | шаг упал, планировщик исправляет его |
 | `step` | `finished` | то же, `elapsed_ms`, детали результата | шаг выполнен (время — с учётом исправлений) |
 | `step` | `failed` | то же, `elapsed_ms`, `error` | шаг не исправился, дальше `clarification_needed` |
-| `insight` | `started` | — | план выполнен, генерируется инсайт (дальше `text`) |
-| `chart` | `started` | — | строится график (дальше `chart`) |
-| `insight` / `chart` | `failed` | `error` | этап упал, дальше `error` и `done` |
-| `dashboard` | `failed` | `error` | дашборд не собран; ответ и график уже отданы, дальше `done` без `error` |
+| `replanning` | `started` | — | lookup-шаг выполнен, план достраивается по увиденному |
+| `replanning` | `substage` | `substage` | реальная фаза достройки плана |
+| `replanning` | `finished` | `total_steps`, `planned_steps`, `steps`, `elapsed_ms` | новый план готов, дальше новые `step` |
+| `replanning` | `failed` | `error`, `elapsed_ms` | перепланирование упало, дальше `clarification_needed` |
+| `insight` | `started` | — | план выполнен, генерируется инсайт (дальше `text {chunk}` или один `text {headline, details}` при выключенном стриме/фолбэке) |
+| `insight` | `finished` | `elapsed_ms` | инсайт готов, дальше `text` |
+| `chart` | `started` | — | строится график |
+| `chart` | `finished` | `elapsed_ms` | график готов, дальше `chart` |
+| `dashboard` | `started` | — | собирается дашборд (после `chart`) |
+| `dashboard` | `finished` | `elapsed_ms` | дашборд готов, дальше `dashboard` |
+| `insight` / `chart` | `failed` | `error`, `elapsed_ms` | этап упал, дальше `error` и `done` |
+| `dashboard` | `failed` | `error`, `elapsed_ms` | дашборд не собран; ответ и график уже отданы, дальше `done` без `error` |
 
-`planning/started` приходит один раз на новый вопрос. `planning/finished`
-несёт весь план — `steps: [{step_id, tool, purpose, input, arguments}]`,
-чтобы фронт показал его строками до выполнения (#239). Его же шлют
-достройка плана после lookup-шага (выполненные и новые шаги вместе), ответ
-на уточнение (`recovery_response`: шаги, которые выполнит этот ход) и
-каждая плитка дашборда по кнопке (с её `tile_id`). У `step/*` поля `tool`,
-`purpose`, `input` и `arguments` — от последней версии шага (после
-исправления): `arguments` — как их написал планировщик, ссылки `$prev`,
-`$step_N` не развёрнуты.
+`planning` приходит на новый вопрос и на повторную попытку после toolgen
+(модель видит созданный инструмент); достройка плана после lookup-шага
+идёт отдельной стадией `replanning` (её `finished`/`failed` закрывает
+стадию явно, а не при старте следующего этапа). Ответ на уточнение
+(`recovery_response`) перепланирует через `_plan` и шлёт план без
+повторного `planning/started`. Во время `planning` и `replanning` приходят
+`substage`-события из `StepPlanner.plan`: фронт показывает реальные фазы
+`semantic` → `llm` → `validation`, а не таймерные догадки. Смена вида
+прошлого графика («сделай таблицей») идёт без плана: сразу `chart` и
+`done`. Этапы `insight`, `chart` и `dashboard` явно шлют `finished` (или
+`failed`) с `elapsed_ms`, поэтому длительность стадии не зависит от
+момента прихода следующего события.
+
+`planning/finished` несёт весь план — `steps: [{step_id, tool, purpose,
+input, arguments}]`, чтобы фронт показал его строками до выполнения (#239).
+Его же шлют достройка плана после lookup-шага (выполненные и новые шаги
+вместе) и каждая плитка дашборда по кнопке (с её `tile_id`). У `step/*`
+поля `tool`, `purpose`, `input` и `arguments` — от последней версии шага
+(после исправления): `arguments` — как их написал планировщик, ссылки
+`$prev`, `$step_N` не развёрнуты.
 
 Детали результата в `step/finished`:
 
@@ -115,21 +243,60 @@
 `GET /api/sessions/{id}/results/{temp_result_vN}?offset=0&limit=50`
 (`limit` до 500) → `{columns, rows, total}`. Отдаются только результаты
 завершённых ходов этой сессии; чужой, удалённый или результат ещё идущего
-хода — 404 (у идущего хода есть `preview`), имя не `temp_result_vN` — 422. Смена вида прошлого графика («сделай таблицей») идёт без
-плана: сразу `chart` и `done`. Этап `dashboard` шлёт только `failed`.
+хода — 404 (у идущего хода есть `preview`), имя не `temp_result_vN` — 422.
+
+План от LLM приходит одним structured-ответом, поэтому `planned_steps`
+появляются только в `planning/finished` (и `replanning/finished`). Фронт
+раскрывает их по одному; отдельные `step`-строки для шагов, уже
+перечисленных в плане, не дублируются — статус, время и ошибка
+показываются внутри раскрытого плана. Для настоящего построчного
+стриминга плана нужен отдельный режим LLM-клиента
+(`instructor.create_partial` / streaming JSON), это не входит в текущий
+контракт `progress`.
+
+### Стриминг вывода
+
+При `INSIGHT_STREAM=true` (по умолчанию) финальный инсайт идёт дельтами:
+
+`insight/started` → N × `text {chunk}` → `chart/started` → `chart` → `done`.
+
+- Итоговый `text {headline, details}` не отправляется, если была хотя бы одна
+  непустая дельта: фронт дописывает подряд идущие `text {chunk}` в одно сообщение.
+- Первая строка текста — headline: она же `caption` графика, запасной заголовок
+  плитки дашборда и headline в памяти сессии.
+- Формат текста: первая строка — вывод; затем строки `- ` с уточнениями;
+  последняя строка — `Ограничения: ...` (необязательна).
+- Нет `complete_stream` или ошибка до первой дельты — structured-фолбэк
+  (`generate()`): приходит один `text {headline, details}`.
+- Ошибка после первой дельты не фолбэчится: `insight/failed` → `error` → `done`,
+  уже показанный префикс остаётся в чате.
+- `INSIGHT_STREAM=false` — прежний контракт: один `text {headline, details}`.
+- Обрыв SSE (кнопка «стоп» на фронте) закрывает поток LLM: `run()` →
+  `aclosing(_turn)` → отмена задачи стрима → `LLMClient.complete_stream`
+  закрывает `AsyncStream`.
+- Стримится только финальный инсайт; обзор таблицы и плитки дашборда —
+  по-прежнему нестриминговые.
+- Хук `_check_context` не читает SSE (иначе `aread()` забуферизует поток),
+  поэтому для стримингового инсайта проверка `usage.prompt_tokens` не
+  выполняется: промпт ограничен `SHOWN_ROWS=50`.
+
+
 
 Вопрос про таблицу целиком («что передо мной?», «что в таблице есть?»,
 «сколько строк и за какой период?», «опиши данные») тоже идёт без плана
-(`core/data/overview.py`): `insight/started` → `text` (`headline` — название
-данных, объём и период из паспорта; `details` — описание LLM по абзацам для
-бизнес-пользователя: о чём данные, что в них есть, что интересного
-посмотреть) → `done`. Технической таблицы колонок в ответе нет. Быстрый путь —
-шаблоны `is_overview_question`: вопрос целиком из обзорных фраз, «сколько строк
+(`core/data/overview.py`): `insight/started` → `insight/finished` → `text`
+(`headline` — название данных, объём и период из паспорта) → `chart/started`
+→ `chart/finished` → `chart` (вид `table`, по строке на колонку) → `done`.
+`details` — строка «Размер и период» из паспорта и описание LLM по пунктам:
+что это, ключевые поля, на что обратить внимание. Быстрый путь — шаблоны
+`is_overview_question`: вопрос целиком из обзорных фраз, «сколько строк
 по Москве?» идёт в планировщик. Формулировку, которую шаблоны не узнали,
 планировщик помечает `route: "overview"` — ответ тот же. Описание берётся из
 паспорта, LLM вызывается, только если паспорт изменился. LLM не ответила — в
-`details` строка «Описание данных сейчас недоступно», объём и период всё равно
-приходят.
+`details` остаются строка «Размер и период» и «Описание данных сейчас
+недоступно», факты и таблица всё равно приходят. Таблица колонок не
+становится последним графиком: «покажи в другом виде» перестраивает прошлый
+график исследования.
 
 Ход всегда заканчивается `done` или `clarification_needed`: любой сбой
 вне шагов (планировщик, инсайт, график) приходит как
@@ -138,17 +305,23 @@
 `fixing` и `clarification_needed`. Сбой дашборда ход не проваливает:
 после `dashboard/failed` сразу `done`, ответ сохраняется в памяти сессии.
 
-Пример успешного хода из одного шага:
+Пример успешного хода из одного шага без стриминга (`INSIGHT_STREAM=false`
+или structured-фолбэк):
 
 ```json
 {"type": "progress", "data": {"stage": "planning", "status": "started"}}
+{"type": "progress", "data": {"stage": "planning", "status": "substage", "substage": "semantic"}}
+{"type": "progress", "data": {"stage": "planning", "status": "substage", "substage": "llm"}}
+{"type": "progress", "data": {"stage": "planning", "status": "substage", "substage": "validation"}}
 {"type": "progress", "data": {"stage": "planning", "status": "finished", "total_steps": 1,
- "steps": [{"step_id": 1, "tool": "group_by", "purpose": "Выручка по регионам",
-            "input": "$prev", "arguments": {"by": "region", "column": "revenue", "function": "SUM"}}]}}
-{"type": "progress", "data": {"stage": "step", "status": "started", "step_id": 1,
+ "planned_steps": [{"step_id": 0, "purpose": "Выручка по регионам", "tool": "group_by"}],
+ "steps": [{"step_id": 0, "tool": "group_by", "purpose": "Выручка по регионам",
+            "input": "$prev", "arguments": {"by": "region", "column": "revenue", "function": "SUM"}}],
+ "elapsed_ms": 120}}
+{"type": "progress", "data": {"stage": "step", "status": "started", "step_id": 0,
  "tool": "group_by", "purpose": "Выручка по регионам", "input": "$prev",
  "arguments": {"by": "region", "column": "revenue", "function": "SUM"}}}
-{"type": "progress", "data": {"stage": "step", "status": "finished", "step_id": 1,
+{"type": "progress", "data": {"stage": "step", "status": "finished", "step_id": 0,
  "tool": "group_by", "purpose": "Выручка по регионам", "input": "$prev",
  "arguments": {"by": "region", "column": "revenue", "function": "SUM"}, "elapsed_ms": 42,
  "input_table": "sales", "result_table": "temp_result_v3", "rows": 2,
@@ -156,9 +329,24 @@
  "preview": [{"region": "msk", "revenue": 120.0}, {"region": "spb", "revenue": 80.0}],
  "code_language": "sql", "code": "SELECT ... FROM \"sales\" GROUP BY ..."}}
 {"type": "progress", "data": {"stage": "insight", "status": "started"}}
+{"type": "progress", "data": {"stage": "insight", "status": "finished", "elapsed_ms": 800}}
 {"type": "text", "data": {"headline": "...", "details": ["..."]}}
 {"type": "progress", "data": {"stage": "chart", "status": "started"}}
+{"type": "progress", "data": {"stage": "chart", "status": "finished", "elapsed_ms": 15}}
 {"type": "chart", "data": {"spec": {}, "caption": "..."}}
+{"type": "done", "data": {}}
+```
+
+Тот же ход со стримингом (`INSIGHT_STREAM=true`): те же события плана и шагов,
+затем дельты текста и график с подписью из первой строки.
+
+```json
+{"type": "progress", "data": {"stage": "insight", "status": "started"}}
+{"type": "text", "data": {"chunk": "Выручка "}}
+{"type": "text", "data": {"chunk": "выросла "}}
+{"type": "text", "data": {"chunk": "на 10%\n- Рост в январе\nОграничения: только 2024 год"}}
+{"type": "progress", "data": {"stage": "chart", "status": "started"}}
+{"type": "chart", "data": {"spec": {}, "caption": "Выручка выросла на 10%"}}
 {"type": "done", "data": {}}
 ```
 

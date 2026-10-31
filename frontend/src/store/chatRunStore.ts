@@ -152,8 +152,23 @@ export function startRun(
   // interrupted — ход остановлен, упал или оборвался: если часть готова, его можно продолжить
   const finishProgress = (interrupted = false) => {
     if (progress && progress.finished_at === undefined) {
+      const now = Date.now();
+      const timeline = progress.timeline?.map((item) => {
+        if (item.kind !== "stage" || item.finished_at !== undefined) return item;
+        return {
+          ...item,
+          finished_at: now,
+          elapsed_ms: Math.max(1, now - item.started_at),
+          status: interrupted ? ("failed" as const) : ("finished" as const),
+        };
+      });
       const resumable = interrupted && Boolean(progress.turn_id) && hasFinishedWork(progress);
-      progress = { ...progress, finished_at: Date.now(), ...(resumable ? { resumable } : {}) };
+      progress = {
+        ...progress,
+        finished_at: now,
+        ...(timeline ? { timeline } : {}),
+        ...(resumable ? { resumable } : {}),
+      };
       store.updateMessage(progressId, { progress }, sessionId);
     }
   };
@@ -251,12 +266,14 @@ export function startRun(
         }
       } else if (event.type === "clarification_needed") {
         // Бэкенд закрывает поток без done: ждёт recovery_response
+        finishProgress(true);
         answerStarted = false;
         streamFinished = true;
         const id = `msg-clarify-${Date.now().toString(36)}`;
         addMessage({ id, role: "agent", content: "", clarification: event.data });
         runs.patchRun(sessionId, { clarificationId: id });
       } else if (event.type === "refusal") {
+        finishProgress(true);
         answerStarted = false;
         streamFinished = true;
         addMessage({ role: "agent", content: event.data.reason || t("chat.refusal"), refusal: event.data });
@@ -270,8 +287,12 @@ export function startRun(
         if (details && Array.isArray(details)) {
           answerDetails = details.filter((d: unknown): d is string => typeof d === "string");
           if (answerDetails.length > 0) {
-            appendText("\n\n" + answerDetails.map((d: string) => `• ${d}`).join("\n"));
+            appendText("\n\n" + answerDetails.map((d: string) => `- ${d}`).join("\n"));
           }
+        }
+        const limits = event.data?.limits || raw.limits;
+        if (typeof limits === "string" && limits.trim()) {
+          appendText(`\n\n> ℹ️ **Ограничения данных:** ${limits.trim()}`);
         }
       } else if (event.type === "chart") {
         answerStarted = false;
@@ -311,6 +332,7 @@ export function startRun(
             .setDashboard(dashData.dashboard_id, dashData.title || t("chat.dashboardDefault"), dashData.tiles);
         }
       } else if (event.type === "error") {
+        finishProgress(true);
         answerStarted = false;
         fail();
         const raw = event as any;
@@ -357,6 +379,7 @@ export function startRun(
     { recoveryResponse, replyTo: options.replyTo, dashboard, resumeTurn: options.resumeTurn },
   );
   stoppers.set(sessionId, () => {
+    finishProgress(true);
     cancelled = true;
     stop();
   });

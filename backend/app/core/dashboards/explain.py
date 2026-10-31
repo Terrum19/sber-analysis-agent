@@ -5,6 +5,7 @@
 """
 
 import math
+import re
 from decimal import Decimal
 
 from app.core.tools.registry import tool_registry
@@ -20,6 +21,9 @@ AGGREGATES = {
     "MEDIAN": "медиана",
     "STDDEV": "стандартное отклонение",
 }
+# Колонка периода из быстрых плиток (rich_tiles): date_trunc('month', "Дата").
+PERIOD_COLUMN = "period"
+TRUNCATED = re.compile(r"date_trunc\('(\w+)', (.+)\)")
 PERIODS = {
     "day": "по дням",
     "week": "по неделям",
@@ -45,6 +49,8 @@ def _explain_step(step: ResearchStep, titles: dict[str, str]) -> str:
         return step.purpose or step.tool or ""
 
     def name(column: str | None) -> str:
+        if column == PERIOD_COLUMN and column not in titles:
+            return "«период»"
         return f"«{titles.get(column, column)}»" if column else ""
 
     def metric(function: str, column: str | None) -> str:
@@ -71,6 +77,9 @@ def _explain_step(step: ResearchStep, titles: dict[str, str]) -> str:
         value = args.value if args.value is not None else "пусто"
         return f"только строки, где {name(args.column)} {args.operator} {value}"
     if step.tool == "create_column":
+        if args.new_column == PERIOD_COLUMN and (found := TRUNCATED.fullmatch(args.expression)):
+            period = PERIODS.get(found[1], found[1])
+            return f"разбивка {period} ({name(found[2].strip(chr(34)))})"
         return f"новый показатель {name(args.new_column)} = {args.expression}"
     if step.tool == "sort_limit":
         order = args.order_by if isinstance(args.order_by, str) else ", ".join(args.order_by)

@@ -102,10 +102,20 @@ export default function ItemActionMenu({
     };
   }, [onClose, view]);
 
+  const [renameError, setRenameError] = useState<string | null>(null);
+
   function handleSaveRename(e?: React.FormEvent) {
     e?.preventDefault();
     const trimmed = nameInput.trim();
-    if (trimmed && trimmed !== title) {
+    if (!trimmed) {
+      setRenameError("Название не может быть пустым");
+      return;
+    }
+    if (trimmed.length > 80) {
+      setRenameError("Максимальная длина названия — 80 символов");
+      return;
+    }
+    if (trimmed !== title) {
       onRename(trimmed);
     }
     onClose();
@@ -290,11 +300,18 @@ export default function ItemActionMenu({
           <input
             ref={inputRef}
             type="text"
+            maxLength={80}
             value={nameInput}
-            onChange={(e) => setNameInput(e.target.value)}
+            onChange={(e) => {
+              setNameInput(e.target.value);
+              if (renameError) setRenameError(null);
+            }}
             className="w-full rounded-lg border border-graphite-700 bg-graphite-950 px-2.5 py-1.5 text-xs text-graphite-50 placeholder-graphite-500 outline-none focus:border-graphite-400"
             placeholder={t("sidebar.newName")}
           />
+          {renameError && (
+            <p className="text-[11px] leading-tight text-bad">{renameError}</p>
+          )}
           <div className="flex items-center justify-end gap-1.5 pt-1">
             <button
               type="button"

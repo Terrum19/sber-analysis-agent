@@ -16,6 +16,32 @@ NO_CHART = "none"
 MAX_BAR_CATEGORIES = 50
 MIN_LINE_POINTS = 3
 MIN_HISTOGRAM_VALUES = 20
+# Явная просьба о графике важнее выбора планировщика «table».
+_CHART_WORDS = re.compile(
+    r"\b(?:график\w*|диаграмм\w*|chart|plot|визуализ\w*|нарисуй\w*|постро\w*)",
+    re.IGNORECASE,
+)
+_TABLE_WORDS = re.compile(r"\bтаблиц\w*", re.IGNORECASE)
+# Слова временной оси: «от даты», «по месяцам», «динамика за год».
+_TIME_WORDS = re.compile(
+    r"\b(?:дат\w*|врем\w*|период\w*|год\w*|месяц\w*|квартал\w*|недел\w*|дн\w*)",
+    re.IGNORECASE,
+)
+
+
+def asks_chart(question: str) -> bool:
+    """Пользователь просит график, а не таблицу.
+
+    «Покажи таблицей» и «таблица с графиком» — просьба о таблице; «график,
+    а не таблицу» — наоборот, просьба о графике.
+    """
+    if _CHART_WORDS.search(question) is None:
+        return False
+    for match in _TABLE_WORDS.finditer(question):
+        prefix = question[max(0, match.start() - 4) : match.start()].lower()
+        if not re.search(r"(?:не|без)\s*$", prefix):
+            return False
+    return True
 
 
 def is_single_number(records: list[dict] | None) -> bool:
@@ -109,7 +135,17 @@ def select_chart(
         return chart_type
     types = infer_field_types(records)
     column = histogram_column(question, types, titles) if chart_type == "histogram" else None
-    return chart_type if fits(chart_type, records, types, column) else "table"
+    if chart_type == "table":
+        # Планировщик мог ошибиться: явная просьба о графике по временному
+        # ряду важнее его «table». «Покажи таблицей» оставляем таблицей.
+        if asks_chart(question) and fits("line", records, types):
+            return "line"
+        return "table"
+    if fits(chart_type, records, types, column):
+        return chart_type
+    # Запрошенный вид не подошёл: для временного ряда линия информативнее
+    # таблицы (bar с сотнями дат не проходит по числу категорий).
+    return "line" if fits("line", records, types) else "table"
 
 
 def histogram_column(
@@ -139,7 +175,18 @@ def _by_question(question: str) -> str:
     text = question.lower()
     if asks_distribution(question):
         return "histogram"
-    if "динамик" in text or "во времени" in text or "по годам" in text or "по месяцам" in text:
+    if _TIME_WORDS.search(text) and ("график" in text or "зависим" in text or "от дат" in text):
+        return "line"
+    if "зависим" in text:
+        return "scatter"
+    if (
+        "динамик" in text
+        or "во времени" in text
+        or "по годам" in text
+        or "по месяцам" in text
+        or "по датам" in text
+        or "по дням" in text
+    ):
         return "line"
     if "сравн" in text or "по категори" in text:
         return "bar"

@@ -58,27 +58,43 @@ p-value в ответе?») планировщик помечает маршру
 """
 
 import asyncio
+import inspect
 import json
 import logging
+import math
 import re
 import time
 from collections.abc import AsyncIterator, Callable
-from contextlib import aclosing
+from contextlib import aclosing, suppress
 from dataclasses import dataclass, field
-
-logger = logging.getLogger(__name__)
 
 import duckdb
 
-from app.api.schemas.chat import ChatRequest, DashboardPayload, PlanStepOut, ProgressPayload
+from app.api.schemas.chat import (
+    ChatRequest,
+    DashboardPayload,
+    PlannedStep,
+    PlanStepOut,
+    ProgressPayload,
+)
+from app.config import settings
+from app.core.agent.budget import (
+    BudgetExceeded,
+    budget_from_settings,
+    current_budget,
+    set_budget,
+)
 from app.core.agent.chart_pick import ChartPicker
 from app.core.agent.explainer import Explainer
 from app.core.agent.insight import InsightGenerator
+from app.core.agent.metrics import TurnMetrics, current_metrics, set_metrics
 from app.core.agent.planner import PlanInvalid, StepPlanner, is_dashboard_question
-from app.core.agent.recovery import STEP_FIX_ATTEMPTS, fixable
+from app.core.agent.recovery import fixable
+from app.core.agent.router import Route, simple_plan
 from app.core.agent.step_executor import StepExecutor, resolve_input, tool_kind
 from app.core.agent.triage import small_talk_reply
 from app.core.agent.turn_log import TurnLog, describe_plan
+from app.core.cache.plan_cache import PlanCache
 from app.core.dashboards.generator import DashboardGenerator
 from app.core.dashboards.models import DashboardTile
 from app.core.data import overview, relations
@@ -86,13 +102,14 @@ from app.core.data.duckdb_manager import DuckDBManager
 from app.core.data.table_vectors import TableVectors
 from app.core.llm.budget import track_truncations
 from app.core.llm.client import LLMClient
-from app.core.logging_setup import set_turn_id
+from app.core.logging_setup import bound_turn, set_turn_id
 from app.core.memory.profile_memory import ProfileMemory
 from app.core.memory.session_memory import SessionMemory
 from app.core.memory.state_cache import StateCache
 from app.core.sandbox.wasm_runtime import SandboxError
 from app.core.tools.base import identifier
 from app.core.tools.registry import tool_registry
+from app.core.tools.toolgen.factory import CreatedTool, ToolCreationError, ToolFactory
 from app.core.viz.chart_morph import detect_morph, morph
 from app.core.viz.chart_selector import (
     MIN_HISTOGRAM_VALUES,
@@ -119,6 +136,8 @@ from app.models.research_step import (
     ResearchStep,
 )
 
+logger = logging.getLogger(__name__)
+
 NO_TABLE_MESSAGE = "Сначала подключите данные"
 # «Продолжить» ход, у которого нет чекпоинта или который уже ответил.
 NOTHING_TO_RESUME = "Продолжить нечего: задайте вопрос заново"
@@ -141,6 +160,7 @@ MISSING_COLUMN = re.compile(r'Referenced column "([^"]+)" not found')
 REMEMBERED = "Запомнено: {notes}"
 
 SUMMARY_UNAVAILABLE = "Описание данных сейчас недоступно: модель не ответила."
+OVERVIEW_CAPTION = "Колонки таблицы"
 SCHEMA_CAPTION = "Связанные таблицы"
 TABLE_WORDS = ("таблица", "таблицы", "таблиц")
 # Вид чекпоинта хода: план с шагами или дашборд по кнопке.
@@ -165,6 +185,8 @@ UNSUPPORTED_SUGGESTIONS = [
 ]
 
 DISTRIBUTION_TOOL = "describe_stats"
+# Осмотр таблицы — разведка: его паспорт не ответ пользователю.
+INSPECT_TOOL = "inspect_temp_table"
 
 # Сколько раз план можно достроить после lookup-шагов (защита от циклов).
 MAX_REPLANS = 2
@@ -216,6 +238,27 @@ class ClarificationNeeded(Exception):
         super().__init__(error)
 
 
+class NoSuitableTool(ClarificationNeeded):
+    """Подходящего инструмента нет; оркестратор может создать его (toolgen).
+
+    Наследник ClarificationNeeded: если создание не удалось, внешний код
+    по-прежнему получает обычное уточнение. ``planning_finished`` — событие
+    planning/finished уже отправлено (пустой план), failed слать не нужно.
+    """
+
+    def __init__(
+        self,
+        error: str = "Не удалось подобрать инструменты под этот вопрос.",
+        suggestions: list[str] | None = None,
+    ) -> None:
+        super().__init__(
+            step_id=-1,
+            error=error,
+            suggestions=suggestions or ["Переформулировать вопрос"],
+        )
+        self.planning_finished = False
+
+
 class _StepFailed(Exception):
     """Шаг не выполнился и не исправился: последняя версия шага и ошибка.
 
@@ -240,6 +283,25 @@ def _progress_event(stage: str, status: str, **fields: object) -> dict:
     return {"type": "progress", "data": payload.model_dump(exclude_none=True)}
 
 
+def _planned_steps(steps: list[ResearchStep]) -> list[PlannedStep]:
+    """Шаги плана для прогресса: purpose или tool, без выдуманных «Шаг N»."""
+    return [
+        PlannedStep(step_id=step.step_id, purpose=step.purpose or step.tool, tool=step.tool)
+        for step in steps
+    ]
+
+
+def _reports_substages(planner: object) -> bool:
+    """Планировщик умеет сообщать реальные фазы планирования."""
+    plan = getattr(planner, "plan", None)
+    if plan is None:
+        return False
+    try:
+        return "on_substage" in inspect.signature(plan).parameters
+    except (TypeError, ValueError):
+        return False
+
+
 def _step_event(step: ResearchStep, status: str, **fields: object) -> dict:
     return _progress_event(
         "step",
@@ -253,7 +315,7 @@ def _step_event(step: ResearchStep, status: str, **fields: object) -> dict:
     )
 
 
-def _plan_event(steps: list[ResearchStep]) -> dict:
+def _plan_event(steps: list[ResearchStep], **fields: object) -> dict:
     """План хода целиком: фронт показывает его строками до выполнения (#239)."""
     return _progress_event(
         "planning",
@@ -269,11 +331,29 @@ def _plan_event(steps: list[ResearchStep]) -> dict:
             )
             for step in steps
         ],
+        **fields,
     )
 
 
 def _fixing_event(step: ResearchStep, attempt: int, error: Exception) -> dict:
     return _step_event(step, "fixing", attempt=attempt, error=str(error))
+
+
+def _text_event(
+    headline: str,
+    details: list[str],
+    limits: str | list[str] | None = None,
+) -> dict:
+    """Вывод целиком: когда стрим выключен или сработал structured-фолбэк."""
+    data: dict = {"headline": headline, "details": details}
+    if limits:
+        data["limits"] = limits
+    return {"type": "text", "data": data}
+
+
+def _text_chunk_event(chunk: str) -> dict:
+    """Дельта текста инсайта при INSIGHT_STREAM=true."""
+    return {"type": "text", "data": {"chunk": chunk}}
 
 
 def _chart_event(spec: dict, caption: str, result_table: str) -> dict:
@@ -287,12 +367,24 @@ def _chart_event(spec: dict, caption: str, result_table: str) -> dict:
     return {"type": "chart", "data": data}
 
 
-def _failure_event() -> dict:
-    return {"type": "error", "data": {"message": FAILURE_MESSAGE}}
+def _failure_event(message: str | None = None) -> dict:
+    return {"type": "error", "data": {"message": message or FAILURE_MESSAGE}}
 
 
-def _done(turn_id: str) -> dict:
-    return {"type": "done", "data": {"turn_id": turn_id}}
+def _done(turn_id: str, *, message: str | None = None) -> dict:
+    """Событие конца хода; метрики аддитивны к прежнему контракту ``turn_id``."""
+    data: dict[str, object] = {"turn_id": turn_id}
+    if message:
+        data["message"] = message
+    metrics = current_metrics()
+    if metrics is not None:
+        data.update(
+            route=metrics.route,
+            llm_calls=metrics.llm_calls,
+            prompt_tokens=metrics.prompt_tokens,
+            total_ms=metrics.total_ms(),
+        )
+    return {"type": "done", "data": data}
 
 
 def _elapsed_ms(started_at: float) -> int:
@@ -309,6 +401,7 @@ class AgentOrchestrator:
         insight_gen: InsightGenerator | None = None,
         cache: StateCache | None = None,
         db: DuckDBManager | None = None,
+        tool_factory: ToolFactory | None = None,
         explainer: Explainer | None = None,
         chart_llm: LLMClient | None = None,
     ) -> None:
@@ -317,7 +410,8 @@ class AgentOrchestrator:
         shared = db or (cache.db if cache is not None else None)
         self.executor = executor or StepExecutor(shared)
         self.db = shared or getattr(self.executor, "db", None) or DuckDBManager()
-        self.planner = planner or StepPlanner()
+        self.plan_cache = PlanCache() if settings.agent_plan_cache else None
+        self.planner = planner or StepPlanner(cache=self.plan_cache)
         self.insight_gen = insight_gen or InsightGenerator(db=self.db)
         # Пояснение — тем же клиентом LLM, что и вывод (у моков вывода клиента нет).
         llm = getattr(self.insight_gen, "llm", None)
@@ -325,6 +419,9 @@ class AgentOrchestrator:
         self.cache = cache or StateCache(self.db)
         self.profiles = ProfileMemory(self.db)
         self.vectors = TableVectors(self.db)
+        # toolgen: инъекция фабрики для тестов, иначе создаётся лениво из planner.llm.
+        self.tool_factory = tool_factory
+        self._created_tools_count = 0
         # Модель планировщика выбирает и график; без неё — эвристика select_chart.
         self.chart_picker = ChartPicker(chart_llm or getattr(self.planner, "llm", None), self.db)
         # Ход, который ведёт этот оркестратор (один на запрос): он в RUNNING_TURNS.
@@ -337,22 +434,80 @@ class AgentOrchestrator:
         clarification_needed) несёт их число в prompt_truncated: eval (#58)
         отбрасывает такие прогоны. Обрезанный промпт чаще всего и кончается
         уточнением: модель без списка тулов строит план, шаг падает.
+
+        ``AGENT_TURN_TIMEOUT_S`` — необязательный жёсткий дедлайн всего хода:
+        при положительном значении по истечении фронт получает error + done,
+        задача плана отменяется. По умолчанию 0 — общего дедлайна нет, ход
+        идёт столько, сколько нужно; от зависаний защищают лимиты этапов,
+        таймауты операций и счётчики циклов.
         """
         truncations = track_truncations()
+        budget = budget_from_settings(settings)
+        metrics = TurnMetrics(
+            session_id=request.session_id,
+            turn_id="",
+            question=request.question,
+            model=getattr(getattr(self.planner, "llm", None), "model", settings.llm_model),
+        )
         turn_log = TurnLog(request.session_id)
         try:
-            # aclosing: клиент отключился — ход закрывается сразу, с отменой задачи плана.
-            async with aclosing(self._turn(request)) as events:
-                while (event := await turn_log.next_event(events)) is not None:
-                    if event["type"] in TURN_END_EVENTS and truncations:
-                        event["data"]["prompt_truncated"] = len(truncations)
-                    turn_log.observe(event)
-                    yield event
+            # total_s=None (или 0) — asyncio.timeout не ограничивает ход.
+            async with asyncio.timeout(budget.total_s):
+                # aclosing: клиент отключился — ход закрывается сразу, с отменой задачи плана.
+                async with aclosing(self._turn(request)) as events:
+                    while True:
+                        # Контекст может смениться между anext (тест/FastAPI):
+                        # выставляем бюджет и метрики перед каждым возобновлением.
+                        set_budget(budget)
+                        set_metrics(metrics)
+                        event = await turn_log.next_event(events)
+                        if event is None:
+                            break
+                        if event["type"] in TURN_END_EVENTS and truncations:
+                            event["data"]["prompt_truncated"] = len(truncations)
+                        turn_log.observe(event)
+                        yield event
+        except TimeoutError:
+            # Жёсткий дедлайн (если он включён): не даём ходу висеть и
+            # держать SSE-соединение. При AGENT_TURN_TIMEOUT_S=0 его нет.
+            set_budget(budget)
+            set_metrics(metrics)
+            metrics.budget_exceeded = "turn"
+            total = budget.total_s or 0
+            minutes = max(1, math.ceil(total / 60)) if total else 0
+            message = (
+                f"Не удалось завершить ход за {minutes} минут"
+                if minutes
+                else "Не удалось завершить ход"
+            )
+            event = _failure_event(message)
+            turn_log.status = turn_log.status or "failed"
+            turn_log.reason = message
+            turn_log.observe(event)
+            finish = _done(metrics.turn_id, message="timeout")
+            turn_log.observe(finish)
+            yield event
+            yield finish
         except Exception as error:
             turn_log.crashed(error)
             raise
         finally:
             turn_log.close()
+            set_budget(budget)
+            set_metrics(metrics)
+            with bound_turn(turn_log.context):
+                logger.info(
+                    "метрики хода: %s",
+                    json.dumps(metrics.as_log(), ensure_ascii=False, default=str),
+                )
+            if settings.agent_metrics_store and metrics.turn_id:
+                from app.core.agent.metrics import MetricsStore
+
+                await asyncio.to_thread(MetricsStore().record, metrics)
+            # В контексте этого генератора снимаем значения; токены из
+            # start-контекста здесь невалидны (anext может идти в новом Task).
+            set_metrics(None)
+            set_budget(None)
             RUNNING_TURNS.discard(self._running)
 
     async def _turn(self, request: ChatRequest) -> AsyncIterator[dict]:
@@ -374,8 +529,23 @@ class AgentOrchestrator:
             memory.start_turn(request.question, reply_to=request.reply_to)
         turn_id = memory.turn_id
         set_turn_id(turn_id)
+        metrics = current_metrics()
+        if metrics is not None:
+            metrics.turn_id = turn_id
+            metrics.question = request.question
+        # Лимит TOOLGEN_MAX_PER_TURN считается на ход, а оркестратор может
+        # переиспользоваться между запросами.
+        self._created_tools_count = 0
+        budget = current_budget()
         self._mark_running(turn_id)
         logger.info("ход начат: вопрос=%r", request.question)
+        if budget is not None:
+            logger.info(
+                "бюджет хода: дедлайн=%s, вызовов LLM=%d, шагов=%d",
+                f"{budget.total_s:.0f} с" if budget.total_s else "нет",
+                budget.max_llm_calls,
+                budget.max_steps,
+            )
 
         catalog: list[str] = []
         if pending is not None and pending.get("kind") == TABLE_CHOICE:
@@ -403,6 +573,8 @@ class AgentOrchestrator:
         ):
             # «Привет», «спасибо», «что ты умеешь» — без плана, LLM и графика.
             logger.info("маршрут: small talk")
+            if metrics is not None:
+                metrics.route = "small_talk"
             memory.finish_turn("ok", headline=reply)
             yield {"type": "text", "data": {"headline": reply, "details": []}}
             yield _done(turn_id)
@@ -459,6 +631,8 @@ class AgentOrchestrator:
                 table, catalog = choice.table, choice.catalog
                 memory.use_table(table)
         if table is None:
+            if metrics is not None:
+                metrics.route = "no_table"
             memory.finish_turn("failed")
             yield {"type": "error", "data": {"message": NO_TABLE_MESSAGE}}
             yield _done(turn_id)
@@ -480,6 +654,8 @@ class AgentOrchestrator:
 
         if pending is None and overview.is_overview_question(request.question):
             logger.info("маршрут: обзор таблицы")
+            if metrics is not None:
+                metrics.route = "overview"
             async for event in self._overview(memory, table):
                 yield event
             return
@@ -489,12 +665,25 @@ class AgentOrchestrator:
             morphed = self._morph(memory, request.question, titles)
             if morphed is not None:
                 logger.info("маршрут: смена вида графика")
+                if metrics is not None:
+                    metrics.route = "chart_morph"
                 yield morphed
                 yield _done(turn_id)
                 return
 
+        route: Route | None = None
+        if pending is None and settings.agent_simple_router:
+            # Быстрый путь: шаблонный план без вызова планировщика.
+            route = simple_plan(request.question, self.profiles.load_profile(table), titles)
+            if route is not None:
+                logger.info("маршрут: простой (%s) — %s", route.kind, route.reason)
+                if metrics is not None:
+                    metrics.route = route.kind
+
         logger.info("маршрут: %s", "план" if pending is None else "ответ на уточнение")
-        async for event in self._answer(memory, request, titles, pending=pending, catalog=catalog):
+        async for event in self._answer(
+            memory, request, titles, pending=pending, catalog=catalog, route=route
+        ):
             yield event
 
     async def _resume(self, memory: SessionMemory, request: ChatRequest) -> AsyncIterator[dict]:
@@ -581,6 +770,7 @@ class AgentOrchestrator:
         *,
         pending: dict | None = None,
         catalog: list[str] | None = None,
+        route: Route | None = None,
         resume: dict | None = None,
     ) -> AsyncIterator[dict]:
         """План и шаги (или их продолжение), затем инсайт, график и дашборд — до done."""
@@ -589,7 +779,9 @@ class AgentOrchestrator:
         # через emit, отдаются фронту сразу, не дожидаясь конца плана.
         events: asyncio.Queue[dict | None] = asyncio.Queue()
         task = asyncio.create_task(
-            self._research(memory, pending, request, events.put_nowait, catalog, resume)
+            self._research(
+                memory, pending, request, events.put_nowait, catalog, route=route, resume=resume
+            )
         )
         task.add_done_callback(lambda _: events.put_nowait(None))
         try:
@@ -648,37 +840,108 @@ class AgentOrchestrator:
         # График по таблицам шагов агент выбирает, пока пишется вывод.
         picking = self._start_chart_pick(question, execution)
         stage = "insight"
+        stage_started = time.perf_counter()
         try:
             logger.info(">>> run() генерация инсайта")
             yield _progress_event("insight", "started")
-            insight = await self.insight_gen.generate(
-                question,
-                result_table,
-                supporting=execution.supporting,
-                steps=execution.steps,
-                memories=memory.context_memories(),
-                result_tool=execution.result_tool,
-                source=memory.table,
-                inputs=execution.inputs,
+            fast = getattr(self.insight_gen, "fast_insight", None)
+            fast_res = (
+                fast(question, result_table, execution.steps)
+                if settings.agent_fast_insight and callable(fast)
+                else None
             )
-            if confirmation:
-                insight.details.append(confirmation)
+            if fast_res is not None:
+                logger.info("<<< run() быстрый инсайт без LLM")
+                if confirmation:
+                    fast_res.details.append(confirmation)
+                insight = fast_res
+                yield _progress_event("insight", "finished", elapsed_ms=_elapsed_ms(stage_started))
+                yield _text_event(insight.headline, insight.details, insight.limits)
+            elif settings.insight_stream and callable(getattr(self.insight_gen, "stream", None)):
+                budget = current_budget()
+                if budget is not None:
+                    budget.enter_stage("insight")
+                queue: asyncio.Queue[dict | None] = asyncio.Queue()
+                streamed = False
+
+                def emit_chunk(delta: str) -> None:
+                    nonlocal streamed
+                    if not delta:
+                        return
+                    if delta.strip():
+                        streamed = True
+                    queue.put_nowait(_text_chunk_event(delta))
+
+                insight_task = asyncio.create_task(
+                    self.insight_gen.stream(
+                        question,
+                        result_table,
+                        supporting=execution.supporting,
+                        steps=execution.steps,
+                        memories=memory.context_memories(),
+                        result_tool=execution.result_tool,
+                        source=memory.table,
+                        inputs=execution.inputs,
+                        emit=emit_chunk,
+                    )
+                )
+                insight_task.add_done_callback(lambda _: queue.put_nowait(None))
+                try:
+                    try:
+                        while (event := await queue.get()) is not None:
+                            yield event
+                        insight = await insight_task
+                    except (BudgetExceeded, TimeoutError, ValueError) as exc:
+                        # Бюджет или нечитаемый ответ: результат уже посчитан,
+                        # поэтому отдаём шаблонный вывод, как в _insight().
+                        # Если текст уже показан, второй ответ дал бы дубль.
+                        if streamed:
+                            raise
+                        metrics = current_metrics()
+                        if metrics is not None and isinstance(exc, (BudgetExceeded, TimeoutError)):
+                            metrics.budget_exceeded = f"insight: {exc}"
+                        logger.warning("инсайт (стрим) не удался, шаблонный вывод: %s", exc)
+                        insight = self._fallback_insight(
+                            question, result_table, execution.steps, str(exc)
+                        )
+                finally:
+                    # Клиент отключился посреди стрима — закрываем поток LLM.
+                    if not insight_task.done():
+                        insight_task.cancel()
+                        with suppress(asyncio.CancelledError):
+                            await insight_task
+                    if budget is not None:
+                        budget.leave_stage("insight")
+                if confirmation:
+                    insight.details.append(confirmation)
+                yield _progress_event("insight", "finished", elapsed_ms=_elapsed_ms(stage_started))
+                if not streamed:
+                    # Фолбэк или пустой стрим: без этого фронт не увидит вывод.
+                    yield _text_event(insight.headline, insight.details, insight.limits)
+            else:
+                insight = await self._insight(
+                    question,
+                    execution,
+                    memories=memory.context_memories(),
+                    source=memory.table,
+                    confirmation=confirmation,
+                )
+                yield _progress_event("insight", "finished", elapsed_ms=_elapsed_ms(stage_started))
+                yield _text_event(insight.headline, insight.details, insight.limits)
             logger.info(
                 "<<< run() инсайт: headline=%r details=%r", insight.headline, insight.details
             )
-            yield {
-                "type": "text",
-                "data": {"headline": insight.headline, "details": insight.details},
-            }
 
             stage = "chart"
+            stage_started = time.perf_counter()
             picked = await picking if picking is not None else None
             if picked is not None:
                 chart_type, chart_table, records = picked.chart_type, picked.table, picked.records
                 columns = {"x": picked.x, "y": picked.y, "color": picked.color}
                 purpose = picked.purpose
+                yield _progress_event("chart", "started")
             else:
-                records = self.db.to_records(result_table, limit=SPEC_ROW_LIMIT)
+                records = await self.db.to_records_async(result_table, limit=SPEC_ROW_LIMIT)
                 view = _requested_view(execution, records)
                 chart_type = select_chart(question, result_table, view, records, titles)
                 if chart_type == NO_CHART:
@@ -692,12 +955,12 @@ class AgentOrchestrator:
                     )
                     yield _done(turn_id)
                     return
+                yield _progress_event("chart", "started")
                 if chart_type == "histogram":
-                    result_table, records = self._histogram_values(
-                        question, result_table, records, titles
+                    result_table, records = await asyncio.to_thread(
+                        self._histogram_values, question, result_table, records, titles
                     )
                 chart_table, columns, purpose = result_table, {}, execution.result_purpose
-            yield _progress_event("chart", "started")
             logger.debug(">>> run() построение графика chart_type=%s", chart_type)
             spec = build_vega_spec(
                 chart_type,
@@ -707,6 +970,7 @@ class AgentOrchestrator:
                 title=purpose or chart_title(records, titles),
                 **columns,
             )
+            yield _progress_event("chart", "finished", elapsed_ms=_elapsed_ms(stage_started))
             logger.debug(
                 "<<< run() график построен: mark=%s строк=%d",
                 spec.get("mark", "?"),
@@ -717,7 +981,9 @@ class AgentOrchestrator:
         except Exception as exc:
             logger.exception("<<< run() этап %s упал", stage)
             memory.finish_turn("failed", reason=f"{stage}: {exc}")
-            yield _progress_event(stage, "failed", error=str(exc))
+            yield _progress_event(
+                stage, "failed", error=str(exc), elapsed_ms=_elapsed_ms(stage_started)
+            )
             yield _failure_event()
             yield _done(turn_id)
             return
@@ -727,6 +993,8 @@ class AgentOrchestrator:
                 picking.cancel()
 
         if execution.dashboard_requested:
+            dashboard_started = time.perf_counter()
+            yield _progress_event("dashboard", "started")
             fallback = DashboardTile(
                 title=spec.get("title") or insight.headline,
                 spec=spec,
@@ -737,12 +1005,24 @@ class AgentOrchestrator:
                 event = await self._build_dashboard(
                     request.session_id, question, execution, titles, fallback
                 )
+            except BudgetExceeded as exc:
+                # Бюджет дашборда исчерпан: у пользователя уже есть текст и
+                # график, дашборд молча пропускаем (без error и failed).
+                logger.warning("<<< run() дашборд пропущен: %s", exc)
             except Exception as exc:
                 # Ответ и график уже у пользователя: ход не провален, нет
                 # только дашборда — без error, дальше обычный done.
                 logger.exception("<<< run() дашборд не собран")
-                yield _progress_event("dashboard", "failed", error=str(exc))
+                yield _progress_event(
+                    "dashboard",
+                    "failed",
+                    error=str(exc),
+                    elapsed_ms=_elapsed_ms(dashboard_started),
+                )
             else:
+                yield _progress_event(
+                    "dashboard", "finished", elapsed_ms=_elapsed_ms(dashboard_started)
+                )
                 yield event
 
         memory.finish_turn(
@@ -755,6 +1035,92 @@ class AgentOrchestrator:
         yield _done(turn_id)
 
     # --- Вспомогательные методы ---
+
+    async def _insight(
+        self,
+        question: str,
+        execution: Execution,
+        *,
+        memories: list[dict] | None = None,
+        source: str = "",
+        confirmation: str | None = None,
+    ) -> Insight:
+        """Инсайт с бюджетом: шаблон для одной ячейки, fallback при таймауте."""
+        budget = current_budget()
+        if budget is not None:
+            budget.enter_stage("insight")
+        timeout = (
+            budget.timeout_for("insight", settings.agent_insight_timeout_s)
+            if budget is not None
+            else settings.agent_insight_timeout_s
+        )
+        result_table = execution.result_table
+        try:
+            async with asyncio.timeout(timeout):
+                fast = getattr(self.insight_gen, "fast_insight", None)
+                if settings.agent_fast_insight and callable(fast):
+                    insight = fast(question, result_table, execution.steps)
+                    if insight is not None:
+                        logger.info("<<< run() быстрый инсайт без LLM")
+                        if confirmation:
+                            insight.details.append(confirmation)
+                        return insight
+                insight = await self.insight_gen.generate(
+                    question,
+                    result_table,
+                    supporting=execution.supporting,
+                    steps=execution.steps,
+                    memories=memories,
+                    result_tool=execution.result_tool,
+                    source=source,
+                    inputs=execution.inputs,
+                )
+                if confirmation:
+                    insight.details.append(confirmation)
+                return insight
+        except (BudgetExceeded, TimeoutError) as exc:
+            metrics = current_metrics()
+            if metrics is not None:
+                metrics.budget_exceeded = f"insight: {exc}"
+            logger.warning("инсайт не уложился в бюджет: %s", exc)
+            fallback = self._fallback_insight(question, result_table, execution.steps, str(exc))
+            if confirmation:
+                fallback.details.append(confirmation)
+            return fallback
+        except ValueError as exc:
+            # Модель вернула пустой или нечитаемый JSON (например, reasoning-
+            # модель потратила весь max_tokens на рассуждения). Результат уже
+            # посчитан: шаблонный вывод лучше провала хода без ответа.
+            logger.warning("инсайт: LLM вернула нечитаемый ответ: %s", exc)
+            fallback = self._fallback_insight(question, result_table, execution.steps, str(exc))
+            if confirmation:
+                fallback.details.append(confirmation)
+            return fallback
+        finally:
+            if budget is not None:
+                budget.leave_stage("insight")
+
+    def _fallback_insight(
+        self,
+        question: str,
+        result_table: str,
+        steps: list[ResearchStep],
+        reason: str,
+    ) -> Insight:
+        """Шаблонный вывод, когда LLM не дала инсайт: результат уже посчитан."""
+        fallback = getattr(self.insight_gen, "fallback_insight", None)
+        if callable(fallback):
+            return fallback(question, result_table, steps, reason)
+        try:
+            rows = len(self.db.to_records(result_table, limit=5))
+        except Exception:
+            logger.warning("запасной инсайт: таблица %s не прочитана", result_table, exc_info=True)
+            rows = 0
+        return Insight(
+            headline="Результат готов",
+            details=[f"Строк в результате: {rows}"],
+            limits=reason,
+        )
 
     def _start_chart_pick(self, question: str, execution: Execution) -> asyncio.Task | None:
         """Задача выбора графика агентом; None — графику не нужен выбор LLM.
@@ -777,6 +1143,7 @@ class AgentOrchestrator:
         request: ChatRequest,
         emit: Emit,
         catalog: list[str] | None = None,
+        route: Route | None = None,
         resume: dict | None = None,
     ) -> tuple[str, Execution]:
         """План и шаги хода: вопрос, на который отвечаем, и итог выполнения.
@@ -817,14 +1184,30 @@ class AgentOrchestrator:
         else:
             context["related"] = self._related(memory.table, request.question)
             tables = [memory.table, *(item.table for item in context["related"])]
-        logger.debug(">>> run() планируем шаги (planner.plan)")
-        emit(_progress_event("planning", "started", tables=tables, turn_id=memory.turn_id))
-        try:
-            plan = await self._plan(request.question, context)
-        except Exception as exc:
-            emit(_progress_event("planning", "failed", error=str(exc)))
-            raise
-        emit(_plan_event(plan.steps))
+        planning_started = time.perf_counter()
+        if route is not None:
+            plan = route.plan
+            logger.info("план (router %s): %s", route.kind, describe_plan(plan))
+            emit(_progress_event("planning", "started", tables=tables, turn_id=memory.turn_id))
+            emit(
+                _plan_event(
+                    plan.steps,
+                    planned_steps=_planned_steps(plan.steps),
+                    elapsed_ms=_elapsed_ms(planning_started),
+                    turn_id=memory.turn_id,
+                )
+            )
+        else:
+            logger.debug(">>> run() планируем шаги (planner.plan)")
+            plan = await self._plan_or_create(
+                request.question,
+                context,
+                memory.table,
+                emit,
+                tables=tables,
+                allow_empty_remember=True,
+                turn_id=memory.turn_id,
+            )
         chosen = plan.steps[0].input if plan.steps else None
         if catalog and chosen in catalog and chosen != memory.table:
             logger.info("планировщик выбрал таблицу %s", chosen)
@@ -889,19 +1272,242 @@ class AgentOrchestrator:
             logger.exception("связанные таблицы %s не прочитаны", table)
             return []
 
-    async def _plan(self, question: str, context: dict) -> ResearchPlan:
-        """План от планировщика; невалидный и после переспроса — уточнение у пользователя."""
+    async def _plan(
+        self,
+        question: str,
+        context: dict,
+        *,
+        stage: str = "planning",
+        emit: Emit = _ignore,
+    ) -> ResearchPlan:
+        """План от планировщика; невалидный и после переспроса — уточнение у пользователя.
+
+        ``stage`` — куда относить реальные фазы планирования: ``planning`` для
+        нового вопроса и ``replanning`` для достройки после lookup-шага.
+        """
+        budget = current_budget()
+        if budget is not None:
+            budget.enter_stage("planning")
         started_at = time.perf_counter()
+
+        def on_substage(name: str) -> None:
+            emit(_progress_event(stage, "substage", substage=name))
+
         try:
-            plan = await self.planner.plan(question, context)
+            if _reports_substages(self.planner):
+                plan = await self.planner.plan(question, context, on_substage=on_substage)
+            else:
+                plan = await self.planner.plan(question, context)
         except PlanInvalid as exc:
+            message = "Не удалось составить корректный план: " + "; ".join(exc.errors)
+            if any(
+                marker in error
+                for error in exc.errors
+                for marker in ("неизвестный инструмент", "не указан инструмент")
+            ):
+                # Модель придумала тул: возможно, его стоит создать, а не просить
+                # пользователя переформулировать.
+                raise NoSuitableTool(message) from exc
             raise ClarificationNeeded(
                 step_id=-1,
-                error="Не удалось составить корректный план: " + "; ".join(exc.errors),
+                error=message,
                 suggestions=["Переформулировать вопрос"],
             ) from exc
+        finally:
+            if budget is not None:
+                budget.leave_stage("planning")
         logger.info("план за %.1f с: %s", time.perf_counter() - started_at, describe_plan(plan))
         return plan
+
+    async def _plan_or_create(
+        self,
+        question: str,
+        context: dict,
+        input_table: str,
+        emit: Emit = _ignore,
+        *,
+        tables: list[str] | None = None,
+        allow_empty_remember: bool = True,
+        tile_id: int | None = None,
+        turn_id: str | None = None,
+    ) -> ResearchPlan:
+        """План; если инструментов не хватает — создать тул и перепланировать.
+
+        Пустой план с remember — это просьба запомнить, toolgen не нужен.
+        Создание ограничено TOOLGEN_MAX_PER_TURN на ход.
+        """
+        while True:
+            planning_started = time.perf_counter()
+            emit(
+                _progress_event(
+                    "planning", "started", tables=tables, tile_id=tile_id, turn_id=turn_id
+                )
+            )
+            try:
+                plan = await self._plan(question, context, emit=emit)
+            except BudgetExceeded as exc:
+                emit(
+                    _progress_event(
+                        "planning",
+                        "failed",
+                        error=str(exc),
+                        tile_id=tile_id,
+                        elapsed_ms=_elapsed_ms(planning_started),
+                        turn_id=turn_id,
+                    )
+                )
+                raise ClarificationNeeded(
+                    step_id=-1,
+                    error=(
+                        "Не удалось уложиться в бюджет планирования; уточните вопрос или сузьте его"
+                    ),
+                    suggestions=["Переформулировать вопрос"],
+                ) from exc
+            except NoSuitableTool as exc:
+                if not await self._create_tool(question, input_table, context, emit, exc):
+                    emit(
+                        _progress_event(
+                            "planning",
+                            "failed",
+                            error=str(exc),
+                            tile_id=tile_id,
+                            elapsed_ms=_elapsed_ms(planning_started),
+                            turn_id=turn_id,
+                        )
+                    )
+                    raise
+                continue
+            except Exception as exc:
+                emit(
+                    _progress_event(
+                        "planning",
+                        "failed",
+                        error=str(exc),
+                        tile_id=tile_id,
+                        elapsed_ms=_elapsed_ms(planning_started),
+                        turn_id=turn_id,
+                    )
+                )
+                raise
+            if plan.steps or (allow_empty_remember and plan.remember):
+                emit(
+                    _plan_event(
+                        plan.steps,
+                        planned_steps=_planned_steps(plan.steps),
+                        tile_id=tile_id,
+                        elapsed_ms=_elapsed_ms(planning_started),
+                        turn_id=turn_id,
+                    )
+                )
+                return plan
+            # Пустой план без remember: подходящего инструмента нет.
+            emit(
+                _plan_event(
+                    [],
+                    tile_id=tile_id,
+                    elapsed_ms=_elapsed_ms(planning_started),
+                    turn_id=turn_id,
+                )
+            )
+            if plan.route in ("answer", "overview"):
+                # Вопрос о прошлых ответах или обзор таблицы: шагов нет по смыслу,
+                # toolgen не нужен — ответят explainer/обзор.
+                return plan
+            if self._get_tool_factory() is None:
+                if settings.toolgen_enabled:
+                    # toolgen включён, но создать инструмент нечем (у планировщика
+                    # нет LLM): пустой план — ответ словами (route answer/overview)
+                    # или пояснение по журналу, а не уточнение.
+                    return plan
+                exc = NoSuitableTool()
+                exc.planning_finished = True
+                raise exc
+            exc = NoSuitableTool()
+            if not await self._create_tool(question, input_table, context, emit, exc):
+                exc.planning_finished = True
+                raise exc
+
+    async def _create_tool(
+        self,
+        question: str,
+        input_table: str,
+        context: dict,
+        emit: Emit,
+        reason: Exception | None = None,
+    ) -> bool:
+        """Создать инструмент через toolgen; False — создание недоступно/упало."""
+        if self._created_tools_count >= settings.toolgen_max_per_turn:
+            logger.info("toolgen: лимит созданий за ход исчерпан")
+            return False
+        factory = self._get_tool_factory()
+        if factory is None:
+            return False
+        tile_id = context.get("tile_id")
+        purpose = context.get("tile_title") or question
+        requested = _requested_tool(reason) if reason is not None else None
+        emit(
+            _progress_event("toolgen", "started", purpose=purpose, tool=requested, tile_id=tile_id)
+        )
+        started_at = time.perf_counter()
+        try:
+            created: CreatedTool = await factory.create(
+                question=question,
+                input_table=input_table,
+                purpose=purpose,
+                tile_title=context.get("tile_title", ""),
+                tile_intent=context.get("tile_intent", ""),
+            )
+        except ToolCreationError as exc:
+            logger.warning("toolgen: инструмент не создан: %s", exc)
+            emit(
+                _progress_event(
+                    "toolgen",
+                    "failed",
+                    purpose=purpose,
+                    error=str(exc),
+                    elapsed_ms=_elapsed_ms(started_at),
+                    tile_id=tile_id,
+                )
+            )
+            return False
+        except Exception as exc:
+            logger.exception("toolgen: неожиданный сбой")
+            emit(
+                _progress_event(
+                    "toolgen",
+                    "failed",
+                    purpose=purpose,
+                    error=str(exc),
+                    elapsed_ms=_elapsed_ms(started_at),
+                    tile_id=tile_id,
+                )
+            )
+            return False
+        self._created_tools_count += 1
+        context.setdefault("created_tools", []).append(created)
+        emit(
+            _progress_event(
+                "toolgen",
+                "finished",
+                purpose=purpose,
+                tool=created.tool.name,
+                elapsed_ms=_elapsed_ms(started_at),
+                tile_id=tile_id,
+            )
+        )
+        return True
+
+    def _get_tool_factory(self) -> ToolFactory | None:
+        """Фабрика по умолчанию: LLM планировщика и общий DuckDB."""
+        if not settings.toolgen_enabled:
+            return None
+        if self.tool_factory is not None:
+            return self.tool_factory
+        llm = getattr(self.planner, "llm", None)
+        if llm is None:
+            return None
+        self.tool_factory = ToolFactory(db=self.db, llm=llm)
+        return self.tool_factory
 
     async def _execute_plan(
         self,
@@ -938,6 +1544,25 @@ class AgentOrchestrator:
         steps = list(plan.steps)
         replans = 0
         index = 0
+        if len(plan.steps) > settings.agent_max_steps:
+            raise PlanInvalid(
+                [f"в плане {len(plan.steps)} шагов, максимум {settings.agent_max_steps}"]
+            )
+        if settings.agent_dag_executor:
+            from app.core.agent.parallel_executor import ParallelPlanExecutor
+            from app.core.agent.plan_graph import PlanGraph
+
+            graph = PlanGraph.from_plan(plan)
+            errors = graph.validate()
+            if errors:
+                raise PlanInvalid(errors)
+            execution, executed_tables = await ParallelPlanExecutor(self.executor).execute(
+                graph, input_table, source, emit, plan=plan
+            )
+            for step_id, table in executed_tables.items():
+                memory.record_step(graph.nodes[step_id].step, table)
+            return execution
+        metrics = current_metrics()
         while index < len(steps):
             step = steps[index]
             if step.step_id in tables:
@@ -1010,6 +1635,8 @@ class AgentOrchestrator:
             inputs[step.step_id] = resolve_input(step, current, tables, source)
             details = self._step_details(inputs[step.step_id], table, tables)
             emit(_step_event(step, "finished", elapsed_ms=elapsed_ms, **details))
+            if metrics is not None:
+                metrics.record_stage(f"step_{step.step_id}", elapsed_ms / 1000)
             steps[index] = step
             kind = tool_kind(step)
             logger.info("шаг %d готов за %d мс: %s", step.step_id, elapsed_ms, table)
@@ -1019,11 +1646,43 @@ class AgentOrchestrator:
                 current = table
             index += 1
 
-            if kind == "lookup" and replans < MAX_REPLANS:
+            if kind == "lookup" and replans < settings.agent_max_replans:
                 replans += 1
                 executed = steps[:index]
-                replanned = await self._replan_after_lookup(
-                    memory, question, executed, tables, observation=table
+                replanning_started = time.perf_counter()
+                emit(_progress_event("replanning", "started"))
+                try:
+                    replanned = await self._replan_after_lookup(
+                        memory,
+                        question,
+                        executed,
+                        tables,
+                        observation=table,
+                        # Паспорт осмотренной таблицы не хранит связь колонок в
+                        # строке: планировщику дополнительно показываем её строки.
+                        sample_source=(
+                            inputs.get(step.step_id) if step.tool == INSPECT_TOOL else None
+                        ),
+                        emit=emit,
+                    )
+                except Exception as exc:
+                    emit(
+                        _progress_event(
+                            "replanning",
+                            "failed",
+                            error=str(exc),
+                            elapsed_ms=_elapsed_ms(replanning_started),
+                        )
+                    )
+                    raise
+                emit(
+                    _progress_event(
+                        "replanning",
+                        "finished",
+                        total_steps=len(executed) + len(replanned.steps),
+                        planned_steps=_planned_steps(replanned.steps),
+                        elapsed_ms=_elapsed_ms(replanning_started),
+                    )
                 )
                 steps = executed + replanned.steps
                 emit(_plan_event(steps))
@@ -1073,9 +1732,24 @@ class AgentOrchestrator:
         """
 
         async def execute(candidate: ResearchStep) -> str:
-            return await self.executor.execute(
-                candidate, current, step_tables=tables, source_table=source, history=memory
+            budget = current_budget()
+            timeout = (
+                budget.timeout_for("steps", settings.agent_step_timeout_s)
+                if budget is not None
+                else settings.agent_step_timeout_s
             )
+            try:
+                async with asyncio.timeout(timeout):
+                    return await self.executor.execute(
+                        candidate,
+                        current,
+                        step_tables=tables,
+                        source_table=source,
+                        history=memory,
+                    )
+            except TimeoutError as exc:
+                remaining = budget.remaining() if budget is not None else 0.0
+                raise BudgetExceeded("steps", remaining, "SQL/шаг превысил лимит") from exc
 
         try:
             return step, await execute(step)
@@ -1099,14 +1773,14 @@ class AgentOrchestrator:
         # feedback — что получает планировщик: та же ошибка и, если его
         # исправление отклонила валидация, этот шаг с причиной отказа.
         feedback = str(error)
-        for attempt in range(1, STEP_FIX_ATTEMPTS + 1):
+        for attempt in range(1, settings.agent_step_fix_attempts + 1):
             if not fixable(error):
                 break
             logger.warning(
                 "    шаг %d: исправление %d/%d после ошибки %r",
                 step.step_id,
                 attempt,
-                STEP_FIX_ATTEMPTS,
+                settings.agent_step_fix_attempts,
                 feedback,
             )
             emit(_fixing_event(step, attempt, error))
@@ -1214,18 +1888,36 @@ class AgentOrchestrator:
     ) -> Execution:
         """Выбрать таблицу ответа и сопутствующие результаты."""
         executed = [step for step in steps if step.step_id in tables]
-        if plan.result_step is not None and plan.result_step in tables:
-            result_table = tables[plan.result_step]
+        # Осмотр таблицы — разведка: его паспорт не ответ, ответ — сама таблица.
+        answer_steps = [step for step in executed if step.tool != INSPECT_TOOL]
+        chosen = next((step for step in executed if step.step_id == plan.result_step), None)
+        if chosen is not None and chosen.tool == INSPECT_TOOL:
+            # result_step явно указывает на осмотр: ответ — осмотренная таблица,
+            # даже если в плане есть обычные шаги (docs/visualization.md).
+            result_table = inputs.get(chosen.step_id) or fallback
+        elif chosen is not None:
+            result_table = tables[chosen.step_id]
+        elif answer_steps:
+            chosen = answer_steps[-1]
+            result_table = tables[chosen.step_id]
         elif executed:
-            result_table = tables[executed[-1].step_id]
+            # План кончился осмотром: показываем осмотренную таблицу, а паспорт
+            # уходит в инсайт — иначе «сколько строк» отвечало бы числом колонок.
+            chosen = executed[-1]
+            result_table = inputs.get(chosen.step_id) or fallback
         else:
             result_table = fallback
-        shown = next((step for step in executed if tables[step.step_id] == result_table), None)
+        passports = [
+            (step.purpose or step.tool or f"шаг {step.step_id}", tables[step.step_id])
+            for step in executed
+            if step.tool == INSPECT_TOOL
+        ]
         supporting = [
             (step.purpose or step.tool or f"шаг {step.step_id}", tables[step.step_id])
             for step in executed
             if tool_kind(step) == "analysis" and tables[step.step_id] != result_table
         ]
+        supporting += [(purpose, table) for purpose, table in passports if table != result_table]
         execution = Execution(
             result_table=result_table,
             supporting=supporting,
@@ -1235,28 +1927,30 @@ class AgentOrchestrator:
             plan=plan,
             steps=executed,
             inputs=dict(inputs or {}),
-            result_purpose=shown.purpose if shown else "",
-            result_kind=tool_kind(shown) if shown else "transform",
-            result_tool=shown.tool if shown else "",
+            result_purpose=chosen.purpose if chosen else "",
+            result_kind=tool_kind(chosen) if chosen else "transform",
+            result_tool=chosen.tool if chosen else "",
         )
         try:
-            values = self._distribution_values(question, shown, inputs or {})
+            values = self._distribution_values(question, chosen, inputs or {})
         except Exception:
             # Гистограмма — дополнение: без неё показываем статистики шага.
             logger.exception("<<< _finish выборка для гистограммы не собрана")
             values = None
-        if values is None:
+        if values is None or chosen is None:
             return execution
         return Execution(
             result_table=values,
-            supporting=[(shown.purpose or shown.tool, result_table), *supporting],
+            supporting=[(chosen.purpose or chosen.tool, result_table), *supporting],
             final_viz="histogram",
             dashboard_requested=plan.dashboard_requested,
             tables=dict(tables),
             plan=plan,
             steps=executed,
             inputs=dict(inputs or {}),
-            result_purpose=shown.purpose,
+            result_purpose=chosen.purpose,
+            result_kind=tool_kind(chosen),
+            result_tool=chosen.tool,
         )
 
     def _distribution_values(
@@ -1298,14 +1992,26 @@ class AgentOrchestrator:
         executed: list[ResearchStep],
         tables: dict[int, str],
         observation: str,
+        sample_source: str | None = None,
+        emit: Emit = _ignore,
     ) -> ResearchPlan:
-        """Достроить план с учётом результата lookup-шага."""
+        """Достроить план с учётом результата lookup-шага.
+
+        ``sample_source`` — таблица, строки которой показываются планировщику
+        дополнительно: паспорт ``inspect_temp_table`` описывает колонки по
+        отдельности и теряет связь «регион ↔ категория ↔ сумма» в строке.
+        """
         observed = self.executor.db.to_records(observation, limit=OBSERVATION_ROWS)
         context = memory.build_context(question)
-        context["executed"] = _describe_executed(executed, tables, observed)
+        lines = [_describe_executed(executed, tables, observed)]
+        if sample_source is not None:
+            sample_rows = self.executor.db.to_records(sample_source, limit=OBSERVATION_ROWS)
+            if sample_rows:
+                lines.append(f"Строки {sample_source}: {sample_rows}")
+        context["executed"] = "\n".join(lines)
         context["next_step_id"] = _next_step_id(tables)
         logger.info(">>> _replan_after_lookup после шага %d", executed[-1].step_id)
-        plan = await self._plan(question, context)
+        plan = await self._plan(question, context, stage="replanning", emit=emit)
         return _renumber(plan, context["next_step_id"])
 
     async def _build_dashboard(
@@ -1316,17 +2022,39 @@ class AgentOrchestrator:
         titles: dict[str, str],
         fallback: DashboardTile,
     ) -> dict:
+        budget = current_budget()
+        if budget is not None:
+            budget.enter_stage("dashboard")
+            if budget.stage_remaining("dashboard") <= 0:
+                raise BudgetExceeded("dashboard", budget.remaining(), "нет бюджета на дашборд")
         plan = execution.plan
-        tiles = []
-        for planned in plan.dashboard_tiles:
-            table = execution.tables.get(planned.step_id)
-            if table is None:
-                logger.warning("    плитка %r: шаг %d не выполнен", planned.title, planned.step_id)
+        specs: list[tuple[DashboardTilePlan, DashboardTile]] = []
+        try:
+            for planned in plan.dashboard_tiles:
+                table = execution.tables.get(planned.step_id)
+                if table is None:
+                    logger.warning(
+                        "    плитка %r: шаг %d не выполнен", planned.title, planned.step_id
+                    )
+                    continue
+                try:
+                    specs.append((planned, await self._tile_spec(planned, table, titles)))
+                except Exception:
+                    logger.exception("    плитка %r не собрана", planned.title)
+            semaphore = asyncio.Semaphore(settings.agent_max_parallel_llm)
+            results = await asyncio.gather(
+                *(self._tile_insight(planned, tile, titles, semaphore) for planned, tile in specs),
+                return_exceptions=True,
+            )
+        finally:
+            if budget is not None:
+                budget.leave_stage("dashboard")
+        tiles: list[DashboardTile] = []
+        for result in results:
+            if isinstance(result, BaseException):
+                logger.error("    плитка не собрана: %s", result)
                 continue
-            try:
-                tiles.append(await self._dashboard_tile(planned, table, titles))
-            except Exception:
-                logger.exception("    плитка %r не собрана", planned.title)
+            tiles.append(result)
         template_id = plan.template_id if tiles else None
         logger.info(">>> run() дашборд: плиток=%d шаблон=%s", len(tiles), template_id)
         dashboard = await DashboardGenerator(db=self.db).generate(
@@ -1341,31 +2069,58 @@ class AgentOrchestrator:
         payload = DashboardPayload.from_dashboard(dashboard)
         return {"type": "dashboard", "data": payload.model_dump(exclude_none=True)}
 
-    async def _dashboard_tile(
+    async def _tile_spec(
         self, planned: DashboardTilePlan, table: str, titles: dict[str, str]
     ) -> DashboardTile:
+        """Собрать спеку плитки без LLM: данные, тип графика и layout."""
         requested = "kpi" if planned.is_kpi and planned.chart_type == "auto" else planned.chart_type
-        records = self.db.to_records(table, limit=SPEC_ROW_LIMIT)
+        records = await self.db.to_records_async(table, limit=SPEC_ROW_LIMIT)
         if requested == "kpi" and not is_single_number(records):
             logger.warning("    плитка %r: KPI не по одному числу", planned.title)
             requested = "auto"
         chart_type = select_chart(planned.title, table, requested, records)
-        spec = build_vega_spec(chart_type, table, db=self.db, titles=titles, title=planned.title)
+        spec = build_vega_spec(chart_type, table, data=records, titles=titles, title=planned.title)
         built = spec["usermeta"]["chart_type"]
-        insight = None
-        if planned.insight_needed:
-            try:
-                insight = await self.insight_gen.generate_tile_insight(planned.title, table, built)
-            except Exception:
-                logger.exception("    плитка %r: вывод не построен", planned.title)
         return DashboardTile(
             title=planned.title,
             spec=spec,
             source_step_id=planned.step_id,
             result_table=table,
-            insight=insight or None,
             is_kpi=built == "kpi",
         )
+
+    async def _tile_insight(
+        self,
+        planned: DashboardTilePlan,
+        tile: DashboardTile,
+        titles: dict[str, str],
+        semaphore: asyncio.Semaphore,
+    ) -> DashboardTile:
+        """LLM-вывод плитки под семафором; ошибка/таймаут не роняет дашборд."""
+        if not planned.insight_needed or tile.result_table is None:
+            return tile
+        budget = current_budget()
+        timeout = (
+            budget.timeout_for("dashboard", settings.agent_dashboard_timeout_s)
+            if budget is not None
+            else settings.agent_dashboard_timeout_s
+        )
+        async with semaphore:
+            try:
+                async with asyncio.timeout(timeout):
+                    insight = await self.insight_gen.generate_tile_insight(
+                        planned.title, tile.result_table, tile.spec["usermeta"]["chart_type"]
+                    )
+                return tile.model_copy(update={"insight": insight})
+            except (BudgetExceeded, TimeoutError) as exc:
+                metrics = current_metrics()
+                if metrics is not None:
+                    metrics.budget_exceeded = f"dashboard: {exc}"
+                logger.warning("    плитка %r: вывод не построен в бюджет: %s", planned.title, exc)
+                return tile
+            except Exception:
+                logger.exception("    плитка %r: вывод не построен", planned.title)
+                return tile
 
     async def _apply_recovery(
         self,
@@ -1459,12 +2214,15 @@ class AgentOrchestrator:
         )
 
     async def _overview(self, memory: SessionMemory, table: str) -> AsyncIterator[dict]:
-        """Ответ на «что передо мной?»: объём, период и описание простыми словами.
+        """Ответ на «что передо мной?»: объём, период, описание и таблица колонок.
 
-        Таблица связана ключами с другими — обзор всех связанных таблиц
-        (_schema_overview). Описание не построилось (LLM недоступна) — объём
-        и период всё равно отдаются. Технической таблицы колонок (типы,
-        заполненность) в ответе нет: пользователю она не нужна.
+        Размер и период идут отдельной строкой из паспорта, описание — пунктами
+        «что это / ключевые поля / на что обратить внимание». Заголовок —
+        название от LLM и объём данных, без служебного имени таблицы. Таблица
+        связана ключами с другими — обзор всех связанных таблиц
+        (_schema_overview). Описание не построилось (LLM недоступна) — факты и
+        таблица всё равно отдаются. Таблица колонок не становится last_chart:
+        «покажи в другом виде» относится к прошлому графику исследования.
         """
         group = relations.component(relations.load(self.db), table)
         if len(group) > 1:
@@ -1472,9 +2230,11 @@ class AgentOrchestrator:
                 yield event
             return
         stage = "insight"
+        stage_started = time.perf_counter()
         try:
             yield _progress_event("insight", "started")
             profile = overview.passport(self.db, table)
+            enrichment = self.profiles.load_enrichment(table)
             try:
                 summary = await overview.describe_dataset(
                     self.db, table, getattr(self.planner, "llm", None)
@@ -1484,12 +2244,25 @@ class AgentOrchestrator:
                 summary = ""
             # Название LLM пишет вместе с описанием (#211): читаем после него.
             headline = overview.headline(profile, relations.table_title(self.db, table))
-            details = overview.paragraphs(summary) or [SUMMARY_UNAVAILABLE]
+            points = overview.summary_lines(summary)
+            details = [overview.facts_line(profile), *(points or [SUMMARY_UNAVAILABLE])]
+            yield _progress_event("insight", "finished", elapsed_ms=_elapsed_ms(stage_started))
             yield {"type": "text", "data": {"headline": headline, "details": details}}
+
+            stage = "chart"
+            stage_started = time.perf_counter()
+            yield _progress_event("chart", "started")
+            spec = build_vega_spec(
+                "table", data=overview.profile_rows(profile, enrichment), title=OVERVIEW_CAPTION
+            )
+            yield _progress_event("chart", "finished", elapsed_ms=_elapsed_ms(stage_started))
+            yield {"type": "chart", "data": {"spec": spec, "caption": OVERVIEW_CAPTION}}
         except Exception as exc:
             logger.exception("<<< run() обзор таблицы: этап %s упал", stage)
             memory.finish_turn("failed")
-            yield _progress_event(stage, "failed", error=str(exc))
+            yield _progress_event(
+                stage, "failed", error=str(exc), elapsed_ms=_elapsed_ms(stage_started)
+            )
             yield _failure_event()
             yield _done(memory.turn_id)
             return
@@ -1525,7 +2298,7 @@ class AgentOrchestrator:
                 role = relations.role(links, name)
                 labels.append(f"«{title}» ({name})" if title else name)
                 facts = overview.facts(profile).removeprefix(f"{name}: ")
-                first = (overview.paragraphs(summary) or [SUMMARY_UNAVAILABLE])[0]
+                first = overview.essence(summary) or SUMMARY_UNAVAILABLE
                 details.append(f"{number}. {labels[-1]} — {role}: {facts}. {first}")
                 rows.append(
                     {
@@ -1587,6 +2360,8 @@ def _requested_view(execution: Execution, records: list[dict]) -> str:
     if execution.final_viz == NO_CHART and not execution.dashboard_requested:
         return NO_CHART
     requested = "auto" if execution.final_viz == NO_CHART else execution.final_viz
+    if requested == "histogram":
+        return "histogram"
     if execution.result_kind == "transform":
         return requested
     # Стат-тест и разведка — строки чисел: таблица. Тренд и сезонность —
@@ -1652,13 +2427,17 @@ def _renumber(plan: ResearchPlan, start: int) -> ResearchPlan:
 
 
 def _require_steps(plan: ResearchPlan) -> None:
-    """Пустой план — подходящих инструментов нет; просим переформулировать."""
+    """Пустой план — подходящих инструментов нет; можно создать новый."""
     if not plan.steps:
-        raise ClarificationNeeded(
-            step_id=-1,
-            error="Не удалось подобрать инструменты под этот вопрос.",
-            suggestions=["Переформулировать вопрос"],
-        )
+        raise NoSuitableTool()
+
+
+def _requested_tool(error: Exception | None) -> str | None:
+    """Имя инструмента из ошибки «неизвестный инструмент 'x'» (для прогресса)."""
+    if error is None:
+        return None
+    match = re.search(r"инструмент\s+'([^']+)'", str(error))
+    return match.group(1) if match else None
 
 
 def _describe_executed(

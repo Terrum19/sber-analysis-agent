@@ -82,6 +82,13 @@ def test_ungrounded_numbers_reads_thousands_and_millions() -> None:
     assert ungrounded_numbers("Выручка 730 млн", "726930548.86") == ["730"]
 
 
+def test_ungrounded_numbers_accepts_dd_mm_dates() -> None:
+    from app.core.agent.quality_fixes import ungrounded_numbers
+
+    sources = "период: 2006-09-01 – 2011-11-22; потребление 120.5"
+    assert ungrounded_numbers("К 01.09 потребление 120.5, к 22.11 — 130.7", sources) == ["130.7"]
+
+
 def test_time_bucket_avg_without_metric_fails_validation() -> None:
     tool = tool_registry.get("time_bucket")
     with pytest.raises(ValueError):
@@ -136,6 +143,19 @@ async def test_insight_asks_again_for_ungrounded_number(db, monkeypatch) -> None
     assert len(llm.prompts) == 2 and "118" in llm.prompts[1]
 
 
+async def test_insight_accepts_dd_mm_dates_from_sources(db, monkeypatch) -> None:
+    from app.core.agent.insight import InsightGenerator
+
+    monkeypatch.setattr(settings, "agent_quality_fixes", True)
+    db.execute(
+        "CREATE TABLE dated AS SELECT DATE '2006-09-01' AS timestep, 10.0 AS consumption_eur"
+    )
+    llm = _ScriptedLLM("01.09 — потребление 10.0")
+    insight = await InsightGenerator(llm=llm, db=db).generate("Потребление?", "dated")
+    assert insight.headline == "01.09 — потребление 10.0"
+    assert len(llm.prompts) == 1
+
+
 async def test_insight_without_facts_when_they_fail(db, monkeypatch) -> None:
     from app.core.agent import insight as module
 
@@ -144,9 +164,9 @@ async def test_insight_without_facts_when_they_fail(db, monkeypatch) -> None:
 
     monkeypatch.setattr(settings, "agent_quality_fixes", True)
     monkeypatch.setattr(module, "insight_facts", broken)
-    llm = _ScriptedLLM("Данных достаточно")
+    llm = _ScriptedLLM("Строк в таблице — 120")
     insight = await module.InsightGenerator(llm=llm, db=db).generate("Сколько строк?", "t")
-    assert insight.headline == "Данных достаточно"
+    assert insight.headline == "Строк в таблице — 120"
     assert len(llm.prompts) == 1
 
 

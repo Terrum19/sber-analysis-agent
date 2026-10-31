@@ -28,4 +28,9 @@ class DatasetDescription(BaseModel):
     display_name: str = Field(
         description="Название набора данных для пользователя: 2-5 слов по-русски, до 40 символов"
     )
-    summary: str = Field(description="Описание набора данных, 3-6 предложений")
+    summary: str = Field(
+        description=(
+            "Описание набора данных по строкам: **Что это**, **Ключевые поля**, "
+            "**На что обратить внимание**; без маркеров списка"
+        )
+    )

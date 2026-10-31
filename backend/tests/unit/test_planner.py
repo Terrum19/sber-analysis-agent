@@ -1,6 +1,7 @@
 """Unit-тесты StepPlanner: генерация плана исследования."""
 
 import json
+from typing import Any
 
 import pytest
 
@@ -56,8 +57,8 @@ def test_plan_includes_columns_in_context(planner):
     import asyncio
 
     context = {
-        "columns": ["x", "y", "z"],
-        "columns_summary": "x, y, z",
+        "columns": ["category", "revenue", "date"],
+        "columns_summary": "category, revenue, date",
         "datasource": "raw",
         "summary": "",
         "messages": [],
@@ -95,11 +96,11 @@ class ScriptedLLM(FakeLLM):
         self.plans = list(plans)
         self.prompts: list[str] = []
 
-    async def complete_structured(self, system, user, schema):
+    async def complete_structured(self, system, user, schema, **kwargs: Any):
         if schema is ResearchPlan:
             self.prompts.append(user)
             return self.plans.pop(0).model_copy(deep=True)
-        return await super().complete_structured(system, user, schema)
+        return await super().complete_structured(system, user, schema, **kwargs)
 
 
 def total(step_id: int, column: str, by: list[str] | None = None) -> ResearchStep:
@@ -172,6 +173,21 @@ def test_plan_ending_with_lookup_drops_tiles_on_future_steps():
     )
     assert validate_plan(plan) == []
     assert [planned.step_id for planned in plan.dashboard_tiles] == [0]
+
+
+def test_plan_reports_real_substages() -> None:
+    import asyncio
+
+    llm = ScriptedLLM(ResearchPlan(steps=[total(0, "revenue")]))
+    substages: list[str] = []
+    asyncio.run(
+        StepPlanner(llm=llm).plan(
+            "Выручка по категориям",
+            {"columns": ["revenue"]},
+            on_substage=substages.append,
+        )
+    )
+    assert substages == ["semantic", "llm", "validation"]
 
 
 def test_question_without_dashboard_words_gets_no_dashboard_prompt():
@@ -365,9 +381,9 @@ def test_prompt_shows_previous_turns_with_plan_arguments():
     import asyncio
 
     class PromptSpy(FakeLLM):
-        async def complete_structured(self, system, user, schema):
+        async def complete_structured(self, system, user, schema, **kwargs: Any):
             self.prompt = user
-            return await super().complete_structured(system, user, schema)
+            return await super().complete_structured(system, user, schema, **kwargs)
 
     llm = PromptSpy()
     turn = {
@@ -385,7 +401,7 @@ def test_prompt_shows_previous_turns_with_plan_arguments():
         "headline": "Пик в июле",
         "result_columns": ["bucket", "sum_revenue"],
     }
-    context = {"columns": ["date", "revenue"], "turns": [turn]}
+    context = {"columns": ["date", "revenue", "category"], "turns": [turn]}
     asyncio.run(StepPlanner(llm=llm).plan("А теперь только для Одежды", context))
     assert "1. Вопрос: Выручка по месяцам" in llm.prompt
     assert '"date_column": "date"' in llm.prompt

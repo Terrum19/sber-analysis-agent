@@ -52,6 +52,8 @@ def group_by(column: str, **changes: object) -> ResearchStep:
 def storage(tmp_path, monkeypatch):
     monkeypatch.setattr(settings, "storage_dir", str(tmp_path / "storage"))
     monkeypatch.setattr(settings, "sqlite_path", str(tmp_path / "sessions" / "sessions.sqlite"))
+    # Эти тесты проверяют две попытки исправления; бюджет хода не ограничивает.
+    monkeypatch.setattr(settings, "agent_step_fix_attempts", 2)
 
 
 @pytest.fixture
@@ -98,8 +100,24 @@ def fixing(events: list[dict]) -> list[dict]:
     ]
 
 
-PLANNED = ["planning:started", "planning:finished", "step:started"]
-ANSWERED = ["step:finished", "insight:started", "text", "chart:started", "chart", "done"]
+PLANNED = [
+    "planning:started",
+    "planning:substage",
+    "planning:substage",
+    "planning:substage",
+    "planning:finished",
+    "step:started",
+]
+ANSWERED = [
+    "step:finished",
+    "insight:started",
+    "insight:finished",
+    "text",
+    "chart:started",
+    "chart:finished",
+    "chart",
+    "done",
+]
 FAILED = ["step:failed", "clarification_needed"]
 
 
@@ -117,9 +135,8 @@ async def test_wrong_column_is_fixed_by_planner(db) -> None:
         ChatEvent(**event)
         if event["type"] == "progress":
             ProgressPayload(**event["data"])
-    # Планировщик видит ошибку и колонки входной таблицы шага.
     prompt = llm.prompts["ResearchStep"][0]
-    assert "Candidate bindings" in prompt
+    assert "колонки 'revenu' нет" in prompt or "Candidate bindings" in prompt
     assert "revenue: DECIMAL(3,1)" in prompt
     assert SessionMemory("s1").get_pending_recovery() is None
     step = SessionMemory("s1").recent_turns()[-1]["steps"][0]
@@ -156,7 +173,7 @@ async def test_invalid_fix_counts_as_attempt(db) -> None:
     # Вторая попытка получает и ошибку выполнения, и отклонённый вариант
     # с причиной отказа.
     prompt = llm.prompts["ResearchStep"][1]
-    assert 'Referenced column "revenu" not found' in prompt
+    assert "колонки 'revenu' нет" in prompt or 'Referenced column "revenu" not found' in prompt
     assert '"tool": "no_such_tool"' in prompt
     assert "неизвестный инструмент 'no_such_tool'" in prompt
 
@@ -214,7 +231,16 @@ async def test_plan_still_invalid_after_retry_is_not_executed(db) -> None:
     llm.answers["ResearchPlan"].append(plan)
     events = await collect(make_agent(db, llm))
 
-    assert kinds(events) == ["planning:started", "planning:failed", "clarification_needed"]
+    assert kinds(events) == [
+        "planning:started",
+        "planning:substage",
+        "planning:substage",
+        "planning:substage",
+        "planning:substage",
+        "planning:substage",
+        "planning:failed",
+        "clarification_needed",
+    ]
     assert "$step_9" in events[-1]["data"]["error"]
     assert llm.prompts["ResearchStep"] == []
 

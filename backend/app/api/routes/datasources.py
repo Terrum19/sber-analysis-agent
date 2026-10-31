@@ -49,8 +49,10 @@ from app.core.data.connectors.postgres import (
 )
 from app.core.data.duckdb_manager import DuckDBManager
 from app.core.data.profiling import TableProfile
+from app.core.data.semantic_model import SemanticRegistry
 from app.core.memory.profile_memory import ProfileMemory
 from app.core.memory.session_memory import SessionMemory
+from app.models.semantic import SemanticModel
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -303,6 +305,43 @@ def forget_csv(db: DuckDBManager, datasource_id: str) -> list[str] | None:
             relations.delete(db, table)
     shutil.rmtree(folder, ignore_errors=True)
     return tables
+
+
+@router.get("/tables/{table}/semantic-model", response_model=SemanticModel)
+def get_semantic_model(table: str, db: Annotated[DuckDBManager, Depends(get_db)]) -> SemanticModel:
+    """Управляемая семантика таблицы (404 — модель ещё не размечена)."""
+    model = SemanticRegistry(db).load(table)
+    if model is None:
+        raise HTTPException(status_code=404, detail=f"Semantic model «{table}» не задана.")
+    return model
+
+
+@router.put("/tables/{table}/semantic-model", response_model=SemanticModel)
+def put_semantic_model(
+    table: str,
+    payload: SemanticModel,
+    db: Annotated[DuckDBManager, Depends(get_db)],
+) -> SemanticModel:
+    """Сохранить semantic model; колонки проверяются по каталогу таблицы."""
+    if payload.table != table:
+        raise HTTPException(status_code=422, detail="table в теле не совпадает с путём.")
+    registry = SemanticRegistry(db)
+    columns = set(db.columns(table))
+    if not columns:
+        raise HTTPException(status_code=404, detail=f"Таблицы «{table}» нет.")
+    errors = registry.validate(payload, columns)
+    if errors:
+        raise HTTPException(status_code=422, detail="; ".join(errors))
+    current = registry.load(table)
+    payload.version = 1 if current is None else current.version + 1
+    registry.save(payload)
+    return payload
+
+
+@router.delete("/tables/{table}/semantic-model", status_code=204)
+def delete_semantic_model(table: str, db: Annotated[DuckDBManager, Depends(get_db)]) -> None:
+    """Удалить semantic model; planner вернётся к колонкам паспорта."""
+    SemanticRegistry(db).delete(table)
 
 
 @router.delete("/{datasource_id}", status_code=204)

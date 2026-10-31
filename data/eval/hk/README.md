@@ -9,14 +9,11 @@
 | Файл | Что в нём |
 |---|---|
 | `questions.yaml` | задачи: вопрос, таблица, проверки, пункты рубрики судьи |
-| `gold.json` | эталонные значения, считает `scripts/eval_gold.py` |
+| `gold.json` | эталонные значения, считает `scripts/eval_gold.py` или `scripts/eval/gold.py` |
 
 ## Запуск
 
-Прогон и проверки — общий скрипт `scripts/eval.py` (`docs/eval.md`), эталоны —
-`scripts/eval_gold.py`. Для `run_python` нужен рантайм песочницы
-(`docs/sandbox.md`): без него тул скрыт от планировщика, и прогон не совпадает с
-тем, что увидит жюри в docker.
+Прогон и проверки — общий скрипт `scripts/eval.py` (`docs/eval.md`) или модули `scripts/eval/run_eval.py` и `scripts/eval/score.py`. Для `run_python` нужен рантайм песочницы (`docs/sandbox.md`): без него тул скрыт от планировщика, и прогон не совпадает с тем, что увидит жюри в docker.
 
 ```bash
 make hk-data                                   # 9 CSV в data/hk_datasets и main.duckdb
@@ -25,14 +22,22 @@ python3 scripts/eval.py --questions data/eval/hk/questions.yaml \
   --columns-recall-only --repeat 3 --model ... # отчёт -> docs/reports/eval_*.md
 ```
 
-`gold.json` берётся рядом с набором (`--gold` — другой файл). Каждая задача —
-новая сессия, цепочка `follow_up_of` — одна сессия по порядку; `--ids` гоняет
-задачи вместе с предками цепочки, `--repeat 3` — повторы для pass^k,
-`--reply-to` — продолжения диалога отвечают на свой ход через `reply_to` (#173).
-`--columns-recall-only` — `columns_all` этого набора не влияет на итог.
+Либо через модульный пайплайн:
+```bash
+pip install -r backend/requirements.txt pyyaml
+make hk-data                                   # 9 CSV в data/hk_datasets и main.duckdb
+python3 scripts/eval/gold.py                   # эталоны -> gold.json
+LLM_BASE_URL=... LLM_MODEL=... LLM_API_KEY=... \
+  python3 scripts/eval/run_eval.py --db backend/storage/duckdb/main.duckdb \
+  --parallel 4 --repeat 1                      # ответы агента -> <run_dir>/results.jsonl
+JUDGE_BASE_URL=... JUDGE_API_KEY=... JUDGE_MODEL=... \
+  python3 scripts/eval/score.py <run_dir> [<run_dir2> ...] --judge --out <dir>
+                                               # проверки, судья -> <dir>/report.md
+```
 
-Ход, который провайдер отклонил с 429, помечается `api_error` и в оценку не
-идёт — в отчёте есть строка «Исключено: ход сорван лимитом API провайдера».
+`gold.json` берётся рядом с набором (`--gold` — другой файл). Каждая задача — новая сессия, цепочка `follow_up_of` — одна сессия по порядку; `--ids` / `--only` гоняет задачи вместе с предками цепочки, `--repeat 3` — повторы для pass^k, `--reply-to` — продолжения диалога отвечают на свой ход через `reply_to` (#173).
+
+Ход, который провайдер отклонил с 429, помечается `api_error` и в оценку не идёт — в отчёте есть строка «Исключено: ход сорван лимитом API провайдера».
 
 ## Формат задачи
 
@@ -70,9 +75,7 @@ python3 scripts/eval.py --questions data/eval/hk/questions.yaml \
 
 Каждому ответу с `done` судья ставит общие пункты — `answers_question`,
 `grounded`, `business_readable` — и пункты задачи из `judge`. Тексты пунктов —
-`GENERAL_RUBRIC` и `TASK_RUBRIC` в #181 (`scripts/eval/score.py`); судью переносят
-в `scripts/eval_judge.py`, `scripts/eval.py` ключ `judge` принимает и не
-проверяет. Судья видит вопрос,
+`GENERAL_RUBRIC` и `TASK_RUBRIC` в `scripts/eval/score.py` (и `docs/eval.md`). Судья видит вопрос,
 справку по исходной таблице (строки, колонки, периоды), эталонные факты и
 значения, ответ ровно в том виде, в каком его видит пользователь, и таблицу
 результата; модель судьи не та же, что у агента. Задача решена, когда прошли все

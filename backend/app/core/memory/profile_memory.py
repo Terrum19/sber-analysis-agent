@@ -81,6 +81,23 @@ SCHEMA = (
     "ALTER TABLE _meta.table_passport ADD COLUMN IF NOT EXISTS summary_fingerprint VARCHAR",
     "ALTER TABLE _meta.table_passport ADD COLUMN IF NOT EXISTS display_name VARCHAR",
     "ALTER TABLE _meta.table_passport ADD COLUMN IF NOT EXISTS name_source VARCHAR",
+    # P1: управляемая семантика и индекс схемы (аддитивные таблицы).
+    """CREATE TABLE IF NOT EXISTS _meta.semantic_model (
+        table_name  VARCHAR PRIMARY KEY,
+        model       JSON NOT NULL,
+        version     INTEGER NOT NULL DEFAULT 1,
+        updated_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+    )""",
+    """CREATE TABLE IF NOT EXISTS _meta.schema_embedding (
+        table_name   VARCHAR NOT NULL,
+        object_type  VARCHAR NOT NULL,
+        object_name  VARCHAR NOT NULL,
+        text_hash    VARCHAR NOT NULL,
+        model        VARCHAR NOT NULL,
+        vector       JSON NOT NULL,
+        updated_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
+        PRIMARY KEY (table_name, object_type, object_name)
+    )""",
 )
 
 DESCRIPTION_STATUSES = ("none", "pending", "ready", "failed")
@@ -330,3 +347,51 @@ class ProfileMemory:
             self.db.execute(
                 "DELETE FROM _meta.table_passport WHERE table_name = $table", {"table": table}
             )
+            self.db.execute(
+                "DELETE FROM _meta.semantic_model WHERE table_name = $table", {"table": table}
+            )
+            self.db.execute(
+                "DELETE FROM _meta.schema_embedding WHERE table_name = $table", {"table": table}
+            )
+
+    # --- P1: semantic model -------------------------------------------------
+
+    def load_semantic_model(self, table: str):
+        """Загрузить SemanticModel таблицы (None — модели нет или она битая)."""
+        from app.models.semantic import SemanticModel
+
+        rows = self.db.query(
+            "SELECT model FROM _meta.semantic_model WHERE table_name = $table", {"table": table}
+        )
+        if not rows:
+            return None
+        raw = rows[0]["model"]
+        try:
+            if isinstance(raw, dict):
+                return SemanticModel.model_validate(raw)
+            return SemanticModel.model_validate_json(raw)
+        except Exception:  # noqa: BLE001 — битую модель считаем отсутствующей
+            return None
+
+    def save_semantic_model(self, model) -> None:
+        """Сохранить модель; version увеличивается при каждом обновлении."""
+        import json
+
+        payload = model.model_dump(mode="json")
+        self.db.execute(
+            "INSERT INTO _meta.semantic_model (table_name, model, version, updated_at) "
+            "VALUES ($table, $model, $version, now()) "
+            "ON CONFLICT (table_name) DO UPDATE SET model = excluded.model, "
+            "version = excluded.version, updated_at = now()",
+            {
+                "table": model.table,
+                "model": json.dumps(payload, ensure_ascii=False),
+                "version": model.version,
+            },
+        )
+
+    def delete_semantic_model(self, table: str) -> None:
+        """Удалить semantic model таблицы."""
+        self.db.execute(
+            "DELETE FROM _meta.semantic_model WHERE table_name = $table", {"table": table}
+        )

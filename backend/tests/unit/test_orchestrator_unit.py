@@ -184,8 +184,10 @@ def test_progress_events_precede_the_answer(orchestrator):
         "step:started",
         "step:finished",
         "insight:started",
+        "insight:finished",
         "text",
         "chart:started",
+        "chart:finished",
         "chart",
         "done",
     ]
@@ -200,14 +202,19 @@ def test_progress_events_precede_the_answer(orchestrator):
         "tables": ["raw"],
         "turn_id": events[-1]["data"]["turn_id"],
     }
-    planned = {"step_id": 0, "tool": "aggregate", "purpose": "Мок шаг", "input": "$prev"}
-    assert progress[1] == {
-        "stage": "planning",
-        "status": "finished",
-        "total_steps": 1,
-        "steps": [{**planned, "arguments": {}}],
-    }
-    assert progress[2] == {"stage": "step", "status": "started", **planned, "arguments": {}}
+    planned = ProgressPayload(**progress[1]).planned_steps
+    assert planned is not None and planned[0].tool == "aggregate"
+    assert progress[1]["stage"] == "planning"
+    assert progress[1]["status"] == "finished"
+    assert progress[1]["total_steps"] == 1
+    plan_step = {"step_id": 0, "tool": "aggregate", "purpose": "Мок шаг", "input": "$prev"}
+    # План целиком (#239) и краткий planned_steps для прогресса — в одном событии.
+    assert progress[1]["steps"] == [{**plan_step, "arguments": {}}]
+    assert progress[1]["planned_steps"] == [
+        {"step_id": 0, "purpose": "Мок шаг", "tool": "aggregate"}
+    ]
+    assert progress[1]["elapsed_ms"] >= 1
+    assert progress[2] == {"stage": "step", "status": "started", **plan_step, "arguments": {}}
     finished = progress[3]
     assert finished["status"] == "finished"
     assert finished["step_id"] == 0
@@ -221,7 +228,35 @@ def test_progress_events_precede_the_answer(orchestrator):
     assert "input_step_id" not in finished
     assert "code" not in finished
     assert progress[4] == {"stage": "insight", "status": "started"}
-    assert progress[5] == {"stage": "chart", "status": "started"}
+    assert progress[5]["stage"] == "insight"
+    assert progress[5]["status"] == "finished"
+    assert progress[5]["elapsed_ms"] >= 1
+    assert progress[6] == {"stage": "chart", "status": "started"}
+    assert progress[7]["stage"] == "chart"
+    assert progress[7]["status"] == "finished"
+    assert progress[7]["elapsed_ms"] >= 1
+
+
+def test_planning_reports_real_substages(orchestrator):
+    class SubstagePlanner(FakePlanner):
+        async def plan(self, question, context, on_substage=None):
+            for name in ("semantic", "llm", "validation"):
+                if on_substage is not None:
+                    on_substage(name)
+            return await super().plan(question, context)
+
+    orchestrator.planner = SubstagePlanner()
+    events = collect(orchestrator, "s1")
+    substages = [
+        event["data"]
+        for event in events
+        if event["type"] == "progress" and event["data"].get("status") == "substage"
+    ]
+    assert [(event["stage"], event["substage"]) for event in substages] == [
+        ("planning", "semantic"),
+        ("planning", "llm"),
+        ("planning", "validation"),
+    ]
 
 
 def test_failed_step_reports_progress(orchestrator):
@@ -292,6 +327,61 @@ def test_insight_failure_ends_the_stream(orchestrator):
     assert events[-3]["data"]["error"] == "LLM timeout"
 
 
+def test_unreadable_insight_falls_back_to_template(orchestrator):
+    class UnreadableInsightGen:
+        async def generate(self, question, result_table, **_):
+            raise ValueError("LLM не вернула валидный JSON для схемы Insight")
+
+        def fallback_insight(self, question, result_table, steps=None, error=""):
+            from app.models.insight import Insight
+
+            return Insight(
+                headline="Результат готов",
+                details=["Строк в результате: 2"],
+                limits=error,
+            )
+
+    orchestrator.insight_gen = UnreadableInsightGen()
+    events = collect(orchestrator, "s1")
+
+    assert "insight:failed" not in stages(events)
+    assert "error" not in stages(events)
+    assert "insight:started" in stages(events)
+    assert "text" in stages(events)
+    assert stages(events)[-1] == "done"
+    text = next(event for event in events if event["type"] == "text")
+    assert text["data"]["headline"] == "Результат готов"
+
+
+def test_stream_budget_exceeded_falls_back_to_template(orchestrator, monkeypatch):
+    from app.config import settings
+    from app.core.agent.budget import BudgetExceeded
+    from app.models.insight import Insight
+
+    monkeypatch.setattr(settings, "insight_stream", True)
+
+    class BudgetInsightGen:
+        async def stream(self, question, result_table, **_):
+            raise BudgetExceeded("llm", 638.7, "лимит вызовов LLM 6 исчерпан")
+
+        def fallback_insight(self, question, result_table, steps=None, error=""):
+            return Insight(
+                headline="Результат готов",
+                details=["Строк в результате: 2"],
+                limits=error,
+            )
+
+    orchestrator.insight_gen = BudgetInsightGen()
+    events = collect(orchestrator, "s1")
+
+    assert "insight:failed" not in stages(events)
+    assert "error" not in stages(events)
+    assert "insight:started" in stages(events)
+    assert stages(events)[-1] == "done"
+    text = next(event for event in events if event["type"] == "text")
+    assert text["data"]["headline"] == "Результат готов"
+
+
 def test_dashboard_failure_keeps_the_answer(orchestrator, monkeypatch):
     from app.core.dashboards.generator import DashboardGenerator
     from app.models.research_step import ResearchPlan
@@ -308,7 +398,14 @@ def test_dashboard_failure_keeps_the_answer(orchestrator, monkeypatch):
     monkeypatch.setattr(DashboardGenerator, "generate", failing_generate)
     events = collect(orchestrator, "s1")
 
-    assert stages(events)[-4:] == ["chart:started", "chart", "dashboard:failed", "done"]
+    assert stages(events)[-6:] == [
+        "chart:started",
+        "chart:finished",
+        "chart",
+        "dashboard:started",
+        "dashboard:failed",
+        "done",
+    ]
     assert "error" not in stages(events)
     assert events[-2]["data"]["error"] == "SQLite недоступна"
 
@@ -373,9 +470,14 @@ def test_done_counts_truncated_prompts(orchestrator):
     events = collect(orchestrator, "s1")
 
     assert events[-1]["data"]["prompt_truncated"] == 2
-    # Следующий ход без обрезок — в done только turn_id.
+    # Следующий ход без обрезок — в done turn_id и аддитивные метрики.
     orchestrator.planner, orchestrator.insight_gen = FakePlanner(), FakeInsightGen()
-    assert list(collect(orchestrator, "s2")[-1]["data"]) == ["turn_id"]
+    data = collect(orchestrator, "s2")[-1]["data"]
+    assert data["turn_id"]
+    assert data["route"] == "complex"
+    assert data["llm_calls"] == 0
+    assert data["total_ms"] >= 1
+    assert "prompt_truncated" not in data
 
 
 def test_clarification_counts_truncated_prompts(orchestrator):
@@ -425,7 +527,15 @@ class NoPlanner:
         raise AssertionError("обзорный вопрос не идёт в планировщик")
 
 
-OVERVIEW_STAGES = ["insight:started", "text", "done"]
+OVERVIEW_STAGES = [
+    "insight:started",
+    "insight:finished",
+    "text",
+    "chart:started",
+    "chart:finished",
+    "chart",
+    "done",
+]
 
 
 def test_overview_question_skips_planner(orchestrator):
@@ -435,11 +545,19 @@ def test_overview_question_skips_planner(orchestrator):
 
     assert stages(events) == OVERVIEW_STAGES
     # Заголовок — название от LLM и объём, без служебного имени таблицы и колонок.
-    assert events[1]["data"] == {
+    assert events[2]["data"] == {
         "headline": "Числа: 2 записи",
-        "details": ["Передо мной числа.", "Пропусков нет."],
+        "details": [
+            "**Размер и период:** 2 строки, 1 колонка, колонок с датами нет — период не определить",
+            "**Что это:** Передо мной числа.",
+            "Пропусков нет.",
+        ],
     }
+    spec = events[5]["data"]["spec"]
+    assert spec["usermeta"]["chart_type"] == "table"
+    assert [row["Колонка"] for row in spec["data"]["values"]] == ["a"]
     assert stages(ask(orchestrator, "Сколько строк?")) == OVERVIEW_STAGES
+    assert stages(ask(orchestrator, "Что перед тобой?")) == OVERVIEW_STAGES
     assert llm.calls == 1
     assert SessionMemory("s1").last_chart() is None
 
@@ -458,8 +576,9 @@ def test_overview_route_from_the_planner(orchestrator):
     # Формулировку шаблоны не узнают — обзор выбирает планировщик.
     events = ask(orchestrator, "Расскажи вкратце, с чем мне тут работать")
 
-    assert stages(events)[-3:] == OVERVIEW_STAGES
-    assert events[-2]["data"]["headline"] == "Числа: 2 записи"
+    assert stages(events)[-len(OVERVIEW_STAGES) :] == OVERVIEW_STAGES
+    text = next(event for event in events if event["type"] == "text")
+    assert text["data"]["headline"] == "Числа: 2 записи"
 
 
 def test_overview_without_llm_still_answers(orchestrator):
@@ -469,7 +588,9 @@ def test_overview_without_llm_still_answers(orchestrator):
     events = ask(orchestrator, "Что за данные?")
 
     assert stages(events) == OVERVIEW_STAGES
-    assert events[1]["data"]["details"] == [SUMMARY_UNAVAILABLE]
+    details = events[2]["data"]["details"]
+    assert details[0].startswith("**Размер и период:**")
+    assert details[1:] == [SUMMARY_UNAVAILABLE]
 
 
 def test_overview_failure_ends_the_stream(orchestrator, monkeypatch):
@@ -489,3 +610,69 @@ def test_overview_failure_ends_the_stream(orchestrator, monkeypatch):
 def test_elapsed_ms_is_never_zero() -> None:
     assert _elapsed_ms(time.perf_counter()) == 1
     assert _elapsed_ms(time.perf_counter() - 2.5) == 2500
+
+
+def test_closing_stream_cancels_insight_stream(orchestrator, monkeypatch):
+    """aclose() SSE доводит отмену до стрима LLM, а не ждёт его конца."""
+    import asyncio
+
+    from app.config import settings
+    from app.models.insight import Insight
+
+    monkeypatch.setattr(settings, "insight_stream", True)
+    closed = asyncio.Event()
+
+    class HangingInsight:
+        async def generate(self, question, result_table, **_):
+            raise AssertionError("при включённом стриме generate не вызывается")
+
+        async def stream(
+            self, question, result_table, *, supporting=None, steps=None, emit=None, **_
+        ):
+            try:
+                emit("первый ")
+                await asyncio.sleep(30)
+                return Insight(headline="никогда", details=[], limits="")
+            finally:
+                closed.set()
+
+    orchestrator.insight_gen = HangingInsight()
+
+    async def _run():
+        events = orchestrator.run(ChatRequest(session_id="s1", question="Тест отмены"))
+        try:
+            while True:
+                event = await anext(events)
+                if event["type"] == "text" and "chunk" in event["data"]:
+                    break
+        finally:
+            await events.aclose()
+        await asyncio.wait_for(closed.wait(), 1)
+
+    asyncio.run(_run())
+
+
+def test_insight_stream_skips_empty_and_whitespace_deltas(orchestrator, monkeypatch):
+    """Пустая дельта не превращается в событие, пробельная — не делает стрим успешным."""
+    from app.config import settings
+    from app.models.insight import Insight
+
+    monkeypatch.setattr(settings, "insight_stream", True)
+
+    class DeltasInsight:
+        async def generate(self, question, result_table, **_):
+            raise AssertionError("при включённом стриме generate не вызывается")
+
+        async def stream(
+            self, question, result_table, *, supporting=None, steps=None, emit=None, **_
+        ):
+            emit("")
+            emit(" \n")
+            emit("Вывод")
+            return Insight(headline="Вывод", details=[], limits="")
+
+    orchestrator.insight_gen = DeltasInsight()
+    events = collect(orchestrator, "s1")
+    chunks = [event["data"]["chunk"] for event in events if event["type"] == "text"]
+
+    assert chunks == [" \n", "Вывод"]

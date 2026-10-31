@@ -6,6 +6,7 @@
 Финальная таблица — основание для инсайта/графика/дашборда.
 """
 
+import difflib
 import logging
 import re
 from dataclasses import replace
@@ -30,6 +31,22 @@ def tool_kind(step: ResearchStep) -> ToolKind:
         return tool_registry.get(step.tool).kind
     except KeyError:
         return "transform"
+
+
+def _read_columns(step: ResearchStep, tool: Any, resolve: "_Resolver") -> list[str]:
+    """Колонки входной таблицы, которые читает шаг (по аргументам тула)."""
+    try:
+        args = tool.parse_args(resolve.value(step.columns), resolve.value(step.arguments))
+    except (KeyError, ValueError):
+        # Синтаксис аргументов проверит сам тул; для выбора входа он не нужен.
+        return []
+    names: list[str] = []
+    for field_name in tool.column_fields():
+        value = getattr(args, field_name, None)
+        for item in value if isinstance(value, list) else [value]:
+            if isinstance(item, str) and not item.startswith("$"):
+                names.append(item)
+    return names
 
 
 class StepExecutor:
@@ -93,6 +110,19 @@ class StepExecutor:
             logger.error(msg)
             raise ValueError(msg)
 
+        if history is None:
+            # Автономное выполнение шага без SessionMemory (например, тесты или
+            # параллельный executor): $prev после агрегата может уже не содержать
+            # колонок шага — если все его колонки есть только в источнике, читаем $source.
+            table = self._source_for_isolated_step(
+                step, tool, resolve, table, source_table or input_table
+            )
+            self._validate_columns(step, tool, resolve, table)
+        elif table == (source_table or input_table):
+            # В пошаговом оркестраторе preflight проверяет исходную таблицу,
+            # а восстановление $prev -> $source производит orchestrator._from_source.
+            self._validate_columns(step, tool, resolve, table)
+
         context = replace(self.context, history=history, source=resolve.refs[SOURCE])
         result = await tool.arun(
             context,
@@ -103,6 +133,72 @@ class StepExecutor:
         )
         logger.debug("<<< StepExecutor.execute() УСПЕШНО result_table=%s", result)
         return result
+
+    def _source_for_isolated_step(
+        self,
+        step: ResearchStep,
+        tool: Any,
+        resolve: "_Resolver",
+        table: str,
+        source: str,
+    ) -> str:
+        """Таблица шага: $prev теряет колонки после агрегата — читаем $source.
+
+        Если шаг с input=$prev ссылается только на колонки, которых в $prev
+        нет, но все они есть в источнике, шаг начинает новую ветку плана
+        (например, независимую плитку дашборда), а не продолжает предыдущий
+        агрегат. Вернуть $prev здесь — Binder Error уже в DuckDB; отдаём
+        источник, чтобы шаг выполнился по назначению.
+        """
+        if step.input != PREVIOUS or table == source:
+            return table
+        try:
+            requested = _read_columns(step, tool, resolve)
+            available = set(self.db.columns(table))
+            source_columns = set(self.db.columns(source))
+        except Exception:  # noqa: BLE001 — каталог недоступен, решает SQL-ошибка
+            return table
+        # Часть колонок уже есть в $prev — это продолжение ветки с новыми
+        # колонками: не подменяем вход, ошибку (если есть) исправит fix_step.
+        if not requested or any(name in available for name in requested):
+            return table
+        if not source_columns or any(name not in source_columns for name in requested):
+            return table
+        logger.warning(
+            "    шаг %d: колонок %s нет в %s (есть: %s), читаю $source %s",
+            step.step_id,
+            ", ".join(requested),
+            table,
+            ", ".join(sorted(available)) or "пусто",
+            source,
+        )
+        return source
+
+    def _validate_columns(
+        self, step: ResearchStep, tool: Any, resolve: "_Resolver", table: str
+    ) -> None:
+        """Проверить колоночные аргументы шага против схемы входной таблицы."""
+        try:
+            available = set(self.db.columns(table))
+        except Exception:  # noqa: BLE001 — каталог недоступен, preflight не блокирует шаг
+            # Каталог недоступен — не блокируем шаг: точную ошибку даст SQL.
+            logger.warning(
+                "    шаг %d: колонки %s не прочитаны, preflight пропущен", step.step_id, table
+            )
+            return
+        if not available:
+            return
+        args = tool.parse_args(resolve.value(step.columns), resolve.value(step.arguments))
+        for name in tool.column_fields():
+            value = getattr(args, name, None)
+            for item in value if isinstance(value, list) else [value]:
+                if not isinstance(item, str) or item.startswith("$") or item in available:
+                    continue
+                hint = difflib.get_close_matches(item, sorted(available), n=1)
+                suffix = f"; возможно, имелось в виду {hint[0]!r}" if hint else ""
+                raise ValueError(
+                    f"шаг {step.step_id}: колонки {item!r} нет в таблице {table}{suffix}"
+                )
 
 
 def resolve_input(

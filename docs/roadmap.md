@@ -19,4 +19,5 @@
 - [ ] Обработка «неудобных» вопросов: переформулировка / отказ
 - [x] Аналитические тулы: атомарные SQL, стат-тесты (SciPy), bootstrap, воронки и когорты, доменные пакеты (см. repo_structure.md)
 - [ ] Сезонность, лаги, прогнозы (scenario-based): есть seasonality, period_compare, lag/lead, lag_correlation, detect_anomalies, trend_analysis, seasonal_decompose и линейный forecast; сценариев пока нет
+- [x] Самосоздание инструментов (toolgen): декларативная спека + SQL + Python в WASM, проверки на выборке (см. architecture.md, sandbox.md)
 - [ ] (Опц.) самоверификация для мощного железа

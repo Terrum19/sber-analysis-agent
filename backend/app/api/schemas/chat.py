@@ -125,6 +125,22 @@ class DashboardPayload(BaseModel):
         )
 
 
+# Фазы планирования, о которых фронт узнаёт по ходу дела (реальные, не таймерные).
+PlanningSubstage = Literal["semantic", "llm", "validation"]
+
+
+class PlannedStep(BaseModel):
+    """Шаг плана для отображения в прогрессе.
+
+    ``purpose`` — назначение от модели; если его нет, фронт показывает ``tool``.
+    «Шаг N» формируется на клиенте через i18n, а не на сервере.
+    """
+
+    step_id: int
+    purpose: str | None = None
+    tool: str | None = None
+
+
 class PlanStepOut(BaseModel):
     """Строка плана в событии planning: шаг до выполнения."""
 
@@ -147,6 +163,9 @@ class ProgressPayload(BaseModel):
     (``attempt`` — номер попытки исправления, ``error`` — текст ошибки).
     ``tables`` — на этапе planning: таблица хода и связанные с ней таблицы,
     которые видит планировщик (первая — $source).
+    ``substage`` — реальная фаза планирования (``semantic`` -> ``llm`` ->
+    ``validation``), приходит со статусом ``substage``.
+    ``planned_steps`` — типизированный список шагов плана для прогресса.
     ``steps`` — на planning finished: весь план; после перепланирования
     приходит снова, с выполненными и новыми шагами (#239).
 
@@ -159,8 +178,18 @@ class ProgressPayload(BaseModel):
     остановленный ход (``ChatRequest.resume_turn``), ``done`` до него не дойдёт.
     """
 
-    stage: Literal["planning", "step", "insight", "chart", "dashboard", "outline", "tile"]
-    status: Literal["started", "finished", "failed", "fixing"]
+    stage: Literal[
+        "planning",
+        "replanning",
+        "step",
+        "insight",
+        "chart",
+        "dashboard",
+        "outline",
+        "tile",
+        "toolgen",
+    ]
+    status: Literal["started", "substage", "finished", "failed", "fixing"]
     step_id: int | None = None
     tool: str | None = None
     purpose: str | None = None
@@ -169,6 +198,8 @@ class ProgressPayload(BaseModel):
     attempt: int | None = None
     error: str | None = None
     tables: list[str] | None = None
+    substage: PlanningSubstage | None = None
+    planned_steps: list[PlannedStep] | None = None
     # Плитка дашборда по кнопке (#224), к которой относится этап или шаг.
     tile_id: int | None = None
     steps: list[PlanStepOut] | None = None

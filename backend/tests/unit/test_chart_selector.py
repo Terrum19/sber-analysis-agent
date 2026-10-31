@@ -7,6 +7,10 @@ from app.core.viz.chart_selector import fits, histogram_column, is_single_number
 from app.core.viz.vega_spec_builder import infer_field_types
 
 MONTHS = [{"month": f"2024-{month:02d}", "revenue": month * 10} for month in range(1, 13)]
+DAILY = [
+    {"period": dt.date(2024, 1, 1) + dt.timedelta(days=offset), "consumption": 100 + offset}
+    for offset in range(60)
+]
 REGIONS = [{"region": "msk", "revenue": 12.5}, {"region": "spb", "revenue": 4.0}]
 SAMPLES = [{"amount": float(value)} for value in range(25)]
 PAIRS = [{"price": value, "demand": 100 - value} for value in range(5)]
@@ -111,6 +115,24 @@ def test_unfit_heuristic_falls_back_to_table() -> None:
     assert select_chart("Распределение чеков", "t", records=REGIONS) == "table"
     assert select_chart("Распределение чеков", "t", records=SAMPLES) == "histogram"
     assert select_chart("Топ товаров", "t", records=[]) == "table"
+
+
+def test_time_dependence_question_is_a_line_even_if_planner_said_table() -> None:
+    question = "создай график зависимости потребления от даты"
+
+    assert select_chart(question, "t", "auto", records=DAILY) == "line"
+    assert select_chart(question, "t", "table", records=DAILY) == "line"
+    assert select_chart(question, "t", "bar", records=DAILY) == "line"
+
+
+def test_explicit_table_request_is_kept() -> None:
+    assert select_chart("покажи таблицей", "t", "table", records=DAILY) == "table"
+    assert select_chart("таблица с графиком", "t", "table", records=DAILY) == "table"
+    assert select_chart("покажи график, а не таблицу", "t", "table", records=DAILY) == "line"
+
+
+def test_dependence_without_date_is_scatter() -> None:
+    assert select_chart("зависимость спроса от цены", "t", records=PAIRS) == "scatter"
 
 
 @pytest.mark.parametrize(

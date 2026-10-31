@@ -13,6 +13,7 @@ import logging
 import os
 import re
 import time
+from collections.abc import AsyncIterator
 from typing import Any, TypeVar
 
 import httpx
@@ -28,6 +29,8 @@ except ImportError:  # instructor 1.3.x
     from instructor.retry import InstructorRetryException
 
 from app.config import settings
+from app.core.agent.budget import BudgetExceeded, current_budget
+from app.core.agent.metrics import current_metrics
 from app.core.llm import budget, ollama_setup
 from app.core.logging_setup import public_url
 
@@ -80,6 +83,17 @@ def _schema_name(kwargs: dict[str, Any]) -> str:
     return (response_format.get("json_schema") or {}).get("name") or "-"
 
 
+def _reasoning_tokens(response: Any) -> int | None:
+    """Сколько токенов ушло на скрытые рассуждения (usage OpenRouter/OpenAI).
+
+    None — провайдер не сообщил: у Ollama и vLLM такого поля нет.
+    """
+    usage = getattr(response, "usage", None)
+    details = getattr(usage, "completion_tokens_details", None)
+    value = getattr(details, "reasoning_tokens", None)
+    return value if isinstance(value, int) else None
+
+
 def _strip_code_fences(text: str) -> str:
     """Удалить markdown-кодовые блоки (```json ... ```) из текста.
 
@@ -96,7 +110,7 @@ class LLMClient:
     """Обёртка над AsyncOpenAI для локального инференса Qwen."""
 
     def __new__(  # noqa: PYI034 — в режиме USE_FAKE_LLM отдаёт FakeLLM
-        cls, http_client: httpx.AsyncClient | None = None
+        cls, http_client: httpx.AsyncClient | None = None, **kwargs: Any
     ) -> "LLMClient":
         if os.getenv("USE_FAKE_LLM", "false").lower() == "true":
             from app.core.llm.fake_client import FakeLLM
@@ -104,29 +118,49 @@ class LLMClient:
             return FakeLLM()
         return super().__new__(cls)
 
-    def __init__(self, http_client: httpx.AsyncClient | None = None) -> None:
-        """http_client — свой HTTP-клиент; бенчмарк так засекает 429 и таймауты."""
+    def __init__(
+        self,
+        http_client: httpx.AsyncClient | None = None,
+        *,
+        model: str | None = None,
+        base_url: str | None = None,
+        api_key: Any | None = None,
+        timeout_s: int | None = None,
+        max_tokens: int | None = None,
+    ) -> None:
+        """http_client — свой HTTP-клиент; бенчмарк так засекает 429 и таймауты.
+
+        model/base_url/api_key/timeout_s — переопределения для пула моделей
+        (P1); без них клиент берёт настройки приложения.
+        """
         http_client = http_client or openai.DefaultAsyncHttpxClient()
         # Хук видит каждый ответ, включая повторы instructor и fallback.
         hooks = http_client.event_hooks
         http_client.event_hooks = {**hooks, "response": [*hooks["response"], self._check_context]}
+        resolved_url = base_url or settings.llm_base_url
+        resolved_key = (
+            (api_key.get_secret_value() if hasattr(api_key, "get_secret_value") else api_key)
+            or settings.llm_api_key.get_secret_value()
+            or "not-needed"
+        )
         self._client = AsyncOpenAI(
-            base_url=settings.llm_base_url,
-            api_key=settings.llm_api_key.get_secret_value() or "not-needed",
-            timeout=settings.llm_timeout_s,
+            base_url=resolved_url,
+            api_key=resolved_key,
+            timeout=timeout_s or settings.llm_timeout_s,
             max_retries=settings.llm_max_retries,
             http_client=http_client,
         )
-        self.model = ollama_setup.active_model()
+        self.model = model or ollama_setup.active_model()
+        self.max_tokens = max_tokens or settings.llm_max_tokens
         self.last_prompt_tokens: int | None = None
         # Текст последнего ответа json_schema: для диагностики ответов без нужных полей.
         self.last_raw: str | None = None
         self._instructor = instructor.from_openai(self._client)
         logger.debug(
             "LLMClient инициализирован: base_url=%s, model=%s, timeout=%ss, temp=%s",
-            public_url(settings.llm_base_url),
+            public_url(resolved_url),
             self.model,
-            settings.llm_timeout_s,
+            timeout_s or settings.llm_timeout_s,
             settings.llm_temperature,
         )
 
@@ -151,10 +185,19 @@ class LLMClient:
         """
         if response.status_code != 200 or not response.url.path.endswith("/chat/completions"):
             return
+        # SSE нельзя читать хуком: aread() забуферизует поток и отменит
+        # инкрементальность вывода. Проверку контекста для стрима пропускаем.
+        if response.headers.get("content-type", "").startswith("text/event-stream"):
+            return
+        try:
+            body = json.loads(response.request.content)
+        except (TypeError, ValueError):
+            body = {}
+        if body.get("stream"):
+            return
         try:
             await response.aread()
             prompt_tokens = (response.json().get("usage") or {}).get("prompt_tokens")
-            body = json.loads(response.request.content)
             self.last_prompt_tokens = prompt_tokens
             if not prompt_tokens:
                 return
@@ -208,63 +251,258 @@ class LLMClient:
         if budget.server_context(str(self._client.base_url), self.model) is not None:
             return
         try:
-            await self._client.chat.completions.create(
-                model=self.model,
-                messages=[{"role": "user", "content": "ok"}],
-                max_tokens=1,
-            )
+            async with asyncio.timeout(SERVER_INFO_TIMEOUT_S):
+                await self._client.chat.completions.create(
+                    model=self.model,
+                    messages=[{"role": "user", "content": "ok"}],
+                    max_tokens=1,
+                )
         except Exception as error:  # noqa: BLE001 — LLM может ещё не подняться
             logger.warning("LLM недоступна при старте, контекст сервера узнаем позже: %s", error)
 
+    @staticmethod
+    def _routing_extra() -> dict[str, Any]:
+        """reasoning/provider для OpenRouter; пустой dict — параметры не передаются.
+
+        LLM_REASONING_EFFORT=none (off) выключает скрытые рассуждения,
+        LLM_PROVIDER закрепляет провайдера (provider.only). Ollama/vLLM оба
+        поля не понимают, поэтому там настройки должны оставаться пустыми.
+        """
+        extra: dict[str, Any] = {}
+        if settings.llm_reasoning_effort:
+            effort = settings.llm_reasoning_effort
+            extra["reasoning"] = {"enabled": False} if effort == "none" else {"effort": effort}
+        if settings.llm_provider:
+            only = [name.strip() for name in settings.llm_provider.split(",") if name.strip()]
+            extra["provider"] = {"only": only}
+        return extra
+
     async def complete(self, system: str, user: str, **kwargs: Any) -> str:
-        """Одиночный completion (без structured output)."""
+        """Одиночный completion (без structured output).
+
+        Таймаут — минимум из LLM_TIMEOUT_S и остатка бюджета хода; вызов
+        учитывается в TurnMetrics. ``max_tokens`` по умолчанию ограничен,
+        чтобы генерация не съела весь бюджет.
+
+        Ответ с ``finish_reason=length`` повторяется один раз с лимитом
+        LLM_LENGTH_RETRY_TOKENS: reasoning-модель (Qwen3 через OpenRouter)
+        могла потратить весь max_tokens на скрытые рассуждения и вернуть
+        пустой content. Обрыв по длине виден и у непустого ответа — он
+        тоже повторяется, чтобы JSON не пришёл обрезанным. Если и
+        увеличенный лимит целиком ушёл в рассуждения, последняя попытка
+        идёт без них: пустой ответ хуже ответа без скрытых рассуждений.
+        """
         logger.debug(
             ">>> complete() system=%r user=%r kwargs=%s",
             system,
             user,
             kwargs,
         )
-        started_at = time.perf_counter()
-        try:
-            # Срок на весь ответ, а не на паузу между байтами (timeout клиента):
-            # OpenRouter, пока модель думает, шлёт пробелы, и запрос висел без конца.
-            resp = await asyncio.wait_for(
-                self._client.chat.completions.create(
-                    model=self.model,
-                    messages=[
-                        {"role": "system", "content": system},
-                        {"role": "user", "content": user},
-                    ],
-                    temperature=settings.llm_temperature,
-                    **kwargs,
-                ),
-                settings.llm_timeout_s,
-            )
-        except Exception as error:
-            self._log_failure(error, time.perf_counter() - started_at)
-            raise
-        content = resp.choices[0].message.content or ""
-        elapsed = time.perf_counter() - started_at
-        logger.debug("<<< complete() ответ за %.2fs: %r", elapsed, content)
-        logger.info(
-            "LLM %s: схема=%s за %.2f с, prompt_tokens=%s, ответ %d символов",
-            self.model,
-            _schema_name(kwargs),
-            elapsed,
-            resp.usage.prompt_tokens if resp.usage else None,
-            len(content),
+        if routing := self._routing_extra():
+            kwargs["extra_body"] = {**kwargs.get("extra_body", {}), **routing}
+        budget = current_budget()
+        timeout = (
+            budget.timeout_for("llm", settings.llm_timeout_s) if budget else settings.llm_timeout_s
         )
-        return content
+        kwargs.setdefault("max_tokens", getattr(self, "max_tokens", settings.llm_max_tokens))
+        kwargs.setdefault("timeout", timeout)
+        messages = [
+            {"role": "system", "content": system},
+            {"role": "user", "content": user},
+        ]
+        retry_tokens = settings.llm_length_retry_tokens
+        # Лучший непустой ответ: если повтор окажется пустым, вернём первый.
+        best = ""
+        reasoning_off = False
+        while True:
+            if budget is not None:
+                budget.consume_llm_call("llm")
+            started_at = time.perf_counter()
+            try:
+                async with asyncio.timeout(timeout):
+                    resp = await self._client.chat.completions.create(
+                        model=self.model,
+                        messages=messages,
+                        temperature=settings.llm_temperature,
+                        **kwargs,
+                    )
+            except TimeoutError as error:
+                # Таймаут этапа (бюджет), а не сетевой сбой: это BudgetExceeded,
+                # чтобы планирование/инсайт деградировали по плану, а не как «ход завис».
+                self._log_failure(error, time.perf_counter() - started_at)
+                if budget is not None:
+                    raise BudgetExceeded(
+                        "llm", budget.remaining(), "LLM не ответила в бюджет"
+                    ) from error
+                raise
+            except Exception as error:
+                self._log_failure(error, time.perf_counter() - started_at)
+                raise
+            if not resp.choices:
+                raise ValueError(f"LLM {self.model}: ответ без choices")
+            choice = resp.choices[0]
+            content = choice.message.content or ""
+            finish_reason = getattr(choice, "finish_reason", None)
+            reasoning_tokens = _reasoning_tokens(resp)
+            if content and len(content) > len(best):
+                best = content
+            elapsed = time.perf_counter() - started_at
+            prompt_tokens = resp.usage.prompt_tokens if resp.usage else 0
+            completion_tokens = resp.usage.completion_tokens if resp.usage else 0
+            metrics = current_metrics()
+            if metrics is not None:
+                metrics.record_llm(
+                    prompt_tokens or 0, completion_tokens or 0, round(elapsed * 1000)
+                )
+            logger.debug("<<< complete() ответ за %.2fs: %r", elapsed, content)
+            logger.info(
+                "LLM %s: схема=%s за %.2f с, prompt_tokens=%s, ответ %d символов",
+                self.model,
+                _schema_name(kwargs),
+                elapsed,
+                prompt_tokens,
+                len(content),
+            )
+            if finish_reason != "length":
+                return content
+            max_tokens = int(kwargs.get("max_tokens") or 0)
+            logger.warning(
+                "LLM %s: ответ обрезан по max_tokens=%s (finish_reason=length, "
+                "reasoning_tokens=%s), видимых символов: %d",
+                self.model,
+                max_tokens,
+                reasoning_tokens if reasoning_tokens is not None else "?",
+                len(content),
+            )
+            # Больше лимита, чем позволяет контекст, просить нельзя: vLLM
+            # ответит 400, Ollama обрежет промпт.
+            room = max(0, settings.llm_num_ctx - prompt_tokens)
+            retry_limit = min(retry_tokens, room) if retry_tokens else 0
+            if retry_limit <= max_tokens:
+                # Увеличенный лимит тоже целиком ушёл в рассуждения (провайдер
+                # их считает — reasoning_tokens есть): пробуем последний раз без
+                # них. Иначе structured-вызов получит пустой ответ и ход упадёт.
+                if not best and reasoning_tokens and retry_tokens and not reasoning_off:
+                    reasoning_off = True
+                    kwargs["extra_body"] = {
+                        **kwargs.get("extra_body", {}),
+                        "reasoning": {"enabled": False},
+                    }
+                    logger.warning(
+                        "LLM %s: рассуждения съели max_tokens=%s, повтор без них",
+                        self.model,
+                        max_tokens,
+                    )
+                    continue
+                return best
+            logger.info("LLM %s: повтор с max_tokens=%s", self.model, retry_limit)
+            kwargs["max_tokens"] = retry_limit
 
-    async def complete_structured(self, system: str, user: str, schema: type[T]) -> T:
+    async def complete_stream(self, system: str, user: str, **kwargs: Any) -> AsyncIterator[str]:
+        """Дельты текста из chat.completions.create(stream=True).
+
+        ``async with stream`` важен для отмены: при закрытии генератора
+        (aclose/CancelledError) AsyncStream.close() закрывает HTTP-ответ.
+
+        Reasoning/provider передаются так же, как в complete().
+
+        Если поток оборвался по max_tokens, а дельт не было, — один повтор с
+        LLM_LENGTH_RETRY_TOKENS: reasoning-модель могла потратить весь лимит
+        на скрытые рассуждения и не выдать видимого текста.
+        """
+        logger.debug(">>> complete_stream() system=%r user=%r", system, user)
+        extra: dict[str, Any] = {}
+        if settings.llm_max_tokens:
+            extra["max_tokens"] = settings.llm_max_tokens
+        extra.update(kwargs)
+        # Как и в complete(): иначе стрим шёл бы с рассуждениями провайдера
+        # по умолчанию, пока structured-вызовы уже слушают LLM_REASONING_EFFORT.
+        if routing := self._routing_extra():
+            extra["extra_body"] = {**extra.get("extra_body", {}), **routing}
+
+        t0 = time.time()
+        first_at: float | None = None
+        chunks = chars = 0
+        messages = [
+            {"role": "system", "content": system},
+            {"role": "user", "content": user},
+        ]
+        retry_tokens = settings.llm_length_retry_tokens
+        try:
+            for attempt in range(2):
+                truncated = False
+                stream = await self._client.chat.completions.create(
+                    model=self.model,
+                    messages=messages,
+                    temperature=settings.llm_temperature,
+                    stream=True,
+                    **extra,
+                )
+                async with stream:
+                    async for chunk in stream:
+                        if not chunk.choices:
+                            continue  # usage-only чанк
+                        choice = chunk.choices[0]
+                        content = choice.delta.content if choice.delta else None
+                        if not content:
+                            if choice.finish_reason == "length":
+                                truncated = True
+                                logger.warning(
+                                    "LLM complete_stream(): ответ обрезан по max_tokens=%s",
+                                    extra.get("max_tokens"),
+                                )
+                            continue
+                        if first_at is None:
+                            first_at = time.time()
+                            logger.info(
+                                "LLM complete_stream(): первый чанк за %.2fs", first_at - t0
+                            )
+                        chunks += 1
+                        chars += len(content)
+                        yield content
+                limit = int(extra.get("max_tokens") or 0)
+                # Рассуждения съели весь лимит и дельт не было — один повтор,
+                # как в complete(): иначе поток пуст и уходит в structured fallback.
+                if not truncated or chunks or attempt or retry_tokens <= limit:
+                    break
+                logger.info("LLM %s: повтор стрима с max_tokens=%s", self.model, retry_tokens)
+                extra["max_tokens"] = retry_tokens
+        except Exception:
+            logger.exception("LLM complete_stream() ОШИБКА")
+            raise
+        logger.info(
+            "LLM complete_stream(): чанков=%d символов=%d время=%.2fs",
+            chunks,
+            chars,
+            time.time() - t0,
+        )
+
+    async def complete_structured(
+        self,
+        system: str,
+        user: str,
+        schema: type[T],
+        *,
+        schema_override: dict[str, Any] | None = None,
+    ) -> T:
         """Structured output через Instructor (валидация по Pydantic-схеме).
 
-        Использует instructor с tool_choice. При ошибке валидации делает
-        fallback: список объектов, затем JSON-режим без tools.
+        json_schema — грамматика на сервере; json_object — только JSON-режим;
+        tools — instructor TOOLS с fallback-цепочкой.
+        ``schema_override`` позволяет сузить схему (maxItems/enum) без
+        изменения pydantic-модели и старых планов.
         """
         schema_name = getattr(schema, "__name__", str(schema))
         if settings.llm_structured_mode == "json_schema":
-            return await self._complete_json_schema(system, user, schema)
+            return await self._complete_json_schema(system, user, schema, schema_override)
+        if settings.llm_structured_mode == "json_object":
+            return await self._complete_json_object(system, user, schema, schema_override)
+        budget = current_budget()
+        if budget is not None:
+            budget.consume_llm_call("llm")
+        timeout = (
+            budget.timeout_for("llm", settings.llm_timeout_s) if budget else settings.llm_timeout_s
+        )
         t0 = time.time()
         try:
             result = await self._instructor.chat.completions.create(
@@ -276,8 +514,17 @@ class LLMClient:
                 temperature=settings.llm_temperature,
                 response_model=schema,
                 max_retries=_validation_retries(),
+                timeout=timeout,
+                max_tokens=getattr(self, "max_tokens", settings.llm_max_tokens),
             )
             elapsed = time.time() - t0
+            metrics = current_metrics()
+            if metrics is not None:
+                metrics.record_llm(
+                    self.last_prompt_tokens or 0,
+                    0,
+                    round(elapsed * 1000),
+                )
             logger.info(
                 "LLM %s: схема=%s (tools) за %.2f с, prompt_tokens=%s",
                 self.model,
@@ -370,24 +617,29 @@ class LLMClient:
 
         return result
 
-    async def _complete_json_schema(self, system: str, user: str, schema: type[T]) -> T:
+    async def _complete_json_schema(
+        self,
+        system: str,
+        user: str,
+        schema: type[T],
+        schema_override: dict[str, Any] | None = None,
+    ) -> T:
         """Один запрос с response_format=json_schema, толерантный разбор, один переспрос.
 
         Грамматика на стороне сервера не даёт модели уйти в прозу или в
         несколько tool_calls; оставшиеся огрехи (обёртки, список вместо
         объекта) чинит structured.parse_structured. Переспрос несёт текст
         ошибки — модели есть что исправлять, а префикс промпта тот же
-        (KV-кеш Ollama переиспользуется).
+        (KV-кеш Ollama/vLLM переиспользуется).
         """
         from app.core.llm.structured import StructuredParseError, parse_structured, repair_prompt
 
+        json_schema = schema_override or self._schema_for(schema)
         response_format = {
             "type": "json_schema",
-            "json_schema": {"name": schema.__name__, "schema": schema.model_json_schema()},
+            "json_schema": {"name": schema.__name__, "schema": json_schema},
         }
         extra: dict[str, Any] = {"response_format": response_format}
-        if settings.llm_max_tokens:
-            extra["max_tokens"] = settings.llm_max_tokens
         prompt = user
         error: Exception | None = None
         for attempt in range(2):
@@ -408,6 +660,58 @@ class LLMClient:
             )
             return result
         raise ValueError(f"LLM не вернул валидный JSON для схемы {schema.__name__}: {error}")
+
+    async def _complete_json_object(
+        self,
+        system: str,
+        user: str,
+        schema: type[T],
+        schema_override: dict[str, Any] | None = None,
+    ) -> T:
+        """JSON-режим без грамматики: ответ парсится тем же толерантным разбором."""
+        from app.core.llm.structured import StructuredParseError, parse_structured, repair_prompt
+
+        prompt = user
+        error: Exception | None = None
+        for attempt in range(2):
+            raw = await self.complete(system, prompt, response_format={"type": "json_object"})
+            try:
+                return parse_structured(schema, raw)
+            except StructuredParseError as exc:
+                error = exc
+                logger.warning("complete_structured() json_object попытка %d: %s", attempt + 1, exc)
+                prompt = user + repair_prompt(raw, exc)
+        raise ValueError(f"LLM не вернул валидный JSON для схемы {schema.__name__}: {error}")
+
+    def _schema_for(self, schema: type[BaseModel]) -> dict[str, Any]:
+        """JSON schema с лимитами, которые не должны ломать старые планы.
+
+        Ограничения добавляются на уровне схемы запроса, а не в
+        pydantic-модели: существующие тесты и сохранённые планы читаются
+        как раньше.
+        """
+        from app.models.insight import Insight
+        from app.models.research_step import ResearchPlan
+
+        data = schema.model_json_schema()
+        if schema is ResearchPlan:
+            steps = data.get("properties", {}).get("steps")
+            if isinstance(steps, dict):
+                steps["maxItems"] = settings.agent_max_steps
+            step_schema = (data.get("$defs") or {}).get("ResearchStep", {})
+            tool_schema = (step_schema.get("properties") or {}).get("tool")
+            if isinstance(tool_schema, dict):
+                # Ленивый импорт: registry -> tools -> base -> llm.client.
+                from app.core.tools.registry import tool_registry
+
+                tool_schema["enum"] = [tool.name for tool in tool_registry.planner_tools()]
+        if schema is Insight:
+            properties = data.get("properties", {})
+            if isinstance(properties.get("headline"), dict):
+                properties["headline"]["maxLength"] = 300
+            if isinstance(properties.get("details"), dict):
+                properties["details"]["maxItems"] = 5
+        return data
 
 
 def _extract_json_block(text: str) -> str | None:
