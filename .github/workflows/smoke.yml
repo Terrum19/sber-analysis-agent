@@ -1,0 +1,74 @@
+# Smoke-тест чистого запуска (#79): docker compose без профиля (Ollama не
+# поднимается — это профиль ci из #79) с фейковой LLM из docker-compose.ci.yml,
+# затем scripts/smoke.sh: CSV -> сессия -> чат (SSE до done) -> фронтенд 200.
+# PR — без фильтров paths и без пропуска: job должен быть обязательным для PR в
+# main, а обязательная проверка, которая не запустилась, блокирует PR.
+# Бюджет минут: push в dev/main — только при изменениях, которые попадают в
+# образы, compose или запуск (сборка образов — самый долгий шаг); слияние
+# только ChangeLog или документации smoke не запускает.
+name: Smoke
+
+on:
+  push:
+    branches: [dev, main]
+    paths:
+      - "backend/**"
+      - "frontend/**"
+      - "infra/**"
+      - "data/**"
+      - "docker-compose.yml"
+      - "docker-compose.ci.yml"
+      - ".env.example"
+      - ".gitattributes"
+      - ".githooks/**"
+      - "**.sh"
+      - "**.command"
+      - ".github/workflows/smoke.yml"
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: smoke-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  smoke:
+    name: Clean start smoke test
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      COMPOSE_FILE: docker-compose.yml:docker-compose.ci.yml
+    steps:
+      - uses: actions/checkout@v4
+
+      # Запуск у пользователя — без .env (start.sh / start.bat, #167).
+      - name: Compose works without .env
+        run: docker compose config --quiet
+
+      # С CRLF скрипты не запустятся в Linux-контейнерах и на Mac (.gitattributes).
+      - name: Line endings of launch scripts
+        run: |
+          bad=$(git ls-files --eol -- '*.sh' '*.command' '.githooks/*' | grep -v 'attr/text eol=lf' || true)
+          if [ -n "$bad" ]; then echo "Нет eol=lf в .gitattributes:"; echo "$bad"; exit 1; fi
+
+      - name: Prepare .env
+        run: |
+          cp .env.example .env
+          docker compose config --quiet
+
+      - name: docker compose up
+        run: docker compose up -d --build --wait --wait-timeout 300 backend frontend
+
+      - name: Smoke test
+        run: scripts/smoke.sh
+
+      - name: Container logs
+        if: failure()
+        run: docker compose logs --no-color
+
+      - name: docker compose down
+        if: always()
+        run: docker compose down -v

@@ -1,0 +1,45 @@
+# --- рантайм-состояние (никогда не в git) ---
+backend/storage/
+*.duckdb
+*.duckdb.wal
+
+# --- веса моделей (крупные бинарники) ---
+# Только корневой каталог: без «/» шаблон глотал и backend/app/models/.
+/models/
+*.gguf
+*.safetensors
+
+# --- датасеты хакатона (≈1,5 ГБ, файлы больше лимита GitHub в 100 МБ) ---
+# В git только README с инструкцией, где их взять.
+/data/hk_datasets/*
+!/data/hk_datasets/README.md
+
+# --- Python ---
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+.pytest_cache/
+.coverage
+htmlcov/
+.ruff_cache/
+.mypy_cache/
+
+# --- Node ---
+node_modules/
+.next/
+next-env.d.ts
+*.tsbuildinfo
+out/
+
+# --- окружение и мусор ---
+.env
+.ollama-started
+.DS_Store
+*.log
+
+# --- временные ---
+non/
+.agents
+winemag-data-130k-v2.csv

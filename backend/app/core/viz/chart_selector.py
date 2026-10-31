@@ -1,0 +1,203 @@
+"""Выбор типа визуализации под вопрос без LLM и проверка вида по данным.
+
+Вид и колонки графика выбирает агент по готовым результатам (см.
+viz/chart_choice.py, agent/chart_pick.py); select_chart — запасной путь,
+когда выбора нет: явный вид от планировщика или ключевые слова вопроса,
+проверенные по строкам результата.
+"""
+
+import math
+import re
+
+from app.core.viz.vega_spec_builder import (
+    detect_wide_matrix,
+    heatmap_axis_candidates,
+    heatmap_metric_candidate,
+    infer_field_types,
+    is_heatmap_axis,
+    ordered_column,
+)
+
+NO_CHART = "none"
+# Больше 12 категорий столбцы лежат (vega_spec_builder), поэтому до 50 читаются.
+MAX_BAR_CATEGORIES = 50
+MIN_LINE_POINTS = 3
+MIN_HISTOGRAM_VALUES = 20
+
+
+def is_single_number(records: list[dict] | None) -> bool:
+    if records is None or len(records) != 1:
+        return False
+    if list(infer_field_types(records).values()) != ["quantitative"]:
+        return False
+    return all(math.isfinite(value) for value in records[0].values())
+
+
+def fits(
+    chart_type: str, records: list[dict], types: dict[str, str], column: str | None = None
+) -> bool:
+    """Подходит ли вид к строкам результата; column — колонка гистограммы."""
+    if detect_wide_matrix(records, types) is not None:
+        return chart_type in ("heatmap", "table")
+    numeric = [column for column, kind in types.items() if kind == "quantitative"]
+    categories = [
+        *[column for column, kind in types.items() if kind == "nominal"],
+        *[column for column, kind in types.items() if kind == "temporal"],
+    ]
+    if chart_type in ("line", "area"):
+        return len(records) >= MIN_LINE_POINTS and ordered_column(types) is not None
+    if chart_type == "scatter":
+        return len(numeric) >= 2
+    if chart_type == "histogram":
+        column = column or (numeric[0] if len(numeric) == 1 else None)
+        return column is not None and _present(records, column) >= MIN_HISTOGRAM_VALUES
+    if chart_type == "box":
+        return bool(numeric)
+    if chart_type == "bar":
+        return bool(categories) and _distinct(records, categories[0]) <= MAX_BAR_CATEGORIES
+    if chart_type == "heatmap":
+        if detect_wide_matrix(records, types) is not None:
+            return True
+        candidates = heatmap_axis_candidates(records, types)
+        metric = heatmap_metric_candidate(records, types)
+        axis_candidates = [c for c in candidates if c != metric]
+        return len(axis_candidates) >= 2
+    if chart_type == "kpi":
+        return is_single_number(records)
+    return chart_type == "table"
+
+
+def fits_columns(
+    chart_type: str,
+    records: list[dict],
+    types: dict[str, str],
+    x: str | None,
+    y: str | None,
+    color: str | None = None,
+) -> bool:
+    """Подходит ли вид к строкам по названным колонкам x и y (выбор агента).
+
+    В отличие от fits, ось x может быть любой колонкой: целочисленный ключ
+    (store_id) — категория столбцов, год числом — ось линии.
+    """
+    if detect_wide_matrix(records, types) is not None:
+        return chart_type in ("heatmap", "table")
+
+    def numeric(column: str | None) -> bool:
+        return column is not None and types.get(column) == "quantitative"
+
+    if y is not None and chart_type not in ("heatmap", "scatter") and not numeric(y):
+        return False
+    if chart_type in ("line", "area"):
+        return x is not None and _distinct(records, x) >= MIN_LINE_POINTS
+    if chart_type == "scatter":
+        return numeric(x) and numeric(y) and x != y
+    if chart_type == "histogram":
+        column = y or x
+        return numeric(column) and _present(records, column) >= MIN_HISTOGRAM_VALUES
+    if chart_type == "box":
+        return numeric(y)
+    if chart_type == "bar":
+        return x is not None and _distinct(records, x) <= MAX_BAR_CATEGORIES
+    if chart_type == "heatmap":
+        if detect_wide_matrix(records, types) is not None:
+            return True
+        if x is None or y is None or x == y:
+            return False
+        if not is_heatmap_axis(records, types, x):
+            return False
+        if is_heatmap_axis(records, types, y):
+            return True
+        if color is None:
+            replacements = heatmap_axis_candidates(records, types, exclude=(x, y))
+            return bool(replacements)
+        return False
+    if chart_type == "kpi":
+        return is_single_number(records)
+    return chart_type == "table"
+
+
+def select_chart(
+    question: str,
+    result_table: str,
+    requested: str = "auto",
+    records: list[dict] | None = None,
+    titles: dict[str, str] | None = None,
+) -> str:
+    """Подобрать тип графика: bar | line | scatter | histogram | kpi | table (или none).
+
+    Результат из одной строки — kpi (одно конечное число) или table. Явный
+    requested или эвристика по ключевым словам вопроса проверяются по
+    records через fits; не подошло — table. Без records проверки нет.
+    Гистограмма по таблице с несколькими числовыми колонками строится по
+    колонке, названной в вопросе (histogram_column).
+    """
+    if requested == NO_CHART:
+        return NO_CHART
+    if records is not None and len(records) <= 1:
+        return "kpi" if is_single_number(records) else "table"
+    chart_type = requested if requested != "auto" else _by_question(question)
+    if records is None:
+        return chart_type
+    types = infer_field_types(records)
+    if detect_wide_matrix(records, types) is not None and requested in ("auto", "bar", "scatter"):
+        return "heatmap"
+    column = histogram_column(question, types, titles) if chart_type == "histogram" else None
+    return chart_type if fits(chart_type, records, types, column) else "table"
+
+
+def histogram_column(
+    question: str, types: dict[str, str], titles: dict[str, str] | None = None
+) -> str | None:
+    """Числовая колонка для гистограммы: единственная или названная в вопросе.
+
+    Колонку узнаём по имени или по началу слов её названия («цен» из «Цена»),
+    чтобы «распределение цен» нашло колонку price с названием «Цена».
+    """
+    numeric = [column for column, kind in types.items() if kind == "quantitative"]
+    if len(numeric) == 1:
+        return numeric[0]
+    text = question.lower()
+    return next(
+        (column for column in numeric if _named(text, column, (titles or {}).get(column, ""))),
+        None,
+    )
+
+
+def asks_distribution(question: str) -> bool:
+    text = question.lower()
+    return "распредел" in text or "гистограмм" in text
+
+
+def _by_question(question: str) -> str:
+    text = question.lower()
+    if asks_distribution(question):
+        return "histogram"
+    if "матриц" in text or "теплова" in text or "heatmap" in text:
+        return "heatmap"
+    if "корреляц" in text and any(
+        w in text for w in ("признак", "всех", "числов", "колон", "таблиц", "сетк")
+    ):
+        return "heatmap"
+    if "динамик" in text or "во времени" in text or "по годам" in text or "по месяцам" in text:
+        return "line"
+    if "сравн" in text or "по категори" in text:
+        return "bar"
+    if "связ" in text or "корреляц" in text:
+        return "scatter"
+    return "bar"
+
+
+def _named(text: str, column: str, title: str) -> bool:
+    if len(column) >= 3 and column.lower() in text:
+        return True
+    words = re.findall(r"\w{3,}", title.lower())
+    return any(word[: max(3, len(word) - 2)] in text for word in words)
+
+
+def _present(records: list[dict], column: str) -> int:
+    return sum(record.get(column) is not None for record in records)
+
+
+def _distinct(records: list[dict], column: str) -> int:
+    return len({repr(record.get(column)) for record in records})

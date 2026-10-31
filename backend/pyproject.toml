@@ -1,0 +1,63 @@
+[project]
+name = "sber-analytical-agent-backend"
+version = "0.1.0"
+description = "AI-Native BI-платформа: диалоговый агент над CSV/PostgreSQL/ClickHouse через DuckDB"
+requires-python = ">=3.11"
+dependencies = [
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.30",
+    "pydantic>=2.7",
+    "pydantic-settings>=2.3",
+    "python-multipart>=0.0.9",
+    "duckdb>=1.0,<2",
+    "openai==1.109.1",     # OpenAI-совместимый клиент к локальному vLLM/Ollama; с 3.3 падает structured output
+    "instructor==1.3.2",   # structured output
+    "httpx==0.28.1",       # клиент LLM и проверка Ollama; openai 3.3 его уже не тянет
+    "openpyxl>=3.1",       # экспорт Excel
+    "pandas>=2.2",
+    "numpy>=1.26",
+    "scipy>=1.12",
+    "pytz>=2024.1",        # DuckDB отдаёт TIMESTAMPTZ в Python через pytz; pandas 3 его не тянет
+    "reportlab>=4.2",      # экспорт PDF
+    "vl-convert-python>=1.6.0",  # рендеринг Vega-Lite графиков в PNG
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.2",
+    "pytest-asyncio>=0.23",
+    "httpx2>=2.0",
+    "coverage>=7.5",
+    "pyyaml>=6.0",         # набор вопросов eval (scripts/eval.py)
+    "ruff>=0.5",
+    "pypdf>=4.3.0",
+]
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["app*"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+pythonpath = ["."]
+markers = [
+    "integration: тесты с живыми СУБД (всё в tests/integration/ помечается автоматически)",
+    "benchmark: тесты производительности (всё в tests/benchmark/ помечается автоматически)",
+]
+
+[tool.coverage.run]
+branch = true
+source = ["app"]
+
+[tool.coverage.report]
+show_missing = true
+skip_covered = true
+fail_under = 50
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"

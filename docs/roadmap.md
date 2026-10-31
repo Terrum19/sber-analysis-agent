@@ -1,0 +1,22 @@
+# Roadmap
+
+## Чекпоинт 2 (сценарии №1-2)
+- [x] Скаффолд репозитория (структура, контракты, промпты)
+- [x] Подключение CSV через DuckDB (сырые данные, см. data_connectors.md)
+- [ ] Профилирование + алиасы + описание «что передо мной»
+- [ ] Планировщик шагов + robust-парсер + реестр тулов (aggregate, time_series, correlation)
+- [ ] Чат со SSE-стримингом (план-минимум фронта)
+- [ ] Инсайт + авто-визуализация (bar/line/histogram)
+
+## Финал
+- [x] Коннектор PostgreSQL (postgres_scanner, см. data_connectors.md)
+- [x] Коннектор ClickHouse
+- [x] WASM-песочница (лимиты, таймаут) + кодогенерация (см. sandbox.md)
+- [x] chart_morph (смена вида без LLM) + ECharts для тяжёлых дашбордов (см. visualization.md)
+- [ ] Генерация дашбордов + повторный доступ (чат/UI) + drag&drop
+- [ ] Канвас: клик по элементу -> «дообследуй»
+- [x] Экспорт .xlsx / .pdf (ReportLab, openpyxl, vl-convert)
+- [ ] Обработка «неудобных» вопросов: переформулировка / отказ
+- [x] Аналитические тулы: атомарные SQL, стат-тесты (SciPy), bootstrap, воронки и когорты, доменные пакеты (см. repo_structure.md)
+- [ ] Сезонность, лаги, прогнозы (scenario-based): есть seasonality, period_compare, lag/lead, lag_correlation, detect_anomalies, trend_analysis, seasonal_decompose и линейный forecast; сценариев пока нет
+- [ ] (Опц.) самоверификация для мощного железа

@@ -1,0 +1,2 @@
+FROM qwen2.5-coder-32k
+PARAMETER num_thread 14

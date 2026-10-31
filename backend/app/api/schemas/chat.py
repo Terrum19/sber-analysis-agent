@@ -1,0 +1,294 @@
+"""Pydantic-схемы API диалога (контракт фронтенд <-> бэкенд)."""
+
+from datetime import datetime
+from typing import Annotated, Any, Literal, Self
+
+from pydantic import BaseModel, Field, StringConstraints, model_validator
+
+from app.api.schemas.dashboard import DashboardTileOut
+from app.core.dashboards.models import Dashboard
+from app.models.clarify import MAX_CLARIFICATIONS, Axis, Clarification
+from app.models.dashboard_plan import DashboardIdea
+from app.models.research_step import NOTE_LIMIT
+
+
+class SessionCreate(BaseModel):
+    table: str | None = None
+    datasource_id: str | None = None
+    title: str | None = None
+
+
+SessionTitle = Annotated[
+    str, StringConstraints(strip_whitespace=True, min_length=1, max_length=200)
+]
+
+
+class SessionUpdate(BaseModel):
+    """Тело PATCH /sessions/{id}: новая таблица по умолчанию и/или новое название.
+
+    Оба поля необязательны, но хотя бы одно должно быть задано (иначе 422).
+    Тело ``{"table": ...}`` прежнего контракта остаётся валидным.
+    """
+
+    table: str | None = None
+    title: SessionTitle | None = None
+
+    @model_validator(mode="after")
+    def require_field(self) -> Self:
+        if self.table is None and self.title is None:
+            raise ValueError("Нужно указать table или title.")
+        return self
+
+
+class SessionOut(BaseModel):
+    session_id: str
+    table: str | None = None
+    datasource_id: str | None = None
+    title: str | None = None
+    created_at: datetime | None = None
+    # Сессия из бандла другого пользователя (#249): в сайдбаре — в папке «Импортированные».
+    imported: bool = False
+
+
+class SessionFileRequest(BaseModel):
+    """Тело сохранения файла .session (#251): лента и активная таблица из браузера."""
+
+    table: str | None = None
+    feed: list[dict[str, Any]] = Field(default_factory=list)
+
+
+MemoryText = Annotated[
+    str, StringConstraints(strip_whitespace=True, min_length=1, max_length=NOTE_LIMIT)
+]
+
+
+class MemoryCreate(BaseModel):
+    """Тело POST /sessions/{id}/memories: текст воспоминания."""
+
+    text: MemoryText
+
+
+class MemoryUpdate(BaseModel):
+    """Тело PATCH /sessions/{id}/memories/{memory_id}: включить или выключить запись."""
+
+    enabled: bool
+
+
+class MemoryOut(BaseModel):
+    """Воспоминание сессии (#197): выключенное не идёт в контекст планировщика и инсайта."""
+
+    memory_id: str
+    text: str
+    source: str
+    created_at: datetime
+    enabled: bool
+    # Ход, в котором запись сделана из чата; у добавленной через API — None.
+    turn_id: str | None = None
+
+
+class ChatRequest(BaseModel):
+    """Один ход диалога."""
+
+    session_id: str
+    question: str
+    recovery_response: str | None = None
+    # turn_id прошлого хода из события done: вопрос продолжает именно его.
+    reply_to: str | None = None
+    # dashboard — ход строит дашборд по кнопке (#224); idea — выбранный вариант.
+    mode: Literal["chat", "dashboard"] = "chat"
+    idea: DashboardIdea | None = None
+    # turn_id остановленного или упавшего хода: продолжить его с чекпоинта,
+    # не повторяя выполненные шаги и плитки (question тогда не используется).
+    resume_turn: str | None = None
+    # Режим «Проверка» (A-29): проверки шагов, критик ответа и исправление по вердикту.
+    verify: bool = False
+    # Ответы на уточняющие вопросы глубокого исследования (A-28): в план, инсайт и журнал хода.
+    clarifications: list[Clarification] | None = Field(default=None, max_length=MAX_CLARIFICATIONS)
+
+
+class ChartPayload(BaseModel):
+    """Готовая визуализация (Vega-Lite спека + краткое пояснение)."""
+
+    spec: dict[str, Any]
+    caption: str
+
+
+class DashboardPayload(BaseModel):
+    dashboard_id: str
+    title: str
+    tiles: list[DashboardTileOut] = Field(default_factory=list)
+
+    @classmethod
+    def from_dashboard(cls, dashboard: Dashboard) -> Self:
+        return cls(
+            dashboard_id=dashboard.id,
+            title=dashboard.title,
+            tiles=[
+                DashboardTileOut(**tile.model_dump(exclude={"snapshot_data"}))
+                for tile in dashboard.tiles
+            ],
+        )
+
+
+class PlanStepOut(BaseModel):
+    """Строка плана в событии planning: шаг до выполнения."""
+
+    step_id: int
+    tool: str | None = None
+    purpose: str = ""
+    input: str
+    arguments: dict[str, Any] = Field(default_factory=dict)
+
+
+class ResultColumn(BaseModel):
+    name: str
+    type: str
+
+
+class ProgressPayload(BaseModel):
+    """Прогресс хода: этап, его статус и шаг плана.
+
+    ``fixing`` — шаг упал, планировщик исправляет его по тексту ошибки
+    (``attempt`` — номер попытки исправления, ``error`` — текст ошибки).
+    ``tables`` — на этапе planning: таблица хода и связанные с ней таблицы,
+    которые видит планировщик (первая — $source).
+    ``steps`` — на planning finished: весь план; после перепланирования
+    приходит снова, с выполненными и новыми шагами (#239).
+
+    Детали шага (#239): ``arguments`` и ``input`` — на любом статусе шага;
+    на finished ещё ``input_table`` (во что развернулся input),
+    ``input_step_id`` (чей результат пришёл на вход), ``result_table``,
+    ``rows``, ``result_columns``, ``preview`` (первые строки) и ``code``
+    на ``code_language`` (sql или python), если шаг выполнял код.
+    ``turn_id`` — в начале planning и outline: по нему фронт продолжает
+    остановленный ход (``ChatRequest.resume_turn``), ``done`` до него не дойдёт.
+
+    Режим «Проверка» (A-29): ``check`` — проверка результата шага
+    (``findings`` на finished), ``review`` — критик (``round``), ``repair`` —
+    исправление ответа (``action``, ``reason``); этапы исправления приходят
+    с ``revision`` 1.
+    """
+
+    stage: Literal[
+        "planning",
+        "step",
+        "insight",
+        "chart",
+        "dashboard",
+        "outline",
+        "tile",
+        "check",
+        "review",
+        "repair",
+    ]
+    status: Literal["started", "finished", "failed", "fixing"]
+    step_id: int | None = None
+    tool: str | None = None
+    purpose: str | None = None
+    total_steps: int | None = None
+    elapsed_ms: int | None = None
+    attempt: int | None = None
+    error: str | None = None
+    tables: list[str] | None = None
+    # Плитка дашборда по кнопке (#224), к которой относится этап или шаг.
+    tile_id: int | None = None
+    steps: list[PlanStepOut] | None = None
+    input: str | None = None
+    arguments: dict[str, Any] | None = None
+    input_table: str | None = None
+    input_step_id: int | None = None
+    result_table: str | None = None
+    rows: int | None = None
+    result_columns: list[ResultColumn] | None = None
+    preview: list[dict[str, Any]] | None = None
+    code: str | None = None
+    code_language: Literal["sql", "python"] | None = None
+    turn_id: str | None = None
+    findings: list[dict[str, str]] | None = None
+    round: int | None = None
+    action: str | None = None
+    reason: str | None = None
+    revision: int | None = None
+
+
+class DashboardIdeasRequest(BaseModel):
+    """Тело POST /sessions/{id}/dashboard-ideas (необязательное): прежние варианты.
+
+    Пусто — обычные варианты по таблице; названия в exclude — новые варианты,
+    которые их не повторяют (пользователь перебрал все прежние).
+    """
+
+    exclude: list[Annotated[str, StringConstraints(max_length=200)]] = Field(
+        default_factory=list, max_length=100
+    )
+
+
+class DashboardIdeasOut(BaseModel):
+    """Ответ POST /sessions/{id}/dashboard-ideas: варианты дашборда для кнопок."""
+
+    ideas: list[DashboardIdea]
+
+
+class ClarifyRequest(BaseModel):
+    """Тело POST /sessions/{id}/clarify: вопрос до начала хода и ответ, к которому он."""
+
+    question: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1)]
+    reply_to: str | None = None
+
+
+class ClarifyQuestionOut(BaseModel):
+    id: str
+    axis: Axis
+    text: str
+    options: list[str]
+    multi: bool = False
+
+
+class ClarifyOut(BaseModel):
+    """Ответ POST /sessions/{id}/clarify: вопроса хватает или вопросы для карточки."""
+
+    enough_info: bool
+    questions: list[ClarifyQuestionOut] = Field(default_factory=list)
+
+
+class StepResultOut(BaseModel):
+    """Ответ GET /sessions/{id}/results/{table}: страница результата шага (#239)."""
+
+    columns: list[ResultColumn]
+    rows: list[dict[str, Any]]
+    total: int
+
+
+class ChatEvent(BaseModel):
+    """Событие стрима для фронтенда."""
+
+    type: Literal[
+        "text",
+        "chart",
+        "dashboard",
+        "error",
+        "done",
+        "clarification_needed",
+        "progress",
+        "dashboard_outline",
+        "dashboard_fallback",
+        "table",
+        "review",
+        "usage",
+    ]
+    data: dict[str, Any] = Field(default_factory=dict)
+
+
+class ExportRequest(BaseModel):
+    session_id: str
+    format: Literal["xlsx", "pdf"] = "xlsx"
+    result_ref: str | None = None  # ссылка на temp_result_vN в DuckDB
+    dashboard_id: str | None = Field(default=None, max_length=64)
+    question: str | None = Field(default=None, max_length=5000)
+    headline: str | None = Field(default=None, max_length=3000)
+    title: str | None = Field(default=None, max_length=500)
+    session_title: str | None = Field(default=None, max_length=500)
+    database_name: str | None = Field(default=None, max_length=500)
+    source_name: str | None = Field(default=None, max_length=500)
+    details: list[str] | None = Field(default=None, max_length=100)
+    spec: dict[str, Any] | None = None

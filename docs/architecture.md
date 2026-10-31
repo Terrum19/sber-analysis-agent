@@ -1,0 +1,271 @@
+# Архитектура SberAnalyticalAgent
+
+## Конвейер одного хода диалога
+
+```
+вопрос пользователя
+  |
+  v
+[1] Planner (LLM + Instructor) --> ResearchPlan {steps[], final_viz, dashboard_requested,
+  |        dashboard_title, template_id, dashboard_tiles[]} (план дашборда: docs/visualization.md)
+  |        вход: вопрос, топ-5 релевантных колонок (semantic_select), контекст сессии
+  v
+[2] StepExecutor: последовательное применение шагов
+  |        тул = предзаписанный SQL/стат-тест (подстановка колонок)
+  |        аргументы шага: позиционные columns + именованные arguments; имя
+  |        аргумента может совпадать с параметром тула (columns у select_columns)
+  |        нет тула -> WASM-песочница (кодогенерация LLM)
+  |        каждый шаг -> temp_result_vN в DuckDB (state cache)
+  |        устаревшие temp_result_vN удаляются по RESULT_TTL_S (docs/memory.md)
+  |        сбой -> recovery: планировщик исправляет шаг по тексту ошибки
+  |        (до 2 раз, событие progress/fixing) -> уточнение у пользователя
+  v
+[3] InsightGenerator (LLM) --> Insight {headline, details, limits}
+  |
+  v
+[4] Визуализация: chart_pick (LLM: шаг, вид, колонки; запасной — chart_selector) -> vega_spec_builder (Vega-Lite JSON)
+  |        смена вида: chart_morph (БЕЗ нового вызова LLM, из state cache)
+  v
+[5] (опц.) DashboardGenerator -> DashboardStore (SQLite: плитки, Vega, снимки данных)
+  |        плитки — из dashboard_tiles плана: по плитке на шаг, вывод LLM — только
+  |        у insight_needed; плиток нет — одна плитка с графиком ответа
+  v
+[6] (опц.) Экспорт: ExcelExporter (.xlsx) / PDFExporter (.pdf)
+```
+
+## Ключевые решения
+
+| Решение | Обоснование |
+|---|---|
+| **DuckDB как единый движок** | SQL в едином диалекте к CSV/PostgreSQL/ClickHouse без предобработки |
+| **ResearchStep + реестр тулов** | расширяемость: новый тул = файл, оркестратор не меняется |
+| **Семантический отбор топ-5 колонок** | схема неконтролируемого размера не влезает в контекст LLM |
+| **WASM-песочница вместо Docker** | инкапсуляция кодогенерации без «жирного» контейнера |
+| **chart_morph без LLM** | «покажи в другом виде» — быстро и дёшево, не нагружая локальную модель |
+| **Vega-Lite JSON-конфиги** | фронт рендерит спеку; бэк не занимается отрисовкой |
+| **4 уровня памяти** | сессия (последние 3 хода) / кеш результатов (DuckDB) / паспорт данных (DuckDB `_meta`) / реестр дашбордов |
+| **Замкнутый контур** | Ollama/vLLM локально; интернет — только к разрешённым доменам (HuggingFace, пакеты) |
+| **Контекст LLM на сервере, проверка в клиенте** | Ollama молча обрезает начало длинного промпта, а `options.num_ctx` в `/v1` не действует (0.24, 0.35.1). Контекст задаёт сервер (`LLM_NUM_CTX` = `OLLAMA_CONTEXT_LENGTH` / `--max-model-len`); клиент сверяет `usage.prompt_tokens` с контекстом сервера (0.24 упирается в него) и с оценкой по символам вместе со схемой тулов (0.35.1 оставляет ~половину контекста); контекст сервера спрашивается при старте бэкенда и переспрашивается, пока сервер его не назовёт; бюджет промпта — `core/llm/budget.py` |
+
+## Память
+
+Подробности — в [memory.md](memory.md).
+
+## События стрима чата
+
+`POST /chat` отдаёт SSE: каждое событие — `ChatEvent {type, data}`
+(`app/api/schemas/chat.py`).
+
+| type | data | когда |
+|---|---|---|
+| `progress` | `ProgressPayload` (ниже) | по ходу хода: план, шаги, начало инсайта и графика |
+| `table` | `{table, previous, title}` | агент сам взял таблицу под вопрос до плана: у сессии её не было (`previous: null`) или вопрос явно про другие, несвязанные данные. `title` — название таблицы (#211) или `null`. Фронт переносит ленту на эту таблицу и пишет «Беру данные «…»» |
+| `text` | `{headline, details}` | инсайт готов |
+| `chart` | `{spec, caption, result_table?}` | Vega-Lite спека (нет, если план выбрал `final_viz: "none"`); `result_table` — `temp_result_vN` ответа (нет, если ответ без шагов): по нему плитка пересчитывается, а результат выгружается в Excel |
+| `dashboard` | `DashboardPayload {dashboard_id, title, tiles}` | дашборд собран по запросу; приходит после `chart` (график и инсайт ответа отдаются и при запросе дашборда) |
+| `clarification_needed` | `{step_id, error, suggestions}`, может быть `prompt_truncated` | шаг не выполнился, ждём `recovery_response`; `prompt_truncated` — как в `done` |
+| `error` | `{message}` | сбой хода; дальше `done` |
+| `done` | `{}` или `{prompt_truncated}` | ход завершён; `prompt_truncated` — сколько промптов хода сервер LLM обрезал (только если > 0) |
+
+`ProgressPayload`: `stage` (`planning` / `step` / `insight` / `chart` /
+`dashboard`), `status` (`started` / `finished` / `failed` / `fixing`) и
+необязательные `step_id`, `tool`, `purpose`, `total_steps`, `elapsed_ms`,
+`attempt`, `error`, а также план и детали шага (#239, ниже) — пустые поля в
+событие не попадают.
+
+События прогресса по порядку:
+
+| stage | status | поля | когда |
+|---|---|---|---|
+| `planning` | `started` | — | планировщик получил вопрос |
+| `planning` | `failed` | `error` | планировщик упал (LLM недоступна), дальше `error` и `done` |
+| `planning` | `finished` | `total_steps`, `steps` | план готов (`0` — инструментов нет, дальше `clarification_needed`) |
+| `step` | `started` | `step_id`, `tool`, `purpose`, `input`, `arguments` | шаг начал выполняться |
+| `step` | `fixing` | то же, `attempt`, `error` | шаг упал, планировщик исправляет его |
+| `step` | `finished` | то же, `elapsed_ms`, детали результата | шаг выполнен (время — с учётом исправлений) |
+| `step` | `failed` | то же, `elapsed_ms`, `error` | шаг не исправился, дальше `clarification_needed` |
+| `insight` | `started` | — | план выполнен, генерируется инсайт (дальше `text`) |
+| `chart` | `started` | — | строится график (дальше `chart`) |
+| `insight` / `chart` | `failed` | `error` | этап упал, дальше `error` и `done` |
+| `dashboard` | `failed` | `error` | дашборд не собран; ответ и график уже отданы, дальше `done` без `error` |
+
+`planning/started` приходит один раз на новый вопрос. `planning/finished`
+несёт весь план — `steps: [{step_id, tool, purpose, input, arguments}]`,
+чтобы фронт показал его строками до выполнения (#239). Его же шлют
+достройка плана после lookup-шага (выполненные и новые шаги вместе), ответ
+на уточнение (`recovery_response`: шаги, которые выполнит этот ход) и
+каждая плитка дашборда по кнопке (с её `tile_id`). У `step/*` поля `tool`,
+`purpose`, `input` и `arguments` — от последней версии шага (после
+исправления): `arguments` — как их написал планировщик, ссылки `$prev`,
+`$step_N` не развёрнуты.
+
+Детали результата в `step/finished`:
+
+| поле | что |
+|---|---|
+| `input_table` | во что развернулся `input`: таблица источника или `temp_result_vN` |
+| `input_step_id` | шаг, чей результат пришёл на вход (нет — вход из источника) |
+| `result_table` | `temp_result_vN` шага |
+| `rows`, `result_columns` | число строк и колонки `[{name, type}]` |
+| `preview` | первые `STEP_PREVIEW_ROWS` (5) строк |
+| `code`, `code_language` | SQL (`sql`) или код песочницы (`python`), которым построен результат; нет у статистических тулов (значения посчитаны в Python) |
+
+Результат не прочитался — приходят только `input_table`, `input_step_id`,
+`result_table`, ход идёт дальше. Весь результат постранично —
+`GET /api/sessions/{id}/results/{temp_result_vN}?offset=0&limit=50`
+(`limit` до 500) → `{columns, rows, total}`. Отдаются только результаты
+завершённых ходов этой сессии; чужой, удалённый или результат ещё идущего
+хода — 404 (у идущего хода есть `preview`), имя не `temp_result_vN` — 422. Смена вида прошлого графика («сделай таблицей») идёт без
+плана: сразу `chart` и `done`. Этап `dashboard` шлёт только `failed`.
+
+Вопрос про таблицу целиком («что передо мной?», «что в таблице есть?»,
+«сколько строк и за какой период?», «опиши данные») тоже идёт без плана
+(`core/data/overview.py`): `insight/started` → `text` (`headline` — название
+данных, объём и период из паспорта; `details` — описание LLM по абзацам для
+бизнес-пользователя: о чём данные, что в них есть, что интересного
+посмотреть) → `done`. Технической таблицы колонок в ответе нет. Быстрый путь —
+шаблоны `is_overview_question`: вопрос целиком из обзорных фраз, «сколько строк
+по Москве?» идёт в планировщик. Формулировку, которую шаблоны не узнали,
+планировщик помечает `route: "overview"` — ответ тот же. Описание берётся из
+паспорта, LLM вызывается, только если паспорт изменился. LLM не ответила — в
+`details` строка «Описание данных сейчас недоступно», объём и период всё равно
+приходят.
+
+Ход всегда заканчивается `done` или `clarification_needed`: любой сбой
+вне шагов (планировщик, инсайт, график) приходит как
+`<stage>/failed` с текстом ошибки, затем `error` с сообщением для
+пользователя и `done`. Упавший шаг сюда не относится — он идёт через
+`fixing` и `clarification_needed`. Сбой дашборда ход не проваливает:
+после `dashboard/failed` сразу `done`, ответ сохраняется в памяти сессии.
+
+Пример успешного хода из одного шага:
+
+```json
+{"type": "progress", "data": {"stage": "planning", "status": "started"}}
+{"type": "progress", "data": {"stage": "planning", "status": "finished", "total_steps": 1,
+ "steps": [{"step_id": 1, "tool": "group_by", "purpose": "Выручка по регионам",
+            "input": "$prev", "arguments": {"by": "region", "column": "revenue", "function": "SUM"}}]}}
+{"type": "progress", "data": {"stage": "step", "status": "started", "step_id": 1,
+ "tool": "group_by", "purpose": "Выручка по регионам", "input": "$prev",
+ "arguments": {"by": "region", "column": "revenue", "function": "SUM"}}}
+{"type": "progress", "data": {"stage": "step", "status": "finished", "step_id": 1,
+ "tool": "group_by", "purpose": "Выручка по регионам", "input": "$prev",
+ "arguments": {"by": "region", "column": "revenue", "function": "SUM"}, "elapsed_ms": 42,
+ "input_table": "sales", "result_table": "temp_result_v3", "rows": 2,
+ "result_columns": [{"name": "region", "type": "VARCHAR"}, {"name": "revenue", "type": "DOUBLE"}],
+ "preview": [{"region": "msk", "revenue": 120.0}, {"region": "spb", "revenue": 80.0}],
+ "code_language": "sql", "code": "SELECT ... FROM \"sales\" GROUP BY ..."}}
+{"type": "progress", "data": {"stage": "insight", "status": "started"}}
+{"type": "text", "data": {"headline": "...", "details": ["..."]}}
+{"type": "progress", "data": {"stage": "chart", "status": "started"}}
+{"type": "chart", "data": {"spec": {}, "caption": "..."}}
+{"type": "done", "data": {}}
+```
+
+Исправление шага:
+
+```json
+{"type": "progress", "data": {"stage": "step", "status": "fixing", "step_id": 1,
+ "tool": "group_by", "purpose": "Выручка по регионам", "attempt": 1,
+ "error": "Binder Error: Referenced column \"revenu\" not found ..."}}
+```
+
+`attempt` — номер попытки исправления (1..`STEP_FIX_ATTEMPTS`), `error` —
+последняя ошибка выполнения шага (отклонённое валидацией исправление её не
+меняет: причину отказа видит только планировщик). План и шаги идут задачей
+(`AgentOrchestrator._research`), события из неё приходят через `emit` и
+очередь в `run()` сразу, не дожидаясь конца плана; `insight` и `chart`
+`run()` отдаёт сам (`yield`).
+
+## Экспорт аналитических отчётов (PDF / Excel)
+
+Экспорт оформляет ответ агента или целостный дашборд в готовый для стейкхолдеров документ через эндпоинты:
+- `POST /api/artifacts/export` (`app/api/routes/artifacts.py`) — экспорт отдельного исследования или дашборда в .xlsx / .pdf;
+- `GET /api/dashboards/{id}/export?format=xlsx|pdf` (`app/api/routes/dashboards.py`) — прямой экспорт дашборда.
+
+### Конвейер экспорта PDF (`PdfExporter`)
+
+```
+ExportRequest {session_id, result_ref?, dashboard_id?, question?, headline?, details?, spec?}
+   |
+   +---> Проверка владения result_ref: плитка дашборда dashboard_id или ход сессии (owns_result)
+   |
+   +---> (опц.) charts.py: normalize_spec() + vl-convert-python -> chart_png (без сети)
+   |
+   +---> (опц.) DuckDBManager: чтение temp_result_vN (до 50 строк)
+   |
+   +---> PdfExporter (ReportLab Platypus + NumberedCanvas):
+   |        1. Регистрация TrueType шрифта DejaVu Sans (кириллица без артефактов)
+   |        2. XML-экранирование текста (xml.sax.saxutils.escape, ₽ -> руб.)
+   |        3. Защита от LayoutError: усечение сверхдлинных текстов, разбивка на строки
+   |        4. Сборка Flowables: Заголовок -> Зелёная линия (#088434) -> Вопрос -> Инсайт -> График -> Таблица
+   |        5. Двухпроходная нумерация «Страница X из Y»
+   v
+FileResponse (application/pdf, inline/attachment)
+```
+
+Для дашбордов (`PdfExporter.export_dashboard`) формируется единый аналитический отчёт:
+- Метаданные (название дашборда, дата среза, название базы данных/сессии, счётчик «Всего плиток»);
+- Фирменная разделительная линия Сбера (`HRFlowable`, `#088434`);
+- Сетка ключевых показателей (KPI);
+- Карточки плиток с встроенным рендером диаграмм (`charts.py`), содержательными инсайтами и таблицами с автоподбором высоты.
+
+### Конвейер экспорта Excel (`ExcelExporter`)
+
+```
+ExportRequest {session_id, result_ref?, dashboard_id?, question?, headline?, details?, spec?}
+   |
+   +---> Извлечение записей: DuckDBManager (temp_result_vN до 5000 строк) или spec.data.values / snapshot_data
+   |
+   +---> Защита от Formula Injection (CWE-1236): sanitize_excel_text / sanitize_excel_value
+   |
+   +---> Нормализация типов: timezone-aware datetime -> naive UTC, NaN -> "", Infinity -> строка, dict/list -> JSON
+   |
+   +---> Устранение Schema Drift: extract_table_columns (объединение ключей по всем строкам выборки)
+   |
+   +---> Одиночный отчёт:
+   |        - Информационная карточка (Заголовок, Вопрос, Детали, Метаданные);
+   |        - Стилизованная таблица (зебра-заливка #F7FAF7, шапка #088434, автофильтр, freeze panes);
+   |        - Детерминированный подбор диаграммы по Vega-Lite spec.encoding (Bar/Line/Pie/Area) или эвристике данных;
+   |        - Подавление диаграммы для чисто табличных представлений (is_table_spec);
+   |        - Ограничение категорий на графике до 50 точек при сохранении всей таблицы.
+   |
+   +---> Дашборд:
+            - Титульный лист «Сводка» с крупными плитками KPI (#F0F7F1), источником данных и реестром состава;
+            - Гиперссылки для быстрой навигации к листам плиток (#'Имя_листа'!A1);
+            - Отдельные листы под каждую плитку с кнопкой «← Вернуться в Сводку», снимком данных и диаграммой;
+            - Автоматический расчёт ширины столбцов под длину содержимого.
+   v
+FileResponse (application/vnd.openxmlformats-officedocument.spreadsheetml.sheet)
+```
+
+### Ключевые гарантии и архитектурные решения
+
+1. **Представительский формат (Executive Business Memo)**:
+   - Отчёт структурирован для бизнес-пользователей: сразу видны вопрос, ключевой вывод (headline) и детали анализа, затем график и подтверждающие данные.
+   - Векторная отрисовка ReportLab Platypus со строгой сеткой отступов, карточками с закруглением (`q_table`, `insight_table`) и корпоративной палитрой Сбера (#088434, #0F172A, #1E293B, #F8FAFC).
+   - Единая фирменная зеленая линия-разделитель (#088434) как в PDF дашбордов, так и в PDF одиночных графиков.
+
+2. **Полная безопасность Excel (CWE-1236 Formula Injection)**:
+   - Все текстовые поля (заголовки, вопросы, детали, инсайты, названия колонок, названия листов) и ячейки проверяются: если строка начинается с `=`, `+`, `-`, `@`, `\t` или `\r`, она экранируется ведущим апострофом `'`, за исключением валидных чисел.
+
+3. **Устойчивость к сложным типам данных и сменам схемы**:
+   - `openpyxl` не поддерживает timezone-aware объекты `datetime` — они автоматически приводятся к naive datetime во избежание падения с `TypeError`.
+   - Нестабильные схемы ответов (schema drift) корректно объединяются без потери колонок.
+
+4. **Полностью автономный рендеринг графиков (`charts.py`)**:
+   - Преобразование Vega-Lite спеки в растровый PNG (scale=2.0) выполняется библиотекой `vl-convert-python` на Rust V8.
+   - Не требует запущенного Chromium, Node.js или сетевого доступа (полная совместимость с замкнутым контуром).
+   - Автоматическая нормализация спеки: замена адаптивных значений фронтенда (`"width": "container"`) на фиксированные пропорции печатного листа.
+
+5. **Корректная типографика и кириллица**:
+   - Использование шрифта `DejaVu Sans` / `DejaVu Sans Bold`, упакованного в системный контейнер через `fonts-dejavu-core`.
+   - Регистрация в ReportLab `pdfmetrics` с каскадным fallback-поиском путей (Linux, macOS, env vars).
+
+6. **Безопасность и отказоустойчивость**:
+   - **XSS / XML Injection Prevention**: пользовательский текст экранируется перед передачей в `Paragraph`, исключая сбои парсера `paraparser` и искажение стилей тегами (`<b>fake</b>` отобразится как текст).
+   - **Устранение LayoutError**: длинные строки усекаются (`truncate_text`), ячейки таблицы ограничиваются (`MAX_CELL_LENGTH = 300`), а карточки разделены на построчные `Table`, предотвращая неделимые оверфлоу-блоки между страницами.
+   - **Многопользовательская изоляция**: `result_ref` принимается, только если таблица принадлежит запросу. С `dashboard_id` — это таблица одной из плиток дашборда (дашборд должен существовать, сессия может быть уже удалена). Без него сессия `session_id` должна существовать, а `SessionMemory.owns_result` находит таблицу среди итога хода, таблицы его графика, таблиц шагов хода (`record_step(step, table)` пишет их в `results` хода) или таблиц ожидающего уточнения. Иначе — `404`.
+   - **Проверка спецификации графика**: запрещены `data.url`, `data.sequence`, `data.graticule` и `data.sphere` в любом объекте `data` (в том числе в слоях и `lookup`); колонки данных с такими именами разрешены. `data.values` и `datasets` обрезаются до 1000 строк, спецификация — до 256 КБ.
+   - **Ограничение рендера**: одновременно рендерится не больше двух графиков (`MAX_PARALLEL_RENDERS`), каждый в отдельном процессе с таймаутом 7 с; если слоты заняты дольше таймаута, отчёт собирается без графика.
+   - **Строгие HTTP-коды**: при ошибках чтения или отсутствии таблицы возвращается `404 Not Found` вместо молчаливой генерации неполного документа. При внутренних ошибках генерации отдаётся статус `500` с подробным описанием ошибки.

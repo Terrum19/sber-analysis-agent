@@ -1,0 +1,163 @@
+# Локальный подъём в замкнутом контуре: start.command / start.bat / start.sh или make up.
+# LLM по умолчанию — Ollama на хосте, вне контейнера (#167): на Mac она берёт Metal,
+# на Windows — видеокарту без WSL-тулкита. backend ходит на host.docker.internal;
+# модель и её вариант с контекстом LLM_NUM_CTX готовит сам (core/llm/ollama_setup.py).
+# Ollama в контейнере — профиль ollama (CPU) или ollama-gpu, для серверов и CI:
+#   COMPOSE_LLM_BASE_URL=http://ollama:11434/v1 docker compose --profile ollama up
+# .env не обязателен: значения по умолчанию — здесь и в app/config.py.
+
+x-ollama: &ollama
+  image: ollama/ollama:0.35.1
+  entrypoint: ["/bin/sh", "/entrypoint.sh"]
+  environment:
+    LLM_MODEL: ${LLM_MODEL:-qwen2.5-coder:7b}
+    EMBED_MODEL: ${EMBED_MODEL:-bge-m3}
+    # Контекст модели в токенах: окончательное значение выбирают #58 и #102.
+    OLLAMA_CONTEXT_LENGTH: ${OLLAMA_CONTEXT_LENGTH:-16384}
+  volumes:
+    - ollama-models:/root/.ollama
+    - ./infra/ollama/entrypoint.sh:/entrypoint.sh:ro
+  # Только localhost: API Ollama без авторизации; backend ходит по сети compose.
+  # Не 11434: этот порт на хосте занимает Ollama вне контейнера.
+  ports:
+    - "127.0.0.1:${OLLAMA_PORT:-11435}:11434"
+  networks:
+    default:
+      aliases: [ollama]
+  # Первый запуск качает модели (минуты): пока идёт start_period, неудачные
+  # проверки не считаются, backend ждёт и LLM_MODEL, и EMBED_MODEL.
+  healthcheck:
+    test: ["CMD", "/bin/sh", "/entrypoint.sh", "check"]
+    interval: 15s
+    timeout: 10s
+    retries: 3
+    start_period: 1h
+    start_interval: 5s
+
+services:
+  ollama-cpu:
+    <<: *ollama
+    profiles: [ollama]
+
+  # GPU NVIDIA: нужен NVIDIA Container Toolkit на хосте.
+  ollama-gpu:
+    <<: *ollama
+    profiles: [ollama-gpu]
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+
+  backend:
+    build: ./backend
+    image: sber-backend:local
+    env_file:
+      - path: .env
+        required: false
+    # Пути данных внутри контейнера — на смонтированном томе /app/storage
+    # (относительные пути из .env рассчитаны на запуск из корня репозитория).
+    environment:
+      STORAGE_DIR: /app/storage
+      DUCKDB_PATH: /app/storage/duckdb/main.duckdb
+      SQLITE_PATH: /app/storage/sessions/sessions.sqlite
+      # Не LLM_BASE_URL: в .env он для make dev (localhost), а в контейнере
+      # localhost — сам backend. Ollama в контейнере: http://ollama:11434/v1.
+      LLM_BASE_URL: ${COMPOSE_LLM_BASE_URL:-http://host.docker.internal:11434/v1}
+      LLM_MODEL: ${LLM_MODEL:-qwen2.5-coder:7b}
+      # Бэкенд ждёт тот же контекст, что задан Ollama (#102).
+      LLM_NUM_CTX: ${OLLAMA_CONTEXT_LENGTH:-16384}
+      # Эмбеддинги — с той же Ollama: переход к другим данным по смыслу вопроса.
+      EMBED_MODEL: ${EMBED_MODEL:-bge-m3}
+    # На Linux host.docker.internal есть только с этой записью (на Mac/Windows — всегда).
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    # Снаружи нужен только фронтенд (:3000); API — для smoke и разработки, с этой машины.
+    ports:
+      - "127.0.0.1:8000:8000"
+    volumes:
+      - ./backend/storage:/app/storage
+    depends_on:
+      ollama-cpu:
+        condition: service_healthy
+        required: false
+      ollama-gpu:
+        condition: service_healthy
+        required: false
+    # В python:3.11-slim нет curl — проверяем /health самим Python.
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - import urllib.request; urllib.request.urlopen('http://localhost:8000/health', timeout=3)
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 10s
+
+  # Демо/тестовый PostgreSQL для коннектора postgres_scanner (tests/integration).
+  # Платформа читает его только в режиме READ_ONLY; бекенд от него не зависит.
+  # Поднимается только по запросу, чтобы не спорить за 5432 с Postgres на хосте:
+  # docker compose --profile integration up -d postgres
+  postgres:
+    image: postgres:16-alpine
+    profiles: [integration]
+    environment:
+      POSTGRES_USER: sber
+      POSTGRES_PASSWORD: sber
+      POSTGRES_DB: sber_demo
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U sber -d sber_demo"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Тестовый ClickHouse для tests/integration (те же учётные данные, что в CI).
+  # Поднимается только по запросу: docker compose --profile integration up -d clickhouse
+  clickhouse:
+    image: clickhouse/clickhouse-server:24.8
+    profiles: [integration]
+    environment:
+      CLICKHOUSE_USER: sber
+      CLICKHOUSE_PASSWORD: sber
+      CLICKHOUSE_DB: sber_demo
+    ports:
+      - "8123:8123"
+      - "9000:9000"
+    healthcheck:
+      test: ["CMD-SHELL", "wget --no-verbose --tries=1 --spider http://localhost:8123/ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  frontend:
+    # NEXT_PUBLIC_API_URL нужен и при сборке: rewrites() /api/* запекаются в next build.
+    build:
+      context: ./frontend
+      args:
+        NEXT_PUBLIC_API_URL: http://backend:8000
+    image: sber-frontend:local
+    ports:
+      - "3000:3000"
+    environment:
+      - NEXT_PUBLIC_API_URL=http://backend:8000
+    depends_on:
+      backend:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q --spider http://localhost:3000/ || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 10s
+
+volumes:
+  postgres-data:
+  ollama-models:
