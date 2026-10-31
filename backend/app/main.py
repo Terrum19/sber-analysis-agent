@@ -14,6 +14,7 @@ from contextlib import asynccontextmanager, suppress
 
 from fastapi import FastAPI
 
+from app import __version__
 from app.api.routes import artifacts, chat, dashboards, datasources, llm, sessions
 from app.config import settings
 from app.core.data.duckdb_manager import DuckDBManager
@@ -59,7 +60,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
 app = FastAPI(
     title="SberAnalyticalAgent",
-    version="0.1.0",
+    version=__version__,
     description="AI-Native BI-платформа: диалоговый агент над CSV/PostgreSQL/ClickHouse через DuckDB.",
     lifespan=lifespan,
 )
