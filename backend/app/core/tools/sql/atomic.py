@@ -104,6 +104,28 @@ class FilterRowsArgs(ToolArgs):
         return self
 
 
+# Дата без времени на колонке TIMESTAMP означает весь день: «<= '2025-12-31'»
+# иначе отрезает 31 декабря после полуночи, а «= '2025-03-15'» находит только 00:00.
+DATE_ONLY = re.compile(r"\d{4}-\d{2}-\d{2}")
+DAY_BOUNDS = {
+    "=": "{column} >= {day} AND {column} < {next}",
+    "<=": "{column} < {next}",
+    ">": "{column} >= {next}",
+}
+
+
+def _next_day(value: object) -> str:
+    return f"(CAST({literal(value)} AS DATE) + INTERVAL 1 DAY)"
+
+
+def _whole_days(db, table: str, column: str, value: object) -> bool:
+    """Значение — дата без времени, а колонка хранит дату со временем."""
+    if not isinstance(value, str) or not DATE_ONLY.fullmatch(value.strip()):
+        return False
+    rows = db.query(f"SELECT typeof({identifier(column)}) AS kind FROM {identifier(table)} LIMIT 1")
+    return bool(rows) and rows[0]["kind"].upper().startswith("TIMESTAMP")
+
+
 class FilterRowsTool(BaseTool):
     name = "filter_rows"
     description = (
@@ -122,7 +144,15 @@ class FilterRowsTool(BaseTool):
             condition = f"{column} {args.operator} ({values})"
         elif args.operator == "BETWEEN":
             low, high = args.value  # type: ignore[misc]
-            condition = f"{column} BETWEEN {literal(low)} AND {literal(high)}"
+            if _whole_days(db, input_table, args.column, high):
+                # «по 31.12» на TIMESTAMP — весь последний день, а не до его полуночи
+                condition = f"{column} >= {literal(low)} AND {column} < {_next_day(high)}"
+            else:
+                condition = f"{column} BETWEEN {literal(low)} AND {literal(high)}"
+        elif args.operator in DAY_BOUNDS and _whole_days(db, input_table, args.column, args.value):
+            condition = DAY_BOUNDS[args.operator].format(
+                column=column, day=literal(args.value), next=_next_day(args.value)
+            )
         else:
             condition = f"{column} {args.operator} {literal(args.value)}"
         return db.save_step_result(
