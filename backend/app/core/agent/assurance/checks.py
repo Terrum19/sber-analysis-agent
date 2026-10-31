@@ -29,6 +29,9 @@ NULL_SHARE = 0.3
 PERIOD_COVERAGE = 0.9
 # Константная метрика подозрительна от стольких строк.
 CONSTANT_MIN_ROWS = 3
+# Служебные счётчики seasonality (число периодов, неполные, пропущенные): одно
+# значение на всех строках — норма, а не схлопнутая метрика.
+SERVICE_COLUMNS = frozenset({"periods", "incomplete", "skipped"})
 
 FILTER_TOOLS = ("filter_rows",)
 JOIN_TOOLS = ("join_tables", "left_join_tables", "join_related")
@@ -211,7 +214,8 @@ def _constants(db, table: str) -> list[StepFinding]:
     numeric = [
         name
         for name, kind in _types(db, table)
-        if any(word in kind.upper() for word in ("INT", "DOUBLE", "DECIMAL", "FLOAT", "REAL"))
+        if name not in SERVICE_COLUMNS
+        and any(word in kind.upper() for word in ("INT", "DOUBLE", "DECIMAL", "FLOAT", "REAL"))
     ]
     if not numeric:
         return []

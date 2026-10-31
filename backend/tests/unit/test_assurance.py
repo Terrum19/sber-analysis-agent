@@ -472,6 +472,9 @@ def test_check_codes(db):
     assert codes(found) == ["nulls"]
     constant = save(db, "SELECT region, 7 AS n FROM sales")
     assert codes(checks.inspect_step(db, step("sort_limit"), "sales", constant, "")) == ["constant"]
+    # Счётчики seasonality одинаковы на всех месяцах — это не аномалия
+    service = save(db, "SELECT region, 2 AS periods, 0 AS incomplete, 0 AS skipped FROM sales")
+    assert codes(checks.inspect_step(db, step("sort_limit"), "sales", service, "")) == []
     assert checks.inspect_step(db, step("filter_rows"), "missing", "missing", "") == []
 
 
