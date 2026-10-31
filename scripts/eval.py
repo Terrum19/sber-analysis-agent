@@ -152,6 +152,7 @@ class RunOptions:
     repeat: int = 1
     judge_client: object | None = None
     judge_votes: int = 3
+    verify: bool = False
 
 
 @dataclass(frozen=True)
@@ -408,7 +409,12 @@ def reply_to_supported() -> bool:
 
 
 async def run_turn(
-    orchestrator, trace: Trace, session_id: str, text: str, reply_to: str | None = None
+    orchestrator,
+    trace: Trace,
+    session_id: str,
+    text: str,
+    reply_to: str | None = None,
+    verify: bool = False,
 ) -> Turn:
     from app.api.schemas.chat import ChatRequest
 
@@ -418,6 +424,8 @@ async def run_turn(
     request = {"session_id": session_id, "question": text}
     if reply_to is not None and reply_to_supported():
         request["reply_to"] = reply_to
+    if verify:
+        request["verify"] = True
     try:
         async for event in orchestrator.run(ChatRequest(**request)):
             elapsed = round(time.perf_counter() - started, 3)
@@ -452,6 +460,30 @@ def events_of(turn: Turn, kind: str) -> list[dict]:
     return [event["data"] for event in turn.events if event["type"] == kind]
 
 
+def answer_events(turn: Turn, kind: str) -> list[dict]:
+    """text или chart последней версии ответа: в режиме «Проверка» (A-29) черновик
+    (revision 0) заменён исправленным (revision 1), оценивается то, что увидел пользователь."""
+    found = events_of(turn, kind)
+    last = max((data.get("revision", 0) for data in found), default=0)
+    return [data for data in found if data.get("revision", 0) == last]
+
+
+def review_of(turn: Turn) -> dict | None:
+    """Итог проверки хода: первый и последний вердикт; без режима «Проверка» — None."""
+    reviews = events_of(turn, "review")
+    if not reviews:
+        return None
+    first, last = reviews[0], reviews[-1]
+    return {
+        "verdict": last["verdict"],
+        "action": first["action"],
+        "repaired": first["action"] in ("fix_insight", "extend_plan", "replan")
+        and any(data.get("revision") == 1 for data in events_of(turn, "text")),
+        "issues": [issue["message"] for issue in first.get("issues", [])],
+        "caveats": last.get("caveats", []),
+    }
+
+
 def used_tools(turn: Turn) -> list[str]:
     tools = [step["tool"] for step in turn.steps]
     tools += [
@@ -464,7 +496,7 @@ def used_tools(turn: Turn) -> list[str]:
 
 def answer_text(turn: Turn) -> str:
     parts = []
-    for data in events_of(turn, "text"):
+    for data in answer_events(turn, "text"):
         parts.append(str(data.get("headline", "")))
         parts += [str(detail) for detail in data.get("details", [])]
     return "\n".join(parts)
@@ -472,7 +504,7 @@ def answer_text(turn: Turn) -> str:
 
 def chart_types(turn: Turn) -> list[str]:
     kinds = []
-    for data in events_of(turn, "chart"):
+    for data in answer_events(turn, "chart"):
         spec = data.get("spec") or {}
         mark = spec.get("mark")
         kind = (spec.get("usermeta") or {}).get("chart_type")
@@ -663,7 +695,7 @@ def visible_text(turn: Turn) -> str:
         parts.append(str(data.get("error", "")))
         parts += [str(suggestion) for suggestion in data.get("suggestions", [])]
     parts += [str(data.get("message", "")) for data in events_of(turn, "error")]
-    parts += [str(data.get("caption", "")) for data in events_of(turn, "chart")]
+    parts += [str(data.get("caption", "")) for data in answer_events(turn, "chart")]
     return "\n".join(part for part in parts if part)
 
 
@@ -972,6 +1004,7 @@ def question_result(
         "prompt_truncated": truncated,
         "errored": errored(turn),
         "error": turn.error,
+        "review": review_of(turn),
     }
 
 
@@ -1050,7 +1083,9 @@ async def run_pass(
         parent = turns.get(question.follow_up_of) if question.follow_up_of else None
         reply_to = turn_id_of(parent) if options.reply_to and parent is not None else None
         rows_before = table_rows(db, table) if question.expect.get("table_intact") else None
-        turn = await run_turn(orchestrator, trace, session_id, question.text, reply_to)
+        turn = await run_turn(
+            orchestrator, trace, session_id, question.text, reply_to, options.verify
+        )
         turns[question.id] = turn
         read_result(turn, db)
         turn.gold = options.gold.get(question.id, {})
@@ -1189,9 +1224,25 @@ def summarize(results: list[dict], model: str, questions_path: Path, day: date) 
             "unprofiled": unprofiled,
         },
         "prompt_truncated": sum(1 for result in results if result["prompt_truncated"]),
+        "review": review_summary(results),
         "errored": sum(1 for result in results if result["errored"]),
         "no_session": sum(1 for result in results if result["session_id"] is None),
         "questions": results,
+    }
+
+
+def review_summary(results: list[dict]) -> dict | None:
+    """Режим «Проверка» (A-29): вердикты критика и сколько ответов исправлено."""
+    reviewed = [result for result in results if result.get("review")]
+    if not reviewed:
+        return None
+    repaired = [result for result in reviewed if result["review"]["repaired"]]
+    return {
+        "reviewed": len(reviewed),
+        "first_actions": dict(Counter(result["review"]["action"] for result in reviewed)),
+        "final_verdicts": dict(Counter(result["review"]["verdict"] for result in reviewed)),
+        "repaired": len(repaired),
+        "repaired_passed": sum(result["passed"] for result in repaired),
     }
 
 
@@ -1237,6 +1288,15 @@ def render(report: dict) -> str:
         )
     if report["no_session"]:
         lines.append(f"Не открылась сессия (нет таблицы): {report['no_session']}.")
+    review = report.get("review")
+    if review:
+        actions = ", ".join(f"{key} — {value}" for key, value in review["first_actions"].items())
+        verdicts = ", ".join(f"{key} — {value}" for key, value in review["final_verdicts"].items())
+        lines.append(
+            f"Проверка (A-29): проверено {review['reviewed']}; первый вердикт: {actions}; "
+            f"итог: {verdicts}; исправлено ответов {review['repaired']}, из них прошли "
+            f"{review['repaired_passed']}."
+        )
     if report["prompt_truncated"]:
         lines.append(
             f"Сервер LLM обрезал промпты в {report['prompt_truncated']} вопросах: "
@@ -1392,6 +1452,7 @@ async def evaluate(args: argparse.Namespace) -> int:
         repeat=args.repeat,
         judge_client=judge_client,
         judge_votes=args.judge_votes,
+        verify=args.verify,
     )
     model = FAKE_MODEL if fake_mode() else args.model or settings.llm_model
     out_dir = args.out_dir or (
@@ -1441,6 +1502,9 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--questions", type=Path, default=DEFAULT_QUESTIONS)
     parser.add_argument("--model", help="LLM_MODEL на время прогона и имя в отчёте")
     parser.add_argument("--fake", action="store_true", help="FakeLLM вместо модели")
+    parser.add_argument(
+        "--verify", action="store_true", help="режим «Проверка» (A-29): verify=true в каждом ходе"
+    )
     parser.add_argument("--db", type=Path, help="DuckDB с датасетами (по умолчанию DUCKDB_PATH)")
     parser.add_argument("--csv", type=Path, nargs="+", help="подключить CSV перед прогоном")
     parser.add_argument("--dataset", help="задать всем вопросам эту таблицу")

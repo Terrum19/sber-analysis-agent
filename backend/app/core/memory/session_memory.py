@@ -466,6 +466,19 @@ class SessionMemory:
             }
         )
 
+    def record_review(
+        self, review: dict, draft: dict | None = None, first: dict | None = None
+    ) -> None:
+        """Итог проверки хода (A-29): последний вердикт, черновой ответ и первый вердикт.
+
+        draft и first есть, только если ответ исправлялся.
+        """
+        self._turn["review"] = review
+        if draft is not None:
+            self._turn["draft"] = draft
+        if first is not None:
+            self._turn["first_review"] = first
+
     def record_chart(self, chart_type: str, result_table: str, title: str = "") -> None:
         """Запомнить график текущего хода (для смены вида без LLM)."""
         self._turn["chart"] = {"type": chart_type, "title": title, "result_table": result_table}

@@ -17,8 +17,13 @@ import type { DashboardTile } from "@/types/dashboard";
 import {
   applyOutline,
   applyProgress,
+  applyReview,
+  applyReviewProgress,
+  closeReview,
   hasFinishedWork,
+  startReview,
   type DashboardEvent,
+  type ReviewState,
   type TurnProgress,
 } from "@/types/chat";
 
@@ -124,6 +129,8 @@ export function startRun(
     resumeTurn?: string;
     /** Дашборд хода собран: открыть его вкладку, если пользователь всё ещё в этой сессии. */
     onDashboardBuilt?: (dashboardId: string) => void;
+    /** Режим «Проверка» (A-29): после ответа агент проверяет его и при необходимости исправляет. */
+    verify?: boolean;
   },
 ) {
   if (isRunning(sessionId)) return;
@@ -157,14 +164,45 @@ export function startRun(
       store.updateMessage(progressId, { progress }, sessionId);
     }
   };
+  // Сообщения текущей версии ответа: после исправления (revision 1) черновые сворачиваются
+  let textIds: string[] = [];
+  let chartIds: string[] = [];
+  let messageCount = 0;
+  // Следующее сообщение ответа — исправленное после проверки
+  let revisedNext = false;
+  const nextId = (kind: string) => `msg-${kind}-${Date.now().toString(36)}-${(messageCount += 1)}`;
+  const supersede = (ids: string[]) => {
+    for (const id of ids) store.updateMessage(id, { superseded: true }, sessionId);
+  };
   const appendText = (text: string) => {
     if (answerStarted) {
       store.appendToLastMessage(text, sessionId);
     } else {
       answerStarted = true;
-      addMessage({ role: "agent", content: text });
+      const id = nextId("answer");
+      textIds.push(id);
+      addMessage({ id, role: "agent", content: text, ...(revisedNext ? { revised: true } : {}) });
+      revisedNext = false;
     }
   };
+  // Карточка проверки ответа (режим «Проверка»): своё сообщение после чернового ответа
+  let review: ReviewState | null = null;
+  const reviewId = `msg-review-${Date.now().toString(36)}`;
+  const setReview = (next: ReviewState) => {
+    if (!review) {
+      // Первый прогон закончен: его прогресс сворачивается, дальше идёт проверка
+      finishProgress();
+      answerStarted = false;
+      addMessage({ id: reviewId, role: "agent", content: "", review: next });
+    } else {
+      store.updateMessage(reviewId, { review: next }, sessionId);
+    }
+    review = next;
+  };
+  const closeOpenReview = () => {
+    if (review && review.finished_at === undefined) setReview(closeReview(review));
+  };
+  const reviewState = () => review ?? startReview(progress?.steps.map((step) => step.step_id) ?? []);
   // Дашборд хода в режиме дашборда: после done открываем его вкладку
   let builtDashboardId: string | null = null;
   let chartTileId: string | null = null;
@@ -186,12 +224,16 @@ export function startRun(
     if (!hasAnswer && !turnId) {
       return;
     }
-    const all = sessionSnapshot(useSessionStore.getState(), sessionId).messages;
+    // Карточка проверки и черновой ответ — не ответ: мета уходит исправленному (или единственному)
+    const all = sessionSnapshot(useSessionStore.getState(), sessionId).messages.filter(
+      (m) => !m.review && !m.superseded,
+    );
     const last = all[all.length - 1];
     if (!last || last.role !== "agent" || last.failed || last.clarification || last.refusal) {
       return;
     }
-    store.updateLastMessage(
+    store.updateMessage(
+      last.id!,
       {
         ...(hasAnswer
           ? {
@@ -209,6 +251,13 @@ export function startRun(
     );
   };
 
+  // Исправленный ответ (revision 1): черновые сообщения этого вида сворачиваются
+  const revise = (data: { revision?: number }, ids: string[]) => {
+    if (data.revision !== 1) return false;
+    supersede(ids);
+    return true;
+  };
+
   const stop = streamChat(
     sessionId,
     q,
@@ -216,6 +265,7 @@ export function startRun(
       if (event.type === "done") {
         streamFinished = true;
         finishProgress(streamHadError);
+        closeOpenReview();
         saveAnswerMeta(event.data?.turn_id);
         if (chartTileId && event.data?.turn_id) {
           store.patchTile(chartTileId, { source_turn_id: event.data.turn_id }, sessionId);
@@ -244,6 +294,13 @@ export function startRun(
         // Ход идёт дальше в той же ленте, поэтому не switchSessionTable: та завела бы ленту новой таблицы
         store.followAgentTable(sessionId, event.data.table);
         addMessage({ role: "agent", content: t("chat.tableChosen", { name: event.data.title || event.data.table }) });
+      } else if (
+        event.type === "progress" &&
+        (event.data.stage === "review" || event.data.stage === "repair" || event.data.revision === 1)
+      ) {
+        setReview(applyReviewProgress(reviewState(), event.data));
+      } else if (event.type === "review") {
+        setReview(applyReview(reviewState(), event.data));
       } else if (event.type === "progress") {
         if (!progress) {
           progress = applyProgress({ planning: false, steps: [], started_at: Date.now() }, event.data);
@@ -265,6 +322,12 @@ export function startRun(
         streamFinished = true;
         addMessage({ role: "agent", content: event.data.reason || t("chat.refusal"), refusal: event.data });
       } else if (event.type === "text") {
+        if (revise(event.data ?? {}, textIds)) {
+          textIds = [];
+          answerStarted = false;
+          answerDetails = [];
+          revisedNext = true;
+        }
         const raw = event as any;
         const headline = event.data?.headline || raw.headline;
         if (typeof headline === "string" && headline) answerHeadline = headline;
@@ -279,7 +342,16 @@ export function startRun(
         }
       } else if (event.type === "chart") {
         answerStarted = false;
-        const chartData = { ...((event.data || (event as any)) as any), tile_id: `chart-${Date.now().toString(36)}` };
+        const revisedChart = revise(event.data ?? {}, chartIds);
+        if (revisedChart) chartIds = [];
+        const chartId = nextId("chart");
+        chartIds.push(chartId);
+        // Исправленный проверкой график встаёт на место чернового, а не второй плиткой
+        const draftTileId = revisedChart ? chartTileId : null;
+        const chartData = {
+          ...((event.data || (event as any)) as any),
+          tile_id: draftTileId ?? `chart-${Date.now().toString(36)}`,
+        };
         if (typeof chartData.caption === "string" && chartData.caption) {
           answerHeadline = chartData.caption;
         }
@@ -292,9 +364,13 @@ export function startRun(
         // График — на правую панель, в ленте только ссылка на него.
         // Панель открываем, только если пользователь смотрит на эту сессию.
         chartTileId = chartData.tile_id;
-        store.addTile({ ...chartTile(chartData, t("chat.chartDefault")), source_session_id: sessionId }, sessionId);
+        const tile = { ...chartTile(chartData, t("chat.chartDefault")), source_session_id: sessionId };
+        if (draftTileId) store.patchTile(draftTileId, tile, sessionId);
+        else store.addTile(tile, sessionId);
         if (viewing()) useUiStore.getState().setCanvasOpen(true);
         addMessage({
+          id: chartId,
+          ...(revisedChart ? { revised: true } : {}),
           role: "agent",
           content: chartData.caption ? t("chat.chartDoneNamed", { name: chartData.caption }) : t("chat.chartDone"),
           chart: chartData,
@@ -332,6 +408,7 @@ export function startRun(
     },
     (error, status) => {
       finishProgress(Boolean(error) || !streamFinished || streamHadError);
+      closeOpenReview();
       if (status === 404) {
         // Сессию удалили на сервере: повтор упадёт так же, нужна новая сессия
         fail();
@@ -363,7 +440,7 @@ export function startRun(
         unseen: !cancelled && !isViewing(sessionId),
       });
     },
-    { recoveryResponse, replyTo: options.replyTo, dashboard, resumeTurn: options.resumeTurn },
+    { recoveryResponse, replyTo: options.replyTo, dashboard, resumeTurn: options.resumeTurn, verify: options.verify },
   );
   stoppers.set(sessionId, () => {
     cancelled = true;

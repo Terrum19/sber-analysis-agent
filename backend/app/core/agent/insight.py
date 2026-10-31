@@ -64,6 +64,7 @@ class InsightGenerator:
         result_tool: str = "",
         source: str | None = None,
         inputs: dict[int, str] | None = None,
+        review: str = "",
     ) -> Insight:
         """Сформировать Insight по финальной таблице.
 
@@ -76,6 +77,7 @@ class InsightGenerator:
         правило headline (RESULT_SHAPES).
         source — исходная таблица сессии, inputs — шаг -> его входная
         таблица: пропуски и отсечённое лимитом видны только в них.
+        review — замечания проверки к прошлому выводу (режим «Проверка», A-29).
         """
         from app.core.data.duckdb_manager import DuckDBManager
 
@@ -90,7 +92,9 @@ class InsightGenerator:
             extra = "\n".join(f"- {purpose}: {rows}" for purpose, rows in supporting)
             prompt = INSIGHT_SUMMARY.format(question=question, result=result)
             prompt += describe_supporting(extra, tested)
-            return await self.llm.complete_structured("Ты — аналитик.", prompt + notes, Insight)
+            return await self.llm.complete_structured(
+                "Ты — аналитик.", prompt + notes + review, Insight
+            )
         # Строки — компактной таблицей с ISO-датами: repr datetime мешает модели читать ряд.
         shown = format_rows(result)
         extra = "\n".join(f"- {purpose}:\n{format_rows(rows)}" for purpose, rows in supporting)
@@ -119,6 +123,7 @@ class InsightGenerator:
         shape = RESULT_SHAPES.get(result_tool, shape)
         plan = describe_steps(steps or [])
         prompt += INSIGHT_RULES.format(plan=plan, facts=facts, shape=shape, hints="".join(hints))
+        prompt += review
         # Опора — весь промпт: условия шагов плана («> 150», «2024»), воспоминания, порог 0.05.
         return await self._grounded(prompt)
 

@@ -673,6 +673,7 @@ def resume(db: DuckDBManager, checkpoint: dict) -> tuple[CountingRuns, list[dict
 
     class Request:
         question = "не используется"
+        verify = False
 
     memory = FakeMemory()
     memory.question = "вопрос"

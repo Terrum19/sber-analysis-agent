@@ -8,7 +8,7 @@
  */
 import { create } from "zustand";
 import { persist, createJSONStorage } from "zustand/middleware";
-import { closeInterrupted } from "@/types/chat";
+import { closeInterrupted, closeReview } from "@/types/chat";
 import type { DashboardTile } from "@/types/dashboard";
 import type {
   ChartEvent,
@@ -17,6 +17,7 @@ import type {
   DashboardFallbackEvent,
   DashboardIdea,
   RefusalEvent,
+  ReviewState,
   TurnProgress,
 } from "@/types/chat";
 import type { Datasource, SessionResponse, TableBrief } from "@/types/datasource";
@@ -41,6 +42,12 @@ export interface ChatMessage {
   refusal?: RefusalEvent["data"];
   /** Прогресс хода по событиям progress. */
   progress?: TurnProgress;
+  /** Проверка ответа (режим «Проверка», A-29): вердикт, исправление и его шаги. */
+  review?: ReviewState;
+  /** Черновой ответ, заменённый исправленным после проверки: свёрнут в «Ответ до проверки». */
+  superseded?: boolean;
+  /** Ответ, исправленный после проверки: подпись «Обновлено после проверки». */
+  revised?: boolean;
   /** Исходный текст вопроса, вызвавший ошибку (для кнопки повтора). */
   failedQuestion?: string;
   /** Упавший ход был в режиме дашборда: повтор идёт с тем же idea (#224). */
@@ -742,11 +749,17 @@ export const useSessionStore = create<SessionState>()(
             // прогресс в ленте — оборванный ход, а не «Всё ещё работаю…» навсегда.
             for (const tables of Object.values(state.sessionTableCache)) {
               for (const snapshot of Object.values(tables)) {
-                snapshot.messages = snapshot.messages.map((m) =>
-                  m.progress && m.progress.finished_at === undefined
-                    ? { ...m, progress: closeInterrupted(m.progress) }
-                    : m,
-                );
+                snapshot.messages = snapshot.messages.map((m) => {
+                  let next = m;
+                  if (m.progress && m.progress.finished_at === undefined) {
+                    next = { ...next, progress: closeInterrupted(m.progress) };
+                  }
+                  // Проверка, оборванная перезагрузкой, не «проверяет» вечно
+                  if (m.review && m.review.finished_at === undefined) {
+                    next = { ...next, review: closeReview(m.review) };
+                  }
+                  return next;
+                });
               }
             }
           }

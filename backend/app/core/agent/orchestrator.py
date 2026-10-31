@@ -71,6 +71,7 @@ logger = logging.getLogger(__name__)
 import duckdb
 
 from app.api.schemas.chat import ChatRequest, DashboardPayload, PlanStepOut, ProgressPayload
+from app.core.agent.assurance import checks
 from app.core.agent.chart_pick import ChartPicker
 from app.core.agent.explainer import Explainer
 from app.core.agent.insight import InsightGenerator
@@ -118,6 +119,7 @@ from app.models.research_step import (
     ResearchPlan,
     ResearchStep,
 )
+from app.models.review import StepFinding
 
 NO_TABLE_MESSAGE = "Сначала подключите данные"
 # «Продолжить» ход, у которого нет чекпоинта или который уже ответил.
@@ -204,6 +206,8 @@ class Execution:
     reply: Insight | None = None
     # Вопрос о таблице целиком (маршрут overview): ответ — обзор таблицы.
     overview: bool = False
+    # Режим «Проверка» (A-29): шаг -> аномалии его результата, которые остались.
+    findings: dict[int, list[StepFinding]] = field(default_factory=dict)
 
 
 class ClarificationNeeded(Exception):
@@ -276,12 +280,13 @@ def _fixing_event(step: ResearchStep, attempt: int, error: Exception) -> dict:
     return _step_event(step, "fixing", attempt=attempt, error=str(error))
 
 
-def _chart_event(spec: dict, caption: str, result_table: str) -> dict:
+def _chart_event(spec: dict, caption: str, result_table: str, **fields: object) -> dict:
     """График с таблицей результата: из неё фронт пересчитывает плитку и выгружает Excel.
 
-    Ответ без шагов строится по исходной таблице — её не отдаём.
+    Ответ без шагов строится по исходной таблице — её не отдаём. fields — revision
+    в режиме «Проверка» (A-29).
     """
-    data = {"spec": spec, "caption": caption}
+    data = {"spec": spec, "caption": caption, **fields}
     if RESULT_TABLE.fullmatch(result_table):
         data["result_table"] = result_table
     return {"type": "chart", "data": data}
@@ -644,9 +649,12 @@ class AgentOrchestrator:
             yield _done(turn_id)
             return
 
-        # --- Финальный блок: инсайт -> чарт -> дашборд -> done ---
+        # --- Финальный блок: инсайт -> чарт -> [проверка] -> дашборд -> done ---
         # График по таблицам шагов агент выбирает, пока пишется вывод.
         picking = self._start_chart_pick(question, execution)
+        # Режим «Проверка» (A-29): черновой ответ — revision 0, исправленный — 1.
+        verify = request.verify and bool(execution.steps)
+        revision = {"revision": 0} if verify else {}
         stage = "insight"
         try:
             logger.info(">>> run() генерация инсайта")
@@ -668,52 +676,19 @@ class AgentOrchestrator:
             )
             yield {
                 "type": "text",
-                "data": {"headline": insight.headline, "details": insight.details},
+                "data": {"headline": insight.headline, "details": insight.details, **revision},
             }
 
             stage = "chart"
-            picked = await picking if picking is not None else None
-            if picked is not None:
-                chart_type, chart_table, records = picked.chart_type, picked.table, picked.records
-                columns = {"x": picked.x, "y": picked.y, "color": picked.color}
-                purpose = picked.purpose
+            spec, chart_table, result_table = await self._build_chart(
+                question, execution, titles, picking
+            )
+            if spec is None:
+                logger.info("<<< run() ответ без графика")
             else:
-                records = self.db.to_records(result_table, limit=SPEC_ROW_LIMIT)
-                view = _requested_view(execution, records)
-                chart_type = select_chart(question, result_table, view, records, titles)
-                if chart_type == NO_CHART:
-                    logger.info("<<< run() ответ без графика")
-                    memory.finish_turn(
-                        "ok",
-                        headline=insight.headline,
-                        result_table=result_table,
-                        result_columns=self._result_columns(result_table),
-                        details=insight.details,
-                    )
-                    yield _done(turn_id)
-                    return
-                if chart_type == "histogram":
-                    result_table, records = self._histogram_values(
-                        question, result_table, records, titles
-                    )
-                chart_table, columns, purpose = result_table, {}, execution.result_purpose
-            yield _progress_event("chart", "started")
-            logger.debug(">>> run() построение графика chart_type=%s", chart_type)
-            spec = build_vega_spec(
-                chart_type,
-                chart_table,
-                data=records,
-                titles=titles,
-                title=purpose or chart_title(records, titles),
-                **columns,
-            )
-            logger.debug(
-                "<<< run() график построен: mark=%s строк=%d",
-                spec.get("mark", "?"),
-                len(spec.get("data", {}).get("values", [])),
-            )
-            memory.record_chart(spec["usermeta"]["chart_type"], chart_table, insight.headline)
-            yield _chart_event(spec, insight.headline, chart_table)
+                yield _progress_event("chart", "started")
+                memory.record_chart(spec["usermeta"]["chart_type"], chart_table, insight.headline)
+                yield _chart_event(spec, insight.headline, chart_table, **revision)
         except Exception as exc:
             logger.exception("<<< run() этап %s упал", stage)
             memory.finish_turn("failed", reason=f"{stage}: {exc}")
@@ -726,7 +701,16 @@ class AgentOrchestrator:
             if picking is not None:
                 picking.cancel()
 
-        if execution.dashboard_requested:
+        if verify:
+            from app.core.agent.assurance.loop import Answer, Assurance
+
+            answer = Answer(execution, insight, spec, chart_table, result_table)
+            async for event in Assurance(self).run(memory, question, answer, titles):
+                yield event
+            execution, insight = answer.execution, answer.insight
+            spec, chart_table, result_table = answer.spec, answer.chart_table, answer.result_table
+
+        if spec is not None and execution.dashboard_requested:
             fallback = DashboardTile(
                 title=spec.get("title") or insight.headline,
                 spec=spec,
@@ -753,6 +737,50 @@ class AgentOrchestrator:
             details=insight.details,
         )
         yield _done(turn_id)
+
+    async def _build_chart(
+        self,
+        question: str,
+        execution: Execution,
+        titles: dict[str, str],
+        picking: asyncio.Task | None,
+    ) -> tuple[dict | None, str, str]:
+        """График ответа: (спека или None — без графика, таблица графика, таблица результата).
+
+        Таблица результата меняется у гистограммы: её выборка — своя таблица.
+        """
+        result_table = execution.result_table
+        picked = await picking if picking is not None else None
+        if picked is not None:
+            chart_type, chart_table, records = picked.chart_type, picked.table, picked.records
+            columns = {"x": picked.x, "y": picked.y, "color": picked.color}
+            purpose = picked.purpose
+        else:
+            records = self.db.to_records(result_table, limit=SPEC_ROW_LIMIT)
+            view = _requested_view(execution, records)
+            chart_type = select_chart(question, result_table, view, records, titles)
+            if chart_type == NO_CHART:
+                return None, result_table, result_table
+            if chart_type == "histogram":
+                result_table, records = self._histogram_values(
+                    question, result_table, records, titles
+                )
+            chart_table, columns, purpose = result_table, {}, execution.result_purpose
+        logger.debug(">>> run() построение графика chart_type=%s", chart_type)
+        spec = build_vega_spec(
+            chart_type,
+            chart_table,
+            data=records,
+            titles=titles,
+            title=purpose or chart_title(records, titles),
+            **columns,
+        )
+        logger.debug(
+            "<<< run() график построен: mark=%s строк=%d",
+            spec.get("mark", "?"),
+            len(spec.get("data", {}).get("values", [])),
+        )
+        return spec, chart_table, result_table
 
     # --- Вспомогательные методы ---
 
@@ -800,6 +828,7 @@ class AgentOrchestrator:
                 step_tables=tables,
                 source_table=resume["source_table"],
                 emit=emit,
+                verify=request.verify,
             )
             return memory.question or resume["question"], execution
         if pending is not None:
@@ -867,7 +896,7 @@ class AgentOrchestrator:
             )
         _require_steps(plan)
         execution = await self._execute_plan(
-            memory, plan, memory.table, request.question, emit=emit
+            memory, plan, memory.table, request.question, emit=emit, verify=request.verify
         )
         execution.remembered = remembered
         return request.question, execution
@@ -914,6 +943,7 @@ class AgentOrchestrator:
         source_table: str | None = None,
         emit: Emit = _ignore,
         checkpoint: bool = True,
+        verify: bool = False,
     ) -> Execution:
         """Последовательно выполнить шаги плана.
 
@@ -930,10 +960,14 @@ class AgentOrchestrator:
         Шаг, чья таблица уже есть в step_tables, не выполняется: так
         продолжается остановленный ход. После каждого шага (и достройки плана)
         пишется чекпоинт хода, если checkpoint (плитки дашборда пишут свой).
+
+        verify (режим «Проверка», A-29) — результат каждого шага проверяется
+        кодом (_check_step); подозрительный шаг исправляется, как упавший.
         """
         source = source_table or input_table
         tables = dict(step_tables or {})
         inputs: dict[int, str] = {}
+        findings: dict[int, list[StepFinding]] = {}
         current = input_table
         steps = list(plan.steps)
         replans = 0
@@ -1010,6 +1044,13 @@ class AgentOrchestrator:
             inputs[step.step_id] = resolve_input(step, current, tables, source)
             details = self._step_details(inputs[step.step_id], table, tables)
             emit(_step_event(step, "finished", elapsed_ms=elapsed_ms, **details))
+            if verify:
+                step, table, found = await self._check_step(
+                    step, table, current, tables, source, question, emit, memory
+                )
+                inputs[step.step_id] = resolve_input(step, current, tables, source)
+                if found:
+                    findings[step.step_id] = found
             steps[index] = step
             kind = tool_kind(step)
             logger.info("шаг %d готов за %d мс: %s", step.step_id, elapsed_ms, table)
@@ -1049,7 +1090,74 @@ class AgentOrchestrator:
                 )
 
         logger.debug("<<< _execute_plan все шаги завершены $prev=%s", current)
-        return self._finish(plan, steps, tables, fallback=current, question=question, inputs=inputs)
+        execution = self._finish(
+            plan, steps, tables, fallback=current, question=question, inputs=inputs
+        )
+        execution.findings = findings
+        return execution
+
+    async def _check_step(
+        self,
+        step: ResearchStep,
+        table: str,
+        current: str,
+        tables: dict[int, str],
+        source: str,
+        question: str,
+        emit: Emit,
+        memory: SessionMemory | None,
+    ) -> tuple[ResearchStep, str, list[StepFinding]]:
+        """Проверить результат шага кодом (A-29); подозрительный — исправить по аномалии.
+
+        Пусто, фильтр оставил почти ничего, join раздул строки, ряд схлопнулся в
+        строку — это ошибка шага без исключения: планировщик исправляет шаг по
+        тексту аномалии, как по ошибке (до STEP_FIX_ATTEMPTS раз). Исправление
+        берётся, только если аномалий стало меньше; не помогло — уточнения у
+        пользователя нет: шаг остаётся, аномалии идут в улики критика.
+        """
+        emit(_progress_event("check", "started", step_id=step.step_id))
+        findings = checks.inspect_step(
+            self.db, step, resolve_input(step, current, tables, source), table, question
+        )
+        attempts = 0
+        while attempts < STEP_FIX_ATTEMPTS and (broken := checks.repairable(findings)):
+            attempts += 1
+            feedback = checks.fix_feedback(broken)
+            logger.warning(
+                "    шаг %d: аномалия результата, исправление %d", step.step_id, attempts
+            )
+            emit(_step_event(step, "fixing", attempt=attempts, error=feedback))
+            columns = self._input_columns(step, current, tables, source)
+            try:
+                fixed = await self.planner.fix_step(step, feedback, columns, set(tables))
+                fixed_table = await self.executor.execute(
+                    fixed, current, step_tables=tables, source_table=source, history=memory
+                )
+            except Exception:
+                # Исправление не вышло (LLM, валидация, выполнение): шаг остаётся прежним.
+                logger.warning(
+                    "    шаг %d: исправление по аномалии не вышло", step.step_id, exc_info=True
+                )
+                continue
+            found = checks.inspect_step(
+                self.db, fixed, resolve_input(fixed, current, tables, source), fixed_table, question
+            )
+            if len(checks.repairable(found)) < len(broken):
+                step, table, findings = fixed, fixed_table, found
+        if attempts:
+            details = self._step_details(
+                resolve_input(step, current, tables, source), table, tables
+            )
+            emit(_step_event(step, "finished", **details))
+        emit(
+            _progress_event(
+                "check",
+                "finished",
+                step_id=step.step_id,
+                findings=[finding.model_dump() for finding in findings],
+            )
+        )
+        return step, table, findings
 
     async def _run_step(
         self,

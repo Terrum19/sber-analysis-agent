@@ -75,6 +75,14 @@ class FakeLLM:
         if schema.__name__ == "AnswerChart":
             # Без выбора шага: график ответа строит эвристика select_chart.
             return schema(step_id=None, chart_type="table", x=None, y=None, color=None, limit=None)
+        if schema.__name__ == "Review":
+            # Режим «Проверка» (A-29): всё в порядке, ответ не исправляется.
+            from app.models.review import CHECKS
+
+            return schema(
+                checks=[{"id": key, "status": "ok", "evidence": "FakeLLM"} for key in CHECKS],
+                verdict="ok",
+            )
         if schema.__name__ == "Insight":
             return schema(
                 headline="Исследование завершено",
