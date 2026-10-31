@@ -902,7 +902,7 @@ export default function ChatPanel({ sessionId }: Props) {
           {/* Чип режима дашборда: × выключает режим */}
           {dashboardMode && (
             <span className="mt-1 mb-1 inline-flex items-center gap-1 rounded-full border border-graphite-600 bg-graphite-800 py-0.5 pl-2 pr-1 text-[12px] text-graphite-100">
-              📊 {t("dashboard.chip")}
+              {t("dashboard.chip")}
               <button
                 onClick={() => {
                   setDashboardMode(false);
@@ -918,7 +918,7 @@ export default function ChatPanel({ sessionId }: Props) {
           {/* Чип режима проверки: × выключает режим */}
           {verifyMode && !dashboardMode && (
             <span className="mt-1 mb-1 mr-1 inline-flex items-center gap-1 rounded-full border border-graphite-600 bg-graphite-800 py-0.5 pl-2 pr-1 text-[12px] text-graphite-100">
-              🔎 {t("verify.chip")}
+              {t("verify.chip")}
               <button
                 onClick={() => setVerifyMode(false)}
                 className="flex h-4 w-4 items-center justify-center rounded-full text-graphite-400 hover:bg-graphite-700 hover:text-graphite-100"
