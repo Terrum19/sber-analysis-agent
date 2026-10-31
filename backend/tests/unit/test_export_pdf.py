@@ -1042,3 +1042,43 @@ def test_api_export_chart_render_failure_adds_warning_in_pdf(
     reader = pypdf.PdfReader(io.BytesIO(resp.content))
     text = "".join(p.extract_text() or "" for p in reader.pages)
     assert "График не удалось отобразить в PDF (ошибка рендеринга визуализации)" in text
+
+
+def test_api_export_heatmap_unpivots_wide_matrix(client: TestClient, monkeypatch) -> None:
+    """Проверка того, что экспорт артефакта heatmap с широкой матрицей пересобирает спеку в unpivoted ячейки."""
+    db: DuckDBManager = client.app.dependency_overrides[get_db]()
+    db.execute(
+        "CREATE TABLE temp_result_v77 AS SELECT 1.0 AS a, -0.2 AS b UNION ALL SELECT -0.2 AS a, 1.0 AS b"
+    )
+    memory = SessionMemory("heatmap_export_session", db)
+    memory.set_table("raw")
+    memory.start_turn("Построй корреляции")
+    memory.finish_turn(
+        "ok",
+        result_table="temp_result_v77",
+        result_columns=["a", "b"],
+    )
+
+    rendered_specs: list[dict] = []
+
+    def mock_render(spec, **kwargs):
+        rendered_specs.append(spec)
+        return b"fake_png"
+
+    monkeypatch.setattr("app.api.routes.artifacts.render_chart_png", mock_render)
+
+    resp = client.post(
+        "/api/artifacts/export",
+        json={
+            "session_id": "heatmap_export_session",
+            "format": "pdf",
+            "result_ref": "temp_result_v77",
+            "spec": {"usermeta": {"chart_type": "heatmap"}},
+        },
+    )
+    assert resp.status_code == 200
+    assert len(rendered_specs) == 1
+    # Спека должна содержать 4 unpivoted ячейки x, y, value
+    assert len(rendered_specs[0]["data"]["values"]) == 4
+    assert rendered_specs[0]["encoding"]["x"]["field"] == "x"
+    assert rendered_specs[0]["encoding"]["y"]["field"] == "y"

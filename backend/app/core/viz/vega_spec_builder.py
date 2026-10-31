@@ -34,7 +34,7 @@ BAR_STEP = 18
 
 _DATE_TEXT = re.compile(r"^\d{4}-\d{2}(-\d{2}([ T]\d{2}:\d{2}(:\d{2}(\.\d+)?)?)?)?$")
 _ORDER_NAME = re.compile(
-    r"(year|month|quarter|week|day|date|period|time|год|месяц|квартал|недел|день|дата|период)",
+    r"(year|month|quarter|week|day|date|period|time|hour|номер|год|месяц|квартал|недел|день|дата|период|час)",
     re.IGNORECASE,
 )
 _TOOLTIP_KEYS = ("field", "type", "title", "aggregate", "bin")
@@ -111,9 +111,215 @@ def ordered_column(types: dict[str, str]) -> str | None:
     return next((column for column in types if _ORDER_NAME.search(column)), None)
 
 
+def _temporal_step(values: list[Any], column_name: str = "") -> tuple[str, str]:
+    """Определить timeUnit и axis.format для temporal-колонки на оси heatmap.
+
+    Возвращает (timeUnit, axis_format):
+    - ('yearmonth', '%m.%Y') для месяцев
+    - ('yearmonthdate', '%d.%m.%Y') для дней и недель
+    """
+    present = [v for v in values if v is not None]
+    if not present:
+        return "yearmonthdate", "%d.%m.%Y"
+
+    if all(isinstance(v, str) and re.match(r"^\d{4}-\d{2}$", v) for v in present):
+        return "yearmonth", "%m.%Y"
+
+    parsed_dates: list[dt.date] = []
+    for v in present:
+        if isinstance(v, dt.datetime):
+            parsed_dates.append(v.date())
+        elif isinstance(v, dt.date):
+            parsed_dates.append(v)
+        elif isinstance(v, str):
+            try:
+                parsed_dates.append(dt.date.fromisoformat(v[:10]))
+            except ValueError:
+                pass
+
+    if not parsed_dates or any(d.day != 1 for d in parsed_dates):
+        return "yearmonthdate", "%d.%m.%Y"
+
+    if re.search(r"(month|месяц)", column_name, re.IGNORECASE):
+        return "yearmonth", "%m.%Y"
+
+    unique_dates = sorted(set(parsed_dates))
+    if len(unique_dates) >= 2:
+        return "yearmonth", "%m.%Y"
+
+    return "yearmonthdate", "%d.%m.%Y"
+
+
+def is_integer_value(v: object) -> bool:
+    if isinstance(v, bool) or v is None:
+        return False
+    return isinstance(v, int)
+
+
+def is_integer_column(records: list[dict], column: str) -> bool:
+    values = [r.get(column) for r in records if r.get(column) is not None]
+    return bool(values) and all(is_integer_value(v) for v in values)
+
+
+def is_fractional_column(records: list[dict], column: str) -> bool:
+    values = [r.get(column) for r in records if r.get(column) is not None]
+    return any(isinstance(v, float | Decimal) for v in values)
+
+
+def is_heatmap_axis(records: list[dict], types: dict[str, str], column: str | None) -> bool:
+    if column is None or column not in types:
+        return False
+    kind = types[column]
+    if records:
+        values = [r.get(column) for r in records if r.get(column) is not None]
+        if values:
+            # Длинные описательные тексты (комментарии, сводки значений) не могут быть осью
+            str_vals = [v for v in values if isinstance(v, str)]
+            if str_vals and (
+                any(len(s) > 50 for s in str_vals)
+                or sum(len(s) for s in str_vals) / len(str_vals) > 30
+            ):
+                return False
+            if len(records) >= 5:
+                # Если колонка уникальна для каждой строки, это первичный ключ таблицы,
+                # а не ось 2D-сетки тепловой карты (на каждый X будет ровно одна точка).
+                distinct = len({repr(v) for v in values})
+                if distinct == len(records):
+                    return False
+    if kind in ("nominal", "temporal"):
+        return True
+    if kind == "quantitative" and is_integer_column(records, column):
+        int_vals = [r.get(column) for r in records if r.get(column) is not None]
+        distinct = len({repr(r.get(column)) for r in records})
+        if distinct <= 50:
+            if _ORDER_NAME.search(column):
+                return True
+            max_val = max(int_vals) if int_vals else 0
+            min_val = min(int_vals) if int_vals else 0
+            if max_val <= 50 and min_val >= 0:
+                return True
+    return False
+
+
+def heatmap_axis_candidates(
+    records: list[dict], types: dict[str, str], exclude: tuple[str, ...] = ()
+) -> list[str]:
+    nominal = [
+        c
+        for c, k in types.items()
+        if k == "nominal" and c not in exclude and is_heatmap_axis(records, types, c)
+    ]
+    temporal = [
+        c
+        for c, k in types.items()
+        if k == "temporal" and c not in exclude and is_heatmap_axis(records, types, c)
+    ]
+    categories = [*nominal, *temporal]
+    int_cols = [
+        c
+        for c, k in types.items()
+        if k == "quantitative" and c not in exclude and is_heatmap_axis(records, types, c)
+    ]
+    order_ints = [c for c in int_cols if _ORDER_NAME.search(c)]
+    other_ints = [c for c in int_cols if not _ORDER_NAME.search(c)]
+    return [*categories, *order_ints, *other_ints]
+
+
+def heatmap_metric_candidate(
+    records: list[dict], types: dict[str, str], exclude: tuple[str, ...] = ()
+) -> str | None:
+    numerics = [c for c, k in types.items() if k == "quantitative" and c not in exclude]
+    if not numerics:
+        return None
+    fractional = [c for c in numerics if is_fractional_column(records, c)]
+    if fractional:
+        return fractional[0]
+    large = [c for c in numerics if len({repr(r.get(c)) for r in records}) > 50]
+    if large:
+        return large[0]
+    other = [c for c in numerics if not _ORDER_NAME.search(c)]
+    if other:
+        return other[0]
+    return numerics[0]
+
+
+def detect_wide_matrix(
+    records: list[dict],
+    types: dict[str, str],
+) -> tuple[list[str], str | None] | None:
+    """Определить, представляют ли строки широкую матрицу (например, корреляционную).
+
+    Возвращает (quant_cols, row_col) или None:
+    - quant_cols: список числовых колонок (столбцы матрицы);
+    - row_col: имя колонки с названиями строк (если есть) или None.
+    """
+    if not records or len(records) < 2:
+        return None
+    quant_cols = [c for c, kind in types.items() if kind == "quantitative"]
+    if len(quant_cols) < 2:
+        return None
+    non_quant = [c for c, kind in types.items() if kind != "quantitative"]
+    if len(non_quant) == 0:
+        if len(records) == len(quant_cols):
+            return quant_cols, None
+        return None
+    if len(non_quant) == 1:
+        row_col = non_quant[0]
+        if types.get(row_col) == "temporal":
+            return None
+        distinct_rows = len({repr(r.get(row_col)) for r in records})
+        if distinct_rows == len(records):
+            row_vals = {str(r.get(row_col)) for r in records if r.get(row_col) is not None}
+            if row_vals.issubset(set(quant_cols)) or (
+                distinct_rows == len(quant_cols) and bool(row_vals.intersection(set(quant_cols)))
+            ):
+                return quant_cols, row_col
+            if len(quant_cols) >= 3 and not any(_ORDER_NAME.search(c) for c in quant_cols):
+                return quant_cols, row_col
+    return None
+
+
+def is_correlation_matrix(
+    records: list[dict],
+    quant_cols: list[str],
+    row_col: str | None = None,
+) -> bool:
+    """Проверить, является ли матрица корреляционной (значения в [-1, 1], диагональ ~1.0)."""
+    if len(records) != len(quant_cols):
+        return False
+    diag_ones = 0
+    total_checked = 0
+    for i, r in enumerate(records):
+        row_name = str(r.get(row_col)) if row_col is not None else quant_cols[i]
+        for j, col in enumerate(quant_cols):
+            val = r.get(col)
+            if val is not None:
+                if not isinstance(val, int | float | Decimal):
+                    return False
+                fval = float(val)
+                if math.isnan(fval) or math.isinf(fval):
+                    continue
+                if not (-1.01 <= fval <= 1.01):
+                    return False
+                total_checked += 1
+                if (col == row_name or i == j) and abs(fval - 1.0) < 0.02:
+                    diag_ones += 1
+    return total_checked > 0 and diag_ones >= max(1, len(quant_cols) - 1)
+
+
+def _axis_channel(columns: "_Columns", col: str) -> dict:
+    if columns.types.get(col) == "temporal":
+        values = [r.get(col) for r in columns.data if r.get(col) is not None]
+        unit, fmt = _temporal_step(values, col)
+        return columns.channel(col, "ordinal", timeUnit=unit, axis={"format": fmt})
+    return columns.channel(col, "ordinal")
+
+
 def chart_title(data: list[dict], titles: dict[str, str] | None = None) -> str | None:
     types = infer_field_types(data)
-    columns = _Columns(types, {column: (titles or {}).get(column, column) for column in types})
+    columns = _Columns(
+        types, {column: (titles or {}).get(column, column) for column in types}, data=data
+    )
     metric = columns.metric()
     category = columns.category(exclude=(metric,) if metric else ())
     metric_label = columns.labels[metric] if metric else COUNT_TITLE
@@ -158,7 +364,7 @@ def build_vega_spec(
         if column is not None and column in types
     }
     distinct = {column: len({repr(record.get(column)) for record in data}) for column in types}
-    built, layout = _ENCODERS[requested](_Columns(types, labels, picked, distinct))
+    built, layout = _ENCODERS[requested](_Columns(types, labels, picked, distinct, data=data))
     spec: dict[str, Any] = {
         "$schema": VEGA_LITE_SCHEMA,
         "usermeta": {
@@ -171,12 +377,26 @@ def build_vega_spec(
             ],
         },
         "width": "container",
-        "data": {"values": values},
+        "data": layout.get("data") or {"values": values},
         "mark": _MARKS[built],
-        **layout,
+        **{k: v for k, v in layout.items() if k not in ("data", "usermeta_fields")},
     }
     # Выбор колонок переживает пересчёт плитки (dashboards/recalculate.py).
     spec["usermeta"].update(picked)
+    if "usermeta_fields" in layout:
+        spec["usermeta"].update(layout["usermeta_fields"])
+    elif built == "heatmap":
+        enc = layout.get("encoding", {})
+        spec["usermeta"]["x"] = enc.get("x", {}).get("field")
+        spec["usermeta"]["y"] = enc.get("y", {}).get("field")
+        if "field" in enc.get("color", {}):
+            spec["usermeta"]["color"] = enc["color"]["field"]
+        elif "color" in spec["usermeta"]:
+            del spec["usermeta"]["color"]
+    elif requested == "heatmap" and built == "bar":
+        enc = layout.get("encoding", {})
+        spec["usermeta"]["x"] = enc.get("x", {}).get("field")
+        spec["usermeta"]["y"] = enc.get("y", {}).get("field")
     if title:
         spec["title"] = title
     return spec
@@ -195,14 +415,25 @@ class _Columns:
         labels: dict[str, str],
         picked: dict[str, str] | None = None,
         distinct: dict[str, int] | None = None,
+        data: list[dict] | None = None,
     ) -> None:
         self.types = types
         self.labels = labels
         self.picked = picked or {}
         self.distinct = distinct or {}
+        self.data = data or []
         self.numeric = [column for column, kind in types.items() if kind == "quantitative"]
         self.temporal = [column for column, kind in types.items() if kind == "temporal"]
         self.nominal = [column for column, kind in types.items() if kind == "nominal"]
+
+    def is_axis_candidate(self, column: str | None) -> bool:
+        return is_heatmap_axis(self.data, self.types, column)
+
+    def axis_candidates(self, exclude: tuple[str, ...] = ()) -> list[str]:
+        return heatmap_axis_candidates(self.data, self.types, exclude)
+
+    def heatmap_metric(self, exclude: tuple[str, ...] = ()) -> str | None:
+        return heatmap_metric_candidate(self.data, self.types, exclude)
 
     def channel(self, column: str, kind: str | None = None, **extra: Any) -> dict:
         return {
@@ -373,24 +604,135 @@ def _box(columns: _Columns) -> tuple[str, dict]:
 
 
 def _heatmap(columns: _Columns) -> tuple[str, dict]:
+    explicit_valid_axes = (
+        bool(columns.picked.get("x"))
+        and bool(columns.picked.get("y"))
+        and columns.is_axis_candidate(columns.picked["x"])
+        and columns.is_axis_candidate(columns.picked["y"])
+    )
+    matrix_info = None if explicit_valid_axes else detect_wide_matrix(columns.data, columns.types)
+    if matrix_info is not None:
+        quant_cols, row_col = matrix_info
+        is_corr = is_correlation_matrix(columns.data, quant_cols, row_col)
+        unpivoted: list[dict[str, Any]] = []
+        for i, r in enumerate(columns.data):
+            row_name = str(r.get(row_col)) if row_col is not None else quant_cols[i]
+            for col in quant_cols:
+                val = r.get(col)
+                unpivoted.append(
+                    {
+                        "x": col,
+                        "y": row_name,
+                        "value": to_json_value(val),
+                    }
+                )
+
+        color_scale = {"scheme": "redblue", "domain": [-1, 1]} if is_corr else {"scheme": "blues"}
+        color_title = "Корреляция" if is_corr else "Значение"
+        y_domain = (
+            quant_cols
+            if is_corr
+            else [str(r.get(row_col)) for r in columns.data if row_col is not None]
+        )
+        tooltip = [
+            {"field": "x", "type": "nominal", "title": "Признак 1" if is_corr else "Колонка"},
+            {"field": "y", "type": "nominal", "title": "Признак 2" if is_corr else "Строка"},
+            {
+                "field": "value",
+                "type": "quantitative",
+                "title": color_title,
+                **({"format": ".2f"} if is_corr else {}),
+            },
+        ]
+        encoding = {
+            "x": {
+                "field": "x",
+                "type": "nominal",
+                "title": None,
+                "scale": {"domain": quant_cols},
+                "axis": {"labelAngle": -45},
+            },
+            "y": {
+                "field": "y",
+                "type": "nominal",
+                "title": None,
+                "scale": {"domain": y_domain},
+            },
+            "color": {
+                "field": "value",
+                "type": "quantitative",
+                "title": color_title,
+                "scale": color_scale,
+            },
+            "tooltip": tooltip,
+        }
+        return "heatmap", {
+            "encoding": encoding,
+            "data": {"values": unpivoted},
+            "usermeta_fields": {"x": "x", "y": "y", "color": "value"},
+        }
+
     # У тепловой карты y — вторая категория, а число — в color.
-    x_column = columns.pick("x") or columns.category()
-    y_column = None
-    if x_column is not None:
-        y_column = columns.pick("y", exclude=(x_column,)) or columns.category(exclude=(x_column,))
+    x_column = columns.pick("x")
+    y_column = columns.pick("y")
+    color_column = columns.numeric_pick("color")
+
+    if y_column is not None and not columns.is_axis_candidate(y_column):
+        if color_column is None:
+            color_column = y_column
+            y_column = None
+            replacements = columns.axis_candidates(exclude=(x_column, color_column))
+            if replacements:
+                y_column = replacements[0]
+        else:
+            y_column = None
+
+    if x_column is not None and not columns.is_axis_candidate(x_column):
+        x_column = None
+
+    tentative_metric = color_column or columns.heatmap_metric(
+        exclude=tuple(c for c in (x_column, y_column) if c is not None)
+    )
+    exclude_for_axes = tuple(c for c in (tentative_metric,) if c is not None)
+    candidates = columns.axis_candidates(exclude=exclude_for_axes)
+
+    if x_column is None:
+        remaining = [c for c in candidates if c != y_column]
+        if remaining:
+            x_column = remaining[0]
+
     if y_column is None:
+        remaining = [c for c in candidates if c != x_column]
+        if remaining:
+            y_column = remaining[0]
+
+    if x_column is None or y_column is None or x_column == y_column:
         return _bar(columns)
-    metric = columns.numeric_pick("color") or columns.metric(exclude=(x_column, y_column))
+
+    if color_column is None:
+        color_column = columns.heatmap_metric(exclude=(x_column, y_column))
+
+    x_channel = _axis_channel(columns, x_column)
+    y_channel = _axis_channel(columns, y_column)
     color = (
-        columns.channel(metric, aggregate="sum", scale={"scheme": "blues"})
-        if metric
+        columns.channel(color_column, aggregate="sum", scale={"scheme": "blues"})
+        if color_column
         else _count(scale={"scheme": "blues"})
     )
+    x_tip = columns.channel(x_column)
+    y_tip = columns.channel(y_column)
+    if columns.types.get(x_column) == "temporal":
+        x_tip["timeUnit"] = x_channel.get("timeUnit")
+        x_tip["format"] = x_channel.get("axis", {}).get("format")
+    if columns.types.get(y_column) == "temporal":
+        y_tip["timeUnit"] = y_channel.get("timeUnit")
+        y_tip["format"] = y_channel.get("axis", {}).get("format")
+
     encoding = {
-        "x": columns.channel(x_column, "ordinal"),
-        "y": columns.channel(y_column, "ordinal"),
+        "x": x_channel,
+        "y": y_channel,
         "color": color,
-        "tooltip": _tip(columns.channel(x_column), columns.channel(y_column), color),
+        "tooltip": _tip(x_tip, y_tip, color),
     }
     return "heatmap", {"encoding": encoding}
 

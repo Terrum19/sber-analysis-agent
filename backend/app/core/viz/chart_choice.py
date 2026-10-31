@@ -14,7 +14,13 @@ from app.core.viz.chart_selector import (
     fits_columns,
     is_single_number,
 )
-from app.core.viz.vega_spec_builder import infer_field_types, to_json_value
+from app.core.viz.vega_spec_builder import (
+    detect_wide_matrix,
+    heatmap_axis_candidates,
+    infer_field_types,
+    is_heatmap_axis,
+    to_json_value,
+)
 from app.models.chart_choice import ChartPick
 
 # Строк результата в промпте выбора графика.
@@ -47,6 +53,14 @@ def rejection(choice: ChartPick, records: list[dict]) -> str | None:
     if choice.chart_type == "kpi":
         return None if is_single_number(records) else "kpi — только когда результат одно число"
     data = limited(records, choice)
+    if detect_wide_matrix(data, types) is not None:
+        if choice.chart_type not in ("heatmap", "table"):
+            return (
+                f"{choice.chart_type}: таблица представляет собой матрицу (все строки и колонки — признаки/показатели); "
+                f"для неё подходит heatmap или table"
+            )
+        if choice.chart_type == "heatmap":
+            return None
     if choice.x is None and choice.y is None:
         if fits(choice.chart_type, data, types):
             return None
@@ -58,7 +72,31 @@ def rejection(choice: ChartPick, records: list[dict]) -> str | None:
                 f"bar: у {choice.x!r} {distinct} значений, больше {MAX_BAR_CATEGORIES} — "
                 f"задай limit (топ-N по y) или другой вид"
             )
-    if fits_columns(choice.chart_type, data, types, choice.x, choice.y):
+    if choice.chart_type == "heatmap":
+        if detect_wide_matrix(data, types) is not None:
+            return None
+        if choice.x is not None and not is_heatmap_axis(data, types, choice.x):
+            return (
+                f"heatmap: x={choice.x!r} — числовая метрика; x и y должны быть "
+                f"категориями (или датой и номером периода), а число — в color"
+            )
+        if choice.y is not None and not is_heatmap_axis(data, types, choice.y):
+            if choice.color is None:
+                candidates = heatmap_axis_candidates(data, types, exclude=(choice.x, choice.y))
+                if candidates:
+                    choice.color = choice.y
+                    choice.y = candidates[0]
+                else:
+                    return (
+                        f"heatmap: y={choice.y!r} — числовая метрика; x и y должны быть "
+                        f"категориями (или датой и номером периода), а число — в color"
+                    )
+            else:
+                return (
+                    f"heatmap: y={choice.y!r} — числовая метрика; x и y должны быть "
+                    f"категориями (или датой и номером периода), а число — в color"
+                )
+    if fits_columns(choice.chart_type, data, types, choice.x, choice.y, choice.color):
         return None
     named = ", ".join(
         f"{role}={column} ({types[column]})"

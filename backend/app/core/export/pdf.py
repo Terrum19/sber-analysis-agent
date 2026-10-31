@@ -883,7 +883,19 @@ class PdfExporter:
         if not is_table_type and tile.spec and isinstance(tile.spec, dict):
             spec_to_render = copy.deepcopy(tile.spec)
             if isinstance(records, list) and records:
-                spec_to_render["data"] = {"values": records[:500]}
+                if spec_to_render.get("usermeta", {}).get("chart_type") == "heatmap":
+                    from app.core.viz.vega_spec_builder import (
+                        build_vega_spec,
+                        detect_wide_matrix,
+                        infer_field_types,
+                    )
+
+                    if detect_wide_matrix(records, infer_field_types(records)) is not None:
+                        spec_to_render = build_vega_spec("heatmap", data=records, title=tile.title)
+                    else:
+                        spec_to_render["data"] = {"values": records[:500]}
+                else:
+                    spec_to_render["data"] = {"values": records[:500]}
             chart_png = render_chart_png(spec_to_render, width=640, scale=2.0)
 
         if chart_png:

@@ -1,3 +1,37 @@
+2026-10-31  Dmitriy Yakushonok  <dmitriyyakushonok@yandex.ru>
+
+	Корректное построение тепловой карты, матрицы корреляций и экспорт в PDF.
+	* backend/app/core/viz/vega_spec_builder.py (_heatmap, detect_wide_matrix,
+	is_correlation_matrix, _axis_channel, _temporal_step): Даты на осях
+	тепловой карты получают timeUnit и axis.format, предотвращая epoch-числа.
+	Поддержаны целочисленные оси (distinct <= 50, week_number, hour, weekday).
+	Метрика из y переносится в color. 2D-матрицы и матрицы корреляций
+	автоматически разворачиваются (unpivot) в плоский список ячеек x, y, value,
+	исключая откат в _bar.
+	* backend/app/core/viz/chart_selector.py (fits, fits_columns, select_chart,
+	_by_question): fits и fits_columns запрещают bar для широких матриц,
+	разрешая heatmap и table. select_chart возвращает heatmap для широких матриц.
+	* backend/app/core/viz/chart_choice.py (rejection): Отклоняет bar/line/scatter
+	для широких матриц, предлагая heatmap.
+	* backend/app/core/llm/prompts/chart_selector.py (CHART_KINDS): Матрица
+	корреляций прямо указана как вид heatmap.
+	* backend/app/core/dashboards/recalculate.py (rebuild_spec): Сброс устаревших
+	осей из метаданных при пересборке широкой матрицы.
+	* backend/app/core/export/pdf.py (PdfExporter.export_dashboard): Сохранение
+	unpivoted ячеек спеки heatmap и пересборка спеки при экспорте, предотвращая
+	пустой белый график в PDF.
+	* backend/app/api/routes/artifacts.py (export_artifact): Защита спеки
+	heatmap при экспорте артефакта/ответа в PDF.
+	* backend/sandbox/runner.mjs: Сброс строкового индекса (reset_index) при
+	экспорте DataFrame с нечисловым индексом.
+	* frontend/src/lib/chartTypes.ts (withChartType): Защита сложных видов (heatmap,
+	histogram, box) от подмены mark на чужом encoding без ответа бэкенда.
+	* frontend/src/components/canvas/Canvas.tsx,
+	frontend/src/app/dashboard/[id]/page.tsx: Обработка тоста app:toast.
+	* backend/tests/unit/test_vega_spec_builder.py, test_chart_selector.py,
+	test_chart_choice.py, test_export_dashboard_pdf.py, test_export_pdf.py:
+	Тесты на все сценарии, 100% покрытие vega_spec_builder.py.
+
 2026-10-31  Alexander Yurits  <143354682+Terrum19@users.noreply.github.com>
 
 	Вкладка «Инсайты» — карточки «вопрос → вывод» (F-17, #259).

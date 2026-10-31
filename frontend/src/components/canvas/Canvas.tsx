@@ -176,8 +176,17 @@ export default function Canvas({ sessionId }: Props) {
 
   useEffect(() => {
     mountedRef.current = true;
+    function onToast(e: Event) {
+      const msg = (e as CustomEvent)?.detail?.message;
+      if (msg) {
+        setSaveStatus(msg);
+        setTimeout(() => setSaveStatus(null), 3500);
+      }
+    }
+    window.addEventListener("app:toast", onToast);
     return () => {
       mountedRef.current = false;
+      window.removeEventListener("app:toast", onToast);
     };
   }, []);
 

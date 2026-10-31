@@ -210,7 +210,19 @@ def export_artifact(
     is_table = is_table_spec(payload.spec)
     chart_spec = copy.deepcopy(payload.spec) if payload.spec else None
     if chart_spec and records:
-        chart_spec["data"] = {"values": records}
+        if chart_spec.get("usermeta", {}).get("chart_type") == "heatmap":
+            from app.core.viz.vega_spec_builder import (
+                build_vega_spec,
+                detect_wide_matrix,
+                infer_field_types,
+            )
+
+            if detect_wide_matrix(records, infer_field_types(records)) is not None:
+                chart_spec = build_vega_spec("heatmap", data=records, title=payload.title)
+            else:
+                chart_spec["data"] = {"values": records}
+        else:
+            chart_spec["data"] = {"values": records}
 
     chart_png = None
     if not is_table and chart_spec:

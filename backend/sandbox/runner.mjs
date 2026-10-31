@@ -87,6 +87,10 @@ if isinstance(_value, _pd.Series):
     _value = _value.to_frame()
 elif not isinstance(_value, _pd.DataFrame):
     _value = _pd.DataFrame(_value)
+if not isinstance(_value.index, _pd.RangeIndex) and _value.index.name != "_row":
+    _value = _value.reset_index()
+    if "index" in _value.columns and _value.columns.tolist().count("index") == 1:
+        _value = _value.rename(columns={"index": "feature"})
 _value.to_csv("/sandbox/result.csv", index=False)
 `;
 

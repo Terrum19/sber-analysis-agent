@@ -841,3 +841,62 @@ def test_export_dashboard_api_database_name_and_unique_filename(
         resp_xlsx.headers["content-type"]
         == "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
     )
+
+
+def test_export_dashboard_pdf_heatmap_preserves_unpivoted_cells(tmp_path: Path) -> None:
+    """Проверка того, что экспорт PDF не затирает unpivoted ячейки heatmap сырыми строками DuckDB."""
+    from app.core.viz.vega_spec_builder import build_vega_spec
+
+    raw_corr_records = [
+        {"male": 1.0, "age": -0.14, "isAlive": -0.05},
+        {"male": -0.14, "age": 1.0, "isAlive": 0.65},
+        {"male": -0.05, "age": 0.65, "isAlive": 1.0},
+    ]
+    heatmap_spec = build_vega_spec("heatmap", data=raw_corr_records, title="Матрица корреляций")
+    assert len(heatmap_spec["data"]["values"]) == 9
+
+    # Плитка содержит спеку с 9 unpivoted значениями, а snapshot_data содержит 3 сырые строки DuckDB
+    tile = DashboardTile(
+        title="Матрица корреляций",
+        spec=heatmap_spec,
+        snapshot_data=raw_corr_records,
+    )
+    dash = Dashboard(
+        id="d-heatmap-test",
+        session_id="sess-heatmap",
+        title="Дашборд с тепловой картой",
+        tiles=[tile],
+    )
+    out_pdf = str(tmp_path / "heatmap_test.pdf")
+    exporter = PdfExporter()
+    exporter.export_dashboard(dash, out_pdf)
+
+    reader = pypdf.PdfReader(out_pdf)
+    assert len(reader.pages) >= 1
+    images = [img for page in reader.pages for img in page.images]
+    assert len(images) >= 1
+    assert len(images[0].data) > 1000
+
+
+def test_export_dashboard_pdf_heatmap_rebuilds_when_spec_values_missing(tmp_path: Path) -> None:
+    """Если у плитки в spec.data.values нет готовых ячеек, экспорт собирает их из records."""
+    raw_corr_records = [
+        {"male": 1.0, "age": -0.14},
+        {"male": -0.14, "age": 1.0},
+    ]
+    tile = DashboardTile(
+        title="Матрица корреляций без values",
+        spec={"usermeta": {"chart_type": "heatmap"}},
+        snapshot_data=raw_corr_records,
+    )
+    dash = Dashboard(
+        id="d-heatmap-rebuild",
+        session_id="sess-heatmap",
+        title="Дашборд",
+        tiles=[tile],
+    )
+    out_pdf = str(tmp_path / "heatmap_rebuild.pdf")
+    exporter = PdfExporter()
+    exporter.export_dashboard(dash, out_pdf)
+    reader = pypdf.PdfReader(out_pdf)
+    assert len(reader.pages) >= 1

@@ -155,6 +155,15 @@ export default function DashboardPage({ params }: { params: { id: string } }) {
     return () => clearTimeout(timer);
   }, [saveState]);
 
+  useEffect(() => {
+    function onToast(e: Event) {
+      const msg = (e as CustomEvent)?.detail?.message;
+      if (msg) flash(msg, 3500);
+    }
+    window.addEventListener("app:toast", onToast);
+    return () => window.removeEventListener("app:toast", onToast);
+  }, []);
+
   async function handleRetrySave() {
     const snapshot = configRef.current;
     if (!snapshot) return;
