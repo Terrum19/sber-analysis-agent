@@ -9,7 +9,14 @@ viz/chart_choice.py, agent/chart_pick.py); select_chart — запасной п�
 import math
 import re
 
-from app.core.viz.vega_spec_builder import infer_field_types, ordered_column
+from app.core.viz.vega_spec_builder import (
+    detect_wide_matrix,
+    heatmap_axis_candidates,
+    heatmap_metric_candidate,
+    infer_field_types,
+    is_heatmap_axis,
+    ordered_column,
+)
 
 NO_CHART = "none"
 # Больше 12 категорий столбцы лежат (vega_spec_builder), поэтому до 50 читаются.
@@ -30,6 +37,8 @@ def fits(
     chart_type: str, records: list[dict], types: dict[str, str], column: str | None = None
 ) -> bool:
     """Подходит ли вид к строкам результата; column — колонка гистограммы."""
+    if detect_wide_matrix(records, types) is not None:
+        return chart_type in ("heatmap", "table")
     numeric = [column for column, kind in types.items() if kind == "quantitative"]
     categories = [
         *[column for column, kind in types.items() if kind == "nominal"],
@@ -47,20 +56,32 @@ def fits(
     if chart_type == "bar":
         return bool(categories) and _distinct(records, categories[0]) <= MAX_BAR_CATEGORIES
     if chart_type == "heatmap":
-        return len(categories) >= 2
+        if detect_wide_matrix(records, types) is not None:
+            return True
+        candidates = heatmap_axis_candidates(records, types)
+        metric = heatmap_metric_candidate(records, types)
+        axis_candidates = [c for c in candidates if c != metric]
+        return len(axis_candidates) >= 2
     if chart_type == "kpi":
         return is_single_number(records)
     return chart_type == "table"
 
 
 def fits_columns(
-    chart_type: str, records: list[dict], types: dict[str, str], x: str | None, y: str | None
+    chart_type: str,
+    records: list[dict],
+    types: dict[str, str],
+    x: str | None,
+    y: str | None,
+    color: str | None = None,
 ) -> bool:
     """Подходит ли вид к строкам по названным колонкам x и y (выбор агента).
 
     В отличие от fits, ось x может быть любой колонкой: целочисленный ключ
     (store_id) — категория столбцов, год числом — ось линии.
     """
+    if detect_wide_matrix(records, types) is not None:
+        return chart_type in ("heatmap", "table")
 
     def numeric(column: str | None) -> bool:
         return column is not None and types.get(column) == "quantitative"
@@ -79,7 +100,18 @@ def fits_columns(
     if chart_type == "bar":
         return x is not None and _distinct(records, x) <= MAX_BAR_CATEGORIES
     if chart_type == "heatmap":
-        return x is not None and y is not None and x != y
+        if detect_wide_matrix(records, types) is not None:
+            return True
+        if x is None or y is None or x == y:
+            return False
+        if not is_heatmap_axis(records, types, x):
+            return False
+        if is_heatmap_axis(records, types, y):
+            return True
+        if color is None:
+            replacements = heatmap_axis_candidates(records, types, exclude=(x, y))
+            return bool(replacements)
+        return False
     if chart_type == "kpi":
         return is_single_number(records)
     return chart_type == "table"
@@ -108,6 +140,8 @@ def select_chart(
     if records is None:
         return chart_type
     types = infer_field_types(records)
+    if detect_wide_matrix(records, types) is not None and requested in ("auto", "bar", "scatter"):
+        return "heatmap"
     column = histogram_column(question, types, titles) if chart_type == "histogram" else None
     return chart_type if fits(chart_type, records, types, column) else "table"
 
@@ -139,6 +173,12 @@ def _by_question(question: str) -> str:
     text = question.lower()
     if asks_distribution(question):
         return "histogram"
+    if "матриц" in text or "теплова" in text or "heatmap" in text:
+        return "heatmap"
+    if "корреляц" in text and any(
+        w in text for w in ("признак", "всех", "числов", "колон", "таблиц", "сетк")
+    ):
+        return "heatmap"
     if "динамик" in text or "во времени" in text or "по годам" in text or "по месяцам" in text:
         return "line"
     if "сравн" in text or "по категори" in text:

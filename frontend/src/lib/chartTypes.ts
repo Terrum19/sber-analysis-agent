@@ -24,6 +24,8 @@ export const CHART_TYPES = [
 
 export type ChartType = (typeof CHART_TYPES)[number];
 
+export const COMPLEX_CHART_TYPES = ["heatmap", "histogram", "box"] as const;
+
 export const CHART_MARK: Record<ChartType, unknown> = {
   bar: "bar",
   line: "line",
@@ -48,11 +50,38 @@ export function chartTypeOf(tile?: DashboardTile | null): ChartType {
 /**
  * Локальная смена типа графика: mark + usermeta (оба поля) + is_kpi + layout.
  * Данные (spec.data.values) не трогаем — их пересчитает backend.
+ * Для heatmap/histogram/box без бэкенда не подменяем mark на чужом encoding:
+ * оставляем старый вид и показываем тост «нужен пересчёт».
  */
 export function withChartType(tile: DashboardTile, type: ChartType): DashboardTile {
   const current = (tile.spec?.usermeta as Record<string, unknown> | undefined) ?? {};
+  const currentType = chartTypeOf(tile);
+  const isComplex = (COMPLEX_CHART_TYPES as readonly string[]).includes(type);
   const min = type === "kpi" ? MIN_SIZE.kpi : MIN_SIZE.chart;
   const layout = tile.layout ?? { x: 0, y: 0, w: min.w, h: min.h };
+
+  if (isComplex && currentType !== type) {
+    if (typeof window !== "undefined") {
+      window.dispatchEvent(
+        new CustomEvent("app:toast", { detail: { message: "Нужен пересчёт" } }),
+      );
+    }
+    return {
+      ...tile,
+      spec: {
+        ...(tile.spec ?? {}),
+        usermeta: { ...current, requested_type: type },
+      },
+      is_kpi: false,
+      layout: {
+        x: layout.x ?? 0,
+        y: layout.y ?? 0,
+        w: Math.max(layout.w ?? min.w, min.w),
+        h: Math.max(layout.h ?? min.h, min.h),
+      },
+    };
+  }
+
   return {
     ...tile,
     spec: {
@@ -79,11 +108,23 @@ export async function withRebuiltChartType(
   tile: DashboardTile,
   type: ChartType,
 ): Promise<DashboardTile> {
-  const local = withChartType(tile, type);
-  if (isMockMode() || !tile.spec) return local;
+  if (isMockMode() || !tile.spec) return withChartType(tile, type);
   try {
-    return { ...local, spec: await rebuildTileSpec(tile.spec, type) };
+    const rebuiltSpec = await rebuildTileSpec(tile.spec, type);
+    const min = type === "kpi" ? MIN_SIZE.kpi : MIN_SIZE.chart;
+    const layout = tile.layout ?? { x: 0, y: 0, w: min.w, h: min.h };
+    return {
+      ...tile,
+      spec: rebuiltSpec,
+      is_kpi: type === "kpi",
+      layout: {
+        x: layout.x ?? 0,
+        y: layout.y ?? 0,
+        w: Math.max(layout.w ?? min.w, min.w),
+        h: Math.max(layout.h ?? min.h, min.h),
+      },
+    };
   } catch {
-    return local;
+    return withChartType(tile, type);
   }
 }

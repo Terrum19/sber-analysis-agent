@@ -3,7 +3,13 @@ from decimal import Decimal
 
 import pytest
 
-from app.core.viz.chart_selector import fits, histogram_column, is_single_number, select_chart
+from app.core.viz.chart_selector import (
+    fits,
+    fits_columns,
+    histogram_column,
+    is_single_number,
+    select_chart,
+)
 from app.core.viz.vega_spec_builder import infer_field_types
 
 MONTHS = [{"month": f"2024-{month:02d}", "revenue": month * 10} for month in range(1, 13)]
@@ -127,3 +133,88 @@ def test_unfit_heuristic_falls_back_to_table() -> None:
 )
 def test_keyword_heuristics(question: str, expected: str) -> None:
     assert select_chart(question, "t") == expected
+
+
+def test_fits_heatmap_cohort_and_grid() -> None:
+    cohort = [
+        {"cohort_week": dt.date(2024, 1, 1), "week_number": 0, "retention": 1.0},
+        {"cohort_week": dt.date(2024, 1, 8), "week_number": 0, "retention": 1.0},
+    ]
+    types_cohort = infer_field_types(cohort)
+    assert fits("heatmap", cohort, types_cohort) is True
+    assert fits_columns("heatmap", cohort, types_cohort, "cohort_week", "week_number") is True
+
+    grid = [{"weekday": 1, "hour": 10, "orders": 5}]
+    types_grid = infer_field_types(grid)
+    assert fits("heatmap", grid, types_grid) is True
+    assert fits_columns("heatmap", grid, types_grid, "weekday", "hour") is True
+
+
+def test_fits_columns_heatmap_metric_handling() -> None:
+    # 2 columns: region and revenue (revenue is float metric)
+    records_2 = [{"region": "msk", "revenue": 10.5}, {"region": "spb", "revenue": 20.0}]
+    types_2 = infer_field_types(records_2)
+    assert fits_columns("heatmap", records_2, types_2, "region", "revenue") is False
+    assert fits_columns("heatmap", records_2, types_2, "revenue", "region") is False
+    assert fits_columns("heatmap", records_2, types_2, None, "region") is False
+    assert fits_columns("heatmap", records_2, types_2, "region", "region") is False
+
+    # 3 columns: region, segment, revenue
+    records_3 = [{"region": "msk", "segment": "b2b", "revenue": 10.5}]
+    types_3 = infer_field_types(records_3)
+    # y is metric, color is None -> replacement segment found -> True
+    assert fits_columns("heatmap", records_3, types_3, "region", "revenue", color=None) is True
+    # y is metric, color already taken -> False
+    assert fits_columns("heatmap", records_3, types_3, "region", "revenue", color="orders") is False
+
+
+def test_fits_columns_box_kpi_table() -> None:
+    records = [{"val": 10.5}]
+    types = infer_field_types(records)
+    assert fits_columns("box", records, types, None, "val") is True
+    assert fits_columns("box", records, types, None, "missing") is False
+    assert fits_columns("kpi", [{"total": 42}], {"total": "quantitative"}, None, "total") is True
+    assert (
+        fits_columns(
+            "kpi",
+            [{"total": 42}, {"total": 43}],
+            {"total": "quantitative"},
+            None,
+            "total",
+        )
+        is False
+    )
+    assert fits_columns("table", records, types, None, None) is True
+    assert fits_columns("unknown_type", records, types, None, None) is False
+
+
+def test_fits_and_fits_columns_wide_matrix() -> None:
+    wide_records = [
+        {"male": 1.0, "age": 0.14, "isAlive": -0.15},
+        {"male": 0.14, "age": 1.0, "isAlive": -0.31},
+        {"male": -0.15, "age": -0.31, "isAlive": 1.0},
+    ]
+    types = infer_field_types(wide_records)
+    assert fits("heatmap", wide_records, types) is True
+    assert fits("bar", wide_records, types) is False
+    assert fits_columns("heatmap", wide_records, types, None, None) is True
+    assert fits_columns("bar", wide_records, types, "male", "age") is False
+    assert select_chart("Построй корреляционную матрицу", "t", records=wide_records) == "heatmap"
+    assert select_chart("построй график", "t", "auto", records=wide_records) == "heatmap"
+    assert select_chart("построй график", "t", "bar", records=wide_records) == "heatmap"
+    assert (
+        select_chart("построй корреляцию признаков", "t", "auto", records=wide_records) == "heatmap"
+    )
+
+    # Columns table (like Screenshot 2) with unique column and long text is rejected from heatmap
+    col_records = [
+        {
+            "Колонка": f"col_{i}",
+            "Тип": "текст" if i % 2 == 0 else "число",
+            "Заполнено": 80.0 + i,
+            "Значения": "очень длинное описание значений колонки превышающее 50 символов " * 2,
+        }
+        for i in range(5)
+    ]
+    col_types = infer_field_types(col_records)
+    assert fits("heatmap", col_records, col_types) is False
