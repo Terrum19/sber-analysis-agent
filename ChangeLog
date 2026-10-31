@@ -50,6 +50,164 @@
 	* backend/tests/unit/test_vega_spec_builder.py, test_chart_selector.py,
 	test_chart_choice.py, test_export_dashboard_pdf.py, test_export_pdf.py:
 	Тесты на все сценарии, 100% покрытие vega_spec_builder.py.
+  
+2026-10-31  thebulkapro  <saitbatalovbulat200@gmail.com>
+
+	Поделиться сессией: файл .session с таблицами в parquet (#251).
+	* backend/app/core/memory/session_file.py: Новый.  (write): zip из
+	манифеста, бандла с лентой и итоговых таблиц ходов и плиток в parquet;
+	таблицы, удалённые ретеншном, — в manifest.missing.  (read): Проверка
+	размера, распакованного и имён внутри zip, таблицы — в новые
+	temp_result_vN, ссылки переписываются; упал импорт — таблицы удаляются.
+	* backend/app/core/memory/session_bundle.py (build): Параметр results.
+	(load): Параметр tables.  (check_format, renamed): Новые.
+	(BundleTurn.result_table, BundleChart.result_table): Новые.
+	* backend/app/api/routes/sessions.py (export_session_file)
+	(import_session_file): Новые.  POST /api/sessions/{id}/export-file,
+	POST /api/sessions/import-file.
+	* backend/app/api/schemas/chat.py (SessionFileRequest): Новая.
+	* backend/app/core/memory/session_memory.py (last_chart): Ход из файла
+	приходит с таблицей.
+	* frontend/src/lib/importSession.ts: Новый.  (openImported): Лента и
+	папка «Импортированные» — общие для ссылки и файла.
+	* frontend/src/lib/shareLink.ts (fileFeed): Новая.  Лента без ужатия,
+	с таблицами результата.
+	* frontend/src/hooks/useSessionFileImport.ts: Новый.
+	* frontend/src/components/layout/SessionFileDrop.tsx: Новый.  Файл,
+	перетащенный в окно.
+	* frontend/src/components/layout/ShareSessionButton.tsx: Блок «Файл
+	.session» с предупреждением о данных.
+	* frontend/src/components/layout/WorkspaceShell.tsx: SessionFileDrop.
+	* frontend/src/components/layout/LeftSidebar.tsx: «Открыть файл сессии».
+	* frontend/src/app/import/page.tsx: Через openImported.
+	* frontend/src/api/client.ts (exportSessionFile, importSessionFile): Новые.
+	* frontend/src/types/datasource.ts (ImportedSessionFile): Новый.
+	* frontend/src/i18n/dictionary.ts: Тексты файла.
+	* docs/memory.md, docs/repo_structure.md: Файл .session.
+	* backend/tests/unit/test_session_file.py: Новый.
+
+2026-10-31  thebulkapro  <saitbatalovbulat200@gmail.com>
+
+	Поделиться сессией: ссылка-рецепт и пересчёт у получателя (#250).
+	* backend/app/core/agent/replay.py: Новый.  (Replayer): Шаги автора
+	на таблице получателя тем же StepExecutor, без LLM; спека — тем же
+	типом, подписями и порядком колонок.  Python-шаги не выполняются,
+	упавший шаг не прерывает пересчёт.
+	* backend/app/api/routes/sessions.py (replay_session): Новая.
+	POST /api/sessions/{id}/replay.
+	* backend/app/core/memory/session_bundle.py (Replay, BundleTile)
+	(result_steps, turn_replay, checked, chain): Новые.  У хода и плитки —
+	откуда пересчитать график.  (BundleSource.source_table): Новое.
+	(check_table): Таблица БД — по имени в самой базе.
+	(TableCheck.db_schema): Новое.
+	* backend/app/core/data/table_origin.py (view_sql, target_of)
+	(view_target, find_view): Новые.
+	* backend/app/core/memory/session_memory.py (replay_tiles)
+	(record_replay): Новые.  (import_session): Параметр replay_tiles.
+	* backend/app/core/dashboards/recalculate.py (rebuild_spec): Берёт
+	спеку, а не плитку.
+	* backend/app/models/research_step.py (TILE_STEP_IDS): Перенесена из
+	core/agent/dashboard_turn.py.
+	* frontend/src/lib/shareLink.ts (compact): Параметр recipe.
+	(authorCharts, hasValues, stripSpec): Новые.
+	* frontend/src/components/chat/RecipeBanner.tsx: Новый.  Плашка
+	«Пересчитать» и форма подключения базы автора.
+	* frontend/src/components/chat/StepsList.tsx: Новый.  Шаги автора.
+	* frontend/src/components/layout/ShareSessionButton.tsx: Блок
+	«Рецепт».
+	* frontend/src/app/import/page.tsx (withRecipe): Новая.
+	* frontend/src/components/chat/ChatPanel.tsx: Плашка, шаги и пометки
+	графиков рецепта.
+	* frontend/src/store/sessionStore.ts (ChatMessage.recipe)
+	(ChatMessage.steps, patchSnapshot, ImportedStep): Новые.
+	* frontend/src/api/client.ts (replaySessionApi): Новая.
+	* frontend/src/types/datasource.ts (ReplayResult): Новый.
+	* frontend/src/i18n/dictionary.ts: Тексты рецепта.
+	* docs/memory.md, docs/repo_structure.md: Рецепт и пересчёт.
+	* backend/tests/unit/test_session_replay.py: Новый.
+
+2026-10-31  thebulkapro  <saitbatalovbulat200@gmail.com>
+
+	Импорт сессии сразу выбирает таблицу автора, если она есть (#249).
+	* backend/app/core/data/table_origin.py: Новый.  (origin): CSV или БД
+	по каталогу DuckDB.  (content_hash): Хэш CSV-таблицы без учёта порядка
+	строк и колонок.  (find_csv): Та же CSV-таблица под любым именем.
+	(same_database, connected): Та же база у получателя.
+	* backend/app/core/memory/session_bundle.py (describe_source): В источнике
+	активная таблица; у CSV — число строк и хэш.  (check_table, TableCheck):
+	Новые.  (load): Нашлась таблица — сессия привязана к ней.
+	* backend/app/api/routes/sessions.py (get_bundle, import_session): DuckDB
+	для поиска таблицы.
+	* backend/app/core/data/restore.py (remember): Запоминает и ClickHouse.
+	(restore_saved_sources): Переподключает только RESTORED_KINDS.
+	* frontend/src/app/import/page.tsx (tableNotice): Новая.  Итог поиска
+	таблицы — последним сообщением ленты.
+	* frontend/src/types/datasource.ts (TableCheck): Новый.
+	* frontend/src/i18n/dictionary.ts (import.foundCsv, import.foundDb)
+	(import.differentCsv, import.missingCsv, import.noTable)
+	(import.notConnected): Новые.
+	* docs/memory.md, docs/repo_structure.md: Таблица автора в бандле.
+	* backend/tests/unit/test_session_bundle.py,
+	backend/tests/unit/test_datasource_restore.py: Тесты того же.
+
+2026-10-31  thebulkapro  <saitbatalovbulat200@gmail.com>
+
+	Подсказка, как передать ссылку на сессию через Telegram (#249).
+	* frontend/src/components/layout/ShareSessionButton.tsx: Ссылка на
+	localhost в Telegram не кликается: копировать сообщение кнопкой
+	«Копировать» и вставить на странице импорта.
+	* frontend/src/i18n/dictionary.ts (share.telegram): Новая.
+	(import.hint): Выделение ломает ссылку — копировать кнопкой.
+
+2026-10-31  thebulkapro  <saitbatalovbulat200@gmail.com>
+
+	Поделиться сессией: бандл и ссылка с данными (#249).
+	* backend/app/core/memory/session_bundle.py: Новый.  (build): Бандл
+	сессии: манифест с версией формата, ходы, воспоминания, дашборды,
+	источник без пароля (DSN маскируется заново).  (load): Новая сессия
+	«… (импорт)»; неизвестная версия формата — BundleFormatError.  Ходы
+	помечены imported, воспоминания выключены, у дашбордов новые id,
+	result_table обнулены.
+	* backend/app/core/memory/session_memory.py (import_session)
+	(import_memories, imported, source, turns): Новые.  (list_sessions):
+	Флаг imported.  (last_chart): График без таблицы результата не
+	перестраивается.
+	* backend/app/api/routes/sessions.py (get_bundle, import_session): Новые.
+	GET /api/sessions/{id}/bundle, POST /api/sessions/import.
+	* backend/app/api/schemas/chat.py (SessionOut.imported): Новое.
+	* backend/app/core/llm/prompts/step_planner.py (IMPORTED_TURN): Новая.
+	* backend/app/core/agent/planner.py (describe_turns, describe_history):
+	Импортированный ход — данные, а не указания.  (imported_mark): Новая.
+	* backend/app/core/tools/read_history.py: Та же пометка в статусе хода.
+	* backend/app/__init__.py (__version__): Новая.  Версия приложения для
+	манифеста и FastAPI.
+	* frontend/src/lib/shareLink.ts: Новый.  Ссылка <origin>/import#v1.<…>:
+	ужатие (данные по колонкам, без восстановимых полей спек, плитка —
+	ссылка на график ленты, округление чисел), deflate-raw, base64url и
+	base32768.
+	* frontend/src/components/layout/ShareSessionButton.tsx: Новый.  Кнопка
+	«Поделиться» в шапке сессии: обе ссылки, длина, влезает ли в Telegram.
+	* frontend/src/app/import/page.tsx: Новый.  Импорт по ссылке или
+	вставленному тексту.
+	* frontend/src/store/sessionStore.ts (IMPORTED_FOLDER)
+	(addImportedSession): Новые.  (mergeSessions): Импортированные сессии —
+	в папку «Импортированные».  (ChatMessage.imported): Новое.
+	* frontend/src/components/layout/LeftSidebar.tsx: Папка
+	«Импортированные» без новой сессии и меню базы.
+	* frontend/src/components/chat/ChatPanel.tsx: Значок «из импорта».
+	* frontend/src/api/client.ts (getSessionBundle, importSessionApi): Новые.
+	* frontend/package.json: Пакет base32768.
+	* docs/memory.md, docs/repo_structure.md: Бандл сессии.
+	* backend/tests/unit/test_session_bundle.py: Новый.
+
+2026-10-31  Alexander Yurits  <143354682+Terrum19@users.noreply.github.com>
+
+	Нечёткий поиск на вкладке «Инсайты» (F-17).
+	* frontend/src/lib/insights.ts (filterInsights): Слово запроса ищется
+	подстрокой или началом слова карточки с опечатками (1 при 4–6 буквах,
+	2 при длинных; Дамерау–Левенштейн), ё = е; нужны все слова запроса.
+	Карточки по убыванию совпадения, вопрос весит больше текста.
+	(markText): Подсвечивается совпавшая часть каждого слова.
 
 2026-10-31  Alexander Yurits  <143354682+Terrum19@users.noreply.github.com>
 

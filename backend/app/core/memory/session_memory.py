@@ -34,6 +34,10 @@
 поэтому сессия переживает перезапуск приложения. Состояние до списка ходов
 (``tables``, ``steps``, ``columns``) открывается, но не читается.
 
+Сессия из бандла другого пользователя (#249) помечена ``imported``, её ходы —
+тоже: в промпте они идут как данные, а не указания. Воспоминания такой сессии
+приходят выключенными.
+
 Состояние сессии хранится в SQLite (таблица ``session_state`` по адресу
 ``settings.sqlite_path``) вместо отдельных JSON-файлов.
 """
@@ -121,7 +125,8 @@ class SessionMemory:
                        json_extract(state, '$.datasource') AS "table",
                        json_extract(state, '$.datasource_id') AS datasource_id,
                        json_extract(state, '$.title') AS title,
-                       json_extract(state, '$.created_at') AS created_at
+                       json_extract(state, '$.created_at') AS created_at,
+                       COALESCE(json_extract(state, '$.imported'), 0) AS imported
                 FROM session_state
                 WHERE json_array_length(state, '$.turns') > 0
                 ORDER BY updated_at DESC
@@ -233,6 +238,68 @@ class SessionMemory:
     def created_at(self) -> str | None:
         """Время создания сессии (ISO, UTC); None у сессий, созданных до его записи."""
         return self._state.get("created_at")
+
+    @property
+    def imported(self) -> bool:
+        """Сессия создана импортом бандла другого пользователя (#249)."""
+        return bool(self._state.get("imported"))
+
+    @property
+    def source(self) -> dict | None:
+        """Источник автора импортированной сессии: kind, маскированный DSN, таблицы."""
+        return self._state.get("source")
+
+    @property
+    def turns(self) -> list[dict]:
+        """Ходы сессии, старые первыми."""
+        return self._state["turns"]
+
+    @property
+    def replay_tiles(self) -> dict[str, dict]:
+        """Плитка импортированного дашборда -> шаг хода, по которому она пересчитывается (#250)."""
+        return self._state.get("replay_tiles") or {}
+
+    def import_session(
+        self,
+        title: str,
+        turns: list[dict],
+        source: dict | None,
+        replay_tiles: dict[str, dict] | None = None,
+    ) -> None:
+        """Заполнить новую сессию ходами из бандла; ничего из них не выполняется.
+
+        Таблицы у сессии нет: на первый вопрос получателя агент сам выберет
+        таблицу из его данных.
+        """
+        self._state.update(
+            title=title,
+            datasource_id=None,
+            datasource=None,
+            pending_recovery=None,
+            imported=True,
+            source=source,
+            turns=turns,
+            replay_tiles=replay_tiles or {},
+            created_at=datetime.now(UTC).isoformat(),
+        )
+        self._persist()
+
+    def record_replay(self, results: dict[str, list[str]], charts: dict[str, str]) -> None:
+        """Запомнить таблицы, пересчитанные у получателя (#250).
+
+        ``results`` — таблицы шагов по ходам, ``charts`` — таблица графика
+        хода: по ней работают смена вида и выгрузка в Excel.
+        """
+        for turn in self._state["turns"]:
+            if turn["turn_id"] in results:
+                turn["results"] = results[turn["turn_id"]]
+            table = charts.get(turn["turn_id"])
+            if table is None:
+                continue
+            turn["result_table"] = table
+            if turn.get("chart") is not None:
+                turn["chart"]["result_table"] = table
+        self._persist()
 
     def set_meta(self, title: str | None, datasource_id: str | None) -> None:
         """Запомнить название и источник сессии; время создания ставится один раз."""
@@ -443,14 +510,25 @@ class SessionMemory:
         self._persist()
 
     def last_chart(self) -> dict | None:
-        """График хода, на который отвечает текущий, иначе последнего успешного с графиком."""
+        """График хода, на который отвечает текущий, иначе последнего успешного с графиком.
+
+        У графика хода, импортированного по ссылке, нет таблицы результата (#249):
+        его не перестроить, и более старый график вместо него не берётся. Из
+        файла ``.session`` ход приходит с таблицей (#251).
+        """
         target = self._find(self._turn.get("reply_to")) if self._turn is not None else None
         if target is not None and target["status"] == "ok" and target["chart"] is not None:
-            return target["chart"]
-        for turn in reversed(self._state["turns"]):
-            if turn["status"] == "ok" and turn["chart"] is not None:
-                return turn["chart"]
-        return None
+            chart = target["chart"]
+        else:
+            chart = next(
+                (
+                    turn["chart"]
+                    for turn in reversed(self._state["turns"])
+                    if turn["status"] == "ok" and turn["chart"] is not None
+                ),
+                None,
+            )
+        return chart if chart is not None and chart.get("result_table") else None
 
     def _past_turns(self) -> list[dict]:
         """Ходы, кроме идущего, с номером в сессии (с 1); шаги — только у успешных."""
@@ -559,6 +637,39 @@ class SessionMemory:
         finally:
             conn.close()
         return self._memory(memory_id)
+
+    def import_memories(self, items: list[dict]) -> None:
+        """Записать воспоминания из бандла выключенными: включает их пользователь.
+
+        Записи без хода этой сессии получают ``turn_id`` None; повтор текста
+        пропускается.
+        """
+        known = {turn["turn_id"] for turn in self._state["turns"]}
+        conn = self._connect()
+        try:
+            for item in items:
+                text = " ".join(item["text"].split())
+                if not text:
+                    continue
+                conn.execute(
+                    """
+                    INSERT OR IGNORE INTO session_memories
+                        (memory_id, session_id, text, text_key, source, created_at, enabled, turn_id)
+                    VALUES (?, ?, ?, ?, ?, ?, 0, ?)
+                    """,
+                    (
+                        uuid.uuid4().hex,
+                        self.session_id,
+                        text,
+                        text.casefold(),
+                        item["source"],
+                        item["created_at"],
+                        item["turn_id"] if item.get("turn_id") in known else None,
+                    ),
+                )
+            conn.commit()
+        finally:
+            conn.close()
 
     def set_memory_enabled(self, memory_id: str, enabled: bool) -> dict | None:
         """Включить или выключить воспоминание; None — такой записи нет."""

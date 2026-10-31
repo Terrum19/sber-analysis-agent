@@ -6,7 +6,16 @@
  */
 import type { ChatStreamEvent, DashboardIdea, ResultColumn } from "@/types/chat";
 import type { LlmStatus } from "@/types/llm";
-import type { Datasource, DatasourceDbRequest, SessionResponse, TableBrief } from "@/types/datasource";
+import type {
+  Datasource,
+  DatasourceDbRequest,
+  ImportedSession,
+  ImportedSessionFile,
+  ReplayResult,
+  SessionResponse,
+  TableBrief,
+} from "@/types/datasource";
+import type { SessionBundle } from "@/lib/shareLink";
 import type {
   DashboardConfig,
   DashboardCreatePayload,
@@ -184,6 +193,87 @@ export async function getSession(sessionId: string): Promise<SessionResponse> {
       apiErr.detail = "Сессия не найдена";
     }
     throw apiErr;
+  }
+}
+
+/** GET /api/sessions/{id}/bundle: бандл сессии без ленты (#249), пароля в нём нет. */
+export async function getSessionBundle(sessionId: string): Promise<SessionBundle> {
+  try {
+    const res = await fetch(`${API}/sessions/${encodeURIComponent(sessionId)}/bundle`);
+    if (!res.ok) throw await parseApiError(res);
+    return (await res.json()) as SessionBundle;
+  } catch (err) {
+    throw toApiError(err);
+  }
+}
+
+/** POST /api/sessions/import: новая сессия из бандла; 400 — текст ошибки для пользователя. */
+export async function importSessionApi(bundle: SessionBundle): Promise<ImportedSession> {
+  try {
+    const res = await fetch(`${API}/sessions/import`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(bundle),
+    });
+    if (!res.ok) throw await parseApiError(res);
+    return (await res.json()) as ImportedSession;
+  } catch (err) {
+    throw toApiError(err);
+  }
+}
+
+/**
+ * POST /api/sessions/{id}/export-file: файл .session — бандл, лента и итоговые
+ * таблицы в parquet (#251); 413 — файл больше лимита импорта.
+ */
+export async function exportSessionFile(
+  sessionId: string,
+  body: { table: string | null; feed: unknown[] },
+): Promise<Blob> {
+  try {
+    const res = await fetch(`${API}/sessions/${encodeURIComponent(sessionId)}/export-file`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    if (!res.ok) throw await parseApiError(res);
+    return await res.blob();
+  } catch (err) {
+    throw toApiError(err);
+  }
+}
+
+/** POST /api/sessions/import-file: новая сессия из файла .session (#251); 400/413 — текст для пользователя. */
+export async function importSessionFile(file: File): Promise<ImportedSessionFile> {
+  const form = new FormData();
+  form.append("file", file);
+  try {
+    const res = await fetch(`${API}/sessions/import-file`, { method: "POST", body: form });
+    if (!res.ok) throw await parseApiError(res);
+    return (await res.json()) as ImportedSessionFile;
+  } catch (err) {
+    throw toApiError(err);
+  }
+}
+
+/**
+ * POST /api/sessions/{id}/replay: пересчитать графики рецепта на данных получателя (#250).
+ * charts — спеки графиков ленты по turn_id (без точек): тип и подписи автора.
+ */
+export async function replaySessionApi(
+  sessionId: string,
+  charts: Record<string, Record<string, unknown>>,
+): Promise<ReplayResult> {
+  try {
+    const res = await fetch(`${API}/sessions/${encodeURIComponent(sessionId)}/replay`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ charts }),
+    });
+    if (!res.ok) throw await parseApiError(res);
+    return (await res.json()) as ReplayResult;
+  } catch (err) {
+    throw toApiError(err);
   }
 }
 

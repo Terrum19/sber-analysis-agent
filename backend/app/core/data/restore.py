@@ -6,6 +6,10 @@
 в фоне (``restore_saved_sources``), а по ``DELETE /api/datasources/{id}``
 отключается и забывается (``forget``). Пароль на диск не попадает: он берётся
 из ``POSTGRES_PASSWORD__<identity>`` или ``POSTGRES_PASSWORD``.
+
+ClickHouse тоже запоминается — его адрес без пароля нужен бандлу сессии
+(#249), — но после рестарта пока не переподключается: переподключаются
+только источники ``RESTORED_KINDS``.
 """
 
 import asyncio
@@ -18,6 +22,7 @@ from dotenv import dotenv_values
 from app.config import ENV_FILES, settings
 from app.core.data import ingest
 from app.core.data.connectors.base import BaseConnector
+from app.core.data.connectors.clickhouse import ClickHouseConnector
 from app.core.data.connectors.factory import build_connector
 from app.core.data.connectors.pg_dsn import parse_dsn, quote_value
 from app.core.data.connectors.postgres import PostgresConnector
@@ -27,19 +32,24 @@ from app.core.memory.profile_memory import ProfileMemory
 logger = logging.getLogger(__name__)
 
 PASSWORD_VARIABLE = "POSTGRES_PASSWORD"
+RESTORED_KINDS = ("postgres",)
 
 
 def remember(
     connector: BaseConnector, description: str | None, store: DatasourceStore | None = None
 ) -> None:
-    """Запомнить подключённый источник PostgreSQL (DSN — без пароля)."""
-    if not isinstance(connector, PostgresConnector):
+    """Запомнить подключённый источник PostgreSQL или ClickHouse (DSN — без пароля)."""
+    if isinstance(connector, PostgresConnector):
+        kind, schema = "postgres", connector.schema
+    elif isinstance(connector, ClickHouseConnector):
+        kind, schema = "clickhouse", None
+    else:
         return
     record = DatasourceRecord(
         identity=connector.identity,
-        kind="postgres",
+        kind=kind,
         dsn=connector.dsn.masked(),
-        db_schema=connector.schema,
+        db_schema=schema,
         description=description,
     )
     (store or DatasourceStore()).save(record)
@@ -79,13 +89,15 @@ async def restore_saved_sources(db, store: DatasourceStore | None = None) -> lis
     """Переподключить сохранённые источники по очереди; вернуть identity восстановленных.
 
     Каждый источник — в отдельном потоке с таймаутом POSTGRES_RESTORE_TIMEOUT_S.
-    Ошибка источника пишется в лог и не мешает остальным.
+    Ошибка источника пишется в лог и не мешает остальным. Источники не из
+    RESTORED_KINDS (ClickHouse) пропускаются.
     """
     try:
         records = await asyncio.to_thread((store or DatasourceStore()).list)
     except Exception:
         logger.exception("Не удалось прочитать сохранённые источники данных")
         return []
+    records = [record for record in records if record.kind in RESTORED_KINDS]
     restored = []
     for record in records:
         try:

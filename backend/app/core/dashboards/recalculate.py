@@ -1,7 +1,7 @@
 import time
 from dataclasses import dataclass, field
 
-from app.core.dashboards.models import Dashboard, DashboardTile
+from app.core.dashboards.models import Dashboard
 from app.core.dashboards.store import DashboardStore, snapshot_records
 from app.core.data.duckdb_manager import DuckDBManager
 from app.core.viz.vega_spec_builder import (
@@ -18,16 +18,17 @@ class Recalculated:
     stale_tiles: set[str] = field(default_factory=set)
 
 
-def rebuild_spec(tile: DashboardTile, records: list[dict]) -> dict:
-    usermeta = tile.spec.get("usermeta")
+def rebuild_spec(spec: dict, result_table: str | None, records: list[dict]) -> dict:
+    """Та же спека (тип графика, подписи, заголовок) по новым строкам результата."""
+    usermeta = spec.get("usermeta")
     if not usermeta:
-        return {**tile.spec, "data": {"values": snapshot_records(records)}}
+        return {**spec, "data": {"values": snapshot_records(records)}}
     titles = {
         column["field"]: column["title"]
         for column in usermeta.get("columns") or []
         if column.get("field") and column.get("title")
     }
-    title = tile.spec.get("title")
+    title = spec.get("title")
     target_type = usermeta.get("requested_type") or usermeta.get("chart_type") or "bar"
     is_matrix = bool(records and detect_wide_matrix(records, infer_field_types(records)))
     x = None if is_matrix else usermeta.get("x")
@@ -35,7 +36,7 @@ def rebuild_spec(tile: DashboardTile, records: list[dict]) -> dict:
     color = None if is_matrix else usermeta.get("color")
     return build_vega_spec(
         target_type,
-        result_table=tile.result_table,
+        result_table=result_table,
         data=records,
         titles=titles,
         title=title if isinstance(title, str) else None,
@@ -55,12 +56,11 @@ def respec(spec: dict, chart_type: str) -> dict:
         return spec
     data = spec.get("data")
     records = data.get("values") if isinstance(data, dict) else None
-    tile = DashboardTile(
-        title="",
-        spec={**spec, "usermeta": {**usermeta, "requested_type": chart_type}},
-        result_table=usermeta.get("result_table"),
+    return rebuild_spec(
+        {**spec, "usermeta": {**usermeta, "requested_type": chart_type}},
+        usermeta.get("result_table"),
+        records if isinstance(records, list) else [],
     )
-    return rebuild_spec(tile, records if isinstance(records, list) else [])
 
 
 def recalculate(
@@ -80,7 +80,7 @@ def recalculate(
                 stale_tiles.add(tile.id)
                 continue
             records = db.to_records(tile.result_table, limit=SPEC_ROW_LIMIT)
-        tile.spec = rebuild_spec(tile, records)
+        tile.spec = rebuild_spec(tile.spec, tile.result_table, records)
         tile.snapshot_data = snapshot_records(records)
         tile.snapshot_at = time.time()
     updated = store.update(dashboard_id, tiles=dashboard.tiles)
