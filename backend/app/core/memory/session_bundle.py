@@ -20,8 +20,8 @@
 импорте ничего из бандла не выполняется — ни SQL шагов, ни LLM.
 
 Рецепт (#250): у хода с графиком и у плитки дашборда в бандле — ``replay``,
-откуда пересчитать график у получателя: шаг хода (``turn_id``, ``step_id``)
-или обзор таблицы (``overview``). Шаг находится по таблице результата автора:
+откуда пересчитать график у получателя: шаг хода (``turn_id``, ``step_id``).
+Шаг находится по таблице результата автора:
 ход хранит результаты шагов по порядку (``results``). Нет ``replay`` —
 график не пересчитывается и едет с данными автора: шаг не найден, график
 построен не по результату шага (гистограмма распределения) или в цепочке
@@ -104,11 +104,10 @@ class BundleChart(BaseModel):
 
 
 class Replay(BaseModel):
-    """Откуда пересчитать график: шаг хода или обзор таблицы («что передо мной?»)."""
+    """Откуда пересчитать график: шаг хода."""
 
     turn_id: Name | None = None
     step_id: int | None = None
-    overview: bool = False
 
 
 class BundleTurn(BaseModel):
@@ -277,8 +276,6 @@ def turn_replay(turn: dict, sources: dict[str, Replay], turns: dict[str, dict]) 
     """
     if turn.get("status") != "ok":
         return None
-    if turn.get("overview"):
-        return Replay(overview=True)
     if turn.get("replay"):
         return checked(Replay.model_validate(turn["replay"]), turns)
     chart = turn.get("chart") or {}
@@ -289,8 +286,8 @@ def checked(replay: Replay | dict | None, turns: dict[str, dict]) -> Replay | No
     """``replay``, если шаг есть и в его цепочке нет Python; иначе None."""
     if isinstance(replay, dict):
         replay = Replay.model_validate(replay)
-    if replay is None or replay.overview:
-        return replay
+    if replay is None:
+        return None
     turn = turns.get(replay.turn_id or "")
     steps = chain(turn.get("steps") or [], replay.step_id) if turn is not None else None
     if not steps or any(step.get("tool") in PYTHON_TOOLS for step in steps):

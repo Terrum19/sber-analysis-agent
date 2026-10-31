@@ -72,6 +72,7 @@ def test_run_wasm_python_is_only_a_bridge(
     monkeypatch.setattr("app.core.tools.run_wasm_python.WASMSandbox", FakeSandbox)
     table = RunWasmPythonTool().run(db, "raw", ["result = df", "raw"])
     assert db.to_records(table) == [{"product": "Apple iPhone 14 Pro", "amount": 250.0}]
+    assert db.step_code(table) == ("python", "result = df")
 
 
 def test_run_wasm_python_wraps_scalars_into_output_col(

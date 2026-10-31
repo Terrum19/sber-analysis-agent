@@ -72,7 +72,10 @@ EXPECT_KEYS = (
     "chart_any",
     "chart_changed",
     "table_intact",
+    "route",
 )
+# expect.route: answer — ответ словами без шагов (пояснение прошлых ответов), data — расчёт.
+ROUTES = ("answer", "data")
 GOLD_FILE = "gold.json"
 DEFAULT_NUMBER_TOLERANCE = 0.005
 NUMBER_ROWS = 200
@@ -238,6 +241,9 @@ def check_expect_types(expect: dict, where: str) -> None:
         flag = expect.get(key)
         if flag is not None and not isinstance(flag, bool):
             raise TypeError(f"{where}: {key} должен быть true или false")
+    route = expect.get("route")
+    if route is not None and route not in ROUTES:
+        raise ValueError(f"{where}: route должен быть одним из {', '.join(ROUTES)}")
     sql = expect.get("contains_any_sql")
     if sql is not None and not has_sql({"sql": sql}):
         raise ValueError(f"{where}: contains_any_sql должен быть строкой SQL")
@@ -827,6 +833,17 @@ def check_table_intact(expected: bool, turn: Turn, db) -> Check:
     return Check("table_intact", False, f"строк {turn.table_rows} из {reference}")
 
 
+def check_route(expected: str, turn: Turn, db) -> Check:
+    tools = used_tools(turn)
+    if expected == "data":
+        return Check("route", bool(tools), "шагов не было" if not tools else "")
+    # Отказ «не удалось подобрать инструменты» тоже без шагов: ответом он не считается.
+    answered = bool(answer_text(turn).strip()) and not events_of(turn, "clarification_needed")
+    if tools:
+        return Check("route", False, f"посчитан шагами: {', '.join(tools)}")
+    return Check("route", answered, "" if answered else "без ответа: " + ending(turn))
+
+
 CHECKS = {
     "tools_any": check_tools,
     "columns_all": check_columns,
@@ -844,6 +861,7 @@ CHECKS = {
     "chart_any": check_chart_any,
     "chart_changed": check_chart_changed,
     "table_intact": check_table_intact,
+    "route": check_route,
 }
 
 

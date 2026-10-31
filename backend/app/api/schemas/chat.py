@@ -96,6 +96,9 @@ class ChatRequest(BaseModel):
     # dashboard — ход строит дашборд по кнопке (#224); idea — выбранный вариант.
     mode: Literal["chat", "dashboard"] = "chat"
     idea: DashboardIdea | None = None
+    # turn_id остановленного или упавшего хода: продолжить его с чекпоинта,
+    # не повторяя выполненные шаги и плитки (question тогда не используется).
+    resume_turn: str | None = None
 
 
 class ChartPayload(BaseModel):
@@ -122,6 +125,21 @@ class DashboardPayload(BaseModel):
         )
 
 
+class PlanStepOut(BaseModel):
+    """Строка плана в событии planning: шаг до выполнения."""
+
+    step_id: int
+    tool: str | None = None
+    purpose: str = ""
+    input: str
+    arguments: dict[str, Any] = Field(default_factory=dict)
+
+
+class ResultColumn(BaseModel):
+    name: str
+    type: str
+
+
 class ProgressPayload(BaseModel):
     """Прогресс хода: этап, его статус и шаг плана.
 
@@ -129,6 +147,16 @@ class ProgressPayload(BaseModel):
     (``attempt`` — номер попытки исправления, ``error`` — текст ошибки).
     ``tables`` — на этапе planning: таблица хода и связанные с ней таблицы,
     которые видит планировщик (первая — $source).
+    ``steps`` — на planning finished: весь план; после перепланирования
+    приходит снова, с выполненными и новыми шагами (#239).
+
+    Детали шага (#239): ``arguments`` и ``input`` — на любом статусе шага;
+    на finished ещё ``input_table`` (во что развернулся input),
+    ``input_step_id`` (чей результат пришёл на вход), ``result_table``,
+    ``rows``, ``result_columns``, ``preview`` (первые строки) и ``code``
+    на ``code_language`` (sql или python), если шаг выполнял код.
+    ``turn_id`` — в начале planning и outline: по нему фронт продолжает
+    остановленный ход (``ChatRequest.resume_turn``), ``done`` до него не дойдёт.
     """
 
     stage: Literal["planning", "step", "insight", "chart", "dashboard", "outline", "tile"]
@@ -143,6 +171,18 @@ class ProgressPayload(BaseModel):
     tables: list[str] | None = None
     # Плитка дашборда по кнопке (#224), к которой относится этап или шаг.
     tile_id: int | None = None
+    steps: list[PlanStepOut] | None = None
+    input: str | None = None
+    arguments: dict[str, Any] | None = None
+    input_table: str | None = None
+    input_step_id: int | None = None
+    result_table: str | None = None
+    rows: int | None = None
+    result_columns: list[ResultColumn] | None = None
+    preview: list[dict[str, Any]] | None = None
+    code: str | None = None
+    code_language: Literal["sql", "python"] | None = None
+    turn_id: str | None = None
 
 
 class DashboardIdeasRequest(BaseModel):
@@ -161,6 +201,14 @@ class DashboardIdeasOut(BaseModel):
     """Ответ POST /sessions/{id}/dashboard-ideas: варианты дашборда для кнопок."""
 
     ideas: list[DashboardIdea]
+
+
+class StepResultOut(BaseModel):
+    """Ответ GET /sessions/{id}/results/{table}: страница результата шага (#239)."""
+
+    columns: list[ResultColumn]
+    rows: list[dict[str, Any]]
+    total: int
 
 
 class ChatEvent(BaseModel):
@@ -188,5 +236,9 @@ class ExportRequest(BaseModel):
     dashboard_id: str | None = Field(default=None, max_length=64)
     question: str | None = Field(default=None, max_length=5000)
     headline: str | None = Field(default=None, max_length=3000)
+    title: str | None = Field(default=None, max_length=500)
+    session_title: str | None = Field(default=None, max_length=500)
+    database_name: str | None = Field(default=None, max_length=500)
+    source_name: str | None = Field(default=None, max_length=500)
     details: list[str] | None = Field(default=None, max_length=100)
     spec: dict[str, Any] | None = None

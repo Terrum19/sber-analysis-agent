@@ -7,8 +7,7 @@
 шагов не вызываются: записаны уже итоговые шаги, текст ответа остаётся
 авторским.
 
-Откуда пересчитать график, записано в бандле (``replay``): шаг хода или обзор
-таблицы. Шаги идут цепочкой ``$prev`` до нужного шага (``session_bundle.chain``);
+Откуда пересчитать график, записано в бандле (``replay``): шаг хода. Шаги идут цепочкой ``$prev`` до нужного шага (``session_bundle.chain``);
 выполненный шаг повторно не считается, даже если на него опираются несколько
 графиков. Каждая таблица автора заменяется таблицей, найденной у получателя
 (``session_bundle.check_tables``). Ход, где какой-то таблицы у получателя
@@ -23,14 +22,11 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
-from app.core.agent.orchestrator import OVERVIEW_CAPTION
 from app.core.agent.step_executor import StepExecutor, tool_kind
 from app.core.dashboards.models import Dashboard
 from app.core.dashboards.recalculate import rebuild_spec
 from app.core.dashboards.store import DashboardStore, snapshot_records
-from app.core.data import overview
 from app.core.data.duckdb_manager import DuckDBManager
-from app.core.memory.profile_memory import ProfileMemory
 from app.core.memory.session_bundle import (
     PYTHON_TOOLS,
     BundleSource,
@@ -40,7 +36,7 @@ from app.core.memory.session_bundle import (
     check_tables,
 )
 from app.core.memory.session_memory import SessionMemory
-from app.core.viz.vega_spec_builder import SPEC_ROW_LIMIT, build_vega_spec
+from app.core.viz.vega_spec_builder import SPEC_ROW_LIMIT
 from app.models.research_step import ResearchStep
 
 logger = logging.getLogger(__name__)
@@ -100,9 +96,6 @@ class Replayer:
             turn_id = turn["turn_id"]
             ref = Replay.model_validate(turn["replay"])
             try:
-                if ref.overview:
-                    out.charts[turn_id] = ReplayedChart(spec=self.overview(turn))
-                    continue
                 table = await self.table(ref)
                 spec = specs.get(turn_id) or fallback_spec(turn)
                 out.charts[turn_id] = ReplayedChart(
@@ -178,14 +171,6 @@ class Replayer:
     def rebuilt(self, spec: dict, table: str) -> dict:
         records = self.db.to_records(table, limit=SPEC_ROW_LIMIT)
         return rebuild_spec(spec, table, ordered(records, spec))
-
-    def overview(self, turn: dict) -> dict:
-        """Таблица колонок по паспорту таблицы получателя — без LLM."""
-        table = self.source(turn)
-        rows = overview.profile_rows(
-            overview.passport(self.db, table), ProfileMemory(self.db).load_enrichment(table)
-        )
-        return build_vega_spec("table", data=rows, title=OVERVIEW_CAPTION)
 
     async def dashboards(self, failed: dict[str, str]) -> list[Dashboard]:
         """Пересчитать плитки дашбордов сессии по их шагам; вернуть дашборды."""

@@ -276,3 +276,14 @@ def test_recalculate_keeps_a_kpi_tile(client: TestClient, db: DuckDBManager) -> 
     assert rebuilt["spec"]["usermeta"]["chart_type"] == "kpi"
     assert rebuilt["spec"]["data"]["values"] == [{"total": 20}]
     assert rebuilt["is_kpi"] is True
+
+
+def test_tile_spec_rebuilds_the_view_without_a_dashboard(client: TestClient) -> None:
+    rows = [{"region": "msk", "revenue": 12.5}, {"region": "spb", "revenue": 4.0}]
+    table = build_vega_spec("table", data=rows)
+    response = client.post("/api/dashboards/tile-spec", json={"spec": table, "chart_type": "bar"})
+    assert response.status_code == 200
+    assert response.json()["usermeta"]["chart_type"] == "bar"
+    assert response.json()["encoding"]["x"]["field"] == "region"
+    unknown = client.post("/api/dashboards/tile-spec", json={"spec": table, "chart_type": "pie"})
+    assert unknown.status_code == 422

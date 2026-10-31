@@ -6,6 +6,11 @@ temp_result_vN (или передаются готовыми записями), 
 определяются по значениям: даты -> temporal, числа -> quantitative,
 остальное -> nominal. Если данных не хватает для запрошенного вида,
 спека строится в ближайшем подходящем виде (см. usermeta.chart_type).
+
+Колонки осей можно назвать явно (x, y, color — выбор агента, см.
+viz/chart_choice.py): тогда график строится по ним, а не по первой
+категории и первому числу. Целочисленный ключ на оси x столбцов
+(store_id) остаётся категорией.
 """
 
 import datetime as dt
@@ -22,6 +27,10 @@ KPI_FORMAT = ",.2~f"
 ROW_FIELD = "_row"
 COLUMN_FIELD = "_column"
 VALUE_FIELD = "_value"
+# С какого числа категорий столбцы лежат: длинные подписи (регионы) не налезают.
+HORIZONTAL_BARS = 12
+# Высота одной лежащей полосы, px: график растёт с числом категорий.
+BAR_STEP = 18
 
 _DATE_TEXT = re.compile(r"^\d{4}-\d{2}(-\d{2}([ T]\d{2}:\d{2}(:\d{2}(\.\d+)?)?)?)?$")
 _ORDER_NAME = re.compile(
@@ -126,11 +135,16 @@ def build_vega_spec(
     data: list[dict] | None = None,
     titles: dict[str, str] | None = None,
     title: str | None = None,
+    x: str | None = None,
+    y: str | None = None,
+    color: str | None = None,
 ) -> dict:
     """Собрать Vega-Lite спеку по типу графика и данным результата.
 
     Если data не передан, строки выгружаются из result_table через
-    db.to_records(result_table, limit=SPEC_ROW_LIMIT).
+    db.to_records(result_table, limit=SPEC_ROW_LIMIT). x, y, color —
+    колонки осей и разбивки цветом; колонки, которой нет в данных, нет и
+    в выборе.
     """
     if data is None:
         data = db.to_records(result_table, limit=SPEC_ROW_LIMIT) if db and result_table else []
@@ -138,7 +152,13 @@ def build_vega_spec(
     values = [{key: to_json_value(value) for key, value in record.items()} for record in data]
     types = infer_field_types(data)
     labels = {column: (titles or {}).get(column, column) for column in types}
-    built, layout = _ENCODERS[requested](_Columns(types, labels))
+    picked = {
+        role: column
+        for role, column in (("x", x), ("y", y), ("color", color))
+        if column is not None and column in types
+    }
+    distinct = {column: len({repr(record.get(column)) for record in data}) for column in types}
+    built, layout = _ENCODERS[requested](_Columns(types, labels, picked, distinct))
     spec: dict[str, Any] = {
         "$schema": VEGA_LITE_SCHEMA,
         "usermeta": {
@@ -155,17 +175,31 @@ def build_vega_spec(
         "mark": _MARKS[built],
         **layout,
     }
+    # Выбор колонок переживает пересчёт плитки (dashboards/recalculate.py).
+    spec["usermeta"].update(picked)
     if title:
         spec["title"] = title
     return spec
 
 
 class _Columns:
-    """Колонки результата, сгруппированные по типам каналов."""
+    """Колонки результата, сгруппированные по типам каналов.
 
-    def __init__(self, types: dict[str, str], labels: dict[str, str]) -> None:
+    picked — колонки, названные явно (x, y, color). Если названа хоть одна,
+    разбивка цветом — только по color: без него график одной серией.
+    """
+
+    def __init__(
+        self,
+        types: dict[str, str],
+        labels: dict[str, str],
+        picked: dict[str, str] | None = None,
+        distinct: dict[str, int] | None = None,
+    ) -> None:
         self.types = types
         self.labels = labels
+        self.picked = picked or {}
+        self.distinct = distinct or {}
         self.numeric = [column for column, kind in types.items() if kind == "quantitative"]
         self.temporal = [column for column, kind in types.items() if kind == "temporal"]
         self.nominal = [column for column, kind in types.items() if kind == "nominal"]
@@ -187,6 +221,32 @@ class _Columns:
 
     def metric(self, exclude: tuple[str, ...] = ()) -> str | None:
         return next((column for column in self.numeric if column not in exclude), None)
+
+    def pick(self, role: str, exclude: tuple[str, ...] = ()) -> str | None:
+        column = self.picked.get(role)
+        return column if column not in exclude else None
+
+    def numeric_pick(self, *roles: str, exclude: tuple[str, ...] = ()) -> str | None:
+        """Первая из названных колонок ролей roles, если она числовая."""
+        for role in roles:
+            column = self.pick(role, exclude)
+            if column is not None and self.types[column] == "quantitative":
+                return column
+        return None
+
+    def value(self, exclude: tuple[str, ...] = ()) -> str | None:
+        """Число для оси y: названное или первое числовое."""
+        return self.numeric_pick("y", exclude=exclude) or self.metric(exclude)
+
+    def picked_order(self) -> tuple[str, str] | None:
+        x_column = self.pick("x")
+        if x_column is None:
+            return None
+        kind = self.types[x_column]
+        # Год или номер месяца числом — порядок, а не величина («2 024»).
+        if kind == "temporal" or (kind == "quantitative" and not _ORDER_NAME.search(x_column)):
+            return x_column, kind
+        return x_column, "ordinal"
 
     def order(self) -> tuple[str, str] | None:
         ordered = ordered_column(self.types)
@@ -212,28 +272,50 @@ def _total(columns: _Columns, metric: str | None) -> dict:
 
 
 def _bar(columns: _Columns) -> tuple[str, dict]:
-    category = columns.category()
+    category = columns.pick("x") or columns.category()
     if category is None:
         return _histogram(columns) if columns.numeric else _table(columns)
     x_kind = "ordinal" if columns.types[category] == "temporal" else "nominal"
-    x_channel = columns.channel(category, x_kind, sort=None)
-    y_channel = _total(columns, columns.metric())
-    encoding = {"x": x_channel, "y": y_channel, "tooltip": _tip(x_channel, y_channel)}
-    return "bar", {"encoding": encoding}
+    metric = columns.value(exclude=(category,))
+    value_channel = _total(columns, metric)
+    # Много категорий — полосы лёжа, по убыванию значения; даты — всегда по оси x.
+    lying = x_kind == "nominal" and columns.distinct.get(category, 0) > HORIZONTAL_BARS
+    category_channel = columns.channel(category, x_kind, sort="-x" if lying else None)
+    across, along = ("y", "x") if lying else ("x", "y")
+    encoding = {
+        across: category_channel,
+        along: value_channel,
+        "tooltip": _tip(category_channel, value_channel),
+    }
+    series = columns.pick("color", exclude=(category, metric))
+    if series is not None:
+        # Столбцы серий рядом, а не стопкой: сравнивают значения, а не суммы.
+        encoding["color"] = columns.channel(series, "nominal")
+        encoding[f"{across}Offset"] = {"field": field_ref(series), "type": "nominal"}
+        encoding["tooltip"] = _tip(category_channel, encoding["color"], value_channel)
+    layout: dict[str, Any] = {"encoding": encoding}
+    if lying:
+        layout["height"] = {"step": BAR_STEP}
+    return "bar", layout
 
 
 def _line(columns: _Columns, chart_type: str = "line") -> tuple[str, dict]:
-    order = columns.order()
+    order = columns.picked_order() or columns.order()
     if order is None:
         return _bar(columns)
     x_column, x_kind = order
-    metric = columns.metric(exclude=(x_column,))
+    metric = columns.value(exclude=(x_column,))
     x_channel = columns.channel(x_column, x_kind)
     y_channel = _total(columns, metric)
     encoding = {"x": x_channel, "y": y_channel, "tooltip": _tip(x_channel, y_channel)}
-    series = columns.category(exclude=(x_column,))
-    if metric and series and columns.types[series] == "nominal":
-        encoding["color"] = columns.channel(series)
+    if columns.picked:
+        series = columns.pick("color", exclude=(x_column, metric))
+    else:
+        series = columns.category(exclude=(x_column,))
+        if not (metric and series and columns.types[series] == "nominal"):
+            series = None
+    if series is not None:
+        encoding["color"] = columns.channel(series, "nominal")
         encoding["tooltip"].extend(_tip(encoding["color"]))
     return chart_type, {"encoding": encoding}
 
@@ -243,7 +325,7 @@ def _area(columns: _Columns) -> tuple[str, dict]:
 
 
 def _histogram(columns: _Columns) -> tuple[str, dict]:
-    metric = columns.metric()
+    metric = columns.numeric_pick("y", "x") or columns.metric()
     if metric is None:
         return _bar(columns)
     binned = columns.channel(metric, bin={"maxbins": 20})
@@ -255,22 +337,29 @@ def _histogram(columns: _Columns) -> tuple[str, dict]:
 def _scatter(columns: _Columns) -> tuple[str, dict]:
     if len(columns.numeric) < 2:
         return _bar(columns)
-    x_column, y_column = columns.numeric[:2]
+    x_column = columns.numeric_pick("x")
+    y_column = columns.numeric_pick("y", exclude=(x_column,)) if x_column else None
+    if y_column is None:
+        x_column, y_column = columns.numeric[:2]
     encoding = {
         "x": columns.channel(x_column, scale={"zero": False}),
         "y": columns.channel(y_column, scale={"zero": False}),
         "tooltip": columns.tooltip(),
     }
-    if columns.nominal:
-        encoding["color"] = columns.channel(columns.nominal[0])
+    if columns.picked:
+        series = columns.pick("color", exclude=(x_column, y_column))
+    else:
+        series = columns.nominal[0] if columns.nominal else None
+    if series is not None:
+        encoding["color"] = columns.channel(series, "nominal")
     return "scatter", {"encoding": encoding}
 
 
 def _box(columns: _Columns) -> tuple[str, dict]:
-    metric = columns.metric()
+    metric = columns.value()
     if metric is None:
         return _bar(columns)
-    category = columns.category()
+    category = columns.pick("x", exclude=(metric,)) if columns.picked else columns.category()
     if category:
         x_channel = columns.channel(category, "nominal")
     else:
@@ -284,11 +373,14 @@ def _box(columns: _Columns) -> tuple[str, dict]:
 
 
 def _heatmap(columns: _Columns) -> tuple[str, dict]:
-    x_column = columns.category()
-    y_column = columns.category(exclude=(x_column,)) if x_column else None
+    # У тепловой карты y — вторая категория, а число — в color.
+    x_column = columns.pick("x") or columns.category()
+    y_column = None
+    if x_column is not None:
+        y_column = columns.pick("y", exclude=(x_column,)) or columns.category(exclude=(x_column,))
     if y_column is None:
         return _bar(columns)
-    metric = columns.metric()
+    metric = columns.numeric_pick("color") or columns.metric(exclude=(x_column, y_column))
     color = (
         columns.channel(metric, aggregate="sum", scale={"scheme": "blues"})
         if metric
@@ -330,7 +422,7 @@ def _table(columns: _Columns) -> tuple[str, dict]:
 
 
 def _kpi(columns: _Columns) -> tuple[str, dict]:
-    metric = columns.metric()
+    metric = columns.value()
     if metric is None:
         return _table(columns)
     text_channel = columns.channel(metric, format=KPI_FORMAT)

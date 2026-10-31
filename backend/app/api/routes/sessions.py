@@ -5,10 +5,12 @@
 PATCH меняет таблицу по умолчанию и/или название, ходы при этом остаются.
 Воспоминания сессии (#197) — ``/{id}/memories``: список, добавление,
 включение и выключение записи. ``/{id}/dashboard-ideas`` — варианты
-дашборда по таблице сессии для кнопок в чате (#224). ``/{id}/bundle`` и
-``/import`` — бандл сессии и импорт его в новую сессию (#249); ``/{id}/replay``
-— пересчёт графиков импортированной сессии по рецепту на данных получателя (#250);
-``/{id}/export-file`` и ``/import-file`` — файл ``.session`` с таблицами (#251).
+дашборда по таблице сессии для кнопок в чате (#224).
+``/{id}/results/{table}`` — страница результата шага хода этой сессии (#239).
+``/{id}/bundle`` и ``/import`` — бандл сессии и импорт его в новую сессию
+(#249); ``/{id}/replay`` — пересчёт графиков импортированной сессии по рецепту
+на данных получателя (#250); ``/{id}/export-file`` и ``/import-file`` — файл
+``.session`` с таблицами (#251).
 Источник правды — SQLite SessionMemory: сессии и их метаданные переживают
 перезапуск.
 """
@@ -17,12 +19,13 @@ import asyncio
 import json
 import logging
 import os
+import pathlib
 import tempfile
 import uuid
-from pathlib import Path
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, UploadFile
+import duckdb
+from fastapi import APIRouter, Depends, File, HTTPException, Path, Query, Request, UploadFile
 from fastapi.responses import FileResponse
 from starlette.background import BackgroundTask
 
@@ -38,6 +41,7 @@ from app.api.schemas.chat import (
     SessionFileRequest,
     SessionOut,
     SessionUpdate,
+    StepResultOut,
 )
 from app.core.agent.replay import Replayer, ReplayOut, ReplayRequest
 from app.core.dashboards.ideas import generate_ideas
@@ -51,6 +55,9 @@ router = APIRouter()
 
 SESSION_LIST_LIMIT = 30
 BUNDLE_MAX_BYTES = 10 << 20
+RESULT_PAGE_LIMIT = 500
+# Имя попадает в SQL как таблица — пускаем только temp_result_vN.
+ResultTable = Annotated[str, Path(pattern=r"^temp_result_v\d+$")]
 
 
 def table_columns(db: DuckDBManager, table: str) -> list[str]:
@@ -141,7 +148,7 @@ async def import_session_file(
     файл сессии, лишнее внутри zip или неизвестная версия формата — 400.
     """
     with tempfile.TemporaryDirectory() as folder:
-        path = Path(folder, "upload.session")
+        path = pathlib.Path(folder, "upload.session")
         try:
             await asyncio.to_thread(session_file.receive, file.file, path)
             return await asyncio.to_thread(session_file.read, path, db)
@@ -196,7 +203,7 @@ async def export_session_file(
     """
     handle, name = tempfile.mkstemp(suffix=".session")
     os.close(handle)
-    path = Path(name)
+    path = pathlib.Path(name)
     try:
         await asyncio.to_thread(
             session_file.write, session_id, db, payload.table, payload.feed, path
@@ -302,3 +309,25 @@ def delete_session(session_id: str) -> dict[str, bool]:
     if not deleted:
         raise HTTPException(status_code=404, detail="Сессия не найдена.")
     return {"ok": True}
+
+
+@router.get("/{session_id}/results/{table}", response_model=StepResultOut)
+def read_result(
+    session_id: str,
+    table: ResultTable,
+    db: Annotated[DuckDBManager, Depends(get_db)],
+    offset: Annotated[int, Query(ge=0)] = 0,
+    limit: Annotated[int, Query(ge=1, le=RESULT_PAGE_LIMIT)] = 50,
+) -> StepResultOut:
+    """Страница результата шага; чужой или удалённый результат — 404."""
+    if not existing(session_id).owns_result(table):
+        raise HTTPException(status_code=404, detail="Результат не найден.")
+    try:
+        columns, total = db.result_shape(table)
+        rows = db.to_records(table, limit=limit, offset=offset) if columns else []
+    except duckdb.Error:
+        logger.exception("результат %s не прочитан", table)
+        columns = []
+    if not columns:
+        raise HTTPException(status_code=404, detail="Результат больше недоступен.")
+    return StepResultOut(columns=columns, rows=rows, total=total)

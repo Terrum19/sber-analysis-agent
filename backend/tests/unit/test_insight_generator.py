@@ -96,6 +96,17 @@ def test_series_prompt_asks_for_whole_series(db):
     assert "12 345" not in llm.prompt
 
 
+def test_trend_result_asks_for_growth_and_significance(db):
+    llm = PromptSpy()
+    asyncio.run(
+        InsightGenerator(llm=llm, db=db).generate(
+            "Растёт ли?", "temp_result_v1", result_tool="trend_analysis"
+        )
+    )
+    assert "yoy_change_avg" in llm.prompt and "p_value < 0,05" in llm.prompt
+    assert "Результат — 2 строк" not in llm.prompt
+
+
 def test_series_shape_counts_the_whole_table(db):
     db.execute("CREATE TABLE temp_result_v4 AS SELECT range AS id FROM range(471)")
     llm = PromptSpy()
@@ -134,3 +145,94 @@ def test_numbers_from_plan_conditions_are_grounded(db):
         InsightGenerator(llm=llm, db=db).generate("Сколько?", "temp_result_v5", steps=steps)
     )
     assert llm.calls == 1
+
+
+@pytest.fixture(params=[True, False], ids=["quality_fixes", "plain"])
+def fixes(request, monkeypatch):
+    from app.config import settings
+
+    monkeypatch.setattr(settings, "agent_quality_fixes", request.param)
+
+
+def test_prompt_without_tests_has_no_significance_rule(db, fixes):
+    llm = PromptSpy()
+    asyncio.run(InsightGenerator(llm=llm, db=db).generate("Сколько вин?", "temp_result_v1"))
+    for text in ("стат-тест", "значим", "0.05", "Сопутствующие"):
+        assert text not in llm.prompt
+
+
+def test_p_value_in_result_keeps_threshold(db, fixes):
+    db.execute("CREATE TABLE temp_test AS SELECT 0.42 AS correlation, 1e-30 AS p_value, 7 AS n")
+    llm = PromptSpy()
+    asyncio.run(InsightGenerator(llm=llm, db=db).generate("Связаны ли?", "temp_test"))
+    assert "p_value < 0.05" in llm.prompt
+    assert "Сопутствующие" not in llm.prompt
+
+
+def test_supporting_test_brings_both_parts(db, fixes):
+    db.execute("CREATE TABLE temp_test AS SELECT 2.1 AS statistic, 0.03 AS P_VALUE")
+    llm = PromptSpy()
+    supporting = [("t-тест", "temp_test")]
+    asyncio.run(
+        InsightGenerator(llm=llm, db=db).generate("Различаются?", "temp_result_v1", supporting)
+    )
+    assert "Сопутствующие результаты" in llm.prompt
+    assert "p_value < 0.05" in llm.prompt
+
+
+def test_supporting_without_p_value_has_no_threshold(db, fixes):
+    db.execute("CREATE TABLE temp_stats AS SELECT 5.0 AS mean, 1.2 AS std")
+    llm = PromptSpy()
+    supporting = [("Статистики", "temp_stats")]
+    asyncio.run(
+        InsightGenerator(llm=llm, db=db).generate("Какие цены?", "temp_result_v1", supporting)
+    )
+    assert "Сопутствующие результаты" in llm.prompt
+    assert "0.05" not in llm.prompt
+
+
+class Headline(PromptSpy):
+    calls = 0
+
+    async def complete_structured(self, system, user, schema):
+        self.calls += 1
+        return Insight(headline="Цена и оценка связаны: 0,42, значимо (p < 0,05)", details=[])
+
+
+def test_threshold_from_prompt_is_grounded(db):
+    db.execute("CREATE TABLE temp_test AS SELECT 0.42 AS correlation, 1e-30 AS p_value, 7 AS n")
+    llm = Headline()
+    asyncio.run(InsightGenerator(llm=llm, db=db).generate("Связаны ли?", "temp_test"))
+    assert llm.calls == 1
+
+
+def test_threshold_without_test_is_not_grounded(db):
+    db.execute("CREATE TABLE temp_corr AS SELECT 0.42 AS correlation, 7 AS n")
+    llm = Headline()
+    asyncio.run(InsightGenerator(llm=llm, db=db).generate("Связаны ли?", "temp_corr"))
+    assert llm.calls == 2
+
+
+def test_prompt_says_a_week_number_merges_the_years(db):
+    from app.models.research_step import ResearchStep
+
+    db.execute("CREATE TABLE temp_result_v4 AS SELECT 4 AS week_number, 43.4 AS sum_revenue")
+    llm = PromptSpy()
+    steps = [
+        ResearchStep(
+            step_id=0,
+            tool="create_column",
+            arguments={"new_column": "week_number", "expression": "EXTRACT(WEEK FROM sold_at)"},
+            purpose="Номер недели года",
+        ),
+        ResearchStep(
+            step_id=1,
+            tool="group_by",
+            arguments={"by": ["week_number"], "column": "revenue", "function": "SUM"},
+            purpose="Выручка по неделям года",
+        ),
+    ]
+    asyncio.run(
+        InsightGenerator(llm=llm, db=db).generate("Какая неделя?", "temp_result_v4", steps=steps)
+    )
+    assert "шаг 1 берёт номер недели года" in llm.prompt

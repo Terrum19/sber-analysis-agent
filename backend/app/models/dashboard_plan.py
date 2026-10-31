@@ -5,13 +5,14 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from app.models.chart_choice import ChartPick
+
 # Сколько идей предлагаем и сколько плиток строим.
 IDEAS_COUNT = 4
 MIN_TILES = 4
 MAX_TILES = 5
 
 Intent = Literal["kpi", "compare", "trend", "distribution", "relation", "share"]
-ChartType = Literal["bar", "line", "area", "scatter", "histogram", "box", "heatmap", "table", "kpi"]
 
 
 class DashboardIdea(BaseModel):
@@ -84,21 +85,10 @@ class DashboardOutline(BaseModel):
         return {**data, "title": title[:start].rstrip(" ,\n'\""), "tiles": tiles}
 
 
-class ChartChoice(BaseModel):
+class ChartChoice(ChartPick):
     """Вид графика плитки по её готовому результату; x, y, color — колонки результата."""
 
     tile_id: int
-    chart_type: ChartType = "table"
-    x: str | None = None
-    y: str | None = None
-    color: str | None = None
-    reason: str = ""
-
-    @field_validator("chart_type", mode="before")
-    @classmethod
-    def _normalize(cls, value: Any) -> Any:
-        text = value.strip().lower() if isinstance(value, str) else value
-        return text if text in ChartType.__args__ else "table"
 
 
 class ChartChoices(BaseModel):

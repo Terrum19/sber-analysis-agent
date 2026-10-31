@@ -1,7 +1,9 @@
-"""Выбор типа визуализации под вопрос.
+"""Выбор типа визуализации под вопрос без LLM и проверка вида по данным.
 
-Способ представления подбирается под вопрос и меняется по просьбе
-пользователя. Логика: явный запрос вида -> таблица результата -> LLM.
+Вид и колонки графика выбирает агент по готовым результатам (см.
+viz/chart_choice.py, agent/chart_pick.py); select_chart — запасной путь,
+когда выбора нет: явный вид от планировщика или ключевые слова вопроса,
+проверенные по строкам результата.
 """
 
 import math
@@ -10,7 +12,8 @@ import re
 from app.core.viz.vega_spec_builder import infer_field_types, ordered_column
 
 NO_CHART = "none"
-MAX_BAR_CATEGORIES = 30
+# Больше 12 категорий столбцы лежат (vega_spec_builder), поэтому до 50 читаются.
+MAX_BAR_CATEGORIES = 50
 MIN_LINE_POINTS = 3
 MIN_HISTOGRAM_VALUES = 20
 
@@ -45,6 +48,38 @@ def fits(
         return bool(categories) and _distinct(records, categories[0]) <= MAX_BAR_CATEGORIES
     if chart_type == "heatmap":
         return len(categories) >= 2
+    if chart_type == "kpi":
+        return is_single_number(records)
+    return chart_type == "table"
+
+
+def fits_columns(
+    chart_type: str, records: list[dict], types: dict[str, str], x: str | None, y: str | None
+) -> bool:
+    """Подходит ли вид к строкам по названным колонкам x и y (выбор агента).
+
+    В отличие от fits, ось x может быть любой колонкой: целочисленный ключ
+    (store_id) — категория столбцов, год числом — ось линии.
+    """
+
+    def numeric(column: str | None) -> bool:
+        return column is not None and types.get(column) == "quantitative"
+
+    if y is not None and chart_type not in ("heatmap", "scatter") and not numeric(y):
+        return False
+    if chart_type in ("line", "area"):
+        return x is not None and _distinct(records, x) >= MIN_LINE_POINTS
+    if chart_type == "scatter":
+        return numeric(x) and numeric(y) and x != y
+    if chart_type == "histogram":
+        column = y or x
+        return numeric(column) and _present(records, column) >= MIN_HISTOGRAM_VALUES
+    if chart_type == "box":
+        return numeric(y)
+    if chart_type == "bar":
+        return x is not None and _distinct(records, x) <= MAX_BAR_CATEGORIES
+    if chart_type == "heatmap":
+        return x is not None and y is not None and x != y
     if chart_type == "kpi":
         return is_single_number(records)
     return chart_type == "table"

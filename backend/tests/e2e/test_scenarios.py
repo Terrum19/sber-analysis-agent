@@ -67,14 +67,11 @@ def test_scenario_1(fake_llm: FakeLLM) -> None:
     )
     assert response.status_code == 200
     stream = events(response)
-    assert [event["type"] for event in stream if event["type"] != "progress"] == [
-        "text",
-        "chart",
-        "done",
-    ]
+    # Обзор — текст для человека, без технической таблицы колонок.
+    assert [event["type"] for event in stream if event["type"] != "progress"] == ["text", "done"]
     headline = stream[1]["data"]["headline"]
-    assert "6 строк" in headline
-    assert "с 2024-01-01 по 2024-02-01" in headline
+    assert "6 записей" in headline
+    assert "с 01.01.2024 по 01.02.2024" in headline
     assert all(event["data"].get("stage") != "planning" for event in stream)
 
 

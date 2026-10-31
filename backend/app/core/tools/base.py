@@ -275,7 +275,10 @@ class BaseTool(ABC):
         parts = []
         for field_name, field in self.Args.model_fields.items():
             text = f"{field_name}: {_type_name(field.annotation, field.metadata)}"
-            if not field.is_required():
+            if field.is_required():
+                # Без пометки модель пропускала обязательный аргумент (group_by без by).
+                text += " (обязательный)"
+            else:
                 default = field.get_default(call_default_factory=True)
                 text += f" = {default!r}"
             parts.append(text)

@@ -4,6 +4,8 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 
 import duckdb
+import httpx
+import openai
 import pytest
 from fastapi import BackgroundTasks
 from fastapi.testclient import TestClient
@@ -20,11 +22,19 @@ from app.core.memory.profile_memory import ProfileMemory
 from app.main import app
 from app.models.enrichment import ColumnEnrichment, EnrichmentBatch
 
+# Настоящий summarize: фикстура ниже подменяет его на заглушку.
+REAL_SUMMARIZE = ingest.summarize
+
 
 @pytest.fixture(autouse=True)
 def summarized(monkeypatch: pytest.MonkeyPatch) -> list[list[str]]:
-    """Описание «что передо мной» без LLM: какие таблицы описывались."""
+    """Описание «что передо мной» без LLM: какие таблицы описывались.
+
+    Заглушка не снимает отметку «описание строится»: сводка видит описание
+    недостроенным, как пока идёт фоновая задача.
+    """
     calls: list[list[str]] = []
+    monkeypatch.setattr(ingest, "_summarizing", set())
 
     async def summarize(db, tables, llm=None) -> None:
         calls.append(list(tables))
@@ -673,6 +683,7 @@ def test_table_brief_shows_summary_built_in_background(client, storage) -> None:
         "period_to": "2024-02-01",
         "description_status": "none",
         "summary": None,
+        "summary_pending": True,
         "warnings": [],
         "entities": [],
         "metrics": ["amount"],
@@ -683,6 +694,31 @@ def test_table_brief_shows_summary_built_in_background(client, storage) -> None:
     brief = client.get("/api/datasources/tables/orders").json()
     assert brief["summary"] == "Передо мной заказы."
     assert brief["display_name"] == "Заказы по дням"
+    assert brief["summary_pending"] is False
+
+
+class DownLLM:
+    async def complete_structured(self, *_: object) -> object:
+        raise openai.APIConnectionError(request=httpx.Request("POST", "http://llm"))
+
+
+@pytest.mark.parametrize("llm", [SummaryLLM(), DownLLM()])
+def test_summary_is_not_pending_once_summarize_ends(client, storage, llm) -> None:
+    """Описание готово или LLM недоступна — фронту больше нечего ждать."""
+    assert client.post("/api/datasources/csv", files=ORDERS_CSV).status_code == 200
+    assert client.get("/api/datasources/tables/orders").json()["summary_pending"] is True
+    db = app.dependency_overrides[get_db]()
+    asyncio.run(REAL_SUMMARIZE(db, ["orders"], llm))
+    assert client.get("/api/datasources/tables/orders").json()["summary_pending"] is False
+
+
+def test_table_without_summary_job_is_not_pending(client, storage) -> None:
+    """Таблица подключена до перезапуска: описание не строится, опрашивать нечего."""
+    assert client.post("/api/datasources/csv", files=ORDERS_CSV).status_code == 200
+    ingest._summarizing.clear()
+    brief = client.get("/api/datasources/tables/orders").json()
+    assert brief["summary"] is None
+    assert brief["summary_pending"] is False
 
 
 def test_renamed_table_keeps_its_sql_name(client, storage) -> None:

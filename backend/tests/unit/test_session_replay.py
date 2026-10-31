@@ -139,7 +139,7 @@ def test_csv_recipe_replays_charts_and_tiles_on_same_data(machines) -> None:
     turn_id = memory.turns[0]["turn_id"]
     out, dashboards = replay(imported, recipient, {turn_id: stripped(spec)})
 
-    assert bundle["turns"][0]["replay"] == {"turn_id": turn_id, "step_id": 2, "overview": False}
+    assert bundle["turns"][0]["replay"] == {"turn_id": turn_id, "step_id": 2}
     assert bundle["dashboards"][0]["tiles"][0]["replay"]["step_id"] == 1
     assert result.table == "sales_1" and not out.failed
     chart = out.charts[turn_id]
@@ -249,25 +249,6 @@ def test_python_step_is_never_replayed(machines) -> None:
     out, _ = replay(imported, recipient, {})
 
     assert "Python" in out.failed[turn_id] and not out.charts
-
-
-def test_overview_turn_is_rebuilt_from_recipient_passport(machines) -> None:
-    author, recipient = machines
-    csv_table(author, "sales")
-    csv_table(recipient, "sales_copy")
-    memory = SessionMemory("author", author)
-    memory.set_table("sales")
-    memory.start_turn("Что передо мной?")
-    memory.mark_overview()
-    memory.finish_turn("ok", "sales: 4 строки")
-
-    bundle, _, imported = share("author", author, recipient)
-    out, _ = replay(imported, recipient, {})
-
-    turn_id = memory.turns[0]["turn_id"]
-    assert bundle["turns"][0]["replay"]["overview"] is True
-    spec = out.charts[turn_id].spec
-    assert spec["usermeta"]["chart_type"] == "table" and len(values(spec)) == 3
 
 
 def test_failed_step_keeps_other_charts(machines) -> None:

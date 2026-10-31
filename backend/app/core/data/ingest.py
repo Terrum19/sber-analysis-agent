@@ -13,6 +13,8 @@
    LLM не вызывается.
 3. summarize() — описание таблицы «что передо мной» (core/data/overview.py)
    в паспорт, после describe(): так оно видит названия колонок из документа.
+   Пока описание строится, summarizing() отвечает True: фронт перезапрашивает
+   сводку таблицы только в это время, а не ждёт описания, которого не будет.
 """
 
 import logging
@@ -32,6 +34,15 @@ from app.core.memory.profile_memory import ProfileMemory
 from app.models.enrichment import ColumnEnrichment
 
 logger = logging.getLogger(__name__)
+
+# Таблицы, чьё описание «что передо мной» строится сейчас в фоне этого процесса.
+# После перезапуска пусто: прерванное описание построится при первом вопросе.
+_summarizing: set[str] = set()
+
+
+def summarizing(table: str) -> bool:
+    """Строится ли сейчас описание таблицы (от подключения до конца summarize)."""
+    return table in _summarizing
 
 
 def attach(connector: BaseConnector, db) -> dict[str, TableProfile]:
@@ -165,6 +176,9 @@ def mark_pending(
     """
     document = (document or "").strip() or None
     job = DescribeJob(run=uuid4().hex, comments={})
+    # Описание строится в фоне после ответа подключения: сводка уже должна
+    # показывать, что его стоит подождать.
+    _summarizing.update(tables)
     memory = ProfileMemory(db)
     for table in tables:
         if document is None:
@@ -182,11 +196,16 @@ async def summarize(db, tables: list[str], llm: LLMClient | None = None) -> None
     описание построится при первом вопросе.
     """
     llm = llm or LLMClient()
-    for table in tables:
-        try:
-            await overview.describe_dataset(db, table, llm)
-        except openai.APIConnectionError:
-            logger.warning("LLM недоступна, описание таблиц %s отложено до вопроса", tables)
-            return
-        except Exception:
-            logger.exception("Описание таблицы %s не построено", table)
+    try:
+        for table in tables:
+            try:
+                await overview.describe_dataset(db, table, llm)
+            except openai.APIConnectionError:
+                logger.warning("LLM недоступна, описание таблиц %s отложено до вопроса", tables)
+                return
+            except Exception:
+                logger.exception("Описание таблицы %s не построено", table)
+            finally:
+                _summarizing.discard(table)
+    finally:
+        _summarizing.difference_update(tables)

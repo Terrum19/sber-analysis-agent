@@ -4,7 +4,7 @@
  * или установлен ключ localStorage.sber_force_mock="true".
  * При ошибках сети или бэкенда выбрасывается ApiError.
  */
-import type { ChatStreamEvent, DashboardIdea } from "@/types/chat";
+import type { ChatStreamEvent, DashboardIdea, ResultColumn } from "@/types/chat";
 import type { LlmStatus } from "@/types/llm";
 import type {
   Datasource,
@@ -37,6 +37,7 @@ import {
   mockPatchSession,
   mockRenameSession,
   mockRecalculateDashboard,
+  mockStepResult,
   mockStreamChat,
   mockUpdateDashboard,
 } from "./mockData";
@@ -404,6 +405,39 @@ export async function fetchDashboardIdeas(sessionId: string, exclude: string[] =
   }
 }
 
+/** Страница результата шага: GET /api/sessions/{id}/results/{table}. */
+export interface StepResultPage {
+  columns: ResultColumn[];
+  rows: Record<string, unknown>[];
+  /** Сколько строк в результате всего. */
+  total: number;
+}
+
+/**
+ * Строки результата шага temp_result_vN начиная с offset (#239).
+ * 404 — результат чужой или удалён (рестарт): фронт оставляет превью из события.
+ */
+export async function getStepResult(
+  sessionId: string,
+  table: string,
+  offset = 0,
+  limit = 50,
+): Promise<StepResultPage> {
+  if (isMockMode()) {
+    return mockStepResult(table, offset, limit);
+  }
+  try {
+    const query = new URLSearchParams({ offset: String(offset), limit: String(limit) });
+    const res = await fetch(
+      `${API}/sessions/${encodeURIComponent(sessionId)}/results/${encodeURIComponent(table)}?${query}`,
+    );
+    if (!res.ok) throw await parseApiError(res);
+    return await res.json();
+  } catch (err) {
+    throw toApiError(err);
+  }
+}
+
 /** Запрос хода в режиме дашборда; idea — выбранный вариант или null. */
 export interface DashboardRequest {
   idea: DashboardIdea | null;
@@ -414,6 +448,7 @@ export interface DashboardRequest {
  * onClose — один раз, когда поток закончился, оборвался или был отменён.
  * replyTo — turn_id из события done: вопрос продолжает конкретный прошлый ход (#166).
  * dashboard — ход строит дашборд (mode: "dashboard", #224).
+ * resumeTurn — turn_id остановленного хода: бэкенд продолжает его с чекпоинта.
  */
 export function streamChat(
   sessionId: string,
@@ -421,7 +456,7 @@ export function streamChat(
   onEvent: (event: ChatStreamEvent) => void,
   onClose?: (error?: string) => void,
   optionsOrRecoveryResponse?:
-    | { recoveryResponse?: string; replyTo?: string | null; dashboard?: DashboardRequest }
+    | { recoveryResponse?: string; replyTo?: string | null; dashboard?: DashboardRequest; resumeTurn?: string }
     | string,
 ): () => void {
   const options =
@@ -447,6 +482,7 @@ export function streamChat(
           reply_to: options?.replyTo ?? null,
           mode: options?.dashboard ? "dashboard" : "chat",
           idea: options?.dashboard?.idea ?? null,
+          resume_turn: options?.resumeTurn ?? null,
         }),
         signal: controller.signal,
       });
@@ -662,6 +698,23 @@ export async function recalculateDashboard(id: string): Promise<DashboardConfig>
   }
 }
 
+/**
+ * Спека плитки в другом виде по её же данным (data.values): бэкенд строит её
+ * тем же построителем, что и график ответа. Без SQL и LLM, дашборд не нужен.
+ */
+export async function rebuildTileSpec(
+  spec: Record<string, unknown>,
+  chartType: string,
+): Promise<Record<string, unknown>> {
+  const res = await fetch(`${API}/dashboards/tile-spec`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ spec, chart_type: chartType }),
+  });
+  if (!res.ok) throw await parseApiError(res);
+  return await res.json();
+}
+
 /** Выгрузка артефактов (Excel / PDF). */
 export interface ExportPayload {
   session_id: string;
@@ -676,6 +729,14 @@ export interface ExportPayload {
   headline?: string;
   /** Детали инсайта — для PDF-отчёта (E-01). */
   details?: string[];
+  /** Заголовок отчёта / дашборда из интерфейса. */
+  title?: string;
+  /** Название сессии для шапки отчёта дашборда. */
+  session_title?: string;
+  /** Название базы данных для шапки отчёта дашборда. */
+  database_name?: string;
+  /** Название источника / базы данных / файла для шапки отчёта дашборда. */
+  source_name?: string;
   /** Vega-Lite спека графика — для картинки в PDF (E-01). */
   spec?: Record<string, unknown>;
 }
