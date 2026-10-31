@@ -13,6 +13,7 @@ export interface ArtifactRecord {
   title: string;
   tile: DashboardTile;
   sessionId?: string;
+  dashboardId?: string;
   openedAt: number;
 }
 
@@ -21,7 +22,7 @@ const LIMIT = 40;
 interface ArtifactState {
   artifacts: Record<string, ArtifactRecord>;
   /** Сохраняет плитку как артефакт и возвращает его id. */
-  saveArtifact: (tile: DashboardTile, sessionId?: string) => string;
+  saveArtifact: (tile: DashboardTile, sessionId?: string, dashboardId?: string) => string;
   removeArtifactsBySessionIds: (sessionIds: string[]) => void;
 }
 
@@ -38,10 +39,10 @@ export const useArtifactStore = create<ArtifactState>()(
   persist(
     (set) => ({
       artifacts: {},
-      saveArtifact: (tile, sessionId) => {
+      saveArtifact: (tile, sessionId, dashboardId) => {
         const id = artifactId(tile);
         set((s) => {
-          const next = { ...s.artifacts, [id]: { id, title: tile.title, tile, sessionId, openedAt: Date.now() } };
+          const next = { ...s.artifacts, [id]: { id, title: tile.title, tile, sessionId, dashboardId, openedAt: Date.now() } };
           const ids = Object.values(next).sort((a, b) => b.openedAt - a.openedAt).map((a) => a.id);
           for (const old of ids.slice(LIMIT)) delete next[old];
           return { artifacts: next };

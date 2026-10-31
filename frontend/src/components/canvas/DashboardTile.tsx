@@ -36,6 +36,7 @@ import {
 import { useElementSize } from "@/hooks/useElementSize";
 import { useT } from "@/i18n/useT";
 import { isKpiTile } from "@/lib/tileLayout";
+import { chartTypeOf } from "@/lib/chartTypes";
 import { DataTable, chartKind } from "@/components/charts/ChartRenderer";
 import Icon from "@/components/ui/Icon";
 
@@ -58,6 +59,8 @@ interface Props {
   onElaborate?: (selection?: ChartSelection) => void;
   /** Меню действий плитки: anchorRect — координаты кнопки «⋯». */
   onMenu?: (anchorRect: DOMRect) => void;
+  /** Смена типа графика: anchorRect — координаты кнопки смены типа. */
+  onChangeChartType?: (anchorRect: DOMRect) => void;
   /** Маленькое превью без осей и инсайта. */
   mini?: boolean;
   /** Компактная плитка в ленте чата: график/KPI + инсайт, без действий. */
@@ -259,6 +262,7 @@ export default function DashboardTile({
   onAddToDashboards,
   onOpenChat,
   chatDeleted = false,
+  onChangeChartType,
   mini = false,
   preview = false,
   dense = false,
@@ -387,10 +391,10 @@ export default function DashboardTile({
         dense ? "p-3" : "p-4"
       } ${canOpen ? "cursor-zoom-in" : ""}`}
     >
-      {/* Верхняя строка плитки; вне режима правки — ручка перетаскивания */}
+      {/* Верхняя строка плитки; шапка — ручка перетаскивания */}
       <div
         className={`flex shrink-0 items-start justify-between gap-2 ${dense ? "mb-1.5" : "mb-2"} ${
-          draggable && !isEditing ? "tile-drag-handle cursor-grab active:cursor-grabbing" : ""
+          draggable ? "tile-drag-handle cursor-grab active:cursor-grabbing" : ""
         }`}
       >
         <div className="min-w-0 flex-1">
@@ -450,6 +454,7 @@ export default function DashboardTile({
               {(isEditing || Boolean(onRename)) && (
                 <button
                   type="button"
+                  onMouseDown={(e) => e.stopPropagation()}
                   onClick={(e) => {
                     e.stopPropagation();
                     setEditingTitle(true);
@@ -470,7 +475,12 @@ export default function DashboardTile({
           {actions && !dense && <div className="flex shrink-0 items-center gap-1">{actions}</div>}
           {canDrill && (
             <button
-              onClick={() => onElaborate?.()}
+              type="button"
+              onMouseDown={(e) => e.stopPropagation()}
+              onClick={(e) => {
+                e.stopPropagation();
+                onElaborate?.();
+              }}
               className="flex h-6 w-6 shrink-0 items-center justify-center rounded-md text-graphite-400 hover:bg-graphite-800 hover:text-graphite-100 transition"
               title={t("drill.menu")}
             >
@@ -479,7 +489,12 @@ export default function DashboardTile({
           )}
           {onOpenChat && (
             <button
-              onClick={onOpenChat}
+              type="button"
+              onMouseDown={(e) => e.stopPropagation()}
+              onClick={(e) => {
+                e.stopPropagation();
+                onOpenChat();
+              }}
               disabled={chatDeleted}
               className="flex h-6 w-6 shrink-0 items-center justify-center rounded-md text-graphite-400 transition hover:bg-graphite-800 hover:text-graphite-100 disabled:cursor-not-allowed disabled:opacity-40"
               title={chatDeleted ? t("tile.chatDeleted") : t("tile.openChat")}
@@ -489,16 +504,49 @@ export default function DashboardTile({
           )}
           {onAddToDashboards && (
             <button
-              onClick={onAddToDashboards}
+              type="button"
+              onMouseDown={(e) => e.stopPropagation()}
+              onClick={(e) => {
+                e.stopPropagation();
+                onAddToDashboards();
+              }}
               className="flex h-6 w-6 shrink-0 items-center justify-center rounded-md text-graphite-400 transition hover:bg-graphite-800 hover:text-graphite-100"
               title={t("addTo.button")}
             >
               <Icon name="plus" size={13} />
             </button>
           )}
+          {onChangeChartType && (
+            <button
+              type="button"
+              data-chart-picker-trigger="true"
+              onMouseDown={(e) => e.stopPropagation()}
+              onClick={(e) => {
+                e.stopPropagation();
+                onChangeChartType(e.currentTarget.getBoundingClientRect());
+              }}
+              className={`flex h-6 shrink-0 items-center justify-center rounded-md text-graphite-400 hover:bg-graphite-800 hover:text-graphite-100 transition ${
+                dense ? "w-6" : "gap-1 px-1.5"
+              }`}
+              title={t("canvas.chartType")}
+              aria-label={t("canvas.chartType")}
+            >
+              <Icon name="chart" size={13} />
+              {!dense && (
+                <span className="text-[11px] font-medium hidden sm:inline max-w-[80px] truncate">
+                  {t(`chartType.${chartTypeOf(tile)}` as any)}
+                </span>
+              )}
+            </button>
+          )}
           {isEditing && onMenu && (
             <button
-              onClick={(e) => onMenu(e.currentTarget.getBoundingClientRect())}
+              type="button"
+              onMouseDown={(e) => e.stopPropagation()}
+              onClick={(e) => {
+                e.stopPropagation();
+                onMenu(e.currentTarget.getBoundingClientRect());
+              }}
               className="flex h-6 w-6 items-center justify-center rounded-md text-graphite-400 hover:bg-graphite-800 hover:text-graphite-100 transition"
               title={t("canvas.tileMenu")}
             >
@@ -507,16 +555,27 @@ export default function DashboardTile({
           )}
           {isEditing && onDelete ? (
             <button
-              onClick={onDelete}
+              type="button"
+              onMouseDown={(e) => e.stopPropagation()}
+              onClick={(e) => {
+                e.stopPropagation();
+                onDelete();
+              }}
               className="flex h-6 w-6 shrink-0 items-center justify-center rounded-md bg-bad/10 text-bad hover:bg-bad/20 transition"
               title={t("tile.delete")}
+              aria-label={t("tile.delete")}
             >
               <Icon name="x" size={13} />
             </button>
           ) : (
             canOpen && (
               <button
-                onClick={onOpen}
+                type="button"
+                onMouseDown={(e) => e.stopPropagation()}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onOpen?.();
+                }}
                 className="flex h-6 w-6 shrink-0 items-center justify-center rounded-md text-graphite-500 opacity-0 transition hover:bg-graphite-800 hover:text-graphite-100 group-hover:opacity-100 focus:opacity-100"
                 title={t("artifact.open")}
               >

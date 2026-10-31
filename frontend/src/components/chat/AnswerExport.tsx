@@ -32,12 +32,12 @@ export default function AnswerExport({
   sessionId,
   question,
   headline,
+  title,
   details,
   spec,
   resultTable,
   compact = false,
   inline = false,
-  title,
 }: Props) {
   const t = useT();
   const [busy, setBusy] = useState<"xlsx" | "pdf" | null>(null);

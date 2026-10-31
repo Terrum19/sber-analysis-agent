@@ -1,5 +1,50 @@
 2026-10-31  Dmitriy Yakushonok  <dmitriyyakushonok@yandex.ru>
 
+	Смена типа графика с плитки, стабилизация сайдбара и навигации.
+	* frontend/src/components/canvas/ChartTypePicker.tsx: Новый. Поповер
+	выбора из 9 типов графиков, позиционирование у плитки, превью при наведении.
+	* frontend/src/hooks/useChartTypeChange.ts: Новый. Хук смены типа графика
+	с превью, дебаунсом сохранения 500 мс, защитой от гонок через saveSeqRef
+	и откатом при ошибке сохранения.
+	* frontend/src/components/canvas/DashboardTile.tsx (DashboardTile): Кнопка
+	смены типа графика всегда видна на плитке (включая dense режим, просмотр,
+	редактирование и вкладку «Графики»). Изоляция событий mousedown от drag handle,
+	исправлена работа кнопки удаления плитки.
+	* frontend/src/components/canvas/Canvas.tsx: Подключение useChartTypeChange,
+	передача смены типа во вкладках «Дашборд» и «Графики», синхронизация
+	удаления плиток с sessionStore.
+	* frontend/src/app/dashboard/[id]/page.tsx: Подключение useChartTypeChange,
+	передача dashboardId в openArtifact.
+	* frontend/src/components/layout/ItemActionMenu.tsx: Выбор типа графика убран
+	из меню троеточия в пользу отдельной кнопки на плитке.
+	* frontend/src/components/ui/Icon.tsx: Добавлены SVG-иконки для всех 9 типов
+	графиков (chartBar, chartLine, chartArea, chartScatter, chartHistogram,
+	chartBox, chartHeatmap, chartTable, chartKpi).
+	* frontend/src/lib/chartTypes.ts (CHART_TYPE_ICONS): Иконки для типов графиков.
+	(withChartType): Подстановка snapshot_data в spec.data.values при отсутствии.
+	* frontend/src/components/chat/ChatPanel.tsx: Устранена плавная прокатка истории
+	при открытии сессии (замена smooth scrollIntoView на мгновенное позиционирование
+	scrollTop в useLayoutEffect).
+	* frontend/src/components/layout/RecentDashboards.tsx: Кэширование недавних
+	дашбордов в памяти и sessionStorage, устранение CLS при смене вкладок,
+	сравнение areDashboardsEqual, удаление pathname из зависимостей fetch.
+	* frontend/src/components/layout/LeftSidebar.tsx: Троттлинг syncSessions (30 с),
+	сохранение скролла сайдбара (cachedSidebarScrollTop), currentSessionId
+	ограничен маршрутом /session/.
+	* frontend/src/store/sessionStore.ts (mergeSessions): Проверка hasChanges
+	для исключения лишних ре-рендеров при неизменном списке сессий.
+	* frontend/src/components/layout/TopHeader.tsx: Локальная горизонтальная
+	прокрутка полосы вкладок вместо глобального scrollIntoView.
+	* frontend/src/store/artifactStore.ts, frontend/src/hooks/useOpenArtifact.ts,
+	frontend/src/app/artifact/[id]/page.tsx: Поддержка dashboardId и кнопка
+	«Назад в дашборд» со страницы артефакта.
+	* frontend/src/i18n/dictionary.ts: Переводы для отката типа графика и возврата
+	в дашборд.
+	* frontend/package.json: Добавлен скрипт npm test.
+	* frontend/src/tests/chartTypeChange.runner.mjs,
+	frontend/src/tests/chartTypeChange.test.ts: Набор тестов смены типов графиков,
+	дебаунса, превью, отката ошибок, стабильности сайдбара и скролла чата.
+
 	Улучшение экспорта в PDF: рендеринг таблиц, наклон подписей оси X под 45°
 	и неотделимость заголовков графиков от визуализаций.
 	* backend/app/core/export/charts.py (is_table_spec, _detect_x_axis_overlap,

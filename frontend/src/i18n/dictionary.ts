@@ -91,6 +91,7 @@ const ru = {
   "zoom.in": "Увеличить плитки",
   "zoom.reset": "Масштаб 100%",
   "artifact.open": "Открыть во вкладке на весь экран",
+  "artifact.toDashboard": "Назад в дашборд",
   "artifact.notFound": "Артефакт не найден",
   "artifact.notFoundText": "Откройте график или KPI из панели дашборда ещё раз.",
 
@@ -381,6 +382,7 @@ const ru = {
   "canvas.saveStateRetry": "Повторить сохранение",
   "canvas.chartType": "Сменить тип графика",
   "canvas.chartTypeLocalOnly": "Тип сохранён; данные пересчитаются после обновления",
+  "canvas.chartTypeRollback": "Не удалось сменить тип графика, изменения отменены",
   "canvas.tileMenu": "Действия плитки",
 
   "addTo.button": "Добавить в дашборды",
@@ -617,6 +619,7 @@ const en: Record<MessageKey, string> = {
   "zoom.in": "Larger tiles",
   "zoom.reset": "Zoom 100%",
   "artifact.open": "Open full size in a tab",
+  "artifact.toDashboard": "Back to dashboard",
   "artifact.notFound": "Artifact not found",
   "artifact.notFoundText": "Open the chart or KPI from the dashboard panel again.",
 
@@ -907,6 +910,7 @@ const en: Record<MessageKey, string> = {
   "canvas.saveStateRetry": "Retry save",
   "canvas.chartType": "Change chart type",
   "canvas.chartTypeLocalOnly": "Type saved; data will refresh later",
+  "canvas.chartTypeRollback": "Failed to change chart type, reverted changes",
   "canvas.tileMenu": "Tile actions",
 
   "addTo.button": "Add to dashboards",
