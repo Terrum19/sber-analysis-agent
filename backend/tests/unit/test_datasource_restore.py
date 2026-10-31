@@ -31,6 +31,7 @@ DSN = f"postgresql://analyst:{SECRET}@db.local:5432/shop?sslmode=disable"
 def clean_environment(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(restore, "ENV_FILES", ())
     monkeypatch.delenv("POSTGRES_PASSWORD", raising=False)
+    monkeypatch.delenv("CLICKHOUSE_PASSWORD", raising=False)
 
 
 @pytest.fixture
@@ -88,14 +89,40 @@ def test_remember_keeps_clickhouse_without_password(store: DatasourceStore) -> N
     assert SECRET.encode() not in Path(settings.sqlite_path).read_bytes()
 
 
-def test_restore_skips_clickhouse(db, store, connectors) -> None:
+def test_restore_reconnects_clickhouse(
+    db, store, connectors, profiled, monkeypatch, caplog
+) -> None:
+    original = ClickHouseConnector(f"clickhouse://analyst:{SECRET}@ch.local:9000/sales")
+    restore.remember(original, None, store)
     store.save(
         DatasourceRecord(
-            identity="ch_0123456789", kind="clickhouse", dsn="clickhouse://analyst@ch.local:9000/x"
+            identity="ch_nopass", kind="clickhouse", dsn="clickhouse://analyst:***@ch.local/x"
         )
     )
-    assert asyncio.run(restore.restore_saved_sources(db, store)) == []
+    monkeypatch.setenv("CLICKHOUSE_PASSWORD", SECRET)
+    monkeypatch.setenv("POSTGRES_PASSWORD__ch_nopass", "чужая переменная")
+    monkeypatch.setenv("CLICKHOUSE_PASSWORD__ch_nopass", "")
+    connectors[None] = FakeConnector("winemag")
+    with caplog.at_level(logging.WARNING, logger=restore.__name__):
+        restored = asyncio.run(restore.restore_saved_sources(db, store))
+    assert restored == [original.identity, "ch_nopass"]
+    assert db.query("SELECT count(*) AS rows FROM winemag") == [{"rows": 1}]
+    kind, dsn, schema = connectors["calls"][0]
+    assert (kind, schema) == ("clickhouse", None)
+    assert ClickHouseConnector(dsn).identity == original.identity
+    assert ClickHouseConnector(dsn).dsn.password == SECRET
+
+
+def test_restore_warns_about_clickhouse_password(db, store, connectors, caplog) -> None:
+    store.save(
+        DatasourceRecord(
+            identity="ch_0123456789", kind="clickhouse", dsn="clickhouse://analyst:***@ch.local/x"
+        )
+    )
+    with caplog.at_level(logging.WARNING, logger=restore.__name__):
+        assert asyncio.run(restore.restore_saved_sources(db, store)) == []
     assert connectors["calls"] == []
+    assert "CLICKHOUSE_PASSWORD__ch_0123456789" in caplog.text
 
 
 def test_remember_skips_other_connectors(store: DatasourceStore) -> None:
@@ -139,6 +166,22 @@ def test_connection_string_restores_identity(monkeypatch: pytest.MonkeyPatch) ->
 def test_connection_string_without_password() -> None:
     saved = record()
     assert restore.connection_string(saved) == saved.dsn
+    keyless = DatasourceRecord(identity="ch_x", kind="clickhouse", dsn="clickhouse://ch.local/x")
+    assert restore.connection_string(keyless) == keyless.dsn
+
+
+def test_clickhouse_password_is_separate(monkeypatch: pytest.MonkeyPatch) -> None:
+    original = ClickHouseConnector(f"clickhouses://analyst:{SECRET}@ch.local/sales")
+    saved = DatasourceRecord(
+        identity=original.identity, kind="clickhouse", dsn=original.dsn.masked()
+    )
+    monkeypatch.setenv("POSTGRES_PASSWORD", "postgres")
+    assert restore.password_for(original.identity, "clickhouse") is None
+    assert restore.connection_string(saved) is None
+    monkeypatch.setenv(f"CLICKHOUSE_PASSWORD__{original.identity}", "p@ss/word")
+    rebuilt = ClickHouseConnector(restore.connection_string(saved))
+    assert rebuilt.identity == original.identity
+    assert (rebuilt.dsn.password, rebuilt.dsn.secure) == ("p@ss/word", True)
 
 
 class FakeConnector(BaseConnector):

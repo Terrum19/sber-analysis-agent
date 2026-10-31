@@ -35,6 +35,22 @@ def test_clickhouses_scheme_sets_secure_and_default_port() -> None:
     assert dsn.connection_string().endswith(" secure=true")
 
 
+def test_with_password_rebuilds_same_source() -> None:
+    dsn = parse_dsn("clickhouses://an%40lyst:old@ch.prod:9440/my%20db")
+    url = dsn.with_password("p@ss:/w'rd%")
+    rebuilt = parse_dsn(url)
+    assert rebuilt == dsn.__class__(
+        host="ch.prod",
+        port=9440,
+        database="my db",
+        user="an@lyst",
+        password="p@ss:/w'rd%",
+        secure=True,
+    )
+    assert rebuilt.masked() == dsn.masked()
+    assert parse_dsn(parse_dsn("clickhouse://h/x").with_password("pw")).user == "default"
+
+
 def test_default_user_port_database() -> None:
     dsn = parse_dsn("clickhouse://localhost")
     assert dsn.user == "default"

@@ -1,3 +1,4 @@
+import asyncio
 import base64
 import os
 import secrets
@@ -9,8 +10,15 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app.api.deps import get_db
-from app.core.data.connectors.clickhouse import ClickHouseConnectionError, ClickHouseConnector
+from app.core.data import restore
+from app.core.data.connectors.clickhouse import (
+    ClickHouseConnectionError,
+    ClickHouseConnector,
+    parse_dsn,
+)
 from app.core.data.duckdb_manager import DuckDBManager
+from app.core.memory.datasource_store import DatasourceStore
+from app.core.memory.profile_memory import ProfileMemory
 from app.main import app
 
 DSN = os.environ.get("TEST_CLICKHOUSE_DSN", "clickhouse://sber:sber@localhost:9000/sber_demo")
@@ -174,6 +182,47 @@ def test_api_attach_clickhouse(table: str, db: DuckDBManager) -> None:
     assert table in body["tables"]
     assert body["datasource_id"].startswith("ch_")
     assert db.query(f"SELECT COUNT(*) AS total FROM {table}") == [{"total": 3}]
+
+
+def test_saved_clickhouse_is_restored_after_restart(
+    table: str, tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = str(tmp_path / "storage" / "main.duckdb")
+    first = DuckDBManager(path)
+    app.dependency_overrides[get_db] = lambda: first
+    try:
+        response = TestClient(app).post(
+            "/api/datasources/db", json={"kind": "clickhouse", "dsn": DSN}
+        )
+    finally:
+        app.dependency_overrides.clear()
+        first.close()
+    assert response.status_code == 200
+    identity = response.json()["datasource_id"]
+    assert DatasourceStore().get(identity).dsn == parse_dsn(DSN).masked()
+    password = parse_dsn(DSN).password
+    if password:
+        monkeypatch.setenv(f"CLICKHOUSE_PASSWORD__{identity}", password)
+
+    second = DuckDBManager(path)
+    try:
+        memory = ProfileMemory(second)
+        profiled_at = memory.load_profile(table).profiled_at
+        assert second.columns(table) == []
+        assert asyncio.run(restore.restore_saved_sources(second)) == [identity]
+        assert second.query(f"SELECT COUNT(*) AS total FROM {table}") == [{"total": 3}]
+        assert memory.load_profile(table).profiled_at == profiled_at
+
+        app.dependency_overrides[get_db] = lambda: second
+        try:
+            assert TestClient(app).delete(f"/api/datasources/{identity}").status_code == 204
+        finally:
+            app.dependency_overrides.clear()
+        assert second.columns(table) == []
+        assert DatasourceStore().get(identity) is None
+        assert asyncio.run(restore.restore_saved_sources(second)) == []
+    finally:
+        second.close()
 
 
 def test_clickhouse_column_comments(db: DuckDBManager) -> None:
