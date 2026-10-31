@@ -7,7 +7,7 @@
  * - Пересчёт и сохранение снимков в памяти/localStorage
  */
 import type { DashboardConfig, DashboardListItem, DashboardTile } from "@/types/dashboard";
-import type { ChatStreamEvent } from "@/types/chat";
+import type { ChatStreamEvent, ProgressPayload } from "@/types/chat";
 import type { Datasource, Glossary, SessionResponse, TableBrief } from "@/types/datasource";
 import { useSessionStore } from "@/store/sessionStore";
 
@@ -396,6 +396,84 @@ export function mockRenameSession(sessionId: string, title: string): SessionResp
  * 5. chart (или dashboard)
  * 6. done
  */
+const MOCK_REGIONS = ["Москва", "Санкт-Петербург", "Казань", "Новосибирск", "Екатеринбург", "Самара", "Сочи", "Пермь"];
+const MOCK_COLUMNS = [
+  { name: "region", type: "VARCHAR" },
+  { name: "month", type: "DATE" },
+  { name: "revenue", type: "DOUBLE" },
+  { name: "orders", type: "BIGINT" },
+];
+/** Размеры результатов шагов мок-хода: temp_result_v1 — фильтр, v2 — группировка, v3 — топ. */
+const MOCK_RESULT_ROWS: Record<string, number> = { temp_result_v1: 1240, temp_result_v2: 96, temp_result_v3: 5 };
+
+function mockResultRow(index: number): Record<string, unknown> {
+  const month = new Date(Date.UTC(2025, index % 12, 1)).toISOString().slice(0, 10);
+  return {
+    region: MOCK_REGIONS[index % MOCK_REGIONS.length],
+    month,
+    revenue: Math.round(((index * 7919) % 10000) * 1250.5) / 100,
+    orders: 40 + ((index * 31) % 260),
+  };
+}
+
+/** Страница результата шага для мок-режима (#239); неизвестная таблица — как удалённая. */
+export async function mockStepResult(table: string, offset: number, limit: number) {
+  await new Promise((resolve) => setTimeout(resolve, 400));
+  const total = MOCK_RESULT_ROWS[table];
+  if (total === undefined) {
+    const { ApiError } = await import("./client");
+    throw new ApiError(404, "Результат больше недоступен.");
+  }
+  const rows = Array.from({ length: Math.max(0, Math.min(limit, total - offset)) }, (_, i) => mockResultRow(offset + i));
+  return { columns: MOCK_COLUMNS, rows, total };
+}
+
+/** План и шаги мок-хода: событие planning со всем планом, затем шаги, один — с исправлением. */
+function mockPlanEvents(): { delay: number; data: ProgressPayload }[] {
+  const plan = [
+    { step_id: 1, tool: "filter_rows", purpose: "Оставить продажи 2025 года", input: "$source", arguments: { column: "order_date", operator: ">=", value: "2025-01-01" } },
+    { step_id: 2, tool: "group_by", purpose: "Выручка и заказы по регионам и месяцам", input: "$prev", arguments: { group_by: ["region", "month"], aggregations: [{ column: "amount", func: "sum", alias: "revenue" }, { column: "order_id", func: "count", alias: "orders" }] } },
+    { step_id: 3, tool: "sort_limit", purpose: "Топ-5 регионов по выручке", input: "$step_2", arguments: { order_by: ["revenue"], descending: true, limit: 5 } },
+  ];
+  const result = (table: string, rows: number) => ({
+    result_table: table,
+    rows,
+    result_columns: MOCK_COLUMNS,
+    preview: Array.from({ length: Math.min(5, rows) }, (_, i) => mockResultRow(i)),
+  });
+  return [
+    { delay: 20, data: { stage: "planning", status: "started" } },
+    { delay: 80, data: { stage: "planning", status: "finished", total_steps: plan.length, steps: plan } },
+    { delay: 120, data: { stage: "step", status: "started", ...plan[0] } },
+    {
+      delay: 160,
+      data: {
+        stage: "step", status: "finished", ...plan[0], elapsed_ms: 42, input_table: "sales", ...result("temp_result_v1", 1240),
+        code_language: "sql", code: "SELECT *\nFROM sales\nWHERE order_date >= '2025-01-01' -- только 2025 год",
+      },
+    },
+    { delay: 180, data: { stage: "step", status: "started", ...plan[1] } },
+    {
+      delay: 200,
+      data: { stage: "step", status: "fixing", ...plan[1], arguments: { group_by: ["regoin", "month"] }, attempt: 1, error: 'Binder Error: column "regoin" not found' },
+    },
+    {
+      delay: 230,
+      data: {
+        stage: "step", status: "finished", ...plan[1], elapsed_ms: 318, input_table: "temp_result_v1", input_step_id: 1, ...result("temp_result_v2", 96),
+        code_language: "sql",
+        code: "SELECT region, month, SUM(amount) AS revenue, COUNT(order_id) AS orders\nFROM temp_result_v1\nGROUP BY region, month",
+      },
+    },
+    { delay: 250, data: { stage: "step", status: "started", ...plan[2] } },
+    {
+      delay: 280,
+      data: { stage: "step", status: "finished", ...plan[2], elapsed_ms: 12, input_table: "temp_result_v2", input_step_id: 2, ...result("temp_result_v3", 5), code_language: "sql", code: "SELECT * FROM temp_result_v2 ORDER BY revenue DESC LIMIT 5" },
+    },
+    { delay: 290, data: { stage: "insight", status: "started" } },
+  ];
+}
+
 export function mockStreamChat(
   sessionId: string,
   question: string,
@@ -522,6 +600,11 @@ export function mockStreamChat(
   }
 
   const timeouts: NodeJS.Timeout[] = [];
+  if (!isDashboardRequest) {
+    mockPlanEvents().forEach(({ delay, data }) => {
+      timeouts.push(setTimeout(() => !isCancelled && onEvent({ type: "progress", data }), delay));
+    });
+  }
 
   const schedule = (delay: number, fn: () => void) => {
     const t = setTimeout(() => {

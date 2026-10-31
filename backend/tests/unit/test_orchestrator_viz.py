@@ -264,6 +264,7 @@ async def test_recovery_answers_the_original_question(db) -> None:
     assert [
         event["data"]["stage"] if event["type"] == "progress" else event["type"] for event in events
     ] == [
+        "planning",
         "step",
         "step",
         "insight",
@@ -273,6 +274,10 @@ async def test_recovery_answers_the_original_question(db) -> None:
         "chart",
         "chart",
         "done",
+    ]
+    # Перепланированный по уточнению план приходит строками до шагов (#239).
+    assert [step["step_id"] for step in events[0]["data"]["steps"]] == [
+        events[1]["data"]["step_id"]
     ]
     assert insight.question == "Сравни выручку по регионам"
     # Ответ на уточнение закрывает тот же ход, а не заводит новый.

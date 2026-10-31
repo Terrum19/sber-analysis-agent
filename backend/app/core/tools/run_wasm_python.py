@@ -36,4 +36,9 @@ class RunWasmPythonTool(BaseTool):
                 )
             sandbox.run(code, workdir)
             result = sql_literal(str(workdir / RESULT_FILE))
-            return db.save_step_result(args.target_table, f"SELECT * FROM read_csv_auto({result})")
+            return db.save_step_result(
+                args.target_table,
+                f"SELECT * FROM read_csv_auto({result})",
+                code=args.python_code,
+                language="python",
+            )

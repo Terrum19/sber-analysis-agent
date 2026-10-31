@@ -9,6 +9,7 @@ import asyncio
 import logging
 import threading
 import time
+from collections import OrderedDict
 from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
@@ -19,6 +20,10 @@ from app.config import settings
 from app.core.data.connectors.csv import load_csv
 
 logger = logging.getLogger(__name__)
+
+# Код результатов, которые ещё не забрал оркестратор: результаты не шагов
+# (гистограмма, кеш) никто не забирает, старые вытесняются.
+STEP_CODE_LIMIT = 256
 
 
 class DuckDBManager:
@@ -31,6 +36,7 @@ class DuckDBManager:
         self._con = duckdb.connect(self._path)
         self._step_counter = 0
         self.lock = threading.RLock()
+        self._step_code: OrderedDict[str, tuple[str, str]] = OrderedDict()
 
     def _timeout(self, timeout_s: float | None) -> float | None:
         """Таймаут запроса: явный или SQL_TIMEOUT_S; 0/None — без таймаута."""
@@ -83,11 +89,23 @@ class DuckDBManager:
                 raise
             self._con.execute("COMMIT")
 
-    def save_step_result(self, source_table: str, sql: str, timeout_s: float | None = None) -> str:
+    def save_step_result(
+        self,
+        source_table: str,
+        sql: str,
+        timeout_s: float | None = None,
+        *,
+        code: str | None = None,
+        language: str | None = "sql",
+    ) -> str:
         """Сохранить результат шага как temp_result_vN и вернуть его имя.
 
         Нужно, чтобы при смене визуализации или лёгкой модификации
         отчёта не пересчитывать тяжёлые запросы заново.
+
+        Код результата для показа в шаге (``step_code``): ``sql`` или
+        ``code`` на языке ``language``; ``language=None`` — показывать
+        нечего (значения посчитаны вне SQL и вставлены литералами).
 
         Номер продолжает уже лежащие в файле таблицы: менеджер создаётся
         на каждый запрос, и счётчик с нуля перезаписал бы temp_result_v1,
@@ -121,6 +139,10 @@ class DuckDBManager:
                     "INSERT OR REPLACE INTO _meta.result_meta VALUES ($name, $created_at)",
                     {"name": target, "created_at": time.time()},
                 )
+                if language is not None:
+                    self._step_code[target] = (language, (code or sql).strip())
+                    while len(self._step_code) > STEP_CODE_LIMIT:
+                        self._step_code.popitem(last=False)
                 return target
 
     def interrupt(self) -> None:
@@ -129,6 +151,11 @@ class DuckDBManager:
             self._con.interrupt()
         except Exception:  # соединение уже закрыто
             logger.debug("DuckDB interrupt: соединение уже закрыто", exc_info=True)
+
+    def step_code(self, table: str) -> tuple[str, str] | None:
+        """Забрать код, которым построен результат: (язык, код) или None."""
+        with self.lock:
+            return self._step_code.pop(table, None)
 
     def _ensure_result_meta(self) -> None:
         """Создать служебную таблицу времени создания результатов в схеме _meta, если её нет."""
@@ -245,9 +272,21 @@ class DuckDBManager:
         )
         return [row["name"] for row in rows]
 
-    def to_records(self, table: str, limit: int = 100) -> list[dict]:
+    def to_records(self, table: str, limit: int = 100, offset: int = 0) -> list[dict]:
         """Выгрузить temp-таблицу в список словарей (для LLM/инсайта)."""
-        return self.query(f"SELECT * FROM {table} LIMIT {limit}")
+        page = f" OFFSET {offset}" if offset else ""
+        return self.query(f"SELECT * FROM {table} LIMIT {limit}{page}")
+
+    def result_shape(self, table: str) -> tuple[list[dict], int]:
+        """Колонки результата шага ({"name", "type"}) и число строк; ([], 0) — таблицы нет."""
+        columns = self.query(
+            "SELECT column_name AS name, data_type AS type FROM information_schema.columns "
+            "WHERE table_name = $tbl ORDER BY ordinal_position",
+            {"tbl": table},
+        )
+        if not columns:
+            return [], 0
+        return columns, self.query(f'SELECT count(*) AS n FROM "{table}"')[0]["n"]
 
     def attach_csv(self, name: str, path: str) -> None:
         """Подключить сырой CSV как представление (без предобработки)."""

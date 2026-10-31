@@ -27,6 +27,7 @@ import { useArtifactStore } from "@/store/artifactStore";
 import { tabHref, useUiStore } from "@/store/uiStore";
 import { useStartSession } from "@/hooks/useStartSession";
 import { useCsvUpload } from "@/hooks/useCsvUpload";
+import { useSessionFileImport } from "@/hooks/useSessionFileImport";
 import { useT } from "@/i18n/useT";
 import { describeDatabase } from "@/lib/describeDatabase";
 import Icon, { type IconName } from "@/components/ui/Icon";
@@ -117,7 +118,9 @@ function DatabaseRow({
   const startSession = useStartSession();
   const isCurrent = useSessionStore((s) => (currentSessionId ? s.sessionDatabase[currentSessionId] === database.id : false));
   const runs = useChatRunStore((s) => s.runs);
-  const description = describeDatabase(database, t);
+  const imported = database.kind === "imported";
+  const title = imported ? t("sidebar.imported") : database.title;
+  const description = imported ? t("sidebar.importedHint") : describeDatabase(database, t);
 
   const [menuAnchor, setMenuAnchor] = useState<
     | { type: "db"; rect: DOMRect }
@@ -151,11 +154,13 @@ function DatabaseRow({
         </button>
         <button
           type="button"
-          onClick={() => hasTables && startSession(database)}
-          disabled={!hasTables}
+          onClick={() => (imported ? toggleDatabase(database.id) : hasTables && startSession(database))}
+          disabled={!hasTables && !imported}
           className="flex min-w-0 flex-1 items-start gap-2 py-1.5 text-left text-[13px] disabled:opacity-50 disabled:cursor-not-allowed"
           title={
-            !hasTables
+            imported
+              ? description
+              : !hasTables
               ? t("welcome.noDataToStart")
               : [
                   t("sidebar.openNewSession", { title: database.title }),
@@ -169,7 +174,7 @@ function DatabaseRow({
           <Icon name={collapsed ? "folder" : "folderOpen"} className="mt-0.5 shrink-0 text-graphite-400" />
           <span className="min-w-0">
             <span className="flex items-center gap-1.5">
-              <span className="block truncate">{database.title}</span>
+              <span className="block truncate">{title}</span>
               {database.pinned && (
                 <Icon
                   name="pin"
@@ -182,6 +187,7 @@ function DatabaseRow({
             <span className="block truncate text-[11px] leading-4 text-graphite-500">{description}</span>
           </span>
         </button>
+        {!imported && (
         <button
           type="button"
           onClick={() => hasTables && startSession(database)}
@@ -191,6 +197,8 @@ function DatabaseRow({
         >
           <Icon name="plus" size={14} />
         </button>
+        )}
+        {!imported && (
         <button
           type="button"
           onClick={(e) => {
@@ -207,6 +215,7 @@ function DatabaseRow({
         >
           <Icon name="moreHorizontal" size={14} />
         </button>
+        )}
       </div>
 
       {!collapsed && (
@@ -442,6 +451,8 @@ export default function LeftSidebar() {
     handleCsvUpload,
     openFilePicker,
   } = useCsvUpload();
+  const sessionFile = useSessionFileImport();
+  const sessionFileRef = useRef<HTMLInputElement>(null);
 
   const isBusy = isCsvBusy;
   const errorMsg = csvErrorMsg;
@@ -481,13 +492,34 @@ export default function LeftSidebar() {
           }}
           disabled={isBusy}
         />
+        <input
+          ref={sessionFileRef}
+          type="file"
+          accept=".session"
+          hidden
+          onChange={(e) => {
+            const file = e.target.files?.[0];
+            e.target.value = "";
+            if (file) sessionFile.importFile(file);
+          }}
+        />
+        <SidebarAction
+          icon="folder"
+          label={t("sidebar.openSessionFile")}
+          title={t("sidebar.openSessionFileHint")}
+          onClick={() => sessionFileRef.current?.click()}
+          disabled={isBusy || sessionFile.busy}
+        />
         <SidebarAction
           icon="layout"
           label={t("sidebar.allDashboards")}
           href="/dashboards"
         />
         <RecentDashboards />
-        {isBusy && <p className="px-2.5 pt-1 text-[11px] text-graphite-400 animate-pulse">{t("sidebar.processing")}</p>}
+        {(isBusy || sessionFile.busy) && (
+          <p className="px-2.5 pt-1 text-[11px] text-graphite-400 animate-pulse">{t("sidebar.processing")}</p>
+        )}
+        {sessionFile.error && <p className="px-2.5 pt-1 text-[11px] leading-tight text-bad">{sessionFile.error}</p>}
         {errorMsg && <p className="px-2.5 pt-1 text-[11px] leading-tight text-bad">{errorMsg}</p>}
       </div>
 

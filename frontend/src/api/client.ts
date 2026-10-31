@@ -4,15 +4,19 @@
  * или установлен ключ localStorage.sber_force_mock="true".
  * При ошибках сети или бэкенда выбрасывается ApiError.
  */
-import type { ChatStreamEvent, DashboardIdea } from "@/types/chat";
+import type { ChatStreamEvent, DashboardIdea, ResultColumn } from "@/types/chat";
 import type { LlmStatus } from "@/types/llm";
 import type {
   Datasource,
   DatasourceDbRequest,
   Glossary,
+  ImportedSession,
+  ImportedSessionFile,
+  ReplayResult,
   SessionResponse,
   TableBrief,
 } from "@/types/datasource";
+import type { SessionBundle } from "@/lib/shareLink";
 import type {
   DashboardConfig,
   DashboardCreatePayload,
@@ -36,6 +40,7 @@ import {
   mockPutGlossary,
   mockRenameSession,
   mockRecalculateDashboard,
+  mockStepResult,
   mockStreamChat,
   mockUpdateDashboard,
 } from "./mockData";
@@ -194,6 +199,87 @@ export async function getSession(sessionId: string): Promise<SessionResponse> {
   }
 }
 
+/** GET /api/sessions/{id}/bundle: бандл сессии без ленты (#249), пароля в нём нет. */
+export async function getSessionBundle(sessionId: string): Promise<SessionBundle> {
+  try {
+    const res = await fetch(`${API}/sessions/${encodeURIComponent(sessionId)}/bundle`);
+    if (!res.ok) throw await parseApiError(res);
+    return (await res.json()) as SessionBundle;
+  } catch (err) {
+    throw toApiError(err);
+  }
+}
+
+/** POST /api/sessions/import: новая сессия из бандла; 400 — текст ошибки для пользователя. */
+export async function importSessionApi(bundle: SessionBundle): Promise<ImportedSession> {
+  try {
+    const res = await fetch(`${API}/sessions/import`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(bundle),
+    });
+    if (!res.ok) throw await parseApiError(res);
+    return (await res.json()) as ImportedSession;
+  } catch (err) {
+    throw toApiError(err);
+  }
+}
+
+/**
+ * POST /api/sessions/{id}/export-file: файл .session — бандл, лента и итоговые
+ * таблицы в parquet (#251); 413 — файл больше лимита импорта.
+ */
+export async function exportSessionFile(
+  sessionId: string,
+  body: { table: string | null; feed: unknown[] },
+): Promise<Blob> {
+  try {
+    const res = await fetch(`${API}/sessions/${encodeURIComponent(sessionId)}/export-file`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    if (!res.ok) throw await parseApiError(res);
+    return await res.blob();
+  } catch (err) {
+    throw toApiError(err);
+  }
+}
+
+/** POST /api/sessions/import-file: новая сессия из файла .session (#251); 400/413 — текст для пользователя. */
+export async function importSessionFile(file: File): Promise<ImportedSessionFile> {
+  const form = new FormData();
+  form.append("file", file);
+  try {
+    const res = await fetch(`${API}/sessions/import-file`, { method: "POST", body: form });
+    if (!res.ok) throw await parseApiError(res);
+    return (await res.json()) as ImportedSessionFile;
+  } catch (err) {
+    throw toApiError(err);
+  }
+}
+
+/**
+ * POST /api/sessions/{id}/replay: пересчитать графики рецепта на данных получателя (#250).
+ * charts — спеки графиков ленты по turn_id (без точек): тип и подписи автора.
+ */
+export async function replaySessionApi(
+  sessionId: string,
+  charts: Record<string, Record<string, unknown>>,
+): Promise<ReplayResult> {
+  try {
+    const res = await fetch(`${API}/sessions/${encodeURIComponent(sessionId)}/replay`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ charts }),
+    });
+    if (!res.ok) throw await parseApiError(res);
+    return (await res.json()) as ReplayResult;
+  } catch (err) {
+    throw toApiError(err);
+  }
+}
+
 /** PATCH /api/sessions/{id} {table}: сменить таблицу сессии (404 — «Таблица не найдена»). */
 export const setSessionTable = patchSession;
 
@@ -349,6 +435,39 @@ export async function fetchDashboardIdeas(sessionId: string, exclude: string[] =
     if (!res.ok) throw await parseApiError(res);
     const body: { ideas: DashboardIdea[] } = await res.json();
     return body.ideas;
+  } catch (err) {
+    throw toApiError(err);
+  }
+}
+
+/** Страница результата шага: GET /api/sessions/{id}/results/{table}. */
+export interface StepResultPage {
+  columns: ResultColumn[];
+  rows: Record<string, unknown>[];
+  /** Сколько строк в результате всего. */
+  total: number;
+}
+
+/**
+ * Строки результата шага temp_result_vN начиная с offset (#239).
+ * 404 — результат чужой или удалён (рестарт): фронт оставляет превью из события.
+ */
+export async function getStepResult(
+  sessionId: string,
+  table: string,
+  offset = 0,
+  limit = 50,
+): Promise<StepResultPage> {
+  if (isMockMode()) {
+    return mockStepResult(table, offset, limit);
+  }
+  try {
+    const query = new URLSearchParams({ offset: String(offset), limit: String(limit) });
+    const res = await fetch(
+      `${API}/sessions/${encodeURIComponent(sessionId)}/results/${encodeURIComponent(table)}?${query}`,
+    );
+    if (!res.ok) throw await parseApiError(res);
+    return await res.json();
   } catch (err) {
     throw toApiError(err);
   }

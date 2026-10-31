@@ -182,6 +182,10 @@ async def test_idea_builds_dashboard_with_llm_chart_choice(db) -> None:
         (3, "failed")
     ) == 1
     assert all(step["tile_id"] in range(4) for step in stages(events, "step"))
+    # План каждой плитки приходит строками со своим tile_id (#239); до него —
+    # planning/started без шагов.
+    plans = [plan for plan in stages(events, "planning") if plan["status"] == "finished"]
+    assert plans and all(plan["tile_id"] in range(4) and plan["steps"] for plan in plans)
 
     dashboard = saved(events)
     assert dashboard.title == "Продажи"

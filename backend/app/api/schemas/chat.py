@@ -45,6 +45,15 @@ class SessionOut(BaseModel):
     datasource_id: str | None = None
     title: str | None = None
     created_at: datetime | None = None
+    # Сессия из бандла другого пользователя (#249): в сайдбаре — в папке «Импортированные».
+    imported: bool = False
+
+
+class SessionFileRequest(BaseModel):
+    """Тело сохранения файла .session (#251): лента и активная таблица из браузера."""
+
+    table: str | None = None
+    feed: list[dict[str, Any]] = Field(default_factory=list)
 
 
 MemoryText = Annotated[
@@ -132,6 +141,21 @@ class PlannedStep(BaseModel):
     tool: str | None = None
 
 
+class PlanStepOut(BaseModel):
+    """Строка плана в событии planning: шаг до выполнения."""
+
+    step_id: int
+    tool: str | None = None
+    purpose: str = ""
+    input: str
+    arguments: dict[str, Any] = Field(default_factory=dict)
+
+
+class ResultColumn(BaseModel):
+    name: str
+    type: str
+
+
 class ProgressPayload(BaseModel):
     """Прогресс хода: этап, его статус и шаг плана.
 
@@ -141,6 +165,15 @@ class ProgressPayload(BaseModel):
     которые видит планировщик (первая — $source).
     ``substage`` — реальная фаза планирования (``semantic`` -> ``llm`` ->
     ``validation``), приходит со статусом ``substage``.
+    ``planned_steps`` — типизированный список шагов плана для прогресса.
+    ``steps`` — на planning finished: весь план; после перепланирования
+    приходит снова, с выполненными и новыми шагами (#239).
+
+    Детали шага (#239): ``arguments`` и ``input`` — на любом статусе шага;
+    на finished ещё ``input_table`` (во что развернулся input),
+    ``input_step_id`` (чей результат пришёл на вход), ``result_table``,
+    ``rows``, ``result_columns``, ``preview`` (первые строки) и ``code``
+    на ``code_language`` (sql или python), если шаг выполнял код.
     ``turn_id`` — в начале planning и outline: по нему фронт продолжает
     остановленный ход (``ChatRequest.resume_turn``), ``done`` до него не дойдёт.
     """
@@ -169,6 +202,17 @@ class ProgressPayload(BaseModel):
     planned_steps: list[PlannedStep] | None = None
     # Плитка дашборда по кнопке (#224), к которой относится этап или шаг.
     tile_id: int | None = None
+    steps: list[PlanStepOut] | None = None
+    input: str | None = None
+    arguments: dict[str, Any] | None = None
+    input_table: str | None = None
+    input_step_id: int | None = None
+    result_table: str | None = None
+    rows: int | None = None
+    result_columns: list[ResultColumn] | None = None
+    preview: list[dict[str, Any]] | None = None
+    code: str | None = None
+    code_language: Literal["sql", "python"] | None = None
     turn_id: str | None = None
 
 
@@ -188,6 +232,14 @@ class DashboardIdeasOut(BaseModel):
     """Ответ POST /sessions/{id}/dashboard-ideas: варианты дашборда для кнопок."""
 
     ideas: list[DashboardIdea]
+
+
+class StepResultOut(BaseModel):
+    """Ответ GET /sessions/{id}/results/{table}: страница результата шага (#239)."""
+
+    columns: list[ResultColumn]
+    rows: list[dict[str, Any]]
+    total: int
 
 
 class ChatEvent(BaseModel):

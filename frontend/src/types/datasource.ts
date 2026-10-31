@@ -1,6 +1,8 @@
 /**
  * Типы источников данных (дубль контракта backend/app/api/schemas/datasource.py).
  */
+import type { DashboardEvent } from "@/types/chat";
+
 export type DbKind = "postgres" | "clickhouse";
 
 export type DescriptionStatus = "none" | "pending" | "ready" | "failed";
@@ -94,4 +96,49 @@ export interface SessionResponse {
   title?: string | null;
   /** ISO 8601 в UTC; у старых сессий null. */
   created_at?: string | null;
+  /** Сессия из ссылки другого пользователя (#249): в сайдбаре — папка «Импортированные». */
+  imported?: boolean;
+}
+
+/** Ответ POST /api/sessions/import. */
+export interface ImportedSession {
+  session_id: string;
+  title: string;
+  /** Старый id дашборда -> новый. */
+  dashboards: Record<string, string>;
+  /** Таблица получателя, к которой привязана сессия; null — не нашлась. */
+  table?: string | null;
+  /** Нашлась ли таблица автора; null — в ссылке её нет. */
+  check?: TableCheck | null;
+}
+
+/** Ответ импорта файла .session (#251): session — бандл и лента с новыми именами таблиц. */
+export interface ImportedSessionFile extends ImportedSession {
+  session: Record<string, unknown>;
+}
+
+/**
+ * Таблица автора у получателя: found — привязана (bound); different — CSV с тем же
+ * именем, но другими данными; missing — CSV нет; no_table — база подключена, таблицы
+ * нет; not_connected — базы автора нет.
+ */
+export interface TableCheck {
+  status: "found" | "different" | "missing" | "no_table" | "not_connected";
+  kind: string;
+  table: string;
+  bound?: string | null;
+  dsn?: string | null;
+  /** Схема базы автора: для формы подключения. */
+  db_schema?: string | null;
+  file?: string | null;
+}
+
+/** Итог пересчёта рецепта (#250): графики по turn_id, дашборды, причины отказов. */
+export interface ReplayResult {
+  /** Таблица автора у получателя; без bound — пересчитывать не по чему. */
+  check: TableCheck | null;
+  charts: Record<string, { spec: Record<string, unknown>; result_table?: string | null }>;
+  dashboards: DashboardEvent["data"][];
+  /** turn_id или id плитки -> почему не пересчитан. */
+  failed: Record<string, string>;
 }

@@ -90,15 +90,13 @@ from app.models.dashboard_plan import (
     DashboardOutline,
     OutlineTile,
 )
-from app.models.research_step import ResearchStep
+from app.models.research_step import TILE_STEP_IDS, ResearchStep
 
 logger = logging.getLogger(__name__)
 
 # Какой вариант сборки плиток сравниваем (см. docstring модуля).
 DASHBOARD_VARIANT = "rich_tiles"
 
-# Шаги плитки N нумеруются с (N + 1) * TILE_STEP_IDS: номера плиток не пересекаются.
-TILE_STEP_IDS = 100
 # Меньше плиток — это уже не дашборд.
 MIN_BUILT_TILES = 2
 

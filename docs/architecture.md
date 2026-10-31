@@ -168,14 +168,15 @@ SQL-шаблон с `{input}`/`{param}` либо Python-код, получающ
 `ProgressPayload`: `stage` (`planning` / `replanning` / `toolgen` / `step` / `insight` /
 `chart` / `dashboard`), `status` (`started` / `substage` / `finished` /
 `failed` / `fixing`) и необязательные `step_id`, `tool`, `purpose`,
-`total_steps`, `planned_steps`, `elapsed_ms`, `attempt`, `error`, `substage` —
-пустые поля в событие не попадают. `planned_steps` — типизированный список
-`{step_id, purpose?, tool?}`: `purpose` — назначение от модели, если его нет,
-фронт показывает `tool`; «Шаг N» формируется на клиенте через i18n.
-`substage` — реальная фаза планирования (`semantic` / `llm` / `validation`),
-фронт рисует её под активной стадией. `elapsed_ms` у этапов (`planning`,
-`replanning`, `toolgen`, `insight`, `chart`, `dashboard`) замеряется `perf_counter()` на
-сервере и не включает сетевую задержку.
+`total_steps`, `planned_steps`, `steps`, `elapsed_ms`, `attempt`, `error`,
+`substage`, а также детали шага (#239, ниже) — пустые поля в событие не
+попадают. `planned_steps` — типизированный список `{step_id, purpose?, tool?}`:
+`purpose` — назначение от модели, если его нет, фронт показывает `tool`;
+«Шаг N» формируется на клиенте через i18n. `substage` — реальная фаза
+планирования (`semantic` / `llm` / `validation`), фронт рисует её под активной
+стадией. `elapsed_ms` у этапов (`planning`, `replanning`, `toolgen`, `insight`,
+`chart`, `dashboard`) замеряется `perf_counter()` на сервере и не включает
+сетевую задержку.
 
 События прогресса по порядку:
 
@@ -184,17 +185,17 @@ SQL-шаблон с `{input}`/`{param}` либо Python-код, получающ
 | `planning` | `started` | — | планировщик получил вопрос |
 | `planning` | `substage` | `substage` | реальная фаза: `semantic` (отбор колонок/инструментов), `llm` (вызов модели), `validation` (проверка плана) |
 | `planning` | `failed` | `error`, `elapsed_ms` | планировщик упал (LLM недоступна), дальше `error` и `done` |
-| `planning` | `finished` | `total_steps`, `planned_steps`, `elapsed_ms` | план готов (`0` — инструментов нет; дальше toolgen или `clarification_needed`) |
+| `planning` | `finished` | `total_steps`, `planned_steps`, `steps`, `elapsed_ms` | план готов (`0` — инструментов нет; дальше toolgen или `clarification_needed`) |
 | `toolgen` | `started` | `purpose`, `tool?` | агент создаёт инструмент (toolgen включён и есть LLM) |
 | `toolgen` | `finished` | `tool`, `purpose`, `elapsed_ms` | инструмент проверен и зарегистрирован; дальше перепланирование |
 | `toolgen` | `failed` | `purpose`, `elapsed_ms`, `error` | создать не удалось; дальше прежнее `clarification_needed` |
-| `step` | `started` | `step_id`, `tool`, `purpose` | шаг начал выполняться |
-| `step` | `fixing` | `step_id`, `tool`, `purpose`, `attempt`, `error` | шаг упал, планировщик исправляет его |
-| `step` | `finished` | `step_id`, `tool`, `purpose`, `elapsed_ms` | шаг выполнен (время — с учётом исправлений) |
-| `step` | `failed` | `step_id`, `tool`, `purpose`, `elapsed_ms`, `error` | шаг не исправился, дальше `clarification_needed` |
+| `step` | `started` | `step_id`, `tool`, `purpose`, `input`, `arguments` | шаг начал выполняться |
+| `step` | `fixing` | то же, `attempt`, `error` | шаг упал, планировщик исправляет его |
+| `step` | `finished` | то же, `elapsed_ms`, детали результата | шаг выполнен (время — с учётом исправлений) |
+| `step` | `failed` | то же, `elapsed_ms`, `error` | шаг не исправился, дальше `clarification_needed` |
 | `replanning` | `started` | — | lookup-шаг выполнен, план достраивается по увиденному |
 | `replanning` | `substage` | `substage` | реальная фаза достройки плана |
-| `replanning` | `finished` | `total_steps`, `planned_steps`, `elapsed_ms` | новый план готов, дальше новые `step` |
+| `replanning` | `finished` | `total_steps`, `planned_steps`, `steps`, `elapsed_ms` | новый план готов, дальше новые `step` |
 | `replanning` | `failed` | `error`, `elapsed_ms` | перепланирование упало, дальше `clarification_needed` |
 | `insight` | `started` | — | план выполнен, генерируется инсайт (дальше `text {chunk}` или один `text {headline, details}` при выключенном стриме/фолбэке) |
 | `insight` | `finished` | `elapsed_ms` | инсайт готов, дальше `text` |
@@ -205,19 +206,44 @@ SQL-шаблон с `{input}`/`{param}` либо Python-код, получающ
 | `insight` / `chart` | `failed` | `error`, `elapsed_ms` | этап упал, дальше `error` и `done` |
 | `dashboard` | `failed` | `error`, `elapsed_ms` | дашборд не собран; ответ и график уже отданы, дальше `done` без `error` |
 
-`planning` приходит на новый вопрос и на повторную попытку после toolgen (модель видит созданный инструмент); достройка плана после lookup-шага
+`planning` приходит на новый вопрос и на повторную попытку после toolgen
+(модель видит созданный инструмент); достройка плана после lookup-шага
 идёт отдельной стадией `replanning` (её `finished`/`failed` закрывает
-стадию явно, а не при старте следующего этапа), ответ на уточнение
-(`recovery_response`) перепланирует через `_plan` и тоже шлёт `step` без
-повторного `planning`. Во время `planning` и `replanning` приходят
+стадию явно, а не при старте следующего этапа). Ответ на уточнение
+(`recovery_response`) перепланирует через `_plan` и шлёт план без
+повторного `planning/started`. Во время `planning` и `replanning` приходят
 `substage`-события из `StepPlanner.plan`: фронт показывает реальные фазы
-`semantic` → `llm` → `validation`, а не таймерные догадки. У
-`step/finished` и `step/failed` поля `tool` и `purpose` — от последней
-версии шага (после исправления). Смена вида прошлого графика («сделай
-таблицей») идёт без плана: сразу `chart` и `done`. Этапы `insight`,
-`chart` и `dashboard` явно шлют `finished` (или `failed`) с `elapsed_ms`,
-поэтому длительность стадии не зависит от момента прихода следующего
-события.
+`semantic` → `llm` → `validation`, а не таймерные догадки. Смена вида
+прошлого графика («сделай таблицей») идёт без плана: сразу `chart` и
+`done`. Этапы `insight`, `chart` и `dashboard` явно шлют `finished` (или
+`failed`) с `elapsed_ms`, поэтому длительность стадии не зависит от
+момента прихода следующего события.
+
+`planning/finished` несёт весь план — `steps: [{step_id, tool, purpose,
+input, arguments}]`, чтобы фронт показал его строками до выполнения (#239).
+Его же шлют достройка плана после lookup-шага (выполненные и новые шаги
+вместе) и каждая плитка дашборда по кнопке (с её `tile_id`). У `step/*`
+поля `tool`, `purpose`, `input` и `arguments` — от последней версии шага
+(после исправления): `arguments` — как их написал планировщик, ссылки
+`$prev`, `$step_N` не развёрнуты.
+
+Детали результата в `step/finished`:
+
+| поле | что |
+|---|---|
+| `input_table` | во что развернулся `input`: таблица источника или `temp_result_vN` |
+| `input_step_id` | шаг, чей результат пришёл на вход (нет — вход из источника) |
+| `result_table` | `temp_result_vN` шага |
+| `rows`, `result_columns` | число строк и колонки `[{name, type}]` |
+| `preview` | первые `STEP_PREVIEW_ROWS` (5) строк |
+| `code`, `code_language` | SQL (`sql`) или код песочницы (`python`), которым построен результат; нет у статистических тулов (значения посчитаны в Python) |
+
+Результат не прочитался — приходят только `input_table`, `input_step_id`,
+`result_table`, ход идёт дальше. Весь результат постранично —
+`GET /api/sessions/{id}/results/{temp_result_vN}?offset=0&limit=50`
+(`limit` до 500) → `{columns, rows, total}`. Отдаются только результаты
+завершённых ходов этой сессии; чужой, удалённый или результат ещё идущего
+хода — 404 (у идущего хода есть `preview`), имя не `temp_result_vN` — 422.
 
 План от LLM приходит одним structured-ответом, поэтому `planned_steps`
 появляются только в `planning/finished` (и `replanning/finished`). Фронт
@@ -255,6 +281,7 @@ SQL-шаблон с `{input}`/`{param}` либо Python-код, получающ
   выполняется: промпт ограничен `SHOWN_ROWS=50`.
 
 
+
 Вопрос про таблицу целиком («что передо мной?», «что в таблице есть?»,
 «сколько строк и за какой период?», «опиши данные») тоже идёт без плана
 (`core/data/overview.py`): `insight/started` → `insight/finished` → `text`
@@ -288,11 +315,19 @@ SQL-шаблон с `{input}`/`{param}` либо Python-код, получающ
 {"type": "progress", "data": {"stage": "planning", "status": "substage", "substage": "validation"}}
 {"type": "progress", "data": {"stage": "planning", "status": "finished", "total_steps": 1,
  "planned_steps": [{"step_id": 0, "purpose": "Выручка по регионам", "tool": "group_by"}],
+ "steps": [{"step_id": 0, "tool": "group_by", "purpose": "Выручка по регионам",
+            "input": "$prev", "arguments": {"by": "region", "column": "revenue", "function": "SUM"}}],
  "elapsed_ms": 120}}
 {"type": "progress", "data": {"stage": "step", "status": "started", "step_id": 0,
- "tool": "group_by", "purpose": "Выручка по регионам"}}
+ "tool": "group_by", "purpose": "Выручка по регионам", "input": "$prev",
+ "arguments": {"by": "region", "column": "revenue", "function": "SUM"}}}
 {"type": "progress", "data": {"stage": "step", "status": "finished", "step_id": 0,
- "tool": "group_by", "purpose": "Выручка по регионам", "elapsed_ms": 42}}
+ "tool": "group_by", "purpose": "Выручка по регионам", "input": "$prev",
+ "arguments": {"by": "region", "column": "revenue", "function": "SUM"}, "elapsed_ms": 42,
+ "input_table": "sales", "result_table": "temp_result_v3", "rows": 2,
+ "result_columns": [{"name": "region", "type": "VARCHAR"}, {"name": "revenue", "type": "DOUBLE"}],
+ "preview": [{"region": "msk", "revenue": 120.0}, {"region": "spb", "revenue": 80.0}],
+ "code_language": "sql", "code": "SELECT ... FROM \"sales\" GROUP BY ..."}}
 {"type": "progress", "data": {"stage": "insight", "status": "started"}}
 {"type": "progress", "data": {"stage": "insight", "status": "finished", "elapsed_ms": 800}}
 {"type": "text", "data": {"headline": "...", "details": ["..."]}}

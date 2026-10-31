@@ -3,15 +3,29 @@
 /**
  * Прогресс хода по событиям progress: полная хронология этапов (планирование,
  * SQL-шаги, перепланирование, инсайт) с таймерами и активной стадией.
- * В свёрнутом виде: «N шагов · X с» (или «N из M плиток · X с»), при раскрытии видна детальная разбивка по времени.
- * В режиме дашборда (#224) вместо плоского списка — плитки плана, у каждой свой статус и свои шаги.
+ * План показывается строками до выполнения: «в очереди» → «идёт» → «готово»
+ * или «упал»; строка раскрывается — что шаг сделал с данными и что получилось
+ * (StepDetails, #239). В свёрнутом виде: «N шагов · X с» (или «N из M плиток · X с»),
+ * при раскрытии видна детальная разбивка по времени.
+ * В режиме дашборда (#224) вместо плоского списка — плитки плана, у каждой свой
+ * статус и свои шаги.
  * Остановленный или упавший ход с готовыми шагами — кнопка «Продолжить».
  */
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useId, useMemo, useState, type ReactNode } from "react";
+import StepDetails from "@/components/chat/StepDetails";
 import Icon from "@/components/ui/Icon";
 import { useT, type Translate } from "@/i18n/useT";
+import { tableTitle, useSessionDatabase } from "@/store/sessionStore";
 import { useUiStore, type Locale } from "@/store/uiStore";
-import type { PlanningSubstage, StepState, TimelineStage, TileIntent, TileState, TurnProgress } from "@/types/chat";
+import type {
+  PlannedStepSummary,
+  PlanningSubstage,
+  StepState,
+  TimelineStage,
+  TileIntent,
+  TileState,
+  TurnProgress,
+} from "@/types/chat";
 
 /** Тишина дольше этого — показываем «Всё ещё работаю…». */
 const QUIET_MS = 20_000;
@@ -103,36 +117,125 @@ function ActiveSubstages({ substage }: { substage?: PlanningSubstage }) {
   );
 }
 
-/** Иконка статуса запланированного шага внутри раскрытого плана. */
-function PlannedStepIcon({ step }: { step?: StepState }) {
-  if (!step) {
-    return <span className="h-1.5 w-1.5 rounded-full bg-graphite-700 shrink-0" />;
-  }
-  if (step.status === "finished") {
-    return <Icon name="check" size={11} className="text-good shrink-0" />;
-  }
-  if (step.status === "failed") {
-    return <Icon name="x" size={11} className="text-bad shrink-0" />;
-  }
+function QueuedDot() {
+  return <span className="inline-block h-[13px] w-[13px] rounded-full border border-graphite-600" />;
+}
+
+function StepRow({
+  step,
+  number,
+  anchor,
+  open,
+  onToggle,
+  details,
+}: {
+  step: StepState;
+  number: number;
+  anchor: string;
+  open: boolean;
+  onToggle: () => void;
+  details: ReactNode;
+}) {
+  const t = useT();
+  const isRunning = step.status === "started" || step.status === "fixing";
+  const icon =
+    step.status === "finished" ? (
+      <Icon name="database" size={13} className="text-good transition-transform duration-200 shrink-0" />
+    ) : step.status === "failed" ? (
+      <Icon name="x" size={13} className="text-bad shrink-0" />
+    ) : step.status === "queued" ? (
+      <QueuedDot />
+    ) : (
+      <Icon
+        name="refresh"
+        size={13}
+        className={`animate-spin motion-reduce:animate-none shrink-0 ${
+          step.status === "fixing" ? "text-warn" : "text-good"
+        }`}
+      />
+    );
+  const note =
+    step.status === "fixing"
+      ? t("progress.fixing", { attempt: step.attempt ?? 1 })
+      : step.status === "failed"
+      ? t("progress.failed")
+      : step.status === "queued"
+      ? t("progress.queued")
+      : step.fixed
+      ? t("progress.fixed")
+      : "";
+
   return (
-    <Icon
-      name="refresh"
-      size={11}
-      className={`animate-spin motion-reduce:animate-none shrink-0 ${
-        step.status === "fixing" ? "text-warn" : "text-good"
-      }`}
-    />
+    <li id={anchor} className="scroll-mt-4">
+      <button
+        type="button"
+        onClick={onToggle}
+        aria-expanded={open}
+        className="group flex w-full items-center gap-2 rounded text-left text-[12px] transition-all duration-200 hover:text-graphite-200"
+      >
+        <Icon
+          name={open ? "chevronDown" : "chevronRight"}
+          size={11}
+          className="-mr-1 shrink-0 text-graphite-600 group-hover:text-graphite-400"
+        />
+        <span className="shrink-0">{icon}</span>
+        <span className="w-4 shrink-0 text-right tabular-nums text-graphite-500">{number}.</span>
+        <span
+          className={`min-w-0 flex-1 truncate ${
+            step.status === "queued"
+              ? "text-graphite-500"
+              : isRunning
+              ? "text-graphite-200 font-medium"
+              : "text-graphite-400"
+          }`}
+        >
+          {step.purpose || step.tool || `#${step.step_id}`}
+        </span>
+        {note && (
+          <span
+            className={`shrink-0 text-[11px] font-medium ${
+              step.status === "failed"
+                ? "text-bad"
+                : step.status === "queued"
+                ? "text-graphite-500"
+                : "text-warn"
+            }`}
+          >
+            {note}
+          </span>
+        )}
+        {step.elapsed_ms !== undefined && step.status !== "fixing" && (
+          <span
+            className="shrink-0 tabular-nums text-graphite-500 text-[11px] flex items-center gap-1"
+            title={t("progress.sqlDuckDbTooltip")}
+          >
+            <span className="text-[10px] text-graphite-600 font-mono">SQL</span>
+            <span>{duration(t, step.elapsed_ms)}</span>
+          </span>
+        )}
+      </button>
+      {open && details}
+    </li>
   );
 }
 
-function StageRow({ stage, steps }: { stage: TimelineStage; steps: StepState[] }) {
+
+function StageRow({
+  stage,
+  stepOf,
+  renderStep,
+}: {
+  stage: TimelineStage;
+  stepOf: (stepId: number) => StepState | undefined;
+  renderStep: (step: StepState) => ReactNode;
+}) {
   const t = useT();
   const locale = useUiStore((s) => s.locale);
   // План открыт по умолчанию: статусы шагов теперь живут только здесь,
   // отдельных строк шагов в таймлайне больше нет.
   const [detailsOpen, setDetailsOpen] = useState(true);
   const isPlanStage = stage.stage === "planning" || stage.stage === "replanning";
-  const plannedSteps = stage.planned_steps ?? [];
+  const plannedSteps: PlannedStepSummary[] = stage.planned_steps ?? [];
   const hasPlannedSteps = isPlanStage && plannedSteps.length > 0;
   const failed = stage.status === "failed";
 
@@ -161,6 +264,15 @@ function StageRow({ stage, steps }: { stage: TimelineStage; steps: StepState[] }
     return () => clearInterval(timer);
   }, [planKey, plannedSteps.length]);
 
+  // Состояние шага из прогресса; план пришёл раньше step-событий — показываем
+  // его строкой «в очереди».
+  const rowFor = (step: PlannedStepSummary): StepState =>
+    stepOf(step.step_id) ?? {
+      step_id: step.step_id,
+      tool: step.tool,
+      purpose: step.purpose,
+      status: "queued",
+    };
   const shownSteps = plannedSteps.slice(0, visibleSteps);
 
   const label = t(stage.labelKey);
@@ -228,106 +340,28 @@ function StageRow({ stage, steps }: { stage: TimelineStage; steps: StepState[] }
           <div className="text-[11px] text-graphite-500 font-medium">
             {t("progress.plannedSteps")}
           </div>
-          <ul className="space-y-1">
-            {shownSteps.map((step, index) => {
-              const executed = steps.find((item) => item.step_id === step.step_id);
-              return (
-                <li
-                  key={step.step_id}
-                  className="flex items-center gap-1.5 text-[11px] text-graphite-400"
-                  title={executed?.error || undefined}
-                >
-                  <PlannedStepIcon step={executed} />
-                  {/* Порядок в плане: после replanning step_id начинается не с 0. */}
-                  <span className="text-graphite-300 font-medium">#{index + 1}</span>
-                  <span className={`truncate ${executed?.status === "failed" ? "text-bad" : ""}`}>
-                    {step.purpose || step.tool || ""}
-                  </span>
-                  {step.purpose && step.tool && step.purpose !== step.tool && (
-                    <span className="text-[10px] font-mono text-graphite-500">({step.tool})</span>
-                  )}
-                  {executed?.status === "failed" && (
-                    <span className="shrink-0 font-medium text-bad">{t("progress.failed")}</span>
-                  )}
-                  {executed?.status === "fixing" && (
-                    <span className="shrink-0 font-medium text-warn">
-                      {t("progress.fixing", { attempt: executed.attempt ?? 1 })}
-                    </span>
-                  )}
-                  {executed?.fixed && (
-                    <span className="shrink-0 font-medium text-warn">{t("progress.fixed")}</span>
-                  )}
-                  {executed?.elapsed_ms !== undefined && executed.status !== "fixing" && (
-                    <span className="ml-auto shrink-0 tabular-nums text-graphite-500 text-[10px]">
-                      {duration(t, executed.elapsed_ms)}
-                    </span>
-                  )}
-                </li>
-              );
-            })}
-          </ul>
+          <ul className="space-y-1">{shownSteps.map((step) => renderStep(rowFor(step)))}</ul>
         </div>
       )}
     </li>
   );
 }
 
-function StepRow({ step }: { step: StepState }) {
-  const t = useT();
-  const isRunning = step.status === "started" || step.status === "fixing";
-  const icon =
-    step.status === "finished" ? (
-      <Icon name="database" size={13} className="text-good transition-transform duration-200 shrink-0" />
-    ) : step.status === "failed" ? (
-      <Icon name="x" size={13} className="text-bad shrink-0" />
-    ) : (
-      <Icon
-        name="refresh"
-        size={13}
-        className={`animate-spin motion-reduce:animate-none shrink-0 ${
-          step.status === "fixing" ? "text-warn" : "text-good"
-        }`}
-      />
-    );
-  const note =
-    step.status === "fixing"
-      ? t("progress.fixing", { attempt: step.attempt ?? 1 })
-      : step.status === "failed"
-      ? t("progress.failed")
-      : step.fixed
-      ? t("progress.fixed")
-      : "";
 
-  return (
-    <li
-      className="flex items-center gap-2 text-[12px] transition-all duration-200"
-      title={step.error || undefined}
-    >
-      <span className="shrink-0">{icon}</span>
-      <span className={`min-w-0 flex-1 truncate ${isRunning ? "text-graphite-200 font-medium" : "text-graphite-400"}`}>
-        {step.purpose || step.tool || `#${step.step_id}`}
-      </span>
-      {note && (
-        <span className={`shrink-0 text-[11px] font-medium ${step.status === "failed" ? "text-bad" : "text-warn"}`}>
-          {note}
-        </span>
-      )}
-      {step.elapsed_ms !== undefined && step.status !== "fixing" && (
-        <span
-          className="shrink-0 tabular-nums text-graphite-500 text-[11px] flex items-center gap-1"
-          title={t("progress.sqlDuckDbTooltip")}
-        >
-          <span className="text-[10px] text-graphite-600 font-mono">SQL</span>
-          <span>{duration(t, step.elapsed_ms)}</span>
-        </span>
-      )}
-    </li>
-  );
-}
-
-function TileRow({ tile, steps }: { tile: TileState; steps: StepState[] }) {
+function TileRow({
+  tile,
+  steps,
+  open,
+  onToggle,
+  renderStep,
+}: {
+  tile: TileState;
+  steps: StepState[];
+  open: boolean;
+  onToggle: () => void;
+  renderStep: (step: StepState) => ReactNode;
+}) {
   const t = useT();
-  const [open, setOpen] = useState(false);
   // Шаги идущей плитки видны сразу, готовой — по клику
   const showSteps = steps.length > 0 && (open || tile.status === "started");
   const icon =
@@ -338,12 +372,12 @@ function TileRow({ tile, steps }: { tile: TileState; steps: StepState[] }) {
     ) : tile.status === "started" ? (
       <Icon name="refresh" size={13} className="animate-spin text-graphite-400" />
     ) : (
-      <span className="inline-block h-[13px] w-[13px] rounded-full border border-graphite-600" />
+      <QueuedDot />
     );
   return (
     <li className="rounded-lg border border-graphite-800 bg-graphite-850/60 px-2.5 py-1.5">
       <button
-        onClick={() => setOpen((v) => !v)}
+        onClick={onToggle}
         disabled={steps.length === 0}
         className="flex w-full items-center gap-2 text-left disabled:cursor-default"
       >
@@ -369,9 +403,7 @@ function TileRow({ tile, steps }: { tile: TileState; steps: StepState[] }) {
       )}
       {showSteps && (
         <ul className="mt-1 space-y-1 border-l border-graphite-800 pl-3 ml-1.5">
-          {steps.map((step) => (
-            <StepRow key={step.step_id} step={step} />
-          ))}
+          {steps.map(renderStep)}
         </ul>
       )}
     </li>
@@ -396,12 +428,87 @@ function ResumeBar({ onResume, lost }: { onResume: () => void; lost?: boolean })
   );
 }
 
-export default function StepProgress({ progress, onResume }: { progress: TurnProgress; onResume?: () => void }) {
+
+export default function StepProgress({
+  progress,
+  sessionId,
+  onResume,
+}: {
+  progress: TurnProgress;
+  sessionId?: string;
+  onResume?: () => void;
+}) {
   const t = useT();
   const locale = useUiStore((s) => s.locale);
+  const database = useSessionDatabase(sessionId);
   const [expanded, setExpanded] = useState(false);
+  const [openSteps, setOpenSteps] = useState<ReadonlySet<number>>(() => new Set());
+  const [openTiles, setOpenTiles] = useState<ReadonlySet<number>>(() => new Set());
+  const [scrollTo, setScrollTo] = useState<number | null>(null);
+  const anchorPrefix = useId();
   const finished = progress.finished_at !== undefined;
   const tiles = progress.tiles;
+  const steps = progress.steps;
+
+  // Номер шага в его списке (в плитке — свой счёт): step_id продолжают прошлые ходы
+  const numbers = useMemo(() => {
+    const counters = new Map<number | undefined, number>();
+    return new Map(
+      steps.map((step) => {
+        const number = (counters.get(step.tile_id) ?? 0) + 1;
+        counters.set(step.tile_id, number);
+        return [step.step_id, number] as const;
+      }),
+    );
+  }, [steps]);
+  const anchor = (stepId: number) => `${anchorPrefix}-step-${stepId}`;
+  const tableName = useCallback((table: string) => tableTitle(database, table), [database]);
+  const stepNumber = useCallback((stepId: number) => numbers.get(stepId), [numbers]);
+  const stepOf = useCallback(
+    (stepId: number) => steps.find((step) => step.step_id === stepId),
+    [steps],
+  );
+
+  const toggle = (set: ReadonlySet<number>, id: number) => {
+    const next = new Set(set);
+    if (!next.delete(id)) next.add(id);
+    return next;
+  };
+  // Ссылка «Результат шага N»: раскрыть шаг (и его плитку) и прокрутить к нему
+  const openStep = useCallback(
+    (stepId: number) => {
+      const tileId = steps.find((step) => step.step_id === stepId)?.tile_id;
+      setOpenSteps((set) => new Set(set).add(stepId));
+      if (tileId !== undefined) setOpenTiles((set) => new Set(set).add(tileId));
+      setScrollTo(stepId);
+    },
+    [steps],
+  );
+  useEffect(() => {
+    if (scrollTo === null) return;
+    document.getElementById(`${anchorPrefix}-step-${scrollTo}`)?.scrollIntoView({ behavior: "smooth", block: "nearest" });
+    setScrollTo(null);
+  }, [scrollTo, anchorPrefix]);
+
+  const renderStep = (step: StepState) => (
+    <StepRow
+      key={step.step_id}
+      step={step}
+      number={numbers.get(step.step_id) ?? step.step_id}
+      anchor={anchor(step.step_id)}
+      open={openSteps.has(step.step_id)}
+      onToggle={() => setOpenSteps((set) => toggle(set, step.step_id))}
+      details={
+        <StepDetails
+          step={step}
+          sessionId={sessionId}
+          tableName={tableName}
+          stepNumber={stepNumber}
+          onOpenStep={openStep}
+        />
+      }
+    />
+  );
 
   // Если есть timeline — отображаем всю хронологию; иначе только steps (fallback)
   const timelineEntries = progress.timeline || [];
@@ -438,7 +545,10 @@ export default function StepProgress({ progress, onResume }: { progress: TurnPro
 
   const totalElapsed = Math.max(0, (progress.finished_at ?? now) - progress.started_at);
   const totalSteps = Math.max(progress.total_steps ?? progress.steps.length, progress.steps.length);
-  const stepsText = stepsOf(locale, progress.steps.length, totalSteps);
+  // В steps лежат и шаги плана «в очереди»: выполненные считаем без них.
+  const doneSteps = progress.steps.filter((step) => step.status !== "queued").length;
+  const stepsText = stepsOf(locale, doneSteps, totalSteps);
+
 
   const collapsedLabel = tiles
     ? t("progress.tiles", {
@@ -515,7 +625,10 @@ export default function StepProgress({ progress, onResume }: { progress: TurnPro
             <TileRow
               key={tile.tile_id}
               tile={tile}
-              steps={progress.steps.filter((step) => step.tile_id === tile.tile_id)}
+              steps={steps.filter((step) => step.tile_id === tile.tile_id)}
+              open={openTiles.has(tile.tile_id)}
+              onToggle={() => setOpenTiles((set) => toggle(set, tile.tile_id))}
+              renderStep={renderStep}
             />
           ))}
         </ul>
@@ -525,19 +638,15 @@ export default function StepProgress({ progress, onResume }: { progress: TurnPro
           <ul className="space-y-1">
             {completedEntries.map((entry) =>
               entry.kind === "step" ? (
-                <StepRow key={entry.id} step={entry.step} />
+                renderStep(entry.step)
               ) : (
-                <StageRow key={entry.id} stage={entry} steps={progress.steps} />
+                <StageRow key={entry.id} stage={entry} stepOf={stepOf} renderStep={renderStep} />
               )
             )}
           </ul>
         ) : (
           unplannedSteps.length > 0 && (
-            <ul className="space-y-1">
-              {unplannedSteps.map((step) => (
-                <StepRow key={step.step_id} step={step} />
-              ))}
-            </ul>
+            <ul className="space-y-1">{unplannedSteps.map(renderStep)}</ul>
           )
         )
       )}
@@ -545,7 +654,7 @@ export default function StepProgress({ progress, onResume }: { progress: TurnPro
       {/* Активная стадия: спиннер и реальные фазы планирования */}
       {!finished && activeLabel && (
         <div className="space-y-1 transition-all duration-300 ease-out">
-          <div className="flex items-center gap-2 text-graphite-200">
+          <div className="flex items-center gap-2 text-graphite-200" data-active-stage={activeStageId}>
             <span className="relative flex h-2 w-2 shrink-0 items-center justify-center">
               <span className="animate-ping motion-reduce:animate-none absolute inline-flex h-full w-full rounded-full bg-good/60 opacity-75" />
               <span className="relative inline-flex rounded-full h-1.5 w-1.5 bg-good" />

@@ -14,6 +14,7 @@ from app.core.memory import session_memory
 from app.core.memory.profile_memory import ProfileMemory
 from app.core.memory.session_memory import SessionMemory
 from app.main import app
+from app.models.research_step import ResearchStep
 
 
 @pytest.fixture
@@ -312,3 +313,62 @@ def test_memories_api_rejects_unknown_session_memory_and_empty_text(client) -> N
     assert client.patch(f"{url}/nope", json={"enabled": False}).status_code == 404
     assert client.post(url, json={"text": "   "}).status_code == 422
     assert client.patch(f"{url}/nope", json={}).status_code == 422
+
+
+def session_with_result(client: TestClient, db_sql: str) -> tuple[str, str]:
+    """Сессия, в ходе которой шаг построил temp_result_v7."""
+    session_id = client.post("/api/sessions", json={"table": "sales"}).json()["session_id"]
+    app.dependency_overrides[get_db]().execute(db_sql)
+    memory = SessionMemory(session_id)
+    memory.start_turn("Выручка по дням")
+    memory.record_step(ResearchStep(step_id=0, tool="aggregate"), "temp_result_v7")
+    memory.finish_turn("ok")
+    return session_id, "temp_result_v7"
+
+
+def test_step_result_is_read_by_pages(client) -> None:
+    session_id, table = session_with_result(
+        client,
+        "CREATE TABLE temp_result_v7 AS SELECT i AS day, i * 10 AS revenue FROM range(5) t(i)",
+    )
+    response = client.get(f"/api/sessions/{session_id}/results/{table}?offset=3&limit=10")
+    assert response.status_code == 200
+    assert response.json() == {
+        "columns": [{"name": "day", "type": "BIGINT"}, {"name": "revenue", "type": "BIGINT"}],
+        "rows": [{"day": 3, "revenue": 30}, {"day": 4, "revenue": 40}],
+        "total": 5,
+    }
+
+
+def test_step_result_of_other_session_is_404(client) -> None:
+    _, table = session_with_result(client, "CREATE TABLE temp_result_v7 AS SELECT 1 AS a")
+    other = client.post("/api/sessions", json={"table": "sales"}).json()["session_id"]
+    assert client.get(f"/api/sessions/{other}/results/{table}").status_code == 404
+    assert client.get(f"/api/sessions/nope/results/{table}").status_code == 404
+
+
+def test_dropped_step_result_is_404(client) -> None:
+    session_id, table = session_with_result(client, "SELECT 1")
+    response = client.get(f"/api/sessions/{session_id}/results/{table}")
+    assert response.status_code == 404
+    assert response.json()["detail"] == "Результат больше недоступен."
+
+
+def test_unreadable_step_result_is_404(client, monkeypatch: pytest.MonkeyPatch) -> None:
+    import duckdb
+
+    session_id, table = session_with_result(client, "CREATE TABLE temp_result_v7 AS SELECT 1 AS a")
+
+    def broken(*_: object) -> None:
+        raise duckdb.IOException("файл базы недоступен")
+
+    monkeypatch.setattr(DuckDBManager, "result_shape", broken)
+    assert client.get(f"/api/sessions/{session_id}/results/{table}").status_code == 404
+
+
+def test_step_result_name_must_be_a_step_result(client) -> None:
+    session_id = client.post("/api/sessions", json={"table": "sales"}).json()["session_id"]
+    assert client.get(f"/api/sessions/{session_id}/results/sales").status_code == 422
+    assert (
+        client.get(f"/api/sessions/{session_id}/results/temp_result_v1?limit=0").status_code == 422
+    )

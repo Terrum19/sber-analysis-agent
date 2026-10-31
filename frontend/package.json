@@ -20,7 +20,8 @@
     "react-vega": "^7.6.0",
     "echarts": "^5.5.1",
     "echarts-for-react": "^3.0.2",
-    "react-grid-layout": "^1.4.4"
+    "react-grid-layout": "^1.4.4",
+    "base32768": "^5.0.1"
   },
   "devDependencies": {
     "typescript": "^5.5.4",

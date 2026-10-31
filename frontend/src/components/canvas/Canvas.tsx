@@ -8,7 +8,7 @@
  * - Кнопка «Сохранить» (PUT /api/dashboards/{id})
  * - Режим редактирования (переименование, удаление плиток)
  */
-import React, { useEffect, useRef, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import type { Layout } from "react-grid-layout";
 import { useCanvasStore } from "@/store/canvasStore";
 import { useSessionStore } from "@/store/sessionStore";
@@ -26,6 +26,9 @@ import { MIN_SIZE, STACK_BELOW, applyGridLayout, tileGridLayout } from "@/lib/ti
 import { CHART_TYPES, chartTypeOf, withRebuiltChartType, type ChartType } from "@/lib/chartTypes";
 import { useElementSize } from "@/hooks/useElementSize";
 import FitGrid from "@/components/canvas/FitGrid";
+import InsightsView from "@/components/insights/InsightsView";
+import { buildInsights } from "@/lib/insights";
+import { translate } from "@/i18n/useT";
 import ItemActionMenu from "@/components/layout/ItemActionMenu";
 import { useOpenArtifact } from "@/hooks/useOpenArtifact";
 import { useAskAgent } from "@/hooks/useAskAgent";
@@ -94,6 +97,17 @@ export default function Canvas({ sessionId }: Props) {
   const sessionTiles = useSessionStore((s) => s.tiles);
 
   const displayTiles = dashboardId ? tiles : (sessionTiles.length > 0 ? sessionTiles : tiles);
+
+  // Инсайты: ходы ленты и плитки панели без хода (F-17)
+  const messages = useSessionStore((s) => s.messages);
+  const insights = useMemo(
+    () =>
+      buildInsights(messages, displayTiles, {
+        ignore: [translate("ru", "canvas.newKpiInsight"), translate("en", "canvas.newKpiInsight")],
+        chartTitle: tr("chat.chartDefault"),
+      }),
+    [messages, displayTiles, tr],
+  );
   const hasResultTable = displayTiles.some((tile) => Boolean(tile.result_table));
 
   // Координаты сетки react-grid-layout
@@ -557,7 +571,7 @@ export default function Canvas({ sessionId }: Props) {
             [
               ["dashboard", tr("canvas.tabDashboard")],
               ["charts", tr("canvas.tabCharts", { n: displayTiles.filter((x) => !isKpiTile(x)).length })],
-              ["insights", tr("canvas.tabInsights")],
+              ["insights", insights.length > 0 ? tr("canvas.tabInsightsCount", { n: insights.length }) : tr("canvas.tabInsights")],
             ] as const
           ).map(([tab, label]) => (
             <button
@@ -586,7 +600,10 @@ export default function Canvas({ sessionId }: Props) {
 
       {/* Основная рабочая область канваса */}
       <div ref={bodyRef} className="flex-1 overflow-y-auto p-4 md:p-5">
-        {displayTiles.length === 0 ? (
+        {activeTab === "insights" ? (
+          // Ответы чата есть и без плиток на панели
+          <InsightsView sessionId={sessionId} cards={insights} />
+        ) : displayTiles.length === 0 ? (
           <div className="flex h-full flex-col items-center justify-center text-center text-graphite-500 space-y-3">
             <div className="h-10 w-10 rounded-lg bg-graphite-800 flex items-center justify-center text-graphite-400">
               <Icon name="layout" size={20} />
@@ -708,38 +725,7 @@ export default function Canvas({ sessionId }: Props) {
                 })}
             </div>
           )
-        ) : (
-          displayTiles.filter((t) => t.insight).length === 0 ? (
-            <div className="flex h-48 flex-col items-center justify-center rounded-xl border border-graphite-800 bg-graphite-950/40 text-center text-graphite-500 space-y-2">
-              <Icon name="sparkle" size={20} className="text-graphite-500" />
-              <p className="text-xs">{tr("canvas.noInsights")}</p>
-            </div>
-          ) : (
-            <div className="space-y-3">
-              {displayTiles
-                .filter((t) => t.insight)
-                .map((tile, i) => (
-                  <div
-                    key={i}
-                    className="rounded-xl border border-graphite-800 bg-graphite-950/80 p-4 shadow-sm"
-                  >
-                    <div className="flex items-center justify-between border-b border-graphite-800/80 pb-2 mb-2">
-                      <span className="text-xs font-semibold text-graphite-300">{tile.title}</span>
-                      {tile.result_table && (
-                        <span className="text-[10px] text-graphite-500 font-mono">
-                          {tile.result_table}
-                        </span>
-                      )}
-                    </div>
-                    <div className="flex items-start gap-2.5 text-xs text-graphite-200">
-                      <Icon name="sparkle" size={14} className="mt-0.5 shrink-0 text-graphite-400" />
-                      <p className="leading-relaxed">{tile.insight}</p>
-                    </div>
-                  </div>
-                ))}
-            </div>
-          )
-        )}
+        ) : null}
       </div>
 
       {/* Меню действий плитки (fixed, вне скролла канваса) */}
