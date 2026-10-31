@@ -28,10 +28,11 @@ class Critic:
 
     async def review(self, evidence: str, round: int = 1, previous: Review | None = None) -> Review:
         """Вердикт по уликам; не получилось за REVIEW_ATTEMPTS — исключение."""
-        checks = "\n".join(f"- {key}: {title}" for key, title in CHECKS.items())
-        prompt = REVIEW_PROMPT.format(evidence=evidence, checks=checks)
         if round > 1 and previous is not None:
-            prompt += REVIEW_FINAL.format(previous=describe_issues(previous))
+            prompt = REVIEW_FINAL.format(evidence=evidence, previous=describe_issues(previous))
+        else:
+            checks = "\n".join(f"- {key}: {title}" for key, title in CHECKS.items())
+            prompt = REVIEW_PROMPT.format(evidence=evidence, checks=checks)
         error: Exception | None = None
         for attempt in range(1, REVIEW_ATTEMPTS + 1):
             try:
@@ -42,6 +43,8 @@ class Critic:
                 prompt += f"\n\nПрошлый ответ отклонён: {exc}. Ответь строго по схеме."
                 continue
             settled = settle(raw, round)
+            if round > 1 and previous is not None:
+                settled = _recheck(settled, previous)
             logger.info(
                 "критик, раунд %d: вердикт %s -> %s, проблем %d",
                 round,
@@ -92,6 +95,29 @@ def settle(review: Review, round: int = 1) -> Review:
         for check in checks
     ]
     return Review(checks=checks, issues=issues, verdict=verdict, caveats=caveats)
+
+
+def _recheck(review: Review, previous: Review) -> Review:
+    """Чек-лист второго раунда — из первого: закрытые пункты становятся ok.
+
+    Второй раунд проверяет только замечания первого и чек-лист не возвращает.
+    """
+    remaining = {issue.check for issue in review.issues}
+    flagged = {issue.check for issue in previous.issues}
+    checks = [
+        check.model_copy(
+            update={
+                "status": "issue"
+                if check.id in remaining
+                else "ok"
+                if check.id in flagged
+                else check.status,
+                "evidence": "",
+            }
+        )
+        for check in previous.checks
+    ]
+    return review.model_copy(update={"checks": checks})
 
 
 def describe_issues(review: Review) -> str:

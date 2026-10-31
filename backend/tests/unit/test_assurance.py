@@ -239,6 +239,11 @@ def test_extend_plan_adds_steps_and_reviews_again(db):
     assert [(r["round"], r["verdict"]) for r in rounds] == [(1, "extend_plan"), (2, "caveat")]
     assert rounds[1]["caveats"] == ["выручку msk делает один заказ"]
     assert "Второго исправления не будет" in critics.prompts[1]
+    # Второй раунд — только замечания первого, без чек-листа.
+    assert "Пройди чек-лист" in critics.prompts[0]
+    assert "Пройди чек-лист" not in critics.prompts[1]
+    outliers = next(c for c in rounds[1]["checks"] if c["id"] == "outliers")
+    assert outliers["status"] == "issue"
     turn = last_turn()
     assert turn["headline"] == "msk впереди по медиане"
     assert turn["draft"]["headline"] == "msk впереди"
@@ -627,3 +632,15 @@ def test_evidence_shows_signs_and_categories(db):
         source="ids",
     )
     assert "Значения категориальных колонок" not in many
+
+
+def test_second_round_marks_closed_issues_ok():
+    first = settle(review("extend_plan", OUTLIERS))
+    critic = Critic(Critics(Review(verdict="ok")))
+
+    final = asyncio.run(critic.review("улики", round=2, previous=first))
+
+    outliers = next(c for c in final.checks if c.id == "outliers")
+    period = next(c for c in final.checks if c.id == "period")
+    assert (final.verdict, outliers.status, period.status) == ("ok", "ok", "ok")
+    assert all(not check.evidence for check in final.checks)
