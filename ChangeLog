@@ -181,6 +181,61 @@
 
 2026-10-31  thebulkapro  <saitbatalovbulat200@gmail.com>
 
+	Глубокое исследование: уточняющие вопросы до начала хода (#198).
+	* backend/app/core/agent/clarify.py: Новый.  (clarify_questions): Вопросы
+	по вопросу, таблице, прошлым ходам, воспоминаниям и ходу из reply_to;
+	реплика без исследования — без LLM.  (checked): Вариант с колонкой не из
+	таблицы и связанных отбрасывается, вопрос меньше чем с двумя вариантами
+	и второй вопрос на ту же тему — тоже.  До 3 вызовов с причиной отказа;
+	после последнего хватает двух вопросов, иначе ClarifyFailed.
+	* backend/app/core/llm/prompts/clarify.py: Новый.
+	* backend/app/models/clarify.py: Новый.  (ClarifyAnswer, Clarification)
+	(describe_clarifications): Новые.
+	* backend/app/api/routes/sessions.py (clarify): Новая.
+	POST /api/sessions/{id}/clarify.
+	* backend/app/api/schemas/chat.py (ClarifyRequest, ClarifyOut)
+	(ClarifyQuestionOut): Новые.  (ChatRequest.clarifications): Новое.
+	* backend/app/core/memory/session_memory.py (start_turn): Параметр
+	clarifications.  (clarifications): Новое.  (build_context): Уточнения
+	текущего хода.
+	* backend/app/core/agent/orchestrator.py: Уточнения в ход, инсайт и выбор
+	связанных таблиц.
+	* backend/app/core/agent/planner.py (describe_answers, clarified): Новые.
+	Колонки отбираются по вопросу вместе с ответами.  (describe_turns):
+	Уточнения прошлого хода.
+	* backend/app/core/llm/prompts/step_planner.py (CLARIFICATIONS): Новая.
+	* backend/app/core/agent/insight.py (describe_clarifications): Новая.
+	Цель пользователя отдельной строкой.
+	* backend/app/core/llm/prompts/insight_summary.py (INSIGHT_CLARIFICATIONS)
+	(INSIGHT_GOAL): Новые.
+	* backend/app/core/agent/explainer.py, backend/app/core/tools/read_history.py:
+	Уточнения прошлого хода.
+	* backend/app/core/memory/session_bundle.py (BundleTurn.clarifications):
+	Новое.
+	* backend/app/core/llm/fake_client.py (_fake_clarify): Новая.
+	* frontend/src/components/chat/ClarifyCard.tsx: Новый.
+	* frontend/src/components/chat/ChatPanel.tsx: Тумблер «Глубокое
+	исследование», взаимоисключающий с «Дашбордом»; карточка вопросов до хода;
+	повтор упавшего хода с теми же уточнениями.
+	* frontend/src/components/chat/DashboardIdeas.tsx (Elapsed): Экспорт.
+	* frontend/src/store/sessionStore.ts (deepResearch, setDeepResearch)
+	(ChatMessage.clarify, ChatMessage.failedClarifications): Новые.
+	Оборванный запрос вопросов после перезагрузки — карточка с «Повторить».
+	* frontend/src/store/chatRunStore.ts (startRun): Параметр clarifications.
+	(ChatRun.failedClarifications): Новое.
+	* frontend/src/types/chat.ts (ClarifyQuestion, Clarification)
+	(ClarifyCardData, closeClarify): Новые.
+	* frontend/src/api/client.ts (clarifyQuestions): Новая.  (streamChat):
+	Поле clarifications.
+	* frontend/src/api/mockData.ts (mockClarify): Новая.
+	* frontend/src/i18n/dictionary.ts: Тексты глубокого исследования.
+	* docs/memory.md, docs/prompts.md, docs/repo_structure.md: Уточнения.
+	* backend/tests/unit/test_clarify.py: Новый.
+	* backend/tests/unit/test_plan_execution.py (FakeMemory): Поле
+	clarifications.
+
+2026-10-31  thebulkapro  <saitbatalovbulat200@gmail.com>
+
 	Поделиться сессией: файл .session с таблицами в parquet (#251).
 	* backend/app/core/memory/session_file.py: Новый.  (write): zip из
 	манифеста, бандла с лентой и итоговых таблиц ходов и плиток в parquet;

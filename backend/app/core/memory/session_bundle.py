@@ -54,6 +54,7 @@ from app.core.data import table_origin
 from app.core.data.connectors import clickhouse, pg_dsn
 from app.core.memory.datasource_store import DatasourceStore
 from app.core.memory.session_memory import SessionMemory
+from app.models.clarify import MAX_CLARIFICATIONS, Clarification
 from app.models.research_step import NOTE_LIMIT, TILE_STEP_IDS
 
 FORMAT = 1
@@ -122,6 +123,8 @@ class BundleTurn(BaseModel):
     status: Literal["ok", "failed", "clarification"]
     reply_to: Name | None = None
     replay: Replay | None = None
+    # Ответы на уточняющие вопросы глубокого исследования (A-28).
+    clarifications: list[Clarification] = Field(default_factory=list, max_length=MAX_CLARIFICATIONS)
 
 
 class BundleMemory(BaseModel):

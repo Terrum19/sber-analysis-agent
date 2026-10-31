@@ -340,6 +340,7 @@ class FakeMemory:
     turn_id = "turn-1"
 
     def __init__(self) -> None:
+        self.clarifications: list[dict] = []
         self.steps: list[int] = []
         self.pending: dict | None = None
         self.checkpoint: dict | None = None

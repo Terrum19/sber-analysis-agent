@@ -143,6 +143,7 @@ class Assurance:
                 supporting=execution.supporting,
                 steps=execution.steps,
                 memories=memory.context_memories(),
+                clarifications=memory.clarifications,
                 result_tool=execution.result_tool,
                 source=memory.table,
                 inputs=execution.inputs,

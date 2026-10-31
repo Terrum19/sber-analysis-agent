@@ -4,7 +4,7 @@
  * или установлен ключ localStorage.sber_force_mock="true".
  * При ошибках сети или бэкенда выбрасывается ApiError.
  */
-import type { ChatStreamEvent, DashboardIdea, ResultColumn } from "@/types/chat";
+import type { ChatStreamEvent, Clarification, ClarifyQuestion, DashboardIdea, ResultColumn } from "@/types/chat";
 import type { LlmStatus } from "@/types/llm";
 import type {
   Datasource,
@@ -28,6 +28,7 @@ import {
   mockBrief,
   mockCreateDashboard,
   mockCreateSession,
+  mockClarify,
   mockDashboardIdeas,
   mockDeleteDashboard,
   mockFetchDashboard,
@@ -405,6 +406,32 @@ export async function fetchDashboardIdeas(sessionId: string, exclude: string[] =
   }
 }
 
+/**
+ * POST /api/sessions/{id}/clarify: уточняющие вопросы глубокого исследования до начала хода (A-28).
+ * enough_info — вопрос однозначен, ход запускается сразу.
+ * 404 — нет сессии, 409 — нет таблицы, 502 — модель не ответила.
+ */
+export async function clarifyQuestions(
+  sessionId: string,
+  question: string,
+  replyTo: string | null,
+): Promise<{ enough_info: boolean; questions: ClarifyQuestion[] }> {
+  if (isMockMode()) {
+    return mockClarify(question);
+  }
+  try {
+    const res = await fetch(`${API}/sessions/${encodeURIComponent(sessionId)}/clarify`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ question, reply_to: replyTo }),
+    });
+    if (!res.ok) throw await parseApiError(res);
+    return await res.json();
+  } catch (err) {
+    throw toApiError(err);
+  }
+}
+
 /** Страница результата шага: GET /api/sessions/{id}/results/{table}. */
 export interface StepResultPage {
   columns: ResultColumn[];
@@ -463,6 +490,8 @@ export function streamChat(
         resumeTurn?: string;
         /** Режим «Проверка» (A-29): после ответа агент проверяет и при необходимости исправляет его. */
         verify?: boolean;
+        /** Ответы на уточняющие вопросы глубокого исследования (A-28). */
+        clarifications?: Clarification[];
       }
     | string,
 ): () => void {
@@ -491,6 +520,7 @@ export function streamChat(
           idea: options?.dashboard?.idea ?? null,
           resume_turn: options?.resumeTurn ?? null,
           verify: options?.verify ?? false,
+          clarifications: options?.clarifications ?? null,
         }),
         signal: controller.signal,
       });
