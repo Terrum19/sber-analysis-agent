@@ -1874,12 +1874,14 @@ class AgentOrchestrator:
         )
 
     async def _overview(self, memory: SessionMemory, table: str) -> AsyncIterator[dict]:
-        """Ответ на «что передо мной?»: факты, описание и таблица колонок, без планировщика.
+        """Ответ на «что передо мной?»: размер и период, описание и таблица колонок.
 
-        Таблица связана ключами с другими — обзор всех связанных таблиц
-        (_schema_overview). Описание не построилось (LLM недоступна) — факты и
-        таблица всё равно отдаются. Таблица колонок не становится last_chart:
-        «покажи в другом виде» относится к прошлому графику исследования.
+        Размер и период идут отдельной строкой из паспорта, описание — пунктами
+        «что это / ключевые поля / на что обратить внимание». Таблица связана
+        ключами с другими — обзор всех связанных таблиц (_schema_overview).
+        Описание не построилось (LLM недоступна) — факты и таблица всё равно
+        отдаются. Таблица колонок не становится last_chart: «покажи в другом
+        виде» относится к прошлому графику исследования.
         """
         group = relations.component(relations.load(self.db), table)
         if len(group) > 1:
@@ -1892,7 +1894,7 @@ class AgentOrchestrator:
             yield _progress_event("insight", "started")
             profile = overview.passport(self.db, table)
             enrichment = self.profiles.load_enrichment(table)
-            headline = overview.facts(profile)
+            headline = f"Обзор датасета «{table}»"
             try:
                 summary = await overview.describe_dataset(
                     self.db, table, getattr(self.planner, "llm", None)
@@ -1900,7 +1902,8 @@ class AgentOrchestrator:
             except Exception:
                 logger.exception("<<< run() описание таблицы %s не построено", table)
                 summary = ""
-            details = overview.paragraphs(summary) or [SUMMARY_UNAVAILABLE]
+            points = overview.summary_lines(summary)
+            details = [overview.facts_line(profile), *(points or [SUMMARY_UNAVAILABLE])]
             yield _progress_event("insight", "finished", elapsed_ms=_elapsed_ms(stage_started))
             yield {"type": "text", "data": {"headline": headline, "details": details}}
 
@@ -1953,7 +1956,7 @@ class AgentOrchestrator:
                 role = relations.role(links, name)
                 labels.append(f"«{title}» ({name})" if title else name)
                 facts = overview.facts(profile).removeprefix(f"{name}: ")
-                first = (overview.paragraphs(summary) or [SUMMARY_UNAVAILABLE])[0]
+                first = overview.essence(summary) or SUMMARY_UNAVAILABLE
                 details.append(f"{number}. {labels[-1]} — {role}: {facts}. {first}")
                 rows.append(
                     {

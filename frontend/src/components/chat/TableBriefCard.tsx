@@ -8,6 +8,7 @@
  */
 import { useState } from "react";
 import Icon from "@/components/ui/Icon";
+import MarkdownContent from "@/components/chat/MarkdownContent";
 import GlossaryModal from "@/components/modals/GlossaryModal";
 import { useDateLocale, useT } from "@/i18n/useT";
 import type { TableBrief } from "@/types/datasource";
@@ -60,7 +61,11 @@ export default function TableBriefCard({
             </button>
           </div>
         ) : null}
-        {!compact && brief.summary && <p className="text-[13px] text-graphite-300">{brief.summary}</p>}
+        {!compact && brief.summary && (
+          <div className="text-[13px] text-graphite-300">
+            <MarkdownContent content={brief.summary} />
+          </div>
+        )}
         {!compact &&
           keyColumns.map((row) => (
             <div key={row.label} className="text-[12px] text-graphite-300">

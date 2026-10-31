@@ -275,7 +275,7 @@ def test_prompt_never_exceeds_the_limit(db) -> None:
     prompt = overview.build_prompt(memory.load_profile("huge"), rows)
     assert len(SCHEMA_DESCRIBE_SYSTEM) + len(prompt) <= overview.PROMPT_MAX_CHARS
     assert "- … и ещё" in prompt
-    assert "колонок" in prompt.split("Качество данных:")[0].splitlines()[-2]
+    assert "колонк" in prompt.split("Качество данных:")[0].splitlines()[-2]
     quality = prompt.split("Качество данных:\n")[1].strip()
     # Замечания таблицы (#105) идут перед замечаниями колонок.
     assert quality.startswith(
@@ -360,6 +360,76 @@ def test_facts_without_dates(db) -> None:
     assert overview.facts(profile) == (
         "plain: 1 строка, 1 колонка, колонок с датами нет — период не определить"
     )
+
+
+def test_facts_line_has_size_and_period_without_table_name(db) -> None:
+    orders(db)
+    profile = ProfileMemory(db).load_profile("orders")
+    assert overview.facts_line(profile) == (
+        "**Размер и период:** 3 строки, 3 колонки, данные с 2024-01-01 по 2024-01-03 («day»)"
+    )
+
+
+def test_paragraphs_strip_list_markers_and_keep_inline_markup() -> None:
+    text = (
+        "### **Что это:** числа\n- `a` — значение\n• **Ключевые поля:**\n1. **42** записи\n```\n\n"
+    )
+    assert overview.paragraphs(text) == [
+        "**Что это:** числа",
+        "`a` — значение",
+        "**Ключевые поля:**",
+        "**42** записи",
+    ]
+
+
+def test_paragraphs_split_one_long_line(monkeypatch) -> None:
+    monkeypatch.setattr(overview, "LONG_SUMMARY_LINE", 20)
+    assert overview.paragraphs("Первое предложение. Второе предложение!") == [
+        "Первое предложение.",
+        "Второе предложение!",
+    ]
+
+
+def test_summary_lines_drop_service_line_and_label_first() -> None:
+    text = (
+        "**Размер и период:** 3 строки\n"
+        "Передо мной заказы по регионам.\n"
+        "**Ключевые поля:**\n"
+        "`amount` — сумма заказа."
+    )
+    assert overview.summary_lines(text) == [
+        "**Что это:** Передо мной заказы по регионам.",
+        "**Ключевые поля:**",
+        "`amount` — сумма заказа.",
+    ]
+
+
+def test_summary_lines_keep_existing_label() -> None:
+    assert overview.summary_lines("**Что это:** заказы.") == ["**Что это:** заказы."]
+
+
+def test_summary_lines_do_not_duplicate_plain_label() -> None:
+    assert overview.summary_lines("Что это: заказы.") == ["**Что это:** заказы."]
+
+
+def test_essence_finds_what_is_this() -> None:
+    text = (
+        "**Размер и период:** 3 строки\n"
+        "**Что это:** заказы по регионам.\n"
+        "**Ключевые поля:** `amount`"
+    )
+    assert overview.essence(text) == "заказы по регионам."
+    assert overview.essence("") == ""
+
+
+def test_prompt_requires_structured_summary(db) -> None:
+    orders(db)
+    prompt = overview.build_prompt(ProfileMemory(db).load_profile("orders"), [])
+    assert "**Что это:**" in prompt
+    assert "**Ключевые поля:**" in prompt
+    assert "**На что обратить внимание:**" in prompt
+    assert "без markdown" not in SCHEMA_DESCRIBE_SYSTEM.lower()
+    assert "3-6 предложений" not in prompt
 
 
 def test_profile_rows(db) -> None:

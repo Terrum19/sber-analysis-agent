@@ -45,14 +45,6 @@ import { RECOVERY_SKIP_STEP, type DashboardEvent, type DashboardIdea } from "@/t
 /** Сколько раз подряд просить новые варианты дашборда, если все прежние уже использованы. */
 const MAX_IDEA_ROUNDS = 3;
 
-/** Текст ответа для буфера обмена: инсайт и детали, иначе — реплика из ленты. */
-function answerText(m: ChatMessage): string {
-  const lines: string[] = [];
-  if (m.answer?.headline) lines.push(m.answer.headline);
-  if (m.answer?.details?.length) lines.push(...m.answer.details.map((detail) => `- ${detail}`));
-  return lines.length > 0 ? lines.join("\n") : m.content;
-}
-
 /** Очистка строки от Markdown-символов для компактной цитаты */
 function stripMarkdown(md: string): string {
   return md
@@ -65,6 +57,16 @@ function stripMarkdown(md: string): string {
     .replace(/\[([^\]]+)\]\([^)]+\)/g, "$1")
     .replace(/^>\s?/gm, "")
     .replace(/^[-*•]\s+/gm, "");
+}
+
+/** Текст ответа для буфера обмена: инсайт и детали, иначе — реплика из ленты. */
+function answerText(m: ChatMessage): string {
+  const lines: string[] = [];
+  if (m.answer?.headline) lines.push(m.answer.headline);
+  if (m.answer?.details?.length) {
+    lines.push(...m.answer.details.map((detail) => `- ${stripMarkdown(detail)}`));
+  }
+  return lines.length > 0 ? lines.join("\n") : m.content;
 }
 
 /** Короткая выдержка ответа для цитаты (схлопнутые пробелы, обрезка по границе слова). */

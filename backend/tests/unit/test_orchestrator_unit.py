@@ -516,8 +516,12 @@ def test_overview_question_skips_planner(orchestrator):
 
     assert stages(events) == OVERVIEW_STAGES
     assert events[2]["data"] == {
-        "headline": "raw: 2 строки, 1 колонка, колонок с датами нет — период не определить",
-        "details": ["Передо мной числа.", "Пропусков нет."],
+        "headline": "Обзор датасета «raw»",
+        "details": [
+            "**Размер и период:** 2 строки, 1 колонка, колонок с датами нет — период не определить",
+            "**Что это:** Передо мной числа.",
+            "Пропусков нет.",
+        ],
     }
     spec = events[5]["data"]["spec"]
     assert spec["usermeta"]["chart_type"] == "table"
@@ -535,7 +539,9 @@ def test_overview_without_llm_still_answers(orchestrator):
     events = ask(orchestrator, "Что за данные?")
 
     assert stages(events) == OVERVIEW_STAGES
-    assert events[2]["data"]["details"] == [SUMMARY_UNAVAILABLE]
+    details = events[2]["data"]["details"]
+    assert details[0].startswith("**Размер и период:**")
+    assert details[1:] == [SUMMARY_UNAVAILABLE]
 
 
 def test_overview_failure_ends_the_stream(orchestrator, monkeypatch):
@@ -571,7 +577,9 @@ def test_closing_stream_cancels_insight_stream(orchestrator, monkeypatch):
         async def generate(self, question, result_table, **_):
             raise AssertionError("при включённом стриме generate не вызывается")
 
-        async def stream(self, question, result_table, *, supporting=None, steps=None, emit=None, **_):
+        async def stream(
+            self, question, result_table, *, supporting=None, steps=None, emit=None, **_
+        ):
             try:
                 emit("первый ")
                 await asyncio.sleep(30)
@@ -606,7 +614,9 @@ def test_insight_stream_skips_empty_and_whitespace_deltas(orchestrator, monkeypa
         async def generate(self, question, result_table, **_):
             raise AssertionError("при включённом стриме generate не вызывается")
 
-        async def stream(self, question, result_table, *, supporting=None, steps=None, emit=None, **_):
+        async def stream(
+            self, question, result_table, *, supporting=None, steps=None, emit=None, **_
+        ):
             emit("")
             emit(" \n")
             emit("Вывод")

@@ -101,6 +101,16 @@ _OVERVIEW = re.compile(
 _FILLER = re.compile(r"(?:расскажи|скажи|подскажи|покажи)(?: мне)?|пожалуйста|привет")
 _SEPARATOR = re.compile(r"\s*(?:[,;:?!.]|\bи\b|\bа\b)\s*")
 
+# Строки описания: модель может добавить маркеры, хотя их ставит интерфейс.
+_HEADING_RE = re.compile(r"^#{1,6}\s*")
+_BULLET_RE = re.compile(r"^(?:[-*•–—]|\d+[.)])\s+")
+_FENCE_RE = re.compile(r"^```[a-zA-Z]*$")
+_SENTENCE_RE = re.compile(r"(?<=[.!?])\s+(?=[А-ЯЁA-Z0-9«(])")
+_SERVICE_LINE_RE = re.compile(r"^(?:\*\*)?(?:размер и период|обзор датасета)\b", re.IGNORECASE)
+_ESSENCE_RE = re.compile(r"^(?:\*\*)?что это(?::\*\*|\*\*:|:)\s*", re.IGNORECASE)
+_BOLD_LABEL_RE = re.compile(r"^\*\*[^*]+:\*\*")
+LONG_SUMMARY_LINE = 280
+
 
 def is_overview_question(question: str) -> bool:
     """Вопрос целиком про таблицу: «что передо мной?», «сколько строк и за какой период?».
@@ -159,6 +169,11 @@ def facts(profile: TableProfile) -> str:
         f"{text}, данные с {_value(temporal.min_date)} по {_value(temporal.max_date)} "
         f"(«{temporal.name}»)"
     )
+
+
+def facts_line(profile: TableProfile) -> str:
+    """Строка «Размер и период» без имени таблицы: имя уходит в headline обзора."""
+    return f"**Размер и период:** {facts(profile).removeprefix(f'{profile.table}: ')}"
 
 
 def family_key(column: ColumnStats) -> tuple[str | None, str, str]:
@@ -413,8 +428,50 @@ def starter_questions(profile: TableProfile, enrichment: list[ColumnEnrichment])
 
 
 def paragraphs(text: str) -> list[str]:
-    """Описание по абзацам для details события text."""
-    return [line.strip() for line in text.splitlines() if line.strip()]
+    """Пункты описания для details события text.
+
+    Снимает маркеры, которые добавит интерфейс: заголовки «#», «-», «•»,
+    нумерацию и code-фенсы. Инлайн-разметка **жирный** и `код` сохраняется.
+    Одну длинную строку без переносов делим по предложениям, чтобы ответ
+    не оставался сплошным абзацем.
+    """
+    lines: list[str] = []
+    for raw in text.replace("\r\n", "\n").split("\n"):
+        line = raw.strip()
+        if not line or _FENCE_RE.fullmatch(line):
+            continue
+        line = _HEADING_RE.sub("", line)
+        line = _BULLET_RE.sub("", line).strip()
+        if line:
+            lines.append(line)
+    if len(lines) == 1 and len(lines[0]) > LONG_SUMMARY_LINE:
+        parts = [part.strip() for part in _SENTENCE_RE.split(lines[0]) if part.strip()]
+        if len(parts) > 1:
+            return parts
+    return lines
+
+
+def summary_lines(text: str) -> list[str]:
+    """Пункты описания без служебной строки о размере; первый — «Что это»."""
+    lines = [line for line in paragraphs(text) if not _SERVICE_LINE_RE.match(line)]
+    if not lines:
+        return lines
+    match = _ESSENCE_RE.match(lines[0])
+    if match and not _BOLD_LABEL_RE.match(lines[0]):
+        lines[0] = f"**Что это:** {lines[0][match.end() :].strip()}"
+    elif not _BOLD_LABEL_RE.match(lines[0]):
+        lines[0] = f"**Что это:** {lines[0]}"
+    return lines
+
+
+def essence(text: str) -> str:
+    """Строка «что это» без ярлыка — для обзора связанных таблиц."""
+    lines = paragraphs(text)
+    for line in lines:
+        match = _ESSENCE_RE.match(line)
+        if match:
+            return line[match.end() :].strip() or line
+    return lines[0] if lines else ""
 
 
 def profile_rows(profile: TableProfile, enrichment: list[ColumnEnrichment]) -> list[dict]:
