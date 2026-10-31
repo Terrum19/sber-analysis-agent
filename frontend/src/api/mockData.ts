@@ -412,20 +412,23 @@ export function mockStreamChat(
   // Видимая проверка, что reply_to дошёл до мока.
   const replyPrefix = _options?.replyTo ? "Уточняю по прошлому ответу…\n" : "";
 
-  const steps = [
+  const headline = isDashboardRequest
+    ? "Дашборд успешно сформирован на основе промежуточных результатов DuckDB"
+    : "Анализ данных завершён: выявлен рост выручки на **18.4%**";
+  const details = [
+    "Москва лидирует с результатом **12.5 млн ₽**",
+    "Темп роста относительно Q2 составил **+18.4%**",
+    "SQL не генерировался заново: использован кэш шага",
+  ];
+  // Вывод — стримом, как у бэкенда с INSIGHT_STREAM: Markdown кусками по 40 мс, затем поля
+  const insight = `\n${headline}\n\n${details.map((d) => `- ${d}`).join("\n")}`;
+  const pieces = insight.match(/\S+\s*|\s+/g) ?? [];
+  const plain = (text: string) => text.replace(/\*\*/g, "");
+  const steps: { delay: number; chunk?: string; headline?: string; details?: string[] }[] = [
     { delay: 300, chunk: `${replyPrefix}Изучаю схему данных в DuckDB...\n` },
     { delay: 700, chunk: "Выполняю расчет шага 1: агрегация продаж по регионам (temp_result_v1).\n" },
-    {
-      delay: 1200,
-      headline: isDashboardRequest
-        ? "Дашборд успешно сформирован на основе промежуточных результатов DuckDB"
-        : "Анализ данных завершён: выявлен рост выручки на 18.4%",
-      details: [
-        "Москва лидирует с результатом 12.5 млн ₽",
-        "Темп роста относительно Q2 составил +18.4%",
-        "SQL не генерировался заново: использован кэш шага",
-      ],
-    },
+    ...pieces.map((chunk, i) => ({ delay: 1200 + i * 40, chunk })),
+    { delay: 1200 + pieces.length * 40, headline: plain(headline), details: details.map(plain) },
   ];
 
   const timeouts: NodeJS.Timeout[] = [];
@@ -444,7 +447,7 @@ export function mockStreamChat(
       if (step.headline) {
         onEvent({
           type: "text",
-          data: { headline: step.headline, details: step.details },
+          data: { headline: step.headline, details: step.details, streamed: true },
         });
 
         // Если вопрос о графиках/дашборде — отправляем превью дашборда
@@ -473,7 +476,16 @@ export function mockStreamChat(
       if (idx === steps.length - 1) {
         const finishTimer = setTimeout(() => {
           if (!isCancelled) {
-            onEvent({ type: "done", data: { turn_id: turnId } });
+            onEvent({
+              type: "done",
+              data: {
+                turn_id: turnId,
+                llm_calls: 3,
+                prompt_tokens: 5240,
+                completion_tokens: 312,
+                total_tokens: 5552,
+              },
+            });
             onClose?.();
           }
         }, 400);

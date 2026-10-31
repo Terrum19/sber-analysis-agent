@@ -108,12 +108,23 @@ export interface TableEvent {
 export interface TextEvent {
   type: "text";
   data: {
+    /** Кусок вывода из стрима LLM: дописывается к ответу. */
     chunk?: string;
     headline?: string;
     details?: string[];
+    /** Текст уже пришёл кусками: headline/details — только для копирования, PDF и цитаты. */
+    streamed?: boolean;
     /** Режим «Проверка»: 0 — черновой ответ, 1 — исправленный после проверки. */
     revision?: number;
   };
+}
+
+/** Токены хода: сумма usage по всем вызовам LLM (из done). */
+export interface TurnTokens {
+  llm_calls: number;
+  prompt_tokens: number;
+  completion_tokens: number;
+  total_tokens: number;
 }
 
 /** Аномалия результата шага, найденная кодом (режим «Проверка»). */
@@ -183,7 +194,7 @@ export interface DoneEvent {
     turn_id?: string;
     /** Сколько символов истории обрезано планировщиком. */
     prompt_truncated?: number;
-  };
+  } & Partial<TurnTokens>;
 }
 
 /** Шаг упал и не исправился (или план пуст): поток закрывается без done. */
@@ -295,7 +306,43 @@ export type ChatStreamEvent =
   | ClarificationEvent
   | RefusalEvent
   | ReviewEvent
-  | ProgressEvent;
+  | ProgressEvent
+  | UsageEvent;
+
+/** Токены одного места хода (key: planning, step:3, tile:2/step:21, outline, insight, chart). */
+export interface ScopeTokens {
+  prompt_tokens: number;
+  /** Пока live — оценка по пришедшим кускам ответа и рассуждений модели. */
+  completion_tokens: number;
+  /** Вызов LLM в этом месте ещё идёт. */
+  live: boolean;
+}
+
+/** Токены места хода: пока LLM пишет — несколько раз в секунду, в конце вызова — точные. */
+export interface UsageEvent {
+  type: "usage";
+  data: ScopeTokens & { key: string; stage?: string; step_id?: number; tile_id?: number };
+}
+
+/** Ключ места хода у шага: так его называет бэкенд (usage.scope_key). */
+export function stepTokensKey(step: Pick<StepState, "step_id" | "tile_id">): string {
+  return step.tile_id !== undefined ? `tile:${step.tile_id}/step:${step.step_id}` : `step:${step.step_id}`;
+}
+
+/** Сумма токенов мест, чей ключ равен key или начинается с key + "/" (плитка вместе с её шагами). */
+export function sumTokens(usage: Record<string, ScopeTokens> | undefined, key?: string): ScopeTokens | undefined {
+  if (!usage) return undefined;
+  let found: ScopeTokens | undefined;
+  for (const [name, item] of Object.entries(usage)) {
+    if (key !== undefined && name !== key && !name.startsWith(`${key}/`)) continue;
+    found = {
+      prompt_tokens: (found?.prompt_tokens ?? 0) + item.prompt_tokens,
+      completion_tokens: (found?.completion_tokens ?? 0) + item.completion_tokens,
+      live: Boolean(found?.live) || item.live,
+    };
+  }
+  return found;
+}
 
 /** Неудачная попытка шага: с какими аргументами и почему упала. */
 export interface StepAttempt {
@@ -368,6 +415,10 @@ export interface TurnProgress {
   resumable?: boolean;
   /** Стрим хода оборвался вместе со страницей (перезагрузка): ответ до ленты не дошёл. */
   lost?: boolean;
+  /** Токены по местам хода из событий usage. */
+  usage?: Record<string, ScopeTokens>;
+  /** Токены хода из done; нет — бэкенд их не прислал. */
+  tokens?: TurnTokens;
 }
 
 /** Готов хотя бы один шаг или плитка: остановленный ход есть с чего продолжать. */
@@ -542,6 +593,8 @@ export interface ReviewState {
   repair?: TurnProgress;
   /** step_id шагов первого прогона: остальные шаги исправления — «добавлено проверкой». */
   known_steps?: number[];
+  /** Токены критика (оба раунда), из событий usage места review. */
+  tokens?: ScopeTokens;
 }
 
 export function startReview(knownSteps: number[]): ReviewState {

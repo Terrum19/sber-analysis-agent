@@ -48,6 +48,14 @@ class Settings(BaseSettings):
     chart_choice_timeout_s: float = 90
     # Исправления качества плана и инсайта (app/core/agent/quality_fixes.py).
     agent_quality_fixes: bool = True
+    # Вывод хода стримом: фронт печатает его по кусочкам (text {chunk}), а не
+    # ждёт целиком. Ответ — Markdown-текст без грамматики json_schema; H-Q3
+    # проверяет первую строку до показа (InsightGenerator.stream).
+    insight_stream: bool = True
+    # Вызовы LLM внутри хода (план, шаги, дашборд) — стримом: фронт видит
+    # токены каждого места по мере генерации. false — одним ответом, как раньше:
+    # токены приходят в конце вызова. Вывод хода управляется INSIGHT_STREAM.
+    llm_stream_calls: bool = True
     # H-R1: в промпт планировщика — только релевантные вопросу тулы.
     # Быстрее вдвое, но сломал вопрос про тренд (П8) — выключено.
     agent_tool_topk: bool = False

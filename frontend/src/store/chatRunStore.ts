@@ -277,6 +277,20 @@ export function startRun(
     (event) => {
       if (event.type === "done") {
         streamFinished = true;
+        const usage = event.data;
+        if (progress && typeof usage?.total_tokens === "number") {
+          progress = {
+            ...progress,
+            tokens: {
+              llm_calls: usage.llm_calls ?? 0,
+              prompt_tokens: usage.prompt_tokens ?? 0,
+              completion_tokens: usage.completion_tokens ?? 0,
+              total_tokens: usage.total_tokens,
+            },
+          };
+          // Прогресс мог свернуться раньше (началась «Проверка»): итог хода — всё равно в него
+          store.updateMessage(progressId, { progress }, sessionId);
+        }
         finishProgress(streamHadError);
         closeOpenReview();
         saveAnswerMeta(event.data?.turn_id);
@@ -334,6 +348,28 @@ export function startRun(
         answerStarted = false;
         streamFinished = true;
         addMessage({ role: "agent", content: event.data.reason || t("chat.refusal"), refusal: event.data });
+      } else if (event.type === "usage") {
+        // Токены места хода: заменяем прежние числа этого места
+        const { key, prompt_tokens, completion_tokens, live } = event.data;
+        const tokens = { prompt_tokens, completion_tokens, live };
+        if (key === "review") {
+          // Критик «Проверки» — в карточку проверки
+          setReview({ ...reviewState(), tokens });
+        } else if (key.startsWith("repair/")) {
+          // Исправление — в его прогресс: те же ключи, что у первого прогона
+          const current = reviewState();
+          if (current.repair) {
+            const repair = { ...current.repair, usage: { ...current.repair.usage, [key.slice(7)]: tokens } };
+            setReview({ ...current, repair });
+          }
+        } else if (progress && progress.finished_at === undefined) {
+          progress = {
+            ...progress,
+            usage: { ...progress.usage, [key]: tokens },
+            last_event_at: Date.now(),
+          };
+          store.updateMessage(progressId, { progress }, sessionId);
+        }
       } else if (event.type === "text") {
         if (revise(event.data ?? {}, textIds)) {
           textIds = [];
@@ -342,16 +378,24 @@ export function startRun(
           revisedNext = true;
         }
         const raw = event as any;
-        const headline = event.data?.headline || raw.headline;
+        const data = event.data ?? raw;
+        const chunk = data.chunk;
+        if (typeof chunk === "string" && chunk) {
+          // Кусок стрима: дописываем к ответу
+          appendText(chunk);
+          return;
+        }
+        const headline = data.headline;
         if (typeof headline === "string" && headline) answerHeadline = headline;
-        const content = event.data?.headline || event.data?.chunk || raw.headline || raw.chunk || "";
-        if (content) appendText(content);
-        const details = event.data?.details || raw.details;
-        if (details && Array.isArray(details)) {
+        const details = data.details;
+        if (Array.isArray(details)) {
           answerDetails = details.filter((d: unknown): d is string => typeof d === "string");
-          if (answerDetails.length > 0) {
-            appendText("\n\n" + answerDetails.map((d: string) => `• ${d}`).join("\n"));
-          }
+        }
+        // streamed — текст уже в ленте кусками, поля нужны только для копирования и PDF
+        if (data.streamed) return;
+        if (typeof headline === "string" && headline) appendText(headline);
+        if (answerDetails.length > 0) {
+          appendText("\n\n" + answerDetails.map((d: string) => `- ${d}`).join("\n"));
         }
       } else if (event.type === "chart") {
         answerStarted = false;

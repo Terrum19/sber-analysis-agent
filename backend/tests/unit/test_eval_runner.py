@@ -354,6 +354,20 @@ def test_value_without_result_table_is_found_in_the_answer_text(sales_db: DuckDB
     assert not runner.check_value({"sql": "SELECT 1234"}, turn, sales_db).passed
 
 
+def test_streamed_answer_text_skips_chunks() -> None:
+    """Куски стрима не попадают в текст для проверок: вывод целиком — в итоговом text."""
+    events = [
+        {"type": "text", "data": {"chunk": "Всего "}},
+        {"type": "text", "data": {"chunk": "12 строк"}},
+        {
+            "type": "text",
+            "data": {"headline": "Всего 12 строк", "details": ["a"], "streamed": True},
+        },
+        {"type": "done", "data": {}},
+    ]
+    assert runner.answer_text(make_turn(events)) == "Всего 12 строк\na"
+
+
 def test_zero_reference_uses_tolerance_as_absolute(sales_db: DuckDBManager) -> None:
     turn = make_turn(ANSWER_EVENTS, result_rows=[{"n": 0.01}])
     assert runner.check_value({"sql": "SELECT 0", "tolerance": 0.02}, turn, sales_db).passed

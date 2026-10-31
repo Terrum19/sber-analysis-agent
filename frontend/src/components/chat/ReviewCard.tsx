@@ -9,12 +9,13 @@
  * черновой ответ, заменённый исправленным: свёрнут в «Ответ до проверки».
  */
 import { useEffect, useMemo, useState } from "react";
-import StepProgress from "@/components/chat/StepProgress";
+import StepProgress, { Tokens } from "@/components/chat/StepProgress";
 import Icon from "@/components/ui/Icon";
 import { useT, type Translate } from "@/i18n/useT";
 import type { MessageKey } from "@/i18n/dictionary";
 import type { ChatMessage } from "@/store/sessionStore";
 import {
+  sumTokens,
   finalReview,
   type ReviewCheck,
   type ReviewCheckId,
@@ -197,6 +198,7 @@ export default function ReviewCard({ review, sessionId }: { review: ReviewState;
             <Spinner />
             <span>{t(review.round > 1 ? "verify.reviewingAgain" : "verify.reviewing")}</span>
             <span className="shrink-0 whitespace-nowrap tabular-nums text-graphite-500">{t("progress.seconds", { s: elapsed })}</span>
+            <Tokens tokens={review.tokens} />
           </div>
           <div className="mt-1.5 flex flex-wrap gap-1">
             {CHECK_ORDER.map((id) => (
@@ -233,6 +235,7 @@ export default function ReviewCard({ review, sessionId }: { review: ReviewState;
             {review.repair_status === "started" && (
               <span className="shrink-0 whitespace-nowrap tabular-nums text-graphite-500">{t("progress.seconds", { s: elapsed })}</span>
             )}
+            <Tokens tokens={sumTokens(review.repair?.usage)} />
           </div>
           {review.repair && review.repair.steps.length > 0 && (
             <div className="mt-1 pl-5">

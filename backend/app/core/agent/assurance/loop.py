@@ -15,6 +15,7 @@ from dataclasses import dataclass
 from app.core.agent.assurance.critic import Critic, describe_issues, review_payload
 from app.core.agent.assurance.evidence import build_evidence
 from app.core.llm.prompts.review import EXTEND_PLAN, INSIGHT_REVIEW, REPLAN
+from app.core.llm.usage import llm_scope
 from app.models.insight import Insight
 from app.models.research_step import ResearchPlan
 from app.models.review import REPAIRS, Review
@@ -59,7 +60,8 @@ class Assurance:
         draft = {"headline": answer.insight.headline, "details": list(answer.insight.details)}
         yield _progress_event("review", "started", round=1)
         try:
-            review = await self.critic.review(self._evidence(memory, question, answer, titles))
+            with llm_scope(phase="review"):
+                review = await self.critic.review(self._evidence(memory, question, answer, titles))
         except Exception as exc:
             # Проверка — дополнение: без неё остаётся обычный ответ.
             logger.exception("проверка: критик не ответил")
@@ -77,8 +79,10 @@ class Assurance:
         reason = review.issues[0].message if review.issues else ""
         yield _progress_event("repair", "started", action=action, reason=reason)
         try:
-            async for event in self._repair(memory, question, answer, review, titles):
-                yield event
+            # Токены исправления — в repair/…: план, шаги, вывод и график заново.
+            with llm_scope(phase="repair"):
+                async for event in self._repair(memory, question, answer, review, titles):
+                    yield event
         except Exception as exc:
             logger.exception("проверка: исправление %s не удалось", action)
             # Сбой шага исправления оставил ожидание уточнения: ход его не ждёт.
@@ -100,9 +104,10 @@ class Assurance:
 
         yield _progress_event("review", "started", round=2)
         try:
-            final = await self.critic.review(
-                self._evidence(memory, question, answer, titles), round=2, previous=review
-            )
+            with llm_scope(phase="review"):
+                final = await self.critic.review(
+                    self._evidence(memory, question, answer, titles), round=2, previous=review
+                )
         except Exception as exc:
             logger.exception("проверка: повторный критик не ответил")
             yield _progress_event("review", "failed", round=2, error=str(exc))

@@ -13,6 +13,8 @@ import logging
 import os
 import re
 import time
+from collections.abc import AsyncIterator
+from contextlib import aclosing
 from typing import Any, TypeVar
 
 import httpx
@@ -29,6 +31,7 @@ except ImportError:  # instructor 1.3.x
 
 from app.config import settings
 from app.core.llm import budget, ollama_setup
+from app.core.llm.usage import current_usage, record_usage, start_call
 from app.core.logging_setup import public_url
 
 logger = logging.getLogger(__name__)
@@ -142,6 +145,26 @@ class LLMClient:
         logger.debug("LLM %s: трассировка сбоя", self.model, exc_info=error)
 
     async def _check_context(self, response: httpx.Response) -> None:
+        """Хук ответа: usage — в токены хода, prompt_tokens — в проверку обрезки.
+
+        Стрим (text/event-stream) не трогаем: aread() дождался бы конца ответа
+        и стрим пришёл бы одним куском. Его usage и проверку делает _stream().
+        """
+        if response.status_code != 200 or not response.url.path.endswith("/chat/completions"):
+            return
+        if response.headers.get("content-type", "").startswith("text/event-stream"):
+            return
+        try:
+            await response.aread()
+            usage = response.json().get("usage") or {}
+            record_usage(usage)
+            body = json.loads(response.request.content)
+        except Exception:  # проверка вспомогательная, запрос не роняет
+            logger.warning("Проверка контекста LLM не удалась", exc_info=True)
+            return
+        await self._check_prompt(body, usage.get("prompt_tokens"))
+
+    async def _check_prompt(self, body: dict, prompt_tokens: int | None) -> None:
         """Сверить prompt_tokens ответа с длиной промпта: не обрезал ли его сервер.
 
         Пока сервер не назвал свой контекст, спрашивает его после ответа (модель
@@ -149,12 +172,7 @@ class LLMClient:
         промпта входит и схема тулов от instructor: сервер считает её токены в
         prompt_tokens. Сбой проверки запрос не роняет.
         """
-        if response.status_code != 200 or not response.url.path.endswith("/chat/completions"):
-            return
         try:
-            await response.aread()
-            prompt_tokens = (response.json().get("usage") or {}).get("prompt_tokens")
-            body = json.loads(response.request.content)
             self.last_prompt_tokens = prompt_tokens
             if not prompt_tokens:
                 return
@@ -217,7 +235,15 @@ class LLMClient:
             logger.warning("LLM недоступна при старте, контекст сервера узнаем позже: %s", error)
 
     async def complete(self, system: str, user: str, **kwargs: Any) -> str:
-        """Одиночный completion (без structured output)."""
+        """Одиночный completion (без structured output).
+
+        Внутри хода (track_usage) — стримом: ответ тот же, но фронт видит
+        токены вызова по мере генерации. Вне хода (eval, проверки) и при
+        LLM_STREAM_CALLS=false — одним ответом, как раньше: токены тогда
+        считает хук ответа.
+        """
+        if settings.llm_stream_calls and current_usage() is not None:
+            return "".join([delta async for delta in self._stream(system, user, kwargs)])
         logger.debug(
             ">>> complete() system=%r user=%r kwargs=%s",
             system,
@@ -255,6 +281,81 @@ class LLMClient:
             len(content),
         )
         return content
+
+    async def complete_stream(self, system: str, user: str, **kwargs: Any) -> AsyncIterator[str]:
+        """Текст ответа по кусочкам — для вывода, который фронт печатает сразу.
+
+        Закрытие генератора (клиент ушёл, ход отменён) закрывает и HTTP-ответ.
+        """
+        # aclosing: закрытие этого генератора сразу закрывает и _stream с HTTP-ответом.
+        async with aclosing(self._stream(system, user, kwargs)) as deltas:
+            async for delta in deltas:
+                yield delta
+
+    async def _stream(self, system: str, user: str, kwargs: dict[str, Any]) -> AsyncIterator[str]:
+        """Ответ стримом (stream=True): куски текста, а куски текста и рассуждений — в токены хода.
+
+        Срок — как у complete(), на весь ответ. usage приходит последним
+        чанком (stream_options.include_usage): оценку места хода по кускам
+        он заменяет точными числами и идёт в проверку обрезки промпта.
+        """
+        logger.debug(">>> stream system=%r user=%r kwargs=%s", system, user, kwargs)
+        messages = [
+            {"role": "system", "content": system},
+            {"role": "user", "content": user},
+        ]
+        call = start_call()
+        started_at = time.perf_counter()
+        first_at: float | None = None
+        chars = 0
+        usage = None
+        try:
+            async with asyncio.timeout(settings.llm_timeout_s):
+                stream = await self._client.chat.completions.create(
+                    model=self.model,
+                    messages=messages,
+                    temperature=settings.llm_temperature,
+                    stream=True,
+                    stream_options={"include_usage": True},
+                    **kwargs,
+                )
+                async with stream:
+                    async for chunk in stream:
+                        usage = chunk.usage or usage
+                        if not chunk.choices:
+                            continue
+                        delta = chunk.choices[0].delta
+                        # Рассуждения (OpenRouter — reasoning, vLLM — reasoning_content)
+                        # не показываем, но считаем: модель работает и тратит токены.
+                        thinking = getattr(delta, "reasoning", None) or getattr(
+                            delta, "reasoning_content", None
+                        )
+                        if (delta.content or thinking) and call is not None:
+                            call.tick()
+                        if not delta.content:
+                            continue
+                        if first_at is None:
+                            first_at = time.perf_counter()
+                        chars += len(delta.content)
+                        yield delta.content
+        except Exception as error:
+            self._log_failure(error, time.perf_counter() - started_at)
+            raise
+        finally:
+            if call is not None:
+                call.finish(usage)
+        prompt_tokens = usage.prompt_tokens if usage else None
+        logger.info(
+            "LLM %s: схема=%s стримом за %.2f с (первый кусок через %.2f с), "
+            "prompt_tokens=%s, ответ %d символов",
+            self.model,
+            _schema_name(kwargs),
+            time.perf_counter() - started_at,
+            (first_at or time.perf_counter()) - started_at,
+            prompt_tokens,
+            chars,
+        )
+        await self._check_prompt({"messages": messages}, prompt_tokens)
 
     async def complete_structured(self, system: str, user: str, schema: type[T]) -> T:
         """Structured output через Instructor (валидация по Pydantic-схеме).
