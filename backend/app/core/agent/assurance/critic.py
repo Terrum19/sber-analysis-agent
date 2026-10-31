@@ -16,6 +16,8 @@ from app.models.review import CHECKS, REPAIRS, Review, ReviewCheck
 
 logger = logging.getLogger(__name__)
 
+# Пункты, замечание по которым значит, что вывод неверен.
+WRONG_ANSWER = ("answers_question", "metric", "numbers")
 # Повтор вызова критика, если модель не ответила или ответила не по схеме.
 REVIEW_ATTEMPTS = 2
 
@@ -71,6 +73,9 @@ def settle(review: Review, round: int = 1) -> Review:
         verdict = "caveat"
     if verdict == "fix_insight" and not issues:
         verdict = "ok"
+    # Замечание к ответу, метрике или числам при «ok» — вывод неверен, а не «в порядке» (eval 31.10).
+    if verdict == "ok" and any(issue.check in WRONG_ANSWER for issue in issues):
+        verdict = "fix_insight"
     if round > 1 and verdict in REPAIRS:
         verdict = "caveat"
     caveats = [text.strip() for text in review.caveats if text.strip()]

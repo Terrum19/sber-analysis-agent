@@ -4,7 +4,9 @@
 «всё хорошо», либо выдуманную претензию. Поэтому код считает по исходной
 таблице и шагам плана то, о чём спрашивает чек-лист: строки на входе и
 выходе шагов, пропуски, выбросы и диапазон дат использованных колонок,
-колонки, которых план не коснулся.
+колонки, которых план не коснулся. И знаки с категориями: у возвратов
+количество отрицательное, а «Тип операции» = «Возврат»; без этого критик
+не видел, что возвраты уже вычтены или, наоборот, прибавлены (eval 31.10).
 """
 
 import logging
@@ -24,6 +26,9 @@ RESULT_ROWS = 20
 SUPPORTING_ROWS = 10
 # Неиспользованных колонок в уликах не больше стольких.
 UNUSED_COLUMNS = 40
+# Текстовая колонка с не большим числом разных значений — категория: значения в уликах.
+CATEGORY_VALUES = 10
+CATEGORY_COLUMNS = 20
 
 NUMERIC = ("INT", "DOUBLE", "DECIMAL", "FLOAT", "REAL", "NUMERIC")
 TEMPORAL = ("DATE", "TIMESTAMP")
@@ -69,6 +74,17 @@ def build_evidence(
         if name not in used and kind.upper().startswith(TEMPORAL)
         if (line := _column(db, source, name, dict(source_columns)))
     ]
+    categories = [
+        line
+        for name, kind in source_columns
+        if kind.upper() == "VARCHAR"
+        if (line := _categories(db, source, name))
+    ][:CATEGORY_COLUMNS]
+    if categories:
+        blocks.append(
+            f"Значения категориальных колонок (до {CATEGORY_VALUES} вариантов):\n"
+            + "\n".join(categories)
+        )
     if dates:
         blocks.append("Даты исходной таблицы, которых план не касался:\n" + "\n".join(dates))
     unused = [
@@ -160,14 +176,16 @@ def _column(db, table: str, name: str, types: dict[str, str]) -> str:
                 f"SELECT count(*) AS n, count({column}) AS filled, min({column}) AS lo, "
                 f"max({column}) AS hi, avg({column}) AS mean, median({column}) AS med, "
                 f"count(*) FILTER (WHERE {column} < q1 - 1.5 * (q3 - q1) "
-                f"OR {column} > q3 + 1.5 * (q3 - q1)) AS outliers FROM {source}, q"
+                f"OR {column} > q3 + 1.5 * (q3 - q1)) AS outliers, "
+                f"count(*) FILTER (WHERE {column} < 0) AS negative FROM {source}, q"
             )[0]
             if not row["n"]:
                 return f"- {name}: таблица пуста"
             return (
                 f"- {name} ({kind}): пропусков {_share(row['n'] - row['filled'], row['n'])}, "
                 f"min {_num(row['lo'])}, max {_num(row['hi'])}, среднее {_num(row['mean'])}, "
-                f"медиана {_num(row['med'])}, выбросов по IQR {_share(row['outliers'], row['n'])}"
+                f"медиана {_num(row['med'])}, выбросов по IQR {_share(row['outliers'], row['n'])}, "
+                f"отрицательных {_share(row['negative'], row['n'])}"
             )
         if kind.startswith(TEMPORAL):
             row = db.query(
@@ -190,6 +208,23 @@ def _column(db, table: str, name: str, types: dict[str, str]) -> str:
     except duckdb.Error:
         logger.warning("улики: колонка %s.%s не посчиталась", table, name, exc_info=True)
         return ""
+
+
+def _categories(db, table: str, name: str) -> str:
+    """Все значения колонки с числом строк, если вариантов не больше CATEGORY_VALUES."""
+    column = identifier(name)
+    try:
+        rows = db.query(
+            f"SELECT {column} AS value, count(*) AS n FROM {identifier(table)} "
+            f"GROUP BY 1 ORDER BY n DESC LIMIT {CATEGORY_VALUES + 1}"
+        )
+    except duckdb.Error:
+        logger.warning("улики: значения %s.%s не прочитаны", table, name, exc_info=True)
+        return ""
+    if not rows or len(rows) > CATEGORY_VALUES:
+        return ""
+    values = ", ".join(f"{row['value']} — {row['n']}" for row in rows)
+    return f"- {name}: {values}"
 
 
 def _rows(db, table: str, limit: int) -> str:

@@ -582,3 +582,48 @@ def test_evidence_describes_text_and_empty_columns(db):
     assert "- revenue: таблица пуста" in text
     assert "- region (VARCHAR): пропусков 0, разных значений 0" in text
     assert "результат пуст" not in text
+
+
+def test_ok_with_a_wrong_number_becomes_a_rewrite():
+    wrong = ReviewIssue(check="numbers", message="количество названо выручкой")
+    assert settle(review("ok", wrong)).verdict == "fix_insight"
+    # Во втором раунде переписывать уже нельзя: остаётся оговорка.
+    assert settle(review("ok", wrong), round=2).verdict == "caveat"
+    minor = ReviewIssue(check="outliers", message="один заказ большой")
+    assert settle(review("ok", minor)).verdict == "ok"
+
+
+def test_evidence_shows_signs_and_categories(db):
+    db.execute(
+        "CREATE TABLE ops AS SELECT * FROM (VALUES ('Продажа', 3), ('Продажа', 2), "
+        "('Возврат', -1)) t(kind, qty)"
+    )
+    db.execute("CREATE TABLE ids AS SELECT 'id' || range AS code FROM range(20)")
+    qty = ResearchStep(step_id=0, tool="group_by", arguments={"by": [], "column": "qty"})
+    text = build_evidence(
+        db,
+        question="вопрос",
+        steps=[qty],
+        tables={0: "ops"},
+        inputs={0: "ops"},
+        result_table="ops",
+        supporting=[],
+        findings={},
+        insight=Insight(headline="ответ"),
+        source="ops",
+    )
+    assert "отрицательных 33.3% (1 из 3)" in text
+    assert "- kind: Продажа — 2, Возврат — 1" in text
+    many = build_evidence(
+        db,
+        question="вопрос",
+        steps=[],
+        tables={},
+        inputs={},
+        result_table="ids",
+        supporting=[],
+        findings={},
+        insight=Insight(headline="ответ"),
+        source="ids",
+    )
+    assert "Значения категориальных колонок" not in many
