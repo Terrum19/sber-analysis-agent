@@ -95,7 +95,12 @@ export default function RecipeBanner({ sessionId, messages }: { sessionId: strin
       const charts = Object.fromEntries(snap.messages.filter(waiting).map((m) => [m.turn_id!, m.chart!.spec]));
       const result = await replaySessionApi(sessionId, charts);
       const check = result.check;
-      if (!check?.bound) {
+      const computed = Object.keys(result.charts).length + Object.keys(result.failed).length > 0;
+      if (computed) {
+        if (check?.bound) followAgentTable(sessionId, check.bound);
+        patchSnapshot(sessionId, (snapshot) => applied(snapshot, result, t("chat.chartDefault")));
+      }
+      if (!check?.bound && (check?.status === "not_connected" || !computed)) {
         if (check?.status === "not_connected") {
           setDsn((check.dsn ?? "").replace(":***@", "@"));
           setSchema(check.db_schema ?? "");
@@ -105,8 +110,6 @@ export default function RecipeBanner({ sessionId, messages }: { sessionId: strin
         }
         return;
       }
-      followAgentTable(sessionId, check.bound);
-      patchSnapshot(sessionId, (snapshot) => applied(snapshot, result, t("chat.chartDefault")));
       const failed = Object.keys(result.failed).length;
       setState({
         status: "message",

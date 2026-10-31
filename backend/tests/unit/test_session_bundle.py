@@ -111,6 +111,7 @@ def test_bundle_lists_csv_files_and_has_no_result_tables(tmp_path, monkeypatch) 
         "rows": None,
         "hash": None,
         "source_table": None,
+        "origins": [],
     }
     turn = bundle["turns"][0]
     assert "result_table" not in turn
@@ -408,3 +409,24 @@ def test_db_of_other_server_is_not_the_same_database(machines) -> None:
 
     assert result.check.status == "not_connected" and result.table is None
     assert PASSWORD not in result.check.dsn
+
+
+def test_bundle_describes_every_turn_table_without_password(machines) -> None:
+    author, _ = machines
+    DatasourceStore().save(DatasourceRecord(identity="pg_0123456789", kind="postgres", dsn=PG_DSN))
+    db_table(author, "pg_0123456789", "orders")
+    csv_table(author, "sales")
+    session = SessionMemory("two-tables")
+    session.set_table("orders")
+    session.start_turn("Заказы?")
+    session.finish_turn("ok", "5")
+    session.set_table("sales")
+
+    source = session_bundle.build("two-tables", author)["source"]
+
+    assert PASSWORD not in json.dumps(source, ensure_ascii=False)
+    assert source["table"] == "sales" and source["tables"] == ["orders", "sales"]
+    orders, sales = source["origins"]
+    assert (orders["kind"], orders["source_table"]) == ("postgres", "orders")
+    assert ":***@" in orders["dsn"]
+    assert sales["hash"] == table_origin.content_hash(author, "sales")

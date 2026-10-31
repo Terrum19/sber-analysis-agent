@@ -10,8 +10,9 @@
 Откуда пересчитать график, записано в бандле (``replay``): шаг хода или обзор
 таблицы. Шаги идут цепочкой ``$prev`` до нужного шага (``session_bundle.chain``);
 выполненный шаг повторно не считается, даже если на него опираются несколько
-графиков. Таблица автора заменяется таблицей получателя, к которой привязана
-сессия; на другие таблицы шаги ссылаются по имени. Шаг с кодом Python не
+графиков. Каждая таблица автора заменяется таблицей, найденной у получателя
+(``session_bundle.check_tables``). Ход, где какой-то таблицы у получателя
+нет, не пересчитывается: в ``failed`` — какая не нашлась. Шаг с кодом Python не
 выполняется никогда. Упавший шаг не прерывает пересчёт: ход или плитка
 остаются с причиной в ``failed``.
 """
@@ -30,7 +31,14 @@ from app.core.dashboards.store import DashboardStore, snapshot_records
 from app.core.data import overview
 from app.core.data.duckdb_manager import DuckDBManager
 from app.core.memory.profile_memory import ProfileMemory
-from app.core.memory.session_bundle import PYTHON_TOOLS, Replay, TableCheck, chain
+from app.core.memory.session_bundle import (
+    PYTHON_TOOLS,
+    BundleSource,
+    Replay,
+    TableCheck,
+    chain,
+    check_tables,
+)
 from app.core.memory.session_memory import SessionMemory
 from app.core.viz.vega_spec_builder import SPEC_ROW_LIMIT, build_vega_spec
 from app.models.research_step import ResearchStep
@@ -63,13 +71,22 @@ class ReplayOut(BaseModel):
 
 
 class Replayer:
-    """Пересчёт одной сессии; помнит выполненные шаги, чтобы не считать их дважды."""
+    """Пересчёт одной сессии; помнит выполненные шаги, чтобы не считать их дважды.
 
-    def __init__(self, memory: SessionMemory, db: DuckDBManager) -> None:
+    ``checks`` — таблицы автора, найденные у получателя; без них ищутся заново.
+    """
+
+    def __init__(
+        self, memory: SessionMemory, db: DuckDBManager, checks: dict[str, TableCheck] | None = None
+    ) -> None:
         self.memory, self.db = memory, db
         self.executor = StepExecutor(db=db)
         self.turns = {turn["turn_id"]: turn for turn in memory.turns}
         self.author_table = (memory.source or {}).get("table")
+        if checks is None:
+            checks = check_tables(db, BundleSource.model_validate(memory.source or {}))
+        self.checks = checks
+        self.renames = {table: check.bound for table, check in checks.items() if check.bound}
         self.tables: dict[tuple[str, int], str] = {}
         self.errors: dict[tuple[str, int], str] = {}
 
@@ -140,20 +157,22 @@ class Replayer:
         )
 
     def source(self, turn: dict) -> str:
-        """Исходная таблица хода у получателя."""
-        tables = turn.get("tables") or []
-        name = tables[0] if tables else self.author_table
-        if name is None:
+        """Исходная таблица хода у получателя; ``ReplayError`` — какой-то таблицы хода у него нет."""
+        tables = turn.get("tables") or [self.author_table]
+        if tables[0] is None:
             raise ReplayError("Неизвестно, по какой таблице сделан ход.")
-        return self.rename(name)
+        for table in tables:
+            if table not in self.renames:
+                raise ReplayError(not_found(table, self.checks.get(table)))
+        return self.renames[tables[0]]
 
     def rename(self, value: Any) -> Any:
         if isinstance(value, list):
             return [self.rename(item) for item in value]
         if isinstance(value, dict):
             return {key: self.rename(item) for key, item in value.items()}
-        if value == self.author_table and self.memory.table:
-            return self.memory.table
+        if isinstance(value, str) and value in self.renames:
+            return self.renames[value]
         return value
 
     def rebuilt(self, spec: dict, table: str) -> dict:
@@ -219,6 +238,15 @@ def fallback_spec(turn: dict) -> dict:
     """Спека по типу графика хода, если фронт не прислал спеку автора."""
     chart = turn.get("chart") or {}
     return {"usermeta": {"chart_type": chart.get("type") or "bar"}}
+
+
+def not_found(table: str, check: TableCheck | None) -> str:
+    """Почему ход не пересчитан: его таблицы у получателя нет."""
+    if check is not None and check.status == "not_connected":
+        return f"Таблица «{table}» не нашлась: база {check.dsn} у вас не подключена."
+    if check is not None and check.status == "different":
+        return f"Таблица «{table}» не нашлась: у вас таблица с этим именем, но с другими данными."
+    return f"Таблица «{table}» у вас не нашлась."
 
 
 def reason(exc: Exception) -> str:

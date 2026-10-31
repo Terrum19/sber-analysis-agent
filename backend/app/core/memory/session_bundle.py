@@ -27,6 +27,9 @@
 построен не по результату шага (гистограмма распределения) или в цепочке
 шагов есть Python. У таблицы БД в источнике — её имя в самой базе
 (``source_table``): по нему она находится у получателя под любым именем.
+Так же описана каждая таблица ходов (``origins``): сессия может идти по
+нескольким таблицам, и у получателя ищется каждая (``check_tables``). У
+старых ссылок ``origins`` нет — ищется только активная таблица.
 
 Файл ``.session`` (#251) везёт итоговые таблицы ходов и плиток: в его бандле
 ссылки на ``temp_result_vN`` остаются (``build(results=True)``), а импорт
@@ -62,6 +65,7 @@ MAX_STEPS = 50
 MAX_MEMORIES = 200
 MAX_DASHBOARDS = 50
 MAX_TILES = 50
+MAX_TABLES = 50
 KINDS = {"pg": "postgres", "ch": "clickhouse", "csv": "csv"}
 CSV_DATASOURCE = re.compile(r"csv_[0-9a-f]+")
 # Шаги с кодом Python: у получателя код автора не выполняется никогда.
@@ -140,6 +144,7 @@ class BundleSource(BaseModel):
     hash: Name | None = None
     # У таблицы БД — её имя в самой базе: имя представления у получателя другое.
     source_table: Text | None = None
+    origins: list["BundleSource"] = Field(default_factory=list, max_length=MAX_TABLES)
 
 
 class BundleTile(DashboardTile):
@@ -345,7 +350,8 @@ def describe_source(memory: SessionMemory, db=None) -> BundleSource:
     """Источник сессии без пароля: тип, маскированный DSN, схема, таблицы, файлы CSV.
 
     Источник узнаётся по активной таблице; не узнан — по ``datasource_id``
-    сессии. У импортированной сессии — источник её автора.
+    сессии. В ``origins`` — каждая узнанная таблица ходов. У импортированной
+    сессии — источник её автора.
     """
     if memory.imported:
         return BundleSource.model_validate(memory.source or {})
@@ -355,26 +361,11 @@ def describe_source(memory: SessionMemory, db=None) -> BundleSource:
     table = memory.table
     if table is not None and table not in tables:
         tables.append(table)
-    found = table_origin.origin(db, table) if db is not None and table is not None else None
-    if found is not None and found.kind == "csv":
-        return BundleSource(
-            kind="csv",
-            tables=tables,
-            files=csv_files(found.datasource_id or "") or [found.file],
-            table=table,
-            rows=table_origin.row_count(db, table),
-            hash=table_origin.content_hash(db, table),
-        )
-    if found is not None:
-        record = found.record
-        return BundleSource(
-            kind=record.kind,
-            dsn=masked_dsn(record.kind, record.dsn),
-            db_schema=record.db_schema,
-            tables=tables,
-            table=table,
-            source_table=table_origin.view_target(db, table),
-        )
+    found = [describe_table(db, name) for name in tables] if db is not None else []
+    origins = [origin for origin in found if origin is not None]
+    active = next((origin for origin in origins if origin.table == table), None)
+    if active is not None:
+        return active.model_copy(update={"tables": tables, "origins": origins})
     datasource_id = memory.datasource_id or ""
     record = DatasourceStore().get(datasource_id) if datasource_id else None
     kind = record.kind if record is not None else KINDS.get(datasource_id.split("_", 1)[0])
@@ -384,6 +375,30 @@ def describe_source(memory: SessionMemory, db=None) -> BundleSource:
         db_schema=record.db_schema if record is not None else None,
         tables=tables,
         files=csv_files(datasource_id),
+        origins=origins,
+    )
+
+
+def describe_table(db, table: str) -> BundleSource | None:
+    """Таблица без пароля: у CSV — число строк и хэш, у БД — адрес и имя в базе; None — не узнана."""
+    found = table_origin.origin(db, table)
+    if found is None:
+        return None
+    if found.kind == "csv":
+        return BundleSource(
+            kind="csv",
+            files=csv_files(found.datasource_id or "") or [found.file],
+            table=table,
+            rows=table_origin.row_count(db, table),
+            hash=table_origin.content_hash(db, table),
+        )
+    record = found.record
+    return BundleSource(
+        kind=record.kind,
+        dsn=masked_dsn(record.kind, record.dsn),
+        db_schema=record.db_schema,
+        table=table,
+        source_table=table_origin.view_target(db, table),
     )
 
 
@@ -475,6 +490,12 @@ def load(raw: Any, db=None, tables: dict[str, str] | None = None) -> Imported:
         table=check.bound if check is not None else None,
         check=check,
     )
+
+
+def check_tables(db, source: BundleSource) -> dict[str, TableCheck]:
+    """Таблица автора -> нашлась ли она у получателя; у старых ссылок — только активная."""
+    checks = (check_table(db, origin) for origin in source.origins or [source])
+    return {check.table: check for check in checks if check is not None}
 
 
 def check_table(db, source: BundleSource) -> TableCheck | None:

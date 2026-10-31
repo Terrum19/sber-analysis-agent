@@ -222,9 +222,11 @@ async def replay_session(
 ) -> ReplayOut:
     """Пересчитать графики и плитки импортированной сессии на данных получателя (#250).
 
-    Таблица автора ищется заново (после подключения базы она могла появиться);
-    не нашлась — ответ с ``check`` и без графиков. Нашлась — сессия к ней
-    привязывается, шаги автора выполняются без LLM. Python-шаги не выполняются.
+    Таблицы автора ищутся заново (после подключения базы они могли появиться);
+    не нашлась ни одна — ответ с ``check`` активной таблицы и без графиков.
+    Иначе шаги автора выполняются без LLM на найденных таблицах, а ход, где
+    какой-то таблицы нет, остаётся с причиной в ``failed``. Нашлась активная
+    таблица — сессия к ней привязывается. Python-шаги не выполняются.
     Не импортированная сессия — 400.
     """
     memory = existing(session_id)
@@ -233,12 +235,14 @@ async def replay_session(
             status_code=400, detail="Пересчитать можно только импортированную сессию."
         )
     source = session_bundle.BundleSource.model_validate(memory.source or {})
-    check = await asyncio.to_thread(session_bundle.check_table, db, source)
-    if check is None or check.bound is None:
+    checks = await asyncio.to_thread(session_bundle.check_tables, db, source)
+    check = checks.get(source.table or "")
+    if not any(item.bound for item in checks.values()):
         return ReplayOut(check=check)
     memory = SessionMemory(session_id, db)
-    memory.set_table(check.bound)
-    out, dashboards = await Replayer(memory, db).run(payload.charts)
+    if check is not None and check.bound is not None:
+        memory.set_table(check.bound)
+    out, dashboards = await Replayer(memory, db, checks).run(payload.charts)
     out.check = check
     out.dashboards = [
         DashboardPayload.from_dashboard(dashboard).model_dump(exclude_none=True)

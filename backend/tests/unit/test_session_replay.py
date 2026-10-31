@@ -30,6 +30,7 @@ BY_REGION = ResearchStep(
     arguments={"by": "region", "column": "revenue", "function": "SUM"},
     purpose="Выручка по регионам",
 )
+REGIONS = "SELECT * FROM (VALUES ('msk', 3.0, 1), ('spb', 1.0, 2)) AS t(region, revenue, id)"
 TOP = ResearchStep(
     step_id=2, tool="sort_limit", arguments={"order_by": "sum_revenue", "limit": 2}, purpose="Топ"
 )
@@ -288,6 +289,67 @@ def test_failed_step_keeps_other_charts(machines) -> None:
     assert second in out.charts
 
 
+def author_on_two_tables(db: DuckDBManager) -> SessionMemory:
+    """Ход по sales, потом смена таблицы и ход по regions."""
+    csv_table(db, "sales")
+    csv_table(db, "regions", REGIONS)
+    memory = SessionMemory("author", db)
+    memory.set_table("sales")
+    run_turn(memory, db, "Выручка", [BY_REGION])
+    memory.set_table("regions")
+    run_turn(memory, db, "Регионы", [BY_REGION])
+    return memory
+
+
+def by_region(db: DuckDBManager, table: str) -> list[dict]:
+    return sorted(db.to_records(table), key=lambda row: row["region"])
+
+
+def test_turns_on_every_found_table_are_replayed(machines) -> None:
+    author, recipient = machines
+    memory = author_on_two_tables(author)
+    csv_table(recipient, "sales_copy")
+    csv_table(recipient, "regions", REGIONS)
+
+    _, result, imported = share("author", author, recipient)
+    out, _ = replay(imported, recipient, {})
+
+    assert result.table == "regions" and not out.failed
+    for turn in memory.turns:
+        chart = out.charts[turn["turn_id"]]
+        assert by_region(recipient, chart.result_table) == by_region(author, turn["result_table"])
+
+
+def test_turn_on_table_not_found_says_which_table(machines) -> None:
+    author, recipient = machines
+    memory = author_on_two_tables(author)
+    csv_table(recipient, "sales", "SELECT 'other' AS region, 1.0 AS revenue, 9 AS id")
+    csv_table(recipient, "regions", REGIONS)
+
+    _, _, imported = share("author", author, recipient)
+    out, _ = replay(imported, recipient, {})
+
+    first, second = (turn["turn_id"] for turn in memory.turns)
+    assert "«sales»" in out.failed[first] and "другими данными" in out.failed[first]
+    assert second in out.charts and second not in out.failed
+
+
+def test_link_without_origins_replays_only_active_table(machines) -> None:
+    author, recipient = machines
+    memory = author_on_two_tables(author)
+    csv_table(recipient, "sales")
+    csv_table(recipient, "regions", REGIONS)
+    bundle = session_bundle.build("author", author)
+    del bundle["source"]["origins"]
+    imported = SessionMemory(session_bundle.load(bundle, recipient).session_id, recipient)
+
+    out, _ = replay(imported, recipient, {})
+
+    first, second = (turn["turn_id"] for turn in memory.turns)
+    assert "«sales»" in out.failed[first]
+    assert second in out.charts
+
+
 def db_view(db: DuckDBManager, identity: str, view: str, table: str, suffix: str) -> None:
     """Представление ``view`` над таблицей ``table`` подключения <identity>_<суффикс>."""
     alias = f"{identity}_{suffix}"
@@ -361,3 +423,17 @@ def test_replay_api_without_author_table_computes_nothing(client) -> None:
 
     assert body["check"]["status"] == "missing"
     assert body["charts"] == {} and body["dashboards"] == []
+
+
+def test_replay_api_replays_found_tables_when_active_one_is_missing(client) -> None:
+    http, db = client
+    memory = author_on_two_tables(db)
+    bundle = http.get("/api/sessions/author/bundle").json()
+    db.execute("DROP TABLE regions")
+    session_id = http.post("/api/sessions/import", json=bundle).json()["session_id"]
+
+    body = http.post(f"/api/sessions/{session_id}/replay", json={}).json()
+
+    first, second = (turn["turn_id"] for turn in memory.turns)
+    assert body["check"]["status"] == "missing"
+    assert first in body["charts"] and "«regions»" in body["failed"][second]
