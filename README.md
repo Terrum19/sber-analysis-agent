@@ -1,99 +1,220 @@
 # SberAnalyticalAgent
 
-**AI-Native BI-платформа**: диалоговый агент на базе LLM, позволяющий
-продуктовым аналитикам и руководителям через естественный язык исследовать
-данные, получать визуализации и собирать дашборды — без участия разработчика.
+**AI-Native BI-платформа**: диалоговый агент на базе LLM. Продуктовый аналитик
+или руководитель на естественном языке исследует данные, получает графики и
+собирает дашборды — без участия разработчика.
 
-Работает в **замкнутом контуре**: локальная LLM (Qwen 2.5-Coder через
-Ollama/vLLM), DuckDB как единый SQL-движок, WASM-песочница для кодогенерации.
-Никаких облачных сервисов внутри.
+Внутри: DuckDB как единый SQL-движок над CSV, PostgreSQL и ClickHouse,
+агент-планировщик с реестром аналитических инструментов, WASM-песочница
+(Pyodide) для кода, который пишет LLM, Vega-Lite для графиков. LLM — любая
+модель с OpenAI-совместимым API; рекомендуемая — **Qwen3.8-27B**.
 
-## Закрываемые сценарии
+- Архитектура — [Architecture.md](Architecture.md)
+- Сценарии и критерии жюри с нашими результатами — [Criteria.md](Criteria.md)
+- Прогоны вопросов организаторов — [TestCases.md](TestCases.md)
 
-1. Первичное знакомство с неизвестными данными («Что передо мной?»)
-2. Ответы на вопросы по содержанию («Какие значения встречаются чаще?»)
-3. Группировки и аномалии («Что происходит с X каждый июль?»)
-4. Авто-визуализация («Покажи наглядно, как это распределено»)
-5. Дашборды по запросу («Создай дашборд с ежеквартальной статистикой»)
-6. Диалог с контекстом («А теперь то же самое в другом виде»)
+## Пререквизиты
 
-## Запуск
+| Что | Версия / объём | Проверить |
+|---|---|---|
+| Docker Engine + Docker Compose (или Docker Desktop на Mac/Windows) | Engine 25+, Compose 2.24+ | `docker compose version` |
+| Свободные порты | 3000 (интерфейс), 8000 (API, только localhost) | |
+| Диск под образы | ~6 ГБ | |
+| Память под платформу | от 4 ГБ свободной RAM (датасеты организаторов — по 0,5–1 млн строк) | |
+| LLM — **Qwen3.8-27B** | один из вариантов ниже | |
 
-Нужна одна программа — [Docker Desktop](https://www.docker.com/products/docker-desktop/)
-(на Linux подойдёт и Docker Engine с Compose 2.24+). Всё остальное делает скрипт запуска:
+Где взять модель (подробнее — в разделе [«Модель»](#модель)):
 
-| Система | Что сделать |
-|---|---|
-| Mac | двойной клик по `start.command` |
-| Windows | двойной клик по `start.bat` |
-| Linux | `./start.sh` |
+- **OpenAI-совместимый API** с моделью `qwen/qwen3.8-27b` (например, OpenRouter) —
+  нужен только ключ. На этой конфигурации получены все результаты в
+  [Criteria.md](Criteria.md) и [TestCases.md](TestCases.md).
+- **Локально в Ollama** (`qwen3.8:27b`, 17,7 ГБ) — видеокарта от 24 ГБ или Mac с
+  Apple Silicon от 32 ГБ памяти.
+- **Локально в vLLM** (`Qwen/Qwen3.8-27B`) — GPU-сервер.
 
-Скрипт сам запускает Docker, если тот не запущен, ставит и запускает
-[Ollama](https://ollama.com) (вне контейнера: на Mac она работает на Metal, на
-Windows — на видеокарте), поднимает платформу и открывает http://localhost:3000.
-Повторный запуск пропускает то, что уже установлено и работает. Остановить —
-`stop.command` / `stop.bat` / `./stop.sh` (данные и модель сохраняются). Ollama,
-которую запустил скрипт, тоже останавливается; запущенную до него — нет.
+## Запуск в Docker Compose
 
-Первый запуск — 10–20 минут и нужен интернет: собираются образы, а модель
-(`qwen2.5-coder:7b`, около 5 ГБ) скачивает сама платформа. Пока модель
-скачивается, над чатом виден прогресс; данные загружать уже можно. Памяти
-рекомендуется от 16 ГБ: модели 7B самой нужно около 6 ГБ.
+**1. Клонировать репозиторий**
 
-На Mac при первом открытии `start.command` система может спросить, доверяете
-ли вы файлу: правый клик → «Открыть». На Linux скрипт берёт Ollama на этой
-машине, а если её нет — ставит официальным установщиком (спросит пароль sudo)
-и запускает на адресе моста docker: контейнерам её видно, локальной сети — нет.
-Уже запущенную службу берёт, если она видна из контейнеров, и сам её не
-перенастраивает. Если хостовую Ollama контейнерам не видно — Ollama в контейнере
-(с NVIDIA Container Toolkit — на GPU и с моделью `LLM_MODEL_GPU`), и скрипт
-говорит об этом.
-Службы запускаются и без systemd (`service`).
+```bash
+git clone https://github.com/Terrum19/sber-analysis-agent.git
+cd sber-analysis-agent
+```
+
+**2. Создать `.env` в корне репозитория** — пять строк:
+
+```bash
+cat > .env <<'EOF'
+COMPOSE_LLM_BASE_URL=https://openrouter.ai/api/v1
+LLM_MODEL=qwen/qwen3.8-27b
+LLM_API_KEY=<ваш ключ>
+LLM_PREPARE_MODEL=false
+EMBED_MODEL=
+EOF
+```
+
+На Windows создайте файл `.env` в Блокноте с теми же пятью строками.
+
+- `COMPOSE_LLM_BASE_URL` — адрес OpenAI-совместимого API модели, как его видит
+  контейнер backend.
+- `LLM_PREPARE_MODEL=false` — не готовить модель через Ollama: её здесь нет.
+- `EMBED_MODEL=` — без модели эмбеддингов. Смена таблицы посреди диалога тогда
+  работает по словам вопроса, остальное не меняется.
+
+Остальные настройки имеют значения по умолчанию (`docker-compose.yml`,
+`backend/app/config.py`); все переменные с пояснениями — в `.env.example`.
+
+**3. Собрать и запустить**
+
+```bash
+docker compose up -d --build
+```
+
+Первая сборка — 5–10 минут: скачиваются базовые образы и зависимости,
+песочница Pyodide и расширения DuckDB для PostgreSQL и ClickHouse.
+
+**4. Проверить, что всё поднялось**
+
+```bash
+docker compose ps                              # backend и frontend: (healthy)
+curl -s http://localhost:8000/health           # {"status":"ok"}
+curl -s http://localhost:8000/api/llm/status   # "state":"ok" — модель отвечает
+```
+
+Откройте http://localhost:3000.
+
+**5. Загрузить данные и спросить**
+
+1. Слева «Загрузка CSV» → выберите CSV (например, файл из
+   [HK_Datasets](https://gitverse.ru/kban/HK_Datasets)). По желанию приложите
+   README датасета как описание: из него в паспорт таблицы попадут названия и
+   смысл колонок.
+2. У появившейся базы нажмите «+» (новая сессия) и задайте вопрос, например
+   «Что передо мной?».
+
+Вместо CSV можно подключить базу: «Подключение базы данных» → PostgreSQL или
+ClickHouse, строка подключения вида `postgresql://user:pass@host:5432/db` или
+`clickhouse://user:pass@host:9000/db`. База на той же машине доступна из
+контейнера как `host.docker.internal`.
+
+**Остановить:** `docker compose down`. Данные, сессии и дашборды лежат в
+`backend/storage/` и переживают перезапуск.
+
+### Модель
+
+Платформа работает с любым OpenAI-совместимым сервером. Выбор задают три
+переменные в `.env`: `COMPOSE_LLM_BASE_URL` (адрес для backend в контейнере),
+`LLM_MODEL` и, если нужен, `LLM_API_KEY`.
+
+**Ollama на этой машине.** Нужны видеокарта от 24 ГБ или Mac с Apple Silicon
+от 32 ГБ памяти. Установите [Ollama](https://ollama.com) и запустите её так,
+чтобы контейнеры её видели. На Linux:
+`OLLAMA_HOST=0.0.0.0 ollama serve`; на Mac и Windows — достаточно запущенного
+приложения. В `.env`:
+
+```bash
+LLM_MODEL=qwen3.8:27b
+```
+
+`COMPOSE_LLM_BASE_URL` не задавайте: по умолчанию backend идёт в Ollama на
+хосте (`http://host.docker.internal:11434/v1`). При старте backend сам скачает
+модель (17,7 ГБ, прогресс — над чатом и в `GET /api/llm/status`) и создаст её
+вариант с контекстом 16 384 токена: у Ollama по умолчанию 4096, длинный промпт
+обрезался бы молча. Эмбеддинги (`bge-m3`) он скачает с той же Ollama.
+
+**Ollama в контейнере на GPU NVIDIA** (нужен NVIDIA Container Toolkit):
+
+```bash
+LLM_MODEL_GPU=qwen3.8:27b make up-gpu
+```
+
+**vLLM на GPU-сервере:**
+
+```bash
+MODEL=Qwen/Qwen3.8-27B bash infra/vllm/serve.sh   # OpenAI API на :8001
+```
+
+В `.env` платформы: `COMPOSE_LLM_BASE_URL=http://<адрес сервера>:8001/v1`,
+`LLM_MODEL=Qwen/Qwen3.8-27B`, `LLM_PREPARE_MODEL=false`, `EMBED_MODEL=`.
+
+Другие модели подключаются так же, сменой `LLM_MODEL`. Сравнение моделей,
+на которых мы тестировали агента, — в [Criteria.md](Criteria.md#модели).
+
+## Другие способы запуска
+
+### Без Docker: backend и frontend на машине
+
+Нужны Python 3.11+, Node.js 20+ и npm.
+
+```bash
+# 1) Зависимости backend (в виртуальном окружении .venv в корне репозитория)
+python3 -m venv .venv
+source .venv/bin/activate              # Windows: .venv\Scripts\activate
+pip install -r backend/requirements.txt
+
+# 2) Песочница для кода от LLM (Pyodide) и расширения DuckDB для PostgreSQL/ClickHouse
+(cd backend/sandbox && npm ci && python fetch_packages.py)
+python -c "import duckdb; c = duckdb.connect(); c.execute('INSTALL postgres_scanner'); c.execute('INSTALL clickhouse_scanner FROM community')"
+
+# 3) Зависимости frontend
+(cd frontend && npm ci)
+
+# 4) .env в корне — как для Docker, но адрес модели в LLM_BASE_URL
+cat > .env <<'EOF'
+LLM_BASE_URL=https://openrouter.ai/api/v1
+LLM_MODEL=qwen/qwen3.8-27b
+LLM_API_KEY=<ваш ключ>
+LLM_PREPARE_MODEL=false
+EMBED_MODEL=
+EOF
+
+# 5) Запуск: backend на :8000, frontend на :3000; остановить — Ctrl+C
+make dev                               # то же самое: bash infra/local-dev.sh
+```
+
+С Ollama на этой же машине в `.env`: `LLM_BASE_URL=http://localhost:11434/v1`,
+`LLM_MODEL=qwen3.8:27b`, строки `LLM_PREPARE_MODEL` и `EMBED_MODEL` уберите.
+
+### Скрипты одного клика (Ollama на машине)
+
+`start.command` (Mac), `start.bat` (Windows), `./start.sh` (Linux) запускают
+Docker, ставят и запускают Ollama вне контейнера, поднимают платформу и
+открывают http://localhost:3000. Остановить — `stop.command` / `stop.bat` /
+`./stop.sh`. Модель — `LLM_MODEL` из `.env`, без него —
+`qwen2.5-coder:7b`; для рекомендуемой модели добавьте в `.env`
+`LLM_MODEL=qwen3.8:27b`.
+
+### Make-цели
+
+```bash
+make up          # docker compose, Ollama на хосте
+make up-ollama   # + Ollama в контейнере на CPU (профиль ollama)
+make up-gpu      # + Ollama в контейнере на GPU NVIDIA (профиль ollama-gpu), модель LLM_MODEL_GPU
+make down        # остановить всё, включая Ollama в контейнере и демо-БД
+```
+
+Демо-PostgreSQL и ClickHouse (пользователь и пароль `sber`, база `sber_demo`):
+`docker compose --profile integration up -d postgres clickhouse`. Backend в той
+же сети compose видит их как `postgres:5432` и `clickhouse:9000`.
+
+## Сценарии и критерии
+
+CRITERIA_SUMMARY
 
 ## Для разработчиков
 
 Модель для платформы готовит backend (`core/llm/ollama_setup.py`): при старте
 скачивает `LLM_MODEL`, если её нет на сервере Ollama, и работает с её вариантом
 с контекстом `LLM_NUM_CTX` (`<модель>-ctx<число>`); состояние — `GET /api/llm/status`.
-Отключить — `LLM_PREPARE_MODEL=false`. `.env` не обязателен: значения по
-умолчанию — в `docker-compose.yml` и `backend/app/config.py`, пример — `.env.example`.
+Отключить — `LLM_PREPARE_MODEL=false`. Переменные окружения перекрывают `.env`:
+`LLM_MODEL_GPU=qwen3.8:27b make up-gpu`.
 
-```bash
-make up          # docker compose, Ollama на хосте (http://host.docker.internal:11434)
-make up-ollama   # Ollama в контейнере на CPU (профиль ollama)
-make up-gpu      # Ollama в контейнере на GPU NVIDIA (профиль ollama-gpu), модель LLM_MODEL_GPU
-make down
-```
+Свой сервер LLM для compose — `COMPOSE_LLM_BASE_URL`; `LLM_BASE_URL` — только
+для запуска без Docker: в контейнере `localhost` — сам backend. Ollama в
+контейнере доступна с этой машины на `http://localhost:${OLLAMA_PORT:-11435}`.
 
-Свой сервер LLM (vLLM, GPU-машина в сети) для compose: `COMPOSE_LLM_BASE_URL` в
-`.env`, например `http://10.0.0.5:8001/v1` (`LLM_BASE_URL` — только для `make dev`:
-в контейнере `localhost` — сам backend). Ollama в контейнере доступна с этой
-машины на `http://localhost:${OLLAMA_PORT:-11435}`. Демо-PostgreSQL и ClickHouse
-для интеграционных тестов — профиль `integration`.
-
-Нужны Docker Engine 25+ и Docker Compose 2.24+ (`start_interval` в healthcheck,
-`depends_on.required`, необязательный `env_file`): `docker compose version`.
-
-Без Docker:
-
-```bash
-# 1) LLM (замкнутый контур): Ollama или vLLM; контекст backend задаст сам (ниже)
-ollama serve
-# или GPU: MODEL=Qwen/Qwen2.5-Coder-14B-Instruct bash infra/vllm/serve.sh
-
-# 2) Зависимости
-cd backend && pip install -r requirements.txt && cd ..
-cd frontend && npm install && cd ..
-
-# 3) Демо-данные
-python scripts/seed_demo_data.py
-
-# 4) Запуск
-bash infra/local-dev.sh
-# backend: http://localhost:8000  frontend: http://localhost:3000
-```
-
-Переменные окружения перекрывают `.env`: `LLM_MODEL_GPU=qwen2.5-coder:32b make up-gpu`.
+Демо-данные для разработки: `python scripts/seed_demo_data.py`; датасеты
+хакатона в DuckDB: `make hk-data`.
 
 ### Eval агента
 
@@ -213,5 +334,5 @@ cd backend && pytest
 
 ## Технологии
 
-Qwen 2.5-Coder (Ollama/vLLM) · DuckDB · FastAPI · Instructor + Pydantic ·
+Qwen3.8-27B (OpenAI-совместимый API, Ollama, vLLM) · DuckDB · FastAPI · Instructor + Pydantic ·
 WASM-песочница · React/Next.js + Zustand · Vega-Lite/ECharts · openpyxl + ReportLab
