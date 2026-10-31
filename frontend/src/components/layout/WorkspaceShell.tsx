@@ -3,9 +3,11 @@
 /**
  * Оболочка рабочей области: сайдбар с базами данных (ширина меняется перетаскиванием),
  * полоса вкладок и содержимое активной вкладки. Открытие страницы добавляет её вкладку.
+ * Файл `.session`, перетащенный в окно, открывается новой сессией (#251).
  */
 import { useEffect, useRef } from "react";
 import LeftSidebar from "@/components/layout/LeftSidebar";
+import SessionFileDrop from "@/components/layout/SessionFileDrop";
 import TopHeader from "@/components/layout/TopHeader";
 import Splitter from "@/components/ui/Splitter";
 import TableSelectModal from "@/components/modals/TableSelectModal";
@@ -47,6 +49,7 @@ export default function WorkspaceShell({ tab, children }: { tab: WorkspaceTab; c
         <TopHeader active={tab} />
         <div className="flex min-h-0 flex-1 flex-col overflow-hidden bg-graphite-900">{children}</div>
       </div>
+      <SessionFileDrop />
       {tableModalTarget && (
         <TableSelectModal
           isOpen={Boolean(tableModalTarget)}

@@ -33,6 +33,8 @@ import TableBriefCard from "@/components/chat/TableBriefCard";
 import DashboardPreviewCard from "@/components/chat/DashboardPreviewCard";
 import AnswerActions from "@/components/chat/AnswerActions";
 import ReplyQuote from "@/components/chat/ReplyQuote";
+import RecipeBanner from "@/components/chat/RecipeBanner";
+import StepsList from "@/components/chat/StepsList";
 import LlmStatusBanner from "@/components/chat/LlmStatusBanner";
 import DashboardIdeas, { type IdeasState } from "@/components/chat/DashboardIdeas";
 import { useLlmStatus } from "@/hooks/useLlmStatus";
@@ -546,6 +548,8 @@ export default function ChatPanel({ sessionId }: Props) {
 
       {/* Лента сообщений */}
       <div className="flex-1 space-y-5 overflow-y-auto px-4 py-6 md:px-8">
+        {/* Ссылка-рецепт: графики без точек пересчитываются по кнопке (#250) */}
+        <RecipeBanner sessionId={sessionId} messages={messages} />
         {messages.length === 0 ? (
           <div className="mx-auto flex h-full max-w-xl flex-col justify-center">
             <div className="flex items-center gap-2 text-[13px] text-graphite-400">
@@ -763,8 +767,28 @@ export default function ChatPanel({ sessionId }: Props) {
                   </div>
                 )}
 
+                {/* Шаги хода автора из ссылки (#250): видно, что и как посчитано */}
+                {m.steps && <StepsList steps={m.steps} />}
+
+                {/* График из рецепта без точек: на панели его ещё нет */}
+                {m.chart && (m.recipe === "pending" || m.recipe === "failed") && (
+                  <div className="mt-2 flex max-w-md items-center gap-2.5 rounded-lg border border-dashed border-graphite-700 py-1.5 pl-3 pr-3">
+                    <Icon name="chart" className="shrink-0 text-graphite-500" />
+                    <span className="min-w-0 flex-1">
+                      <span className="block truncate text-[12.5px] text-graphite-300">
+                        {m.chart.caption || t("chat.chartDefault")}
+                      </span>
+                      <span className="block text-[11px] text-warn">
+                        {m.recipe === "failed"
+                          ? t("chat.recipeFailed", { msg: m.recipeError ?? "" })
+                          : t("chat.recipePending")}
+                      </span>
+                    </span>
+                  </div>
+                )}
+
                 {/* График — только ссылка: сам он на правой панели */}
-                {m.chart && (
+                {m.chart && m.recipe !== "pending" && m.recipe !== "failed" && (
                   <div className="mt-2 flex max-w-md items-center gap-2.5 rounded-lg border border-graphite-800 bg-graphite-850 py-1.5 pl-3 pr-1.5">
                     <Icon name="chart" className="shrink-0 text-graphite-400" />
                     <span className="min-w-0 flex-1">
@@ -772,7 +796,11 @@ export default function ChatPanel({ sessionId }: Props) {
                         {m.chart.caption || t("chat.chartDefault")}
                       </span>
                       <span className="block text-[11px] text-graphite-500">
-                        {t("chat.chartOnPanel")}
+                        {m.recipe === "replayed"
+                          ? t("chat.recipeReplayed")
+                          : m.recipe === "author"
+                            ? t("chat.recipeAuthor")
+                            : t("chat.chartOnPanel")}
                       </span>
                     </span>
                     <button
@@ -830,6 +858,12 @@ export default function ChatPanel({ sessionId }: Props) {
               </div>
               <span className="mt-1 text-[10px] text-graphite-500 px-1">
                 {m.timestamp || ""}
+                {/* Ход из ссылки другого пользователя (#249) */}
+                {m.imported && m.role === "user" && (
+                  <span className="ml-1.5 rounded border border-graphite-700 px-1 py-px text-graphite-400">
+                    {t("chat.importedBadge")}
+                  </span>
+                )}
               </span>
             </div>
           ))

@@ -4,7 +4,7 @@
  * Верхняя строка рабочей области:
  * - Слева: вкладки как в VS Code (приветствие, дашборды, сессии, дашборды, артефакты);
  *   перетаскиваются мышью, полоса прокручивается колесом и уходит под панель справа
- * - Справа: показ правой панели (в сессии)
+ * - Справа: «Поделиться» и показ правой панели (в сессии)
  */
 import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
@@ -15,6 +15,7 @@ import { useChatRunStore } from "@/store/chatRunStore";
 import { useT } from "@/i18n/useT";
 import Icon, { type IconName } from "@/components/ui/Icon";
 import RunDot from "./RunDot";
+import ShareSessionButton from "./ShareSessionButton";
 
 const TAB_ICON: Record<WorkspaceTab["kind"], IconName> = {
   welcome: "home",
@@ -188,6 +189,7 @@ export default function TopHeader({ active }: { active: WorkspaceTab }) {
       {/* Панель справа: вкладки уходят под неё (сплошной фон и мягкий край) */}
       {active.kind === "session" && (
         <div className="absolute inset-y-0 right-0 flex items-center gap-1.5 bg-graphite-950 pl-2 pr-3 before:pointer-events-none before:absolute before:inset-y-0 before:right-full before:w-10 before:bg-gradient-to-l before:from-graphite-950 before:to-transparent">
+          <ShareSessionButton sessionId={active.id} />
           <button
             onClick={() => setCanvasOpen(!canvasOpen)}
             className={`flex h-7 w-7 items-center justify-center rounded-lg transition ${

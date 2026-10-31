@@ -15,6 +15,7 @@ from app.api.routes import datasources
 from app.config import settings
 from app.core.data import ingest, restore
 from app.core.data.connectors.base import BaseConnector
+from app.core.data.connectors.clickhouse import ClickHouseConnector
 from app.core.data.connectors.postgres import PostgresConnector
 from app.core.data.duckdb_manager import DuckDBManager
 from app.core.data.profiling import profile_table
@@ -76,6 +77,25 @@ def test_remember_keeps_password_off_disk(store: DatasourceStore) -> None:
     assert saved.dsn == "postgresql://analyst:***@db.local:5432/shop"
     assert (saved.db_schema, saved.description) == ("sales", "описание")
     assert SECRET.encode() not in Path(settings.sqlite_path).read_bytes()
+
+
+def test_remember_keeps_clickhouse_without_password(store: DatasourceStore) -> None:
+    connector = ClickHouseConnector(f"clickhouse://analyst:{SECRET}@ch.local:9000/sales")
+    restore.remember(connector, None, store)
+    saved = store.get(connector.identity)
+    assert (saved.kind, saved.db_schema) == ("clickhouse", None)
+    assert saved.dsn == "clickhouse://analyst:***@ch.local:9000/sales"
+    assert SECRET.encode() not in Path(settings.sqlite_path).read_bytes()
+
+
+def test_restore_skips_clickhouse(db, store, connectors) -> None:
+    store.save(
+        DatasourceRecord(
+            identity="ch_0123456789", kind="clickhouse", dsn="clickhouse://analyst@ch.local:9000/x"
+        )
+    )
+    assert asyncio.run(restore.restore_saved_sources(db, store)) == []
+    assert connectors["calls"] == []
 
 
 def test_remember_skips_other_connectors(store: DatasourceStore) -> None:

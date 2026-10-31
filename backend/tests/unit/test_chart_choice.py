@@ -72,7 +72,7 @@ def test_unknown_columns_are_left_out_of_the_choice() -> None:
 def test_recalculated_tile_keeps_the_chosen_columns() -> None:
     spec = build_vega_spec("bar", "temp_result_v1", data=STORES, x="store_id", y="revenue")
     tile = DashboardTile(title="Магазины", spec=spec, result_table="temp_result_v1")
-    rebuilt = rebuild_spec(tile, STORES)
+    rebuilt = rebuild_spec(tile.spec, tile.result_table, STORES)
     assert rebuilt["encoding"]["x"]["field"] == "store_id"
     assert rebuilt["usermeta"]["x"] == "store_id"
 
