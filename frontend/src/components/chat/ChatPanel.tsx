@@ -29,6 +29,7 @@ import { downloadBlob, safeFilename } from "@/lib/download";
 import Icon from "@/components/ui/Icon";
 import ClarificationCard from "@/components/chat/ClarificationCard";
 import StepProgress from "@/components/chat/StepProgress";
+import ReviewCard, { DraftAnswer } from "@/components/chat/ReviewCard";
 import TableBriefCard from "@/components/chat/TableBriefCard";
 import DashboardPreviewCard from "@/components/chat/DashboardPreviewCard";
 import AnswerActions from "@/components/chat/AnswerActions";
@@ -84,6 +85,8 @@ export default function ChatPanel({ sessionId }: Props) {
   const streaming = run?.status === "running";
   const lastFailedQuestion = run?.failedQuestion ?? null;
   const [dashboardMode, setDashboardMode] = useState(false);
+  // Режим «Проверка» (A-29): после ответа агент проверяет его и при необходимости исправляет
+  const [verifyMode, setVerifyMode] = useState(false);
   const [ideas, setIdeas] = useState<IdeasState | null>(null);
   const ideasRequestRef = useRef(0);
   // Сообщение с карточкой уточнения, на которую ещё можно ответить
@@ -381,6 +384,7 @@ export default function ChatPanel({ sessionId }: Props) {
       recoveryResponse,
       replyTo: quote?.turn_id ?? null,
       dashboard,
+      verify: verifyMode && !dashboard,
       onDashboardBuilt: (dashboardId) => router.push(`/dashboard/${dashboardId}`),
     });
   }
@@ -405,6 +409,7 @@ export default function ChatPanel({ sessionId }: Props) {
       replyTo: null,
       resumeTurn: progress.turn_id,
       dashboard: progress.tiles ? { idea: null } : undefined,
+      verify: verifyMode && !progress.tiles,
       onDashboardBuilt: (dashboardId) => router.push(`/dashboard/${dashboardId}`),
     });
   }
@@ -608,7 +613,10 @@ export default function ChatPanel({ sessionId }: Props) {
             </div>
           </div>
         ) : (
-          messages.map((m, i) => (
+          messages.map((m, i) =>
+            m.superseded ? (
+              <DraftAnswer key={m.id || i} message={m} />
+            ) : (
             <div
               key={m.id || i}
               id={m.turn_id ? `turn-${m.turn_id}` : undefined}
@@ -631,6 +639,8 @@ export default function ChatPanel({ sessionId }: Props) {
                     : "w-full text-graphite-200"
                 }`}
               >
+                {m.review && <ReviewCard review={m.review} sessionId={sessionId} />}
+
                 {m.progress && (
                   <StepProgress
                     progress={m.progress}
@@ -641,6 +651,14 @@ export default function ChatPanel({ sessionId }: Props) {
                         : undefined
                     }
                   />
+                )}
+
+                {/* Ответ исправлен после проверки (режим «Проверка») */}
+                {m.revised && (
+                  <div className="mb-1 inline-flex items-center gap-1 rounded-full bg-good/10 px-2 py-0.5 text-[11px] text-good">
+                    <Icon name="check" size={11} />
+                    {t("verify.updated")}
+                  </div>
                 )}
 
                 {/* Текст сообщения */}
@@ -832,7 +850,8 @@ export default function ChatPanel({ sessionId }: Props) {
                 {m.timestamp || ""}
               </span>
             </div>
-          ))
+            ),
+          )
         )}
         <div ref={messagesEndRef} />
       </div>
@@ -891,6 +910,19 @@ export default function ChatPanel({ sessionId }: Props) {
                 }}
                 className="flex h-4 w-4 items-center justify-center rounded-full text-graphite-400 hover:bg-graphite-700 hover:text-graphite-100"
                 title={t("dashboard.chipOff")}
+              >
+                <Icon name="x" size={10} />
+              </button>
+            </span>
+          )}
+          {/* Чип режима проверки: × выключает режим */}
+          {verifyMode && !dashboardMode && (
+            <span className="mt-1 mb-1 mr-1 inline-flex items-center gap-1 rounded-full border border-graphite-600 bg-graphite-800 py-0.5 pl-2 pr-1 text-[12px] text-graphite-100">
+              🔎 {t("verify.chip")}
+              <button
+                onClick={() => setVerifyMode(false)}
+                className="flex h-4 w-4 items-center justify-center rounded-full text-graphite-400 hover:bg-graphite-700 hover:text-graphite-100"
+                title={t("verify.chipOff")}
               >
                 <Icon name="x" size={10} />
               </button>
@@ -981,6 +1013,21 @@ export default function ChatPanel({ sessionId }: Props) {
           >
             <Icon name="layout" size={13} />
             {t("dashboard.toggle")}
+          </button>
+          {/* Режим «Проверка» (A-29): с дашбордом не совмещается */}
+          <button
+            onClick={() => setVerifyMode(!verifyMode)}
+            disabled={dashboardMode}
+            aria-pressed={verifyMode && !dashboardMode}
+            title={dashboardMode ? t("verify.dashboardHint") : t("verify.toggleHint")}
+            className={`inline-flex items-center gap-1.5 rounded-full border px-3 py-1 text-xs transition disabled:cursor-not-allowed disabled:opacity-40 ${
+              verifyMode && !dashboardMode
+                ? "border-graphite-400 bg-graphite-700 text-graphite-50"
+                : "border-graphite-700 text-graphite-400 hover:bg-graphite-800 hover:text-graphite-200"
+            }`}
+          >
+            <Icon name="check" size={13} />
+            {t("verify.toggle")}
           </button>
           {dashboardMode && (
             <button

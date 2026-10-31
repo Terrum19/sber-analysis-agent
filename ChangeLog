@@ -1,5 +1,45 @@
 2026-10-31  Alexander Yurits  <143354682+Terrum19@users.noreply.github.com>
 
+	Режим «Проверка»: проверки шагов, критик ответа и исправление по
+	вердикту (A-29, #257; F-18, #258).
+	* backend/app/core/agent/assurance/checks.py: Новый. Аномалии результата
+	шага без LLM: пусто, фильтр оставил < 1 %, join раздул строки, ряд
+	схлопнулся в строку, ≥ 30 % NULL, неполный крайний период time_bucket,
+	константа. Первые четыре исправляет fix_step, как ошибку шага.
+	* backend/app/core/agent/assurance/evidence.py: Новый. Улики критика:
+	шаги со строками на входе и выходе, пропуски, выбросы по IQR, медиана и
+	диапазон дат использованных колонок, неиспользованные колонки, факты.
+	* backend/app/core/agent/assurance/critic.py: Новый. Чек-лист из 10
+	пунктов, вердикт ok / caveat / fix_insight / extend_plan / replan;
+	settle: material без улик — minor, extend / replan без material —
+	оговорка, во втором раунде — только ok или caveat.
+	* backend/app/core/agent/assurance/loop.py: Новый. Критик -> исправление
+	(вывод заново, шаги к плану, план заново) -> повторный критик, одно
+	исправление на ход; сбой исправления — оговорка.
+	* backend/app/core/agent/orchestrator.py (_check_step, _build_chart):
+	Новые. verify — проверка шагов в _execute_plan и цикл после чернового
+	ответа; text и chart с revision.
+	* backend/app/api/schemas/chat.py: ChatRequest.verify, стадии check /
+	review / repair, событие review.
+	* backend/app/core/memory/session_memory.py (record_review): Новая.
+	* backend/app/core/agent/planner.py, insight.py: Замечания проверки в
+	промпте (context["review"], review).
+	* backend/app/core/llm/fake_client.py: Review — ok.
+	* scripts/eval.py: --verify; оценивается последняя версия ответа;
+	вердикты и исправленные ответы в отчёте.
+	* frontend/src/components/chat/ReviewCard.tsx: Новый. Карточка
+	проверки: перебор чек-листа, вердикт, проблемы, оговорки, шаги
+	исправления; DraftAnswer — «Ответ до проверки».
+	* frontend/src/components/chat/StepProgress.tsx: Значок проверки шага,
+	аномалии, «добавлено проверкой».
+	* frontend/src/components/chat/ChatPanel.tsx: Тумблер и чип «Проверка».
+	* frontend/src/store/chatRunStore.ts: События проверки — в карточку,
+	черновой ответ сворачивается при revision 1.
+	* frontend/src/types/chat.ts, api/client.ts, api/mockData.ts,
+	i18n/dictionary.ts: Типы, verify в запросе, мок-сценарий, строки.
+
+2026-10-31  Alexander Yurits  <143354682+Terrum19@users.noreply.github.com>
+
 	Вкладка «Инсайты» — карточки «вопрос → вывод» (F-17, #259).
 	* frontend/src/lib/insights.ts (buildInsights): Новая. Карточка на ход
 	чата (всё между репликами пользователя): вопрос, headline, details,

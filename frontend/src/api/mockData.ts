@@ -7,7 +7,7 @@
  * - Пересчёт и сохранение снимков в памяти/localStorage
  */
 import type { DashboardConfig, DashboardListItem, DashboardTile } from "@/types/dashboard";
-import type { ChatStreamEvent, ProgressPayload } from "@/types/chat";
+import type { ChatStreamEvent, ProgressPayload, ReviewCheckId } from "@/types/chat";
 import type { Datasource, SessionResponse, TableBrief } from "@/types/datasource";
 
 const STORAGE_KEY = "sber_mock_dashboards_db";
@@ -401,8 +401,9 @@ export function mockStreamChat(
   question: string,
   onEvent: (event: ChatStreamEvent) => void,
   onClose?: (error?: string) => void,
-  _options?: { recoveryResponse?: string; replyTo?: string | null },
+  _options?: { recoveryResponse?: string; replyTo?: string | null; verify?: boolean },
 ): () => void {
+  if (_options?.verify) return mockVerifyStream(onEvent, onClose);
   let isCancelled = false;
   const isDashboardRequest = /дашборд|панел|график|kpi|отчет|показател/i.test(question);
   // turn_id нужен кнопкам «Спросить об этом» и цитате в демо-режиме (F-12).
@@ -483,6 +484,169 @@ export function mockStreamChat(
 
   return () => {
     isCancelled = true;
+    timeouts.forEach(clearTimeout);
+    onClose?.();
+  };
+}
+
+const VERIFY_CHECKS: { id: ReviewCheckId; title: string }[] = [
+  { id: "answers_question", title: "Ответ на вопрос" },
+  { id: "metric", title: "Метрика" },
+  { id: "period", title: "Период" },
+  { id: "filters", title: "Фильтры" },
+  { id: "nulls", title: "Пропуски" },
+  { id: "outliers", title: "Выбросы" },
+  { id: "columns", title: "Неучтённые колонки" },
+  { id: "joins", title: "Объединения" },
+  { id: "claims", title: "Смелость выводов" },
+  { id: "numbers", title: "Числа" },
+];
+
+/**
+ * Режим «Проверка» в мок-режиме (A-29): шаг с аномалией и исправлением,
+ * черновой ответ, вердикт extend_plan, дополнительный шаг, исправленный
+ * ответ и итоговый вердикт.
+ */
+function mockVerifyStream(onEvent: (event: ChatStreamEvent) => void, onClose?: (error?: string) => void): () => void {
+  const turnId = `mock-turn-${Date.now().toString(36)}`;
+  const plan = [
+    { step_id: 0, tool: "filter_rows", purpose: "Только 2024 год", input: "$source" },
+    { step_id: 1, tool: "time_bucket", purpose: "Выручка по месяцам", input: "$prev" },
+  ];
+  const extra = { step_id: 2, tool: "filter_rows", purpose: "Без неполного декабря", input: "$step_1" };
+  const checks = (issue: ReviewCheckId | null) =>
+    VERIFY_CHECKS.map((check) => ({
+      ...check,
+      status: check.id === issue ? ("issue" as const) : ("ok" as const),
+      evidence: check.id === issue ? "данные по 2024-12-12: в декабре 12 дней из 31" : "по уликам",
+    }));
+  const issue = {
+    check: "period" as const,
+    severity: "material" as const,
+    message: "Неполный декабрь сравнивается с полными месяцами",
+    evidence: "данные по 2024-12-12",
+    fix: "Исключить декабрь из сравнения",
+  };
+  const chart = (caption: string, revision: number) => ({
+    type: "chart" as const,
+    data: { caption, spec: DEFAULT_TILES[2].spec, result_table: `temp_result_v${revision + 1}`, revision },
+  });
+  const events: [number, ChatStreamEvent][] = [
+    [200, { type: "progress", data: { stage: "planning", status: "started", turn_id: turnId } }],
+    [700, { type: "progress", data: { stage: "planning", status: "finished", total_steps: 2, steps: plan } }],
+    [300, { type: "progress", data: { stage: "step", status: "started", ...plan[0] } }],
+    [600, { type: "progress", data: { stage: "step", status: "finished", ...plan[0], elapsed_ms: 40, rows: 0 } }],
+    [200, { type: "progress", data: { stage: "check", status: "started", step_id: 0 } }],
+    [
+      500,
+      {
+        type: "progress",
+        data: {
+          stage: "step",
+          status: "fixing",
+          ...plan[0],
+          attempt: 1,
+          error: "Шаг выполнился, но результат подозрителен: результат пуст (на входе 12000 строк)",
+        },
+      },
+    ],
+    [900, { type: "progress", data: { stage: "step", status: "finished", ...plan[0], rows: 9800 } }],
+    [200, { type: "progress", data: { stage: "check", status: "finished", step_id: 0, findings: [] } }],
+    [300, { type: "progress", data: { stage: "step", status: "started", ...plan[1] } }],
+    [700, { type: "progress", data: { stage: "step", status: "finished", ...plan[1], elapsed_ms: 60, rows: 12 } }],
+    [200, { type: "progress", data: { stage: "check", status: "started", step_id: 1 } }],
+    [
+      400,
+      {
+        type: "progress",
+        data: {
+          stage: "check",
+          status: "finished",
+          step_id: 1,
+          findings: [{ code: "partial_period", message: "последний период 2024-12-01 неполный: данные по 2024-12-12" }],
+        },
+      },
+    ],
+    [300, { type: "progress", data: { stage: "insight", status: "started" } }],
+    [
+      1200,
+      {
+        type: "text",
+        data: { headline: "В декабре выручка упала на 58%", details: ["Худший месяц года — декабрь"], revision: 0 },
+      },
+    ],
+    [300, chart("Выручка по месяцам", 0)],
+    [300, { type: "progress", data: { stage: "review", status: "started", round: 1 } }],
+    [3500, { type: "progress", data: { stage: "review", status: "finished", round: 1 } }],
+    [
+      100,
+      {
+        type: "review",
+        data: { round: 1, verdict: "extend_plan", action: "extend_plan", checks: checks("period"), issues: [issue], caveats: [] },
+      },
+    ],
+    [
+      300,
+      {
+        type: "progress",
+        data: { stage: "repair", status: "started", action: "extend_plan", reason: issue.message },
+      },
+    ],
+    [300, { type: "progress", data: { stage: "planning", status: "started", revision: 1 } }],
+    [
+      1200,
+      {
+        type: "progress",
+        data: { stage: "planning", status: "finished", total_steps: 3, steps: [...plan, extra], revision: 1 },
+      },
+    ],
+    [100, { type: "progress", data: { stage: "step", status: "finished", ...plan[0], revision: 1 } }],
+    [100, { type: "progress", data: { stage: "step", status: "finished", ...plan[1], revision: 1 } }],
+    [300, { type: "progress", data: { stage: "step", status: "started", ...extra, revision: 1 } }],
+    [700, { type: "progress", data: { stage: "step", status: "finished", ...extra, elapsed_ms: 30, rows: 11, revision: 1 } }],
+    [200, { type: "progress", data: { stage: "check", status: "started", step_id: 2, revision: 1 } }],
+    [300, { type: "progress", data: { stage: "check", status: "finished", step_id: 2, findings: [], revision: 1 } }],
+    [300, { type: "progress", data: { stage: "insight", status: "started", revision: 1 } }],
+    [
+      1500,
+      {
+        type: "text",
+        data: {
+          headline: "Без неполного декабря выручка стабильна: 1.1–1.3 млн в месяц",
+          details: ["Декабрь в данных — только 12 дней", "Худший полный месяц — февраль"],
+          revision: 1,
+        },
+      },
+    ],
+    [200, { type: "progress", data: { stage: "chart", status: "started", revision: 1 } }],
+    [300, chart("Выручка по полным месяцам", 1)],
+    [200, { type: "progress", data: { stage: "repair", status: "finished", action: "extend_plan" } }],
+    [200, { type: "progress", data: { stage: "review", status: "started", round: 2 } }],
+    [2500, { type: "progress", data: { stage: "review", status: "finished", round: 2 } }],
+    [
+      100,
+      {
+        type: "review",
+        data: { round: 2, verdict: "ok", action: "ok", checks: checks(null), issues: [], caveats: [] },
+      },
+    ],
+    [200, { type: "done", data: { turn_id: turnId } }],
+  ];
+  const timeouts: NodeJS.Timeout[] = [];
+  let cancelled = false;
+  let at = 0;
+  events.forEach(([delay, event], index) => {
+    at += delay;
+    timeouts.push(
+      setTimeout(() => {
+        if (cancelled) return;
+        onEvent(event);
+        if (index === events.length - 1) onClose?.();
+      }, at),
+    );
+  });
+  return () => {
+    cancelled = true;
     timeouts.forEach(clearTimeout);
     onClose?.();
   };

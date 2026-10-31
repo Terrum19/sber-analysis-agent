@@ -366,7 +366,14 @@ export function streamChat(
   onEvent: (event: ChatStreamEvent) => void,
   onClose?: (error?: string) => void,
   optionsOrRecoveryResponse?:
-    | { recoveryResponse?: string; replyTo?: string | null; dashboard?: DashboardRequest; resumeTurn?: string }
+    | {
+        recoveryResponse?: string;
+        replyTo?: string | null;
+        dashboard?: DashboardRequest;
+        resumeTurn?: string;
+        /** Режим «Проверка» (A-29): после ответа агент проверяет и при необходимости исправляет его. */
+        verify?: boolean;
+      }
     | string,
 ): () => void {
   const options =
@@ -393,6 +400,7 @@ export function streamChat(
           mode: options?.dashboard ? "dashboard" : "chat",
           idea: options?.dashboard?.idea ?? null,
           resume_turn: options?.resumeTurn ?? null,
+          verify: options?.verify ?? false,
         }),
         signal: controller.signal,
       });
