@@ -1,5 +1,10 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { fileURLToPath } from "node:url";
+import path from "node:path";
+
+// Исходники фронта: и в контейнере (/app), и в локальном checkout
+const SRC = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
 const CHART_TYPES = [
   "bar",
@@ -542,7 +547,7 @@ test("Codebase inspection: chat auto-scroll, sidebar and navigation stability", 
   const fs = await import("node:fs/promises");
 
   // ChatPanel не должен использовать smooth scroll при открытии сессии
-  const chatCode = await fs.readFile("/app/src/components/chat/ChatPanel.tsx", "utf-8");
+  const chatCode = await fs.readFile(SRC + "/components/chat/ChatPanel.tsx", "utf-8");
   assert.ok(
     !chatCode.includes('scrollIntoView({ behavior: "smooth" });'),
     "ChatPanel must not use smooth scrollIntoView on tab switch / stream"
@@ -553,7 +558,7 @@ test("Codebase inspection: chat auto-scroll, sidebar and navigation stability", 
   );
 
   // RecentDashboards должен использовать кэш и не зависеть от pathname в fetch-эффекте
-  const recentCode = await fs.readFile("/app/src/components/layout/RecentDashboards.tsx", "utf-8");
+  const recentCode = await fs.readFile(SRC + "/components/layout/RecentDashboards.tsx", "utf-8");
   assert.ok(
     recentCode.includes("cachedRecentDashboards"),
     "RecentDashboards must use cachedRecentDashboards"
@@ -568,7 +573,7 @@ test("Codebase inspection: chat auto-scroll, sidebar and navigation stability", 
   );
 
   // LeftSidebar должен троттлить syncSessions и восстанавливать скролл
-  const sidebarCode = await fs.readFile("/app/src/components/layout/LeftSidebar.tsx", "utf-8");
+  const sidebarCode = await fs.readFile(SRC + "/components/layout/LeftSidebar.tsx", "utf-8");
   assert.ok(
     sidebarCode.includes("SESSIONS_SYNC_THROTTLE_MS"),
     "LeftSidebar must throttle syncSessions"
@@ -583,14 +588,14 @@ test("Codebase inspection: chat auto-scroll, sidebar and navigation stability", 
   );
 
   // TopHeader не должен вызывать глобальный scrollIntoView
-  const headerCode = await fs.readFile("/app/src/components/layout/TopHeader.tsx", "utf-8");
+  const headerCode = await fs.readFile(SRC + "/components/layout/TopHeader.tsx", "utf-8");
   assert.ok(
     !headerCode.includes("ref.current?.scrollIntoView"),
     "TopHeader must not call global scrollIntoView"
   );
 
   // Artifact страница содержит кнопку назад в дашборд
-  const artifactCode = await fs.readFile("/app/src/app/artifact/[id]/page.tsx", "utf-8");
+  const artifactCode = await fs.readFile(SRC + "/app/artifact/[id]/page.tsx", "utf-8");
   assert.ok(
     artifactCode.includes("toDashboard"),
     "Artifact page must have back to dashboard navigation"
@@ -601,7 +606,7 @@ test("Codebase inspection: DashboardTile renders change chart type button in nor
   const fs = await import("node:fs/promises");
   
   // 1. Проверяем DashboardTile.tsx
-  const tileCode = await fs.readFile("/app/src/components/canvas/DashboardTile.tsx", "utf-8");
+  const tileCode = await fs.readFile(SRC + "/components/canvas/DashboardTile.tsx", "utf-8");
   assert.ok(
     tileCode.includes("onChangeChartType"),
     "DashboardTile must accept onChangeChartType prop"
@@ -620,7 +625,7 @@ test("Codebase inspection: DashboardTile renders change chart type button in nor
   );
 
   // 2. Проверяем Canvas.tsx
-  const canvasCode = await fs.readFile("/app/src/components/canvas/Canvas.tsx", "utf-8");
+  const canvasCode = await fs.readFile(SRC + "/components/canvas/Canvas.tsx", "utf-8");
   assert.ok(
     canvasCode.includes("useChartTypeChange"),
     "Canvas must use useChartTypeChange"
@@ -637,7 +642,7 @@ test("Codebase inspection: DashboardTile renders change chart type button in nor
   );
 
   // 3. Проверяем app/dashboard/[id]/page.tsx
-  const pageCode = await fs.readFile("/app/src/app/dashboard/[id]/page.tsx", "utf-8");
+  const pageCode = await fs.readFile(SRC + "/app/dashboard/[id]/page.tsx", "utf-8");
   assert.ok(
     pageCode.includes("useChartTypeChange"),
     "dashboard/[id]/page.tsx must use useChartTypeChange"
@@ -652,14 +657,14 @@ test("Codebase inspection: DashboardTile renders change chart type button in nor
   );
 
   // 4. Проверяем ItemActionMenu.tsx: выбор графика убран из меню троеточия
-  const menuCode = await fs.readFile("/app/src/components/layout/ItemActionMenu.tsx", "utf-8");
+  const menuCode = await fs.readFile(SRC + "/components/layout/ItemActionMenu.tsx", "utf-8");
   assert.ok(
     !menuCode.includes("chartType"),
     "ItemActionMenu must not contain chartType selection"
   );
 
   // 5. Проверяем ChartTypePicker.tsx
-  const pickerCode = await fs.readFile("/app/src/components/canvas/ChartTypePicker.tsx", "utf-8");
+  const pickerCode = await fs.readFile(SRC + "/components/canvas/ChartTypePicker.tsx", "utf-8");
   assert.ok(
     pickerCode.includes("CHART_TYPES.map"),
     "ChartTypePicker must map over CHART_TYPES"
