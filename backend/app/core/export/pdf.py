@@ -434,23 +434,29 @@ class PdfExporter:
                 if table_flowable:
                     elements.append(table_flowable)
             elif chart_png:
-                elements.append(Paragraph("Визуализация данных", styles["SectionHeading"]))
-                elements.append(Spacer(1, 4))
+                chart_block: list[Any] = [
+                    Paragraph("Визуализация данных", styles["SectionHeading"]),
+                    Spacer(1, 4),
+                ]
                 img_flowable = self._build_image(
                     chart_png, max_width=printable_width, max_height=210
                 )
                 if img_flowable:
-                    elements.append(img_flowable)
-                    elements.append(Spacer(1, 6))
+                    chart_block.append(img_flowable)
+                    chart_block.append(Spacer(1, 6))
+                elements.append(KeepTogether(chart_block))
             elif chart_render_failed:
-                elements.append(Paragraph("Визуализация данных", styles["SectionHeading"]))
-                elements.append(Spacer(1, 4))
                 warn_text = (
                     "<i>График не удалось отобразить в PDF (ошибка рендеринга визуализации); "
                     "детальные данные представлены в таблице.</i>"
                 )
-                elements.append(Paragraph(warn_text, styles["Footnote"]))
-                elements.append(Spacer(1, 6))
+                warn_block: list[Any] = [
+                    Paragraph("Визуализация данных", styles["SectionHeading"]),
+                    Spacer(1, 4),
+                    Paragraph(warn_text, styles["Footnote"]),
+                    Spacer(1, 6),
+                ]
+                elements.append(KeepTogether(warn_block))
 
             if not is_table and records:
                 elements.append(Spacer(1, 4))
@@ -871,14 +877,15 @@ class PdfExporter:
             header_block.append(ins_table)
             header_block.append(Spacer(1, 6))
 
-        card.append(KeepTogether(header_block))
-
         # Извлекаем строки данных с единым приоритетом разрешения
         records = resolve_tile_records(tile, db=db, limit=500)
 
         # Рендеринг графика (Vega-Lite)
         chart_png: bytes | None = None
-        is_table_type = bool(tile.spec and isinstance(tile.spec, dict) and is_table_spec(tile.spec))
+        is_table_type = bool(
+            (tile.spec and isinstance(tile.spec, dict) and is_table_spec(tile.spec))
+            or (not tile.spec and not tile.is_kpi)
+        )
 
         if not is_table_type and tile.spec and isinstance(tile.spec, dict):
             spec_to_render = copy.deepcopy(tile.spec)
@@ -898,58 +905,61 @@ class PdfExporter:
                     spec_to_render["data"] = {"values": records[:500]}
             chart_png = render_chart_png(spec_to_render, width=640, scale=2.0)
 
+        content_block: list[Any] = []
         if chart_png:
             img_flowable = self._build_image(chart_png, max_width=printable_width, max_height=230)
             if img_flowable:
-                card.append(img_flowable)
-                card.append(Spacer(1, 6))
+                content_block.append(img_flowable)
+                content_block.append(Spacer(1, 6))
         elif not is_table_type and tile.spec and isinstance(records, list) and records:
-            card.append(
+            content_block.append(
                 Paragraph(
                     "<i>График не удалось отобразить в PDF; ниже представлены табличные данные.</i>",
                     styles["Footnote"],
                 )
             )
-            card.append(Spacer(1, 4))
+            content_block.append(Spacer(1, 4))
             table_flowable = self._build_data_table(
                 records[:MAX_DASHBOARD_TABLE_ROWS], printable_width, styles
             )
             if table_flowable:
-                card.append(table_flowable)
+                content_block.append(table_flowable)
                 if len(records) > MAX_DASHBOARD_TABLE_ROWS:
-                    card.append(Spacer(1, 2))
-                    card.append(
+                    content_block.append(Spacer(1, 2))
+                    content_block.append(
                         Paragraph(
                             f"<i>Показаны первые {MAX_DASHBOARD_TABLE_ROWS} строк из {len(records)}.</i>",
                             styles["Footnote"],
                         )
                     )
-                card.append(Spacer(1, 6))
+                content_block.append(Spacer(1, 6))
         elif isinstance(records, list) and records:
             # Табличное представление
             table_flowable = self._build_data_table(
                 records[:MAX_DASHBOARD_TABLE_ROWS], printable_width, styles
             )
             if table_flowable:
-                card.append(table_flowable)
+                content_block.append(table_flowable)
                 if len(records) > MAX_DASHBOARD_TABLE_ROWS:
-                    card.append(Spacer(1, 2))
-                    card.append(
+                    content_block.append(Spacer(1, 2))
+                    content_block.append(
                         Paragraph(
                             f"<i>Показаны первые {MAX_DASHBOARD_TABLE_ROWS} строк из {len(records)}.</i>",
                             styles["Footnote"],
                         )
                     )
-                card.append(Spacer(1, 6))
+                content_block.append(Spacer(1, 6))
         else:
-            card.append(
+            content_block.append(
                 Paragraph(
                     "<i>Данные для отображения плитки отсутствуют.</i>",
                     styles["Footnote"],
                 )
             )
-            card.append(Spacer(1, 6))
+            content_block.append(Spacer(1, 6))
 
+        # Заголовок плитки и её содержимое (график или таблица) неотделимы и объединяются в KeepTogether
+        card.append(KeepTogether(header_block + content_block))
         return card
 
     def _build_logo(self, size: float = 18.0) -> Drawing:

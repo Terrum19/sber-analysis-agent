@@ -207,7 +207,7 @@ def export_artifact(
         )
 
     # payload.format == "pdf"
-    is_table = is_table_spec(payload.spec)
+    is_table = is_table_spec(payload.spec) or (not payload.spec and bool(records))
     chart_spec = copy.deepcopy(payload.spec) if payload.spec else None
     if chart_spec and records:
         if chart_spec.get("usermeta", {}).get("chart_type") == "heatmap":

@@ -1,5 +1,24 @@
 2026-10-31  Dmitriy Yakushonok  <dmitriyyakushonok@yandex.ru>
 
+	Улучшение экспорта в PDF: рендеринг таблиц, наклон подписей оси X под 45°
+	и неотделимость заголовков графиков от визуализаций.
+	* backend/app/core/export/charts.py (is_table_spec, _detect_x_axis_overlap,
+	_auto_rotate_x_axis, normalize_spec): Расширено определение табличных спек
+	(проверка полей root chart_type/type/kind, meta/params, кодирования __col/__row/__val
+	и text mark), исключая ошибочный рендеринг таблиц в виде растрового графика.
+	Добавлен автоповорот оси X под -45 градусов при геометрическом наложении подписей.
+	* backend/app/core/export/pdf.py (PdfExporter._build_tile_card, export_answer):
+	Заголовок плитки, инсайт и контент (график или таблица) объединены в единый
+	KeepTogether блок, гарантируя неотделимость заголовка от графика при переносе страниц.
+	Плитки без спецификации корректно классифицируются как табличные.
+	* backend/app/api/routes/artifacts.py (export_artifact): Обработка табличных
+	артефактов без спецификации графика напрямую как таблиц.
+	* backend/tests/unit/test_export_pdf.py, test_export_dashboard_pdf.py:
+	Тесты на расширенное распознавание таблиц, автоповорот осей X под -45°,
+	структуру KeepTogether в карточке плитки и экспорт табличных плиток.
+
+2026-10-31  Dmitriy Yakushonok  <dmitriyyakushonok@yandex.ru>
+
 	Корректное построение тепловой карты, матрицы корреляций и экспорт в PDF.
 	* backend/app/core/viz/vega_spec_builder.py (_heatmap, detect_wide_matrix,
 	is_correlation_matrix, _axis_channel, _temporal_step): Даты на осях

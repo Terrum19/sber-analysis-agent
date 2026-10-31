@@ -900,3 +900,77 @@ def test_export_dashboard_pdf_heatmap_rebuilds_when_spec_values_missing(tmp_path
     exporter.export_dashboard(dash, out_pdf)
     reader = pypdf.PdfReader(out_pdf)
     assert len(reader.pages) >= 1
+
+
+def test_build_tile_card_keeps_title_and_chart_together() -> None:
+    """Заголовок плитки, инсайт и график должны объединяться в единый KeepTogether блок."""
+    from reportlab.platypus import KeepTogether, Paragraph, Table
+
+    from app.core.dashboards.models import DashboardTile
+    from app.core.export.pdf import PdfExporter
+
+    tile = DashboardTile(
+        title="Динамика выручки по кварталам",
+        insight="Рост выручки составил 15% по сравнению с прошлым годом",
+        spec={
+            "mark": "bar",
+            "data": {"values": [{"q": "Q1", "v": 10}, {"q": "Q2", "v": 20}]},
+            "encoding": {
+                "x": {"field": "q", "type": "nominal"},
+                "y": {"field": "v", "type": "quantitative"},
+            },
+        },
+    )
+
+    exporter = PdfExporter()
+    styles = exporter._build_styles()
+    card_elements = exporter._build_tile_card(tile, printable_width=523.27, styles=styles)
+
+    assert len(card_elements) == 1
+    keep_together = card_elements[0]
+    assert isinstance(keep_together, KeepTogether)
+
+    # Проверяем, что внутри KeepTogether находятся заголовок, блок инсайта и график
+    inner = keep_together._content
+    assert any(isinstance(f, Paragraph) and "Динамика выручки" in f.text for f in inner)
+    assert any(isinstance(f, Table) for f in inner)  # блок инсайта
+    # Проверяем наличие визуализации (картинка Image)
+    from reportlab.platypus import Image as RLImage
+
+    assert any(isinstance(f, RLImage) for f in inner)
+
+
+def test_export_dashboard_pdf_table_spec_renders_as_table_not_chart(tmp_path: Path) -> None:
+    """Плитка с табличной спекой рендерится как таблица данных, а не как график-картинка."""
+    tile = DashboardTile(
+        title="Таблица ключевых метрик",
+        spec={
+            "chart_type": "table",
+            "data": {
+                "values": [
+                    {"Метрика": "CAC", "Значение": 1500},
+                    {"Метрика": "LTV", "Значение": 8000},
+                ]
+            },
+        },
+    )
+    dash = Dashboard(
+        id="d-table-tile",
+        session_id="sess-table",
+        title="Дашборд с таблицей",
+        tiles=[tile],
+    )
+    out_pdf = str(tmp_path / "table_tile_dash.pdf")
+    exporter = PdfExporter()
+    exporter.export_dashboard(dash, out_pdf)
+
+    reader = pypdf.PdfReader(out_pdf)
+    assert len(reader.pages) >= 1
+    # Таблица не должна содержать сгенерированных картинок графиков
+    images = [img for page in reader.pages for img in page.images]
+    assert len(images) == 0
+
+    text = "".join(p.extract_text() or "" for p in reader.pages)
+    assert "Таблица ключевых метрик" in text
+    assert "CAC" in text
+    assert "LTV" in text
