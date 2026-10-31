@@ -1,3 +1,35 @@
+2026-10-31  Alexander Yurits  <143354682+Terrum19@users.noreply.github.com>
+
+	Сборка открытых PR к сдаче 31.10 и правки стыков.
+	* backend/app/core/tools/sql/atomic.py (FilterRowsTool): Дата без
+	времени на колонке TIMESTAMP — весь день: BETWEEN по '2025-12-31'
+	отрезал 31 декабря после полуночи.  (_whole_days, _next_day)
+	(DAY_BOUNDS): Новые.
+	* backend/app/core/agent/assurance/checks.py (SERVICE_COLUMNS): Новая.
+	Счётчики seasonality не помечаются как константная метрика.
+	* backend/app/core/agent/assurance/loop.py (Assurance._repair): Новый
+	вывод исправления видит уточнения глубокого исследования (A-28).
+	* backend/app/core/export/pdf.py (PdfExporter.export_dashboard): Скрытые
+	плитки (F-15) не выгружаются, как и в Excel.
+	* frontend/src/hooks/useChartTypeChange.ts (executeSave): Спека
+	пересобирается на бэкенде (withRebuiltChartType): одна замена mark
+	рисовала таблицу полосами, сложные виды не менялись.
+	* frontend/src/lib/chartTypes.ts (withChartType): Без тоста: превью при
+	наведении звало его на каждый сложный вид.
+	* frontend/src/store/chatRunStore.ts: График, исправленный проверкой,
+	встаёт на место чернового, а не второй плиткой; 404 сессии (A-26) и
+	закрытие проверки (A-29) вместе.
+	* frontend/src/components/canvas/Canvas.tsx: Видимые плитки (F-15) — и
+	для вкладки «Инсайты» (F-17), и для смены вида (#256).
+	* frontend/src/components/canvas/DashboardTile.tsx: «Открыть чат» и
+	«＋ в дашборды» не начинают перетаскивание плитки.
+	* frontend/src/components/chat/ChatPanel.tsx: «Проверка» и «Глубокое
+	исследование» включаются вместе.
+	* frontend/src/tests/chartTypeChange.runner.mjs: Исходники — от файла
+	теста, а не из /app.
+	* backend/tests/unit/test_tools.py, test_session_bundle.py,
+	test_assurance.py, test_export_dashboard_pdf.py: Тесты того же.
+
 2026-10-31  Dmitriy Yakushonok  <dmitriyyakushonok@yandex.ru>
 
 	Смена типа графика с плитки, стабилизация сайдбара и навигации.
