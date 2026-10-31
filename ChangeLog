@@ -1,3 +1,48 @@
+2026-10-30  thebulkapro  <saitbatalovbulat200@gmail.com>
+
+	График в несколько дашбордов галочками и переход к чату графика (#237).
+	* backend/app/core/dashboards/models.py (DashboardTile): Поля
+	origin_tile_id, source_session_id, source_turn_id, hidden.
+	(DashboardSummary): Поле origin_keys.
+	* backend/app/core/dashboards/store.py (TILE_COLUMNS): Новая.  Колонки
+	новых полей; в старой базе добавляются при подключении.
+	(list): origin_keys и tiles_count — по видимым плиткам.
+	* backend/app/core/dashboards/generator.py (generate): Параметр
+	turn_id.  Плитки помнят сессию и ход.
+	* backend/app/core/dashboards/recalculate.py (recalculate): Скрытые
+	плитки не пересчитываются.
+	* backend/app/core/export/excel.py (export_dashboard): Скрытые плитки
+	не выгружаются.
+	* backend/app/core/agent/orchestrator.py (_build_dashboard)
+	* backend/app/core/agent/dashboard_turn.py (_build): turn_id хода.
+	* frontend/src/lib/tileOrigin.ts: Новый.  Ключ происхождения, копия
+	внизу сетки, добавление и снятие графика.
+	* frontend/src/components/canvas/AddToDashboardsDialog.tsx: Новый.
+	Окно «＋ в дашборды»: галочки, новый дашборд, итог тостом.
+	* frontend/src/components/canvas/DashboardTile.tsx: Кнопки
+	«＋ в дашборды» и «Открыть чат» в шапке.
+	* frontend/src/components/canvas/Canvas.tsx,
+	frontend/src/app/dashboard/[id]/page.tsx: Окно на плитках, скрытые
+	плитки не рисуются.  Страница дашборда: «Открыть чат», удалённый
+	чат — кнопка неактивна.
+	* frontend/src/components/canvas/Canvas.tsx: Возврат в чат — панель
+	открывает последний сохранённый дашборд сессии, а не черновик:
+	«Сохранить» и «Обновить данные» больше не создают его копию.
+	* frontend/src/components/canvas/Canvas.tsx,
+	frontend/src/app/dashboard/[id]/page.tsx: Кнопка «Отмена» в режиме
+	правки.  Правки не автосохраняются, пока режим не закрыт.
+	* frontend/src/app/dashboards/page.tsx: Превью без скрытых плиток.
+	* frontend/src/components/chat/ChatPanel.tsx: ?turn= — прокрутка
+	к ответу.
+	* frontend/src/store/sessionStore.ts (patchTile): Новая.
+	* frontend/src/store/chatRunStore.ts: Плитка графика помнит сессию
+	и ход.
+	* frontend/src/types/dashboard.ts, frontend/src/api/mockData.ts,
+	frontend/src/i18n/dictionary.ts: То же.
+	* docs/memory.md: Происхождение плиток и скрытые плитки.
+	* backend/tests/unit/test_dashboard_store.py,
+	backend/tests/unit/test_dashboards_api.py: Тесты того же.
+
 2026-10-31  Alexander Yurits  <143354682+Terrum19@users.noreply.github.com>
 
 	Вопрос в удалённую сессию — 404, а не новая пустая сессия.

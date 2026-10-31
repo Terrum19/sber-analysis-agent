@@ -168,6 +168,8 @@ export interface SessionState {
   removeMessage: (id: string, sessionId?: string) => void;
   removeLastFailedMessage: (sessionId?: string) => void;
   addTile: (tile: DashboardTile, sessionId?: string) => void;
+  /** Дописать плитку сессии по id (например, ход, где построен график). */
+  patchTile: (tileId: string, patch: Partial<DashboardTile>, sessionId?: string) => void;
   setTiles: (tiles: DashboardTile[]) => void;
   selectTile: (index: number | null) => void;
   setDatasource: (datasource: Datasource | null) => void;
@@ -368,6 +370,19 @@ export const useSessionStore = create<SessionState>()(
           useCanvasStore.getState().addTile(tile);
         }
         set((st) => patchSession(st, sessionId, (snap) => ({ ...snap, tiles: [...snap.tiles, tile] })));
+      },
+      patchTile: (tileId, patch, sessionId) => {
+        const s = get();
+        const canvas = useCanvasStore.getState();
+        if ((sessionId ?? s.sessionId) === s.sessionId && !canvas.dashboardId) {
+          canvas.setTiles(canvas.tiles.map((tile) => (tile.id === tileId ? { ...tile, ...patch } : tile)));
+        }
+        set((st) =>
+          patchSession(st, sessionId, (snap) => ({
+            ...snap,
+            tiles: snap.tiles.map((tile) => (tile.id === tileId ? { ...tile, ...patch } : tile)),
+          })),
+        );
       },
       setTiles: (tiles) => {
         if (!useCanvasStore.getState().dashboardId) {

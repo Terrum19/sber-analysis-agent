@@ -735,7 +735,7 @@ class AgentOrchestrator:
             )
             try:
                 event = await self._build_dashboard(
-                    request.session_id, question, execution, titles, fallback
+                    request.session_id, question, execution, titles, fallback, turn_id
                 )
             except Exception as exc:
                 # Ответ и график уже у пользователя: ход не провален, нет
@@ -1315,6 +1315,7 @@ class AgentOrchestrator:
         execution: Execution,
         titles: dict[str, str],
         fallback: DashboardTile,
+        turn_id: str | None = None,
     ) -> dict:
         plan = execution.plan
         tiles = []
@@ -1334,6 +1335,7 @@ class AgentOrchestrator:
             plan.dashboard_title or DASHBOARD_TITLE,
             _arrange(tiles) if tiles else [fallback],
             template_id=template_id,
+            turn_id=turn_id,
         )
         # Плитки уходят сразу в событии: фронт рисует превью без GET.
         # exclude_none убирает snapshot_data (в payload он None) и другие

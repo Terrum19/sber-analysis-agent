@@ -62,7 +62,7 @@ def recalculate(
         return None
     stale_tiles = set()
     for tile in dashboard.tiles:
-        if not tile.result_table:
+        if tile.hidden or not tile.result_table:
             continue
         # Под одним lock: очистка temp_result_vN не удалит таблицу между проверкой и чтением.
         with db.lock:

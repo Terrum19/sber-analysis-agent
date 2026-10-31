@@ -136,7 +136,8 @@ export function mockFetchDashboards(sessionId?: string): DashboardListItem[] {
     title: d.title,
     created_at: d.created_at,
     updated_at: d.updated_at,
-    tiles_count: d.tiles.length,
+    tiles_count: d.tiles.filter((t) => !t.hidden).length,
+    origin_keys: d.tiles.filter((t) => !t.hidden).map((t) => t.origin_tile_id || t.id || ""),
   }));
 }
 

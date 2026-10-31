@@ -7,6 +7,7 @@
  * - Кнопка «Обновить данные» (пересчёт снимка)
  * - Кнопка «Сохранить» (PUT /api/dashboards/{id})
  * - Режим редактирования (переименование, удаление плиток)
+ * - «＋ в дашборды» на плитке (F-15); скрытые плитки не видны
  */
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import type { Layout } from "react-grid-layout";
@@ -15,10 +16,13 @@ import { useSessionStore } from "@/store/sessionStore";
 import {
   createDashboard,
   exportArtifact,
+  fetchDashboard,
+  fetchDashboards,
   recalculateDashboard,
   updateDashboard,
 } from "@/api/client";
 import DashboardTile, { isKpiTile } from "@/components/canvas/DashboardTile";
+import AddToDashboardsDialog from "@/components/canvas/AddToDashboardsDialog";
 import AnswerExport from "@/components/chat/AnswerExport";
 import Icon from "@/components/ui/Icon";
 import ZoomControl from "@/components/ui/ZoomControl";
@@ -49,6 +53,7 @@ export default function Canvas({ sessionId }: Props) {
   const [exportMenuOpen, setExportMenuOpen] = useState(false);
   const [isExporting, setIsExporting] = useState<"xlsx" | "pdf" | null>(null);
   const [menu, setMenu] = useState<{ index: number; rect: DOMRect } | null>(null);
+  const [addTo, setAddTo] = useState<DashboardTileType | null>(null);
   const setCanvasOpen = useUiStore((s) => s.setCanvasOpen);
   const tr = useT();
   const zoom = useUiStore((s) => s.zoom);
@@ -82,6 +87,7 @@ export default function Canvas({ sessionId }: Props) {
   const mountedRef = useRef(true);
   const saveSeqRef = useRef(0);
   const layoutReadyRef = useRef(false);
+  const editSnapshotRef = useRef<{ title: string; tiles: DashboardTileType[] } | null>(null);
 
   // Первый onLayoutChange после (пере)монтирования сетки — служебный: RGL
   // нормализует координаты, это не действие пользователя и не повод для PUT.
@@ -97,24 +103,31 @@ export default function Canvas({ sessionId }: Props) {
   const sessionTiles = useSessionStore((s) => s.tiles);
 
   const displayTiles = dashboardId ? tiles : (sessionTiles.length > 0 ? sessionTiles : tiles);
+  // Скрытые плитки (график убран из дашборда, где построен) хранятся, но не рисуются;
+  // i — индекс в displayTiles, по нему работают правки.
+  const visible = useMemo(
+    () => displayTiles.map((tile, i) => ({ tile, i })).filter(({ tile }) => !tile.hidden),
+    [displayTiles],
+  );
+  const shownTiles = useMemo(() => visible.map(({ tile }) => tile), [visible]);
+  const hasResultTable = shownTiles.some((tile) => Boolean(tile.result_table));
 
   // Инсайты: ходы ленты и плитки панели без хода (F-17)
   const messages = useSessionStore((s) => s.messages);
   const insights = useMemo(
     () =>
-      buildInsights(messages, displayTiles, {
+      buildInsights(messages, shownTiles, {
         ignore: [translate("ru", "canvas.newKpiInsight"), translate("en", "canvas.newKpiInsight")],
         chartTitle: tr("chat.chartDefault"),
       }),
-    [messages, displayTiles, tr],
+    [messages, shownTiles, tr],
   );
-  const hasResultTable = displayTiles.some((tile) => Boolean(tile.result_table));
 
   // Координаты сетки react-grid-layout
   // В узкой панели график по умолчанию во всю ширину, KPI — в половину
   const { ref: bodyRef, width: bodyWidth } = useElementSize<HTMLDivElement>();
   const stack = bodyWidth > 0 && bodyWidth * zoom < STACK_BELOW;
-  const gridLayout: Layout[] = tileGridLayout(displayTiles, isKpiTile, { stack });
+  const gridLayout: Layout[] = tileGridLayout(shownTiles, isKpiTile, { stack });
 
   // Запись плиток: сохранённый дашборд живёт в canvasStore, черновик сессии —
   // в sessionStore (он же синхронизирует canvasStore, пока dashboardId === null).
@@ -148,8 +161,9 @@ export default function Canvas({ sessionId }: Props) {
   }
 
   // Автосохранение раскладки: только для сохранённого дашборда, debounce 800 мс.
+  // В режиме правки не сохраняем: правки уходят по «Сохранить», «Отмена» их откатывает.
   useEffect(() => {
-    if (!dashboardId || layoutRevision === 0 || stack) return;
+    if (!dashboardId || layoutRevision === 0 || stack || isEditing) return;
     const timer = setTimeout(async () => {
       const snapshot = useCanvasStore.getState().tiles;
       if (!snapshot.length) return;
@@ -165,7 +179,7 @@ export default function Canvas({ sessionId }: Props) {
       }
     }, 800);
     return () => clearTimeout(timer);
-  }, [layoutRevision, dashboardId, stack, setSaveState]);
+  }, [layoutRevision, dashboardId, stack, isEditing, setSaveState]);
 
   // «Сохранено» гаснет через 2 секунды; «Ошибка» остаётся до повтора.
   useEffect(() => {
@@ -173,6 +187,25 @@ export default function Canvas({ sessionId }: Props) {
     const timer = setTimeout(() => setSaveState("idle"), 2000);
     return () => clearTimeout(timer);
   }, [saveState, setSaveState]);
+
+  // Возврат в чат: панель снова работает с последним сохранённым дашбордом сессии,
+  // иначе «Сохранить» и «Обновить данные» создают его копию с исходным названием.
+  useEffect(() => {
+    let alive = true;
+    fetchDashboards(sessionId)
+      .then(async (list) => {
+        const latest = [...list].sort((a, b) => Number(b.updated_at ?? 0) - Number(a.updated_at ?? 0))[0];
+        if (!latest || !alive) return;
+        const dashboard = await fetchDashboard(latest.id);
+        const canvas = useCanvasStore.getState();
+        if (!alive || canvas.dashboardId || useSessionStore.getState().sessionId !== sessionId) return;
+        canvas.setDashboard(dashboard.id, dashboard.title, dashboard.tiles, dashboard.updated_at);
+      })
+      .catch(() => undefined);
+    return () => {
+      alive = false;
+    };
+  }, [sessionId]);
 
   useEffect(() => {
     mountedRef.current = true;
@@ -262,10 +295,22 @@ export default function Canvas({ sessionId }: Props) {
   }
 
   function handleStartEdit() {
+    editSnapshotRef.current = { title: useCanvasStore.getState().dashboardTitle, tiles: displayTiles };
     if (tiles.length === 0 && sessionTiles.length > 0) {
       setTiles(sessionTiles);
     }
     setIsEditing(true);
+  }
+
+  /** Выйти из правки без сохранения: название и плитки — как до «карандаша». */
+  function handleCancelEdit() {
+    const snapshot = editSnapshotRef.current;
+    editSnapshotRef.current = null;
+    if (snapshot) {
+      setDashboardTitle(snapshot.title);
+      writeTiles(snapshot.tiles);
+    }
+    setIsEditing(false);
   }
 
   // Сохранение изменений в бэкенд
@@ -313,7 +358,7 @@ export default function Canvas({ sessionId }: Props) {
   }
 
   async function handleExport(format: "xlsx" | "pdf") {
-    if (displayTiles.length === 0) {
+    if (shownTiles.length === 0) {
       setSaveStatus(tr("canvas.exportNoTable"));
       setTimeout(() => setSaveStatus(null), 3500);
       return;
@@ -523,14 +568,24 @@ export default function Canvas({ sessionId }: Props) {
           </div>
 
           {isEditing ? (
-            <button
-              onClick={handleSave}
-              disabled={isSaving}
-              className="ml-1 flex items-center gap-1.5 rounded-md bg-graphite-100 px-2.5 py-1 text-[12px] font-medium text-graphite-950 hover:bg-graphite-50 transition disabled:opacity-50"
-            >
-              <Icon name="save" size={14} className={isSaving ? "animate-spin" : ""} />
-              {isSaving ? tr("canvas.saving") : tr("canvas.save")}
-            </button>
+            <>
+              <button
+                onClick={handleCancelEdit}
+                disabled={isSaving}
+                className="ml-1 flex items-center rounded-md border border-graphite-700 px-2.5 py-1 text-[12px] text-graphite-300 hover:bg-graphite-800 hover:text-graphite-100 transition disabled:opacity-50"
+                title={tr("canvas.cancelEditHint")}
+              >
+                {tr("canvas.cancelEdit")}
+              </button>
+              <button
+                onClick={handleSave}
+                disabled={isSaving}
+                className="ml-1 flex items-center gap-1.5 rounded-md bg-graphite-100 px-2.5 py-1 text-[12px] font-medium text-graphite-950 hover:bg-graphite-50 transition disabled:opacity-50"
+              >
+                <Icon name="save" size={14} className={isSaving ? "animate-spin" : ""} />
+                {isSaving ? tr("canvas.saving") : tr("canvas.save")}
+              </button>
+            </>
           ) : (
             <div className="flex items-center gap-0.5">
               <button
@@ -569,7 +624,7 @@ export default function Canvas({ sessionId }: Props) {
           {(
             [
               ["dashboard", tr("canvas.tabDashboard")],
-              ["charts", tr("canvas.tabCharts", { n: displayTiles.filter((x) => !isKpiTile(x)).length })],
+              ["charts", tr("canvas.tabCharts", { n: shownTiles.filter((x) => !isKpiTile(x)).length })],
               ["insights", insights.length > 0 ? tr("canvas.tabInsightsCount", { n: insights.length }) : tr("canvas.tabInsights")],
             ] as const
           ).map(([tab, label]) => (
@@ -602,7 +657,7 @@ export default function Canvas({ sessionId }: Props) {
         {activeTab === "insights" ? (
           // Ответы чата есть и без плиток на панели
           <InsightsView sessionId={sessionId} cards={insights} />
-        ) : displayTiles.length === 0 ? (
+        ) : shownTiles.length === 0 ? (
           <div className="flex h-full flex-col items-center justify-center text-center text-graphite-500 space-y-3">
             <div className="h-10 w-10 rounded-lg bg-graphite-800 flex items-center justify-center text-graphite-400">
               <Icon name="layout" size={20} />
@@ -652,9 +707,9 @@ export default function Canvas({ sessionId }: Props) {
                   onResizeStop={(layout: Layout[]) => handleLayoutChange(layout, true)}
                   useCSSTransforms={true}
                 >
-                  {displayTiles.map((tile, i) => {
+                  {visible.map(({ tile, i }, shownIndex) => {
                     const tileId = tile.id || `tile-${i}`;
-                    const dense = (gridLayout[i]?.h ?? 0) <= MIN_SIZE.chart.h;
+                    const dense = (gridLayout[shownIndex]?.h ?? 0) <= MIN_SIZE.chart.h;
                     return (
                       <div key={tileId} className="h-full">
                         <DashboardTile
@@ -667,6 +722,7 @@ export default function Canvas({ sessionId }: Props) {
                           onOpen={() => openArtifact(tile, sessionId)}
                           onElaborate={(selection) => handleElaborate(tile, selection)}
                           onMenu={(rect) => setMenu({ index: i, rect })}
+                          onAddToDashboards={() => setAddTo(tile)}
                         />
                       </div>
                     );
@@ -674,14 +730,14 @@ export default function Canvas({ sessionId }: Props) {
             </FitGrid>
           </div>
         ) : activeTab === "charts" ? (
-          displayTiles.filter((t) => !t.is_kpi).length === 0 ? (
+          shownTiles.filter((t) => !t.is_kpi).length === 0 ? (
             <div className="flex h-48 flex-col items-center justify-center rounded-xl border border-graphite-800 bg-graphite-950/40 text-center text-graphite-500 space-y-2">
               <Icon name="layout" size={20} className="text-graphite-500" />
               <p className="text-xs">{tr("canvas.noCharts")}</p>
             </div>
           ) : (
             <div className="space-y-4">
-              {displayTiles
+              {shownTiles
                 .filter((t) => !isKpiTile(t))
                 .map((tile, i) => {
                   const origIdx = displayTiles.findIndex(
@@ -718,6 +774,7 @@ export default function Canvas({ sessionId }: Props) {
                         }
                         onOpen={() => openArtifact(tile, sessionId)}
                         onElaborate={(selection) => handleElaborate(tile, selection)}
+                        onAddToDashboards={() => setAddTo(tile)}
                       />
                     </div>
                   );
@@ -741,6 +798,20 @@ export default function Canvas({ sessionId }: Props) {
           onChartTypeChange={(type) => handleChartTypeChange(menu.index, type as ChartType)}
           onOpen={() => openArtifact(displayTiles[menu.index], sessionId)}
           onElaborate={() => handleElaborate(displayTiles[menu.index])}
+        />
+      )}
+
+      {addTo && (
+        <AddToDashboardsDialog
+          tile={addTo}
+          sessionId={sessionId}
+          current={dashboardId ? { id: dashboardId, tiles } : null}
+          onCurrentSaved={(updated) => setTiles(updated.tiles)}
+          onDone={(message) => {
+            setSaveStatus(message);
+            setTimeout(() => setSaveStatus(null), 4000);
+          }}
+          onClose={() => setAddTo(null)}
         />
       )}
     </div>

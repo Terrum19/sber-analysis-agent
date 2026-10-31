@@ -167,6 +167,7 @@ export function startRun(
   };
   // Дашборд хода в режиме дашборда: после done открываем его вкладку
   let builtDashboardId: string | null = null;
+  let chartTileId: string | null = null;
   const failDashboard = dashboard ? { failedDashboard: dashboard } : {};
   const fail = () => {
     streamHadError = true;
@@ -216,6 +217,9 @@ export function startRun(
         streamFinished = true;
         finishProgress(streamHadError);
         saveAnswerMeta(event.data?.turn_id);
+        if (chartTileId && event.data?.turn_id) {
+          store.patchTile(chartTileId, { source_turn_id: event.data.turn_id }, sessionId);
+        }
         if (builtDashboardId && isViewing(sessionId)) options.onDashboardBuilt?.(builtDashboardId);
       } else if (event.type === "dashboard_outline") {
         if (progress) {
@@ -287,7 +291,8 @@ export function startRun(
         }
         // График — на правую панель, в ленте только ссылка на него.
         // Панель открываем, только если пользователь смотрит на эту сессию.
-        store.addTile(chartTile(chartData, t("chat.chartDefault")), sessionId);
+        chartTileId = chartData.tile_id;
+        store.addTile({ ...chartTile(chartData, t("chat.chartDefault")), source_session_id: sessionId }, sessionId);
         if (viewing()) useUiStore.getState().setCanvasOpen(true);
         addMessage({
           role: "agent",

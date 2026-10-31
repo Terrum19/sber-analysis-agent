@@ -28,7 +28,7 @@ function toDate(ts?: number | string): Date | null {
 function DashboardPreview({ config }: { config: DashboardConfig | undefined }) {
   const t = useT();
   if (!config) return <div className="h-full animate-pulse rounded-lg bg-graphite-800/60" />;
-  const tiles = [...config.tiles].sort((a, b) => Number(isKpiTile(b)) - Number(isKpiTile(a))).slice(0, 4);
+  const tiles = config.tiles.filter((tile) => !tile.hidden).sort((a, b) => Number(isKpiTile(b)) - Number(isKpiTile(a))).slice(0, 4);
   if (tiles.length === 0) {
     return (
       <div className="flex h-full items-center justify-center rounded-lg border border-dashed border-graphite-700 text-[11px] text-graphite-500">

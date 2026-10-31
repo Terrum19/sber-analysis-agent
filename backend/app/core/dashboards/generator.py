@@ -28,9 +28,15 @@ class DashboardGenerator:
         title: str,
         tiles: list[DashboardTile],
         template_id: str | None = None,
+        turn_id: str | None = None,
     ) -> Dashboard:
-        """Собрать дашборд из плиток, снять данные плиток с result_table, сохранить."""
+        """Собрать дашборд из плиток, снять данные плиток с result_table, сохранить.
+
+        Плитки помнят сессию и ход, где построены: со страницы дашборда — переход к чату.
+        """
         for tile in tiles:
+            tile.source_session_id = session_id
+            tile.source_turn_id = turn_id
             if tile.result_table and self.db is not None:
                 records = self.db.to_records(tile.result_table, limit=SPEC_ROW_LIMIT)
                 tile.snapshot_data = snapshot_records(records)

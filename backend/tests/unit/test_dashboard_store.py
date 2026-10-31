@@ -241,3 +241,60 @@ async def test_generate_writes_snapshots(store: DashboardStore) -> None:
     assert saved.tiles[0].snapshot_at is not None
     assert saved.tiles[1].snapshot_data is None
     assert saved.tiles[1].snapshot_at is None
+
+
+def test_tile_origin_round_trip(store: DashboardStore) -> None:
+    dashboard = make_dashboard(tiles_count=1)
+    dashboard.tiles[0] = dashboard.tiles[0].model_copy(
+        update={
+            "origin_tile_id": "orig",
+            "source_session_id": "s9",
+            "source_turn_id": "t9",
+            "hidden": True,
+        }
+    )
+    store.create(dashboard)
+    assert store.get(dashboard.id) == dashboard
+
+
+def test_old_store_gets_new_tile_columns(store_path: str) -> None:
+    Path(store_path).parent.mkdir(parents=True)
+    connection = sqlite3.connect(store_path)
+    connection.executescript(
+        "CREATE TABLE dashboards (id TEXT PRIMARY KEY, session_id TEXT, title TEXT,"
+        " template_id TEXT, created_at REAL, updated_at REAL);"
+        "CREATE TABLE dashboard_tiles (id TEXT PRIMARY KEY, dashboard_id TEXT,"
+        " order_index INTEGER, title TEXT, source_step_id INTEGER, result_table TEXT,"
+        " spec_json TEXT, insight TEXT, is_kpi INTEGER,"
+        " layout_json TEXT, snapshot_json TEXT, snapshot_at REAL);"
+        "INSERT INTO dashboards VALUES ('old', 's1', 'Старый', NULL, 1.0, 1.0);"
+        "INSERT INTO dashboard_tiles VALUES ('t1', 'old', 0, 'Плитка', NULL, NULL,"
+        ' \'{}\', NULL, 0, \'{"x": 0, "y": 0, "w": 6, "h": 4}\', NULL, NULL);'
+    )
+    connection.commit()
+    connection.close()
+    tile = DashboardStore(path=store_path).get("old").tiles[0]
+    assert tile.origin_tile_id is None
+    assert tile.source_session_id is None
+    assert tile.hidden is False
+
+
+def test_list_gives_origin_keys_of_visible_tiles(store: DashboardStore) -> None:
+    dashboard = make_dashboard(tiles_count=3)
+    dashboard.tiles[1].origin_tile_id = "orig"
+    dashboard.tiles[2].hidden = True
+    store.create(dashboard)
+    summary = store.list()[0]
+    assert summary.origin_keys == [dashboard.tiles[0].id, "orig"]
+    assert summary.tiles_count == 2
+
+
+async def test_generator_marks_session_and_turn(store: DashboardStore) -> None:
+    tiles = make_dashboard(tiles_count=2).tiles
+    dashboard = await DashboardGenerator(store=store).generate(
+        "s7", "Продажи", tiles, turn_id="turn7"
+    )
+    saved = store.get(dashboard.id)
+    assert {(tile.source_session_id, tile.source_turn_id) for tile in saved.tiles} == {
+        ("s7", "turn7")
+    }
