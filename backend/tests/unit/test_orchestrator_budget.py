@@ -50,6 +50,61 @@ async def test_turn_deadline_returns_error_and_done(monkeypatch) -> None:
     db.close()
 
 
+async def test_turn_without_deadline_finishes_normally(monkeypatch, tmp_path) -> None:
+    """AGENT_TURN_TIMEOUT_S=0: общего дедлайна нет, ход доходит до done."""
+    from app.models.insight import Insight
+    from app.models.research_step import ResearchPlan, ResearchStep
+
+    monkeypatch.setattr(settings, "agent_turn_timeout_s", 0)
+    monkeypatch.setattr(settings, "storage_dir", str(tmp_path / "storage"))
+    monkeypatch.setattr(settings, "sqlite_path", str(tmp_path / "sessions" / "sessions.sqlite"))
+
+    db = DuckDBManager(":memory:")
+    db.execute("CREATE TABLE raw AS SELECT 1 AS a")
+    db.execute(
+        "CREATE TABLE temp_result_v1 AS SELECT DATE '2024-01-01' AS day, 1.0 AS a "
+        "UNION ALL SELECT DATE '2024-01-02', 2.0"
+    )
+    SessionMemory("no-deadline").set_table("raw")
+
+    class SlowPlanner:
+        async def plan(self, question: str, context: dict):
+            await asyncio.sleep(0.05)
+            return ResearchPlan(
+                final_viz="table",
+                steps=[
+                    ResearchStep(
+                        step_id=0,
+                        tool="group",
+                        input="$source",
+                        arguments={"sql": "SELECT 1"},
+                    )
+                ],
+            )
+
+    class Executor:
+        async def execute(self, step, input_table, **_: object) -> str:
+            return "temp_result_v1"
+
+    class InsightGen:
+        def fast_insight(self, question, result_table, steps):
+            return Insight(headline="готово", details=[])
+
+    agent = AgentOrchestrator(
+        planner=SlowPlanner(), executor=Executor(), insight_gen=InsightGen(), db=db
+    )
+    events = [
+        event
+        async for event in agent.run(
+            ChatRequest(session_id="no-deadline", question="Сложный вопрос")
+        )
+    ]
+    assert events[-1]["type"] == "done"
+    assert events[-1]["data"].get("message") != "timeout"
+    assert any(event["type"] == "text" for event in events)
+    db.close()
+
+
 async def test_simple_question_skips_the_planner() -> None:
     from app.core.agent.insight import InsightGenerator
     from app.core.data.profiling import ColumnStats, TableProfile

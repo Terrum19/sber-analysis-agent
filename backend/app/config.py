@@ -35,8 +35,6 @@ class Settings(BaseSettings):
     llm_model_sql: str = ""
     llm_base_url_fast: str = ""
     llm_base_url_sql: str = ""
-    # P1: эмбеддинги для schema linking; пусто — только lexical fallback.
-    embed_model: str = ""
     # Ключ провайдера (OpenRouter и т.п.); локальным Ollama/vLLM не нужен.
     llm_api_key: SecretStr = SecretStr("not-needed")
     # План на CPU строится 90-180 с (docs/reports/llm_perf); 120 с обрывали ход.
@@ -118,16 +116,20 @@ class Settings(BaseSettings):
     codegen_attempts: int = 2
     codegen_max_rows: int = 200_000
     # --- Бюджет хода (P0) ---
-    # Жёсткий дедлайн хода, секунды: 14.5 мин, чтобы фронт успел получить done
-    # и не упёрся в 15-минутный SLO.
-    agent_turn_timeout_s: int = 870
+    # Общий дедлайн хода, секунды. 0 — без общего дедлайна: упор на качество,
+    # ход идёт столько, сколько нужно. От зависаний защищают лимиты этапов,
+    # таймауты LLM/шага/инсайта/дашборда и счётчики циклов (шаги, replan,
+    # исправления, toolgen, вызовы LLM).
+    agent_turn_timeout_s: int = 0
     agent_plan_timeout_s: int = 240
     agent_step_timeout_s: int = 60
-    # Один шаг может исправляться планировщиком; бюджет хода всё равно главный.
+    # Один шаг может исправляться планировщиком; общий дедлайн не главный.
     agent_step_fix_attempts: int = 1
     agent_insight_timeout_s: int = 90
     agent_dashboard_timeout_s: int = 120
-    agent_max_llm_calls: int = 6
+    # Страховка от зацикливания: максимум вызовов LLM за ход. Не ограничивает
+    # качество на коротких вопросах, но не даёт бесконечно ходить по кругу.
+    agent_max_llm_calls: int = 24
     agent_max_steps: int = 8
     # Самосоздание инструментов (toolgen): спека + SQL или Python в WASM.
     toolgen_enabled: bool = True
@@ -218,9 +220,16 @@ class Settings(BaseSettings):
             logger.warning("LLM base URL не заканчивается на /v1: %s", text)
         return text
 
+    @field_validator("agent_turn_timeout_s")
+    @classmethod
+    def _turn_timeout_can_be_disabled(cls, value: int) -> int:
+        """0 — общего дедлайна нет; отрицательное значение сломало бы бюджет."""
+        if value < 0:
+            raise ValueError("значение не может быть отрицательным")
+        return value
+
     @field_validator(
         "llm_max_tokens",
-        "agent_turn_timeout_s",
         "agent_plan_timeout_s",
         "agent_step_timeout_s",
         "agent_step_fix_attempts",

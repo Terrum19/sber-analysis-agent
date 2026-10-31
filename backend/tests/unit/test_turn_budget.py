@@ -1,5 +1,6 @@
 """Бюджет хода: дедлайн, лимиты этапов и вызовов LLM."""
 
+import math
 import time
 
 import pytest
@@ -69,6 +70,35 @@ def test_budget_from_settings_reserves_stages() -> None:
     assert budget.stage_limits["planning"] == 240
     assert 0 < budget.stage_limits["steps"] < 870
     assert budget.snapshot()["remaining_s"] > 0
+
+
+def test_zero_turn_timeout_means_no_total_deadline() -> None:
+    settings = Settings(
+        _env_file=None,
+        agent_turn_timeout_s=0,
+        agent_plan_timeout_s=240,
+        agent_insight_timeout_s=90,
+        agent_dashboard_timeout_s=120,
+        agent_max_steps=8,
+        agent_max_llm_calls=24,
+        llm_timeout_s=600,
+    )
+    budget = budget_from_settings(settings)
+    assert budget.total_s is None
+    assert math.isinf(budget.remaining())
+    # Общего дедлайна нет, поэтому и агрегатного лимита этапа steps нет:
+    # каждый шаг ограничен своим AGENT_STEP_TIMEOUT_S.
+    assert "steps" not in budget.stage_limits
+    assert budget.timeout_for("steps", 60) == 60
+    assert budget.timeout_for("unknown", 100) == 100
+    assert budget.snapshot()["remaining_s"] is None
+
+
+def test_llm_call_limit_without_deadline_is_reported() -> None:
+    budget = TurnBudget(total_s=None, max_llm_calls=1)
+    budget.consume_llm_call("llm")
+    with pytest.raises(BudgetExceeded, match="без общего дедлайна"):
+        budget.consume_llm_call("llm")
 
 
 def test_leave_stage_records_metrics() -> None:

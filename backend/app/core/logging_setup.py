@@ -111,11 +111,12 @@ def public_url(url: str) -> str:
 
 def startup_summary(settings: Settings, log_file: Path | None) -> str:
     fake_llm = os.getenv("USE_FAKE_LLM", "false").lower() == "true"
+    deadline = f"{settings.agent_turn_timeout_s} с" if settings.agent_turn_timeout_s else "нет"
     return (
         f"старт: модель={settings.llm_model} адрес LLM={public_url(settings.llm_base_url)}"
         f" structured={settings.llm_structured_mode} контекст={settings.llm_num_ctx}"
         f" таймаут={settings.llm_timeout_s} с повторы={settings.llm_max_retries}"
-        f" max_tokens={settings.llm_max_tokens} бюджет_хода={settings.agent_turn_timeout_s} с"
+        f" max_tokens={settings.llm_max_tokens} бюджет_хода={deadline}"
         f" максимум_шагов={settings.agent_max_steps}"
         f" fake_llm={fake_llm}"
         f" уровень логов={settings.log_level} файл логов={log_file or 'нет'}"

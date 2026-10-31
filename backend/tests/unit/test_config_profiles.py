@@ -23,7 +23,6 @@ def test_json_object_mode_is_supported() -> None:
 @pytest.mark.parametrize(
     "field",
     [
-        "agent_turn_timeout_s",
         "agent_plan_timeout_s",
         "agent_max_llm_calls",
         "agent_max_steps",
@@ -34,6 +33,12 @@ def test_json_object_mode_is_supported() -> None:
 def test_limits_must_be_positive(field: str) -> None:
     with pytest.raises(ValidationError):
         Settings(_env_file=None, **{field: 0})
+
+
+def test_turn_timeout_can_be_disabled_but_not_negative() -> None:
+    assert Settings(_env_file=None, agent_turn_timeout_s=0).agent_turn_timeout_s == 0
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None, agent_turn_timeout_s=-1)
 
 
 def test_empty_role_urls_are_allowed() -> None:

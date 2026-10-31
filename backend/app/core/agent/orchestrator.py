@@ -362,8 +362,11 @@ class AgentOrchestrator:
         отбрасывает такие прогоны. Обрезанный промпт чаще всего и кончается
         уточнением: модель без списка тулов строит план, шаг падает.
 
-        Весь ход ограничен ``AGENT_TURN_TIMEOUT_S`` (по умолчанию 14.5 мин):
-        по истечении фронт получает error + done, задача плана отменяется.
+        ``AGENT_TURN_TIMEOUT_S`` — необязательный жёсткий дедлайн всего хода:
+        при положительном значении по истечении фронт получает error + done,
+        задача плана отменяется. По умолчанию 0 — общего дедлайна нет, ход
+        идёт столько, сколько нужно; от зависаний защищают лимиты этапов,
+        таймауты операций и счётчики циклов.
         """
         truncations = track_truncations()
         budget = budget_from_settings(settings)
@@ -375,6 +378,7 @@ class AgentOrchestrator:
         )
         turn_log = TurnLog(request.session_id)
         try:
+            # total_s=None (или 0) — asyncio.timeout не ограничивает ход.
             async with asyncio.timeout(budget.total_s):
                 # aclosing: клиент отключился — ход закрывается сразу, с отменой задачи плана.
                 async with aclosing(self._turn(request)) as events:
@@ -391,12 +395,18 @@ class AgentOrchestrator:
                         turn_log.observe(event)
                         yield event
         except TimeoutError:
-            # Жёсткий дедлайн: не даём ходу висеть и держать SSE-соединение.
+            # Жёсткий дедлайн (если он включён): не даём ходу висеть и
+            # держать SSE-соединение. При AGENT_TURN_TIMEOUT_S=0 его нет.
             set_budget(budget)
             set_metrics(metrics)
             metrics.budget_exceeded = "turn"
-            minutes = max(1, math.ceil(budget.total_s / 60))
-            message = f"Не удалось завершить ход за {minutes} минут"
+            total = budget.total_s or 0
+            minutes = max(1, math.ceil(total / 60)) if total else 0
+            message = (
+                f"Не удалось завершить ход за {minutes} минут"
+                if minutes
+                else "Не удалось завершить ход"
+            )
             event = _failure_event(message)
             turn_log.status = turn_log.status or "failed"
             turn_log.reason = message
@@ -447,7 +457,15 @@ class AgentOrchestrator:
         # Лимит TOOLGEN_MAX_PER_TURN считается на ход, а оркестратор может
         # переиспользоваться между запросами.
         self._created_tools_count = 0
+        budget = current_budget()
         logger.info("ход начат: вопрос=%r", request.question)
+        if budget is not None:
+            logger.info(
+                "бюджет хода: дедлайн=%s, вызовов LLM=%d, шагов=%d",
+                f"{budget.total_s:.0f} с" if budget.total_s else "нет",
+                budget.max_llm_calls,
+                budget.max_steps,
+            )
 
         catalog: list[str] = []
         if pending is not None and pending.get("kind") == TABLE_CHOICE:
