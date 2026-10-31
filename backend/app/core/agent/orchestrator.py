@@ -70,7 +70,7 @@ logger = logging.getLogger(__name__)
 
 import duckdb
 
-from app.api.schemas.chat import ChatRequest, DashboardPayload, ProgressPayload
+from app.api.schemas.chat import ChatRequest, DashboardPayload, PlanStepOut, ProgressPayload
 from app.core.agent.chart_pick import ChartPicker
 from app.core.agent.explainer import Explainer
 from app.core.agent.insight import InsightGenerator
@@ -170,6 +170,9 @@ DISTRIBUTION_TOOL = "describe_stats"
 MAX_REPLANS = 2
 # Сколько строк результата lookup-шага показать планировщику.
 OBSERVATION_ROWS = 20
+# Сколько строк результата шага приходит в событии finished (#239); остальное —
+# GET /sessions/{id}/results/{table}.
+STEP_PREVIEW_ROWS = 5
 
 DASHBOARD_TITLE = "Дашборд"
 GRID_COLUMNS = 12
@@ -239,7 +242,33 @@ def _progress_event(stage: str, status: str, **fields: object) -> dict:
 
 def _step_event(step: ResearchStep, status: str, **fields: object) -> dict:
     return _progress_event(
-        "step", status, step_id=step.step_id, tool=step.tool, purpose=step.purpose, **fields
+        "step",
+        status,
+        step_id=step.step_id,
+        tool=step.tool,
+        purpose=step.purpose,
+        input=step.input,
+        arguments=step.arguments,
+        **fields,
+    )
+
+
+def _plan_event(steps: list[ResearchStep]) -> dict:
+    """План хода целиком: фронт показывает его строками до выполнения (#239)."""
+    return _progress_event(
+        "planning",
+        "finished",
+        total_steps=len(steps),
+        steps=[
+            PlanStepOut(
+                step_id=step.step_id,
+                tool=step.tool,
+                purpose=step.purpose,
+                input=step.input,
+                arguments=step.arguments,
+            )
+            for step in steps
+        ],
     )
 
 
@@ -759,6 +788,7 @@ class AgentOrchestrator:
         """
         if resume is not None:
             plan = ResearchPlan.model_validate(resume["plan"])
+            emit(_plan_event(plan.steps))
             tables = existing_results(
                 self.db, {int(key): value for key, value in resume["step_tables"].items()}
             )
@@ -794,7 +824,7 @@ class AgentOrchestrator:
         except Exception as exc:
             emit(_progress_event("planning", "failed", error=str(exc)))
             raise
-        emit(_progress_event("planning", "finished", total_steps=len(plan.steps)))
+        emit(_plan_event(plan.steps))
         chosen = plan.steps[0].input if plan.steps else None
         if catalog and chosen in catalog and chosen != memory.table:
             logger.info("планировщик выбрал таблицу %s", chosen)
@@ -912,8 +942,9 @@ class AgentOrchestrator:
             step = steps[index]
             if step.step_id in tables:
                 # Выполнен до остановки хода: результат уже лежит в своей таблице.
-                emit(_step_event(step, "finished"))
                 inputs[step.step_id] = resolve_input(step, current, tables, source)
+                details = self._step_details(inputs[step.step_id], tables[step.step_id], tables)
+                emit(_step_event(step, "finished", **details))
                 if tool_kind(step) == "transform":
                     current = tables[step.step_id]
                 index += 1
@@ -976,11 +1007,12 @@ class AgentOrchestrator:
                     step_id=failed.step.step_id, error=str(exc), suggestions=suggestions
                 ) from exc
             elapsed_ms = _elapsed_ms(started_at)
-            emit(_step_event(step, "finished", elapsed_ms=elapsed_ms))
+            inputs[step.step_id] = resolve_input(step, current, tables, source)
+            details = self._step_details(inputs[step.step_id], table, tables)
+            emit(_step_event(step, "finished", elapsed_ms=elapsed_ms, **details))
             steps[index] = step
             kind = tool_kind(step)
             logger.info("шаг %d готов за %d мс: %s", step.step_id, elapsed_ms, table)
-            inputs[step.step_id] = resolve_input(step, current, tables, source)
             tables[step.step_id] = table
             memory.record_step(step, table)
             if kind == "transform":
@@ -994,6 +1026,7 @@ class AgentOrchestrator:
                     memory, question, executed, tables, observation=table
                 )
                 steps = executed + replanned.steps
+                emit(_plan_event(steps))
                 plan = ResearchPlan(
                     steps=steps,
                     final_viz=replanned.final_viz,
@@ -1137,6 +1170,30 @@ class AgentOrchestrator:
             logger.exception("    шаг %d: колонки таблицы %s не прочитаны", step.step_id, table)
             return {}
         return {row["column_name"]: row["data_type"] for row in rows}
+
+    def _step_details(self, input_table: str, table: str, tables: dict[int, str]) -> dict:
+        """Что шаг взял на вход и что получил: для раскрытия шага на фронте (#239).
+
+        Результат не прочитался — только ссылки на таблицы: ход идёт дальше.
+        """
+        details: dict = {
+            "input_table": input_table,
+            "input_step_id": next(
+                (step_id for step_id, name in tables.items() if name == input_table), None
+            ),
+            "result_table": table,
+        }
+        code = self.db.step_code(table)
+        if code is not None:
+            details["code_language"], details["code"] = code
+        try:
+            columns, rows = self.db.result_shape(table)
+            preview = self.db.to_records(table, limit=STEP_PREVIEW_ROWS)
+        except duckdb.Error:
+            logger.exception("    результат шага %s не прочитан", table)
+            return details
+        details.update(result_columns=columns, rows=rows, preview=preview)
+        return details
 
     def _result_columns(self, table: str) -> list[str]:
         """Колонки результата хода для памяти; каталог недоступен — без них."""
@@ -1359,6 +1416,7 @@ class AgentOrchestrator:
                 template_id=pending.get("template_id"),
                 dashboard_tiles=pending.get("dashboard_tiles") or [],
             )
+            emit(_plan_event(plan.steps))
             return await self._execute_plan(
                 memory,
                 plan,
@@ -1389,6 +1447,7 @@ class AgentOrchestrator:
 
         plan = _renumber(await self._plan(modified_question, context), context["next_step_id"])
         _require_steps(plan)
+        emit(_plan_event(plan.steps))
         return await self._execute_plan(
             memory,
             plan,

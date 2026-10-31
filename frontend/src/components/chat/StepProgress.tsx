@@ -1,15 +1,19 @@
 "use client";
 
 /**
- * Прогресс хода по событиям progress: «Планирую…», затем список шагов
- * (purpose, статус, время). Когда ход закончен — свёрнут в строку
+ * Прогресс хода по событиям progress: «Планирую…», затем весь план
+ * пронумерованными строками (purpose, статус, время): «в очереди» → «идёт» →
+ * «готово» или «упал». Строка раскрывается по клику — что шаг сделал с данными
+ * и что получилось (StepDetails, #239). Когда ход закончен — свёрнут в строку
  * «N шагов · X с», по клику раскрывается. В режиме дашборда (#224) вместо
  * плоского списка — плитки плана, у каждой свой статус и свои шаги.
  * Остановленный или упавший ход с готовыми шагами — кнопка «Продолжить».
  */
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useId, useMemo, useState, type ReactNode } from "react";
+import StepDetails from "@/components/chat/StepDetails";
 import Icon from "@/components/ui/Icon";
 import { useT, type Translate } from "@/i18n/useT";
+import { tableTitle, useSessionDatabase } from "@/store/sessionStore";
 import { useUiStore, type Locale } from "@/store/uiStore";
 import type { StepState, TileIntent, TileState, TurnProgress } from "@/types/chat";
 
@@ -43,13 +47,33 @@ function duration(t: Translate, ms: number): string {
   return t("progress.seconds", { s: seconds(ms) });
 }
 
-function StepRow({ step }: { step: StepState }) {
+function QueuedDot() {
+  return <span className="inline-block h-[13px] w-[13px] rounded-full border border-graphite-600" />;
+}
+
+function StepRow({
+  step,
+  number,
+  anchor,
+  open,
+  onToggle,
+  details,
+}: {
+  step: StepState;
+  number: number;
+  anchor: string;
+  open: boolean;
+  onToggle: () => void;
+  details: ReactNode;
+}) {
   const t = useT();
   const icon =
     step.status === "finished" ? (
       <Icon name="check" size={13} className="text-good" />
     ) : step.status === "failed" ? (
       <Icon name="x" size={13} className="text-bad" />
+    ) : step.status === "queued" ? (
+      <QueuedDot />
     ) : (
       <Icon name="refresh" size={13} className={`animate-spin ${step.status === "fixing" ? "text-warn" : "text-graphite-400"}`} />
     );
@@ -58,24 +82,61 @@ function StepRow({ step }: { step: StepState }) {
       ? t("progress.fixing", { attempt: step.attempt ?? 1 })
       : step.status === "failed"
       ? t("progress.failed")
+      : step.status === "queued"
+      ? t("progress.queued")
       : step.fixed
       ? t("progress.fixed")
       : "";
   return (
-    <li className="flex items-center gap-2" title={step.error || undefined}>
-      <span className="shrink-0">{icon}</span>
-      <span className="min-w-0 flex-1 truncate">{step.purpose || step.tool || `#${step.step_id}`}</span>
-      {note && <span className={`shrink-0 ${step.status === "failed" ? "text-bad" : "text-warn"}`}>{note}</span>}
-      {step.elapsed_ms !== undefined && step.status !== "fixing" && (
-        <span className="shrink-0 tabular-nums text-graphite-500">{duration(t, step.elapsed_ms)}</span>
-      )}
+    <li id={anchor} className="scroll-mt-4">
+      <button
+        type="button"
+        onClick={onToggle}
+        aria-expanded={open}
+        className="group flex w-full items-center gap-2 rounded text-left hover:text-graphite-200"
+      >
+        <Icon
+          name={open ? "chevronDown" : "chevronRight"}
+          size={11}
+          className="-mr-1 shrink-0 text-graphite-600 group-hover:text-graphite-400"
+        />
+        <span className="shrink-0">{icon}</span>
+        <span className="w-4 shrink-0 text-right tabular-nums text-graphite-500">{number}.</span>
+        <span className={`min-w-0 flex-1 truncate ${step.status === "queued" ? "text-graphite-500" : ""}`}>
+          {step.purpose || step.tool || `#${step.step_id}`}
+        </span>
+        {note && (
+          <span
+            className={`shrink-0 ${
+              step.status === "failed" ? "text-bad" : step.status === "queued" ? "text-graphite-500" : "text-warn"
+            }`}
+          >
+            {note}
+          </span>
+        )}
+        {step.elapsed_ms !== undefined && step.status !== "fixing" && (
+          <span className="shrink-0 tabular-nums text-graphite-500">{duration(t, step.elapsed_ms)}</span>
+        )}
+      </button>
+      {open && details}
     </li>
   );
 }
 
-function TileRow({ tile, steps }: { tile: TileState; steps: StepState[] }) {
+function TileRow({
+  tile,
+  steps,
+  open,
+  onToggle,
+  renderStep,
+}: {
+  tile: TileState;
+  steps: StepState[];
+  open: boolean;
+  onToggle: () => void;
+  renderStep: (step: StepState) => ReactNode;
+}) {
   const t = useT();
-  const [open, setOpen] = useState(false);
   // Шаги идущей плитки видны сразу, готовой — по клику
   const showSteps = steps.length > 0 && (open || tile.status === "started");
   const icon =
@@ -86,12 +147,12 @@ function TileRow({ tile, steps }: { tile: TileState; steps: StepState[] }) {
     ) : tile.status === "started" ? (
       <Icon name="refresh" size={13} className="animate-spin text-graphite-400" />
     ) : (
-      <span className="inline-block h-[13px] w-[13px] rounded-full border border-graphite-600" />
+      <QueuedDot />
     );
   return (
     <li className="rounded-lg border border-graphite-800 bg-graphite-850/60 px-2.5 py-1.5">
       <button
-        onClick={() => setOpen((v) => !v)}
+        onClick={onToggle}
         disabled={steps.length === 0}
         className="flex w-full items-center gap-2 text-left disabled:cursor-default"
       >
@@ -117,9 +178,7 @@ function TileRow({ tile, steps }: { tile: TileState; steps: StepState[] }) {
       )}
       {showSteps && (
         <ul className="mt-1 space-y-1 border-l border-graphite-800 pl-3 ml-1.5">
-          {steps.map((step) => (
-            <StepRow key={step.step_id} step={step} />
-          ))}
+          {steps.map(renderStep)}
         </ul>
       )}
     </li>
@@ -155,13 +214,83 @@ function ResumeBar({ onResume, lost }: { onResume: () => void; lost?: boolean })
   );
 }
 
-export default function StepProgress({ progress, onResume }: { progress: TurnProgress; onResume?: () => void }) {
+export default function StepProgress({
+  progress,
+  sessionId,
+  onResume,
+}: {
+  progress: TurnProgress;
+  sessionId?: string;
+  onResume?: () => void;
+}) {
   const t = useT();
   const locale = useUiStore((s) => s.locale);
+  const database = useSessionDatabase(sessionId);
   const [expanded, setExpanded] = useState(false);
+  const [openSteps, setOpenSteps] = useState<ReadonlySet<number>>(() => new Set());
+  const [openTiles, setOpenTiles] = useState<ReadonlySet<number>>(() => new Set());
+  const [scrollTo, setScrollTo] = useState<number | null>(null);
+  const anchorPrefix = useId();
   const finished = progress.finished_at !== undefined;
   const now = useNow(!finished);
   const tiles = progress.tiles;
+  const steps = progress.steps;
+
+  // Номер шага в его списке (в плитке — свой счёт): step_id продолжают прошлые ходы
+  const numbers = useMemo(() => {
+    const counters = new Map<number | undefined, number>();
+    return new Map(
+      steps.map((step) => {
+        const number = (counters.get(step.tile_id) ?? 0) + 1;
+        counters.set(step.tile_id, number);
+        return [step.step_id, number] as const;
+      }),
+    );
+  }, [steps]);
+  const anchor = (stepId: number) => `${anchorPrefix}-step-${stepId}`;
+  const tableName = useCallback((table: string) => tableTitle(database, table), [database]);
+  const stepNumber = useCallback((stepId: number) => numbers.get(stepId), [numbers]);
+
+  const toggle = (set: ReadonlySet<number>, id: number) => {
+    const next = new Set(set);
+    if (!next.delete(id)) next.add(id);
+    return next;
+  };
+  // Ссылка «Результат шага N»: раскрыть шаг (и его плитку) и прокрутить к нему
+  const openStep = useCallback(
+    (stepId: number) => {
+      const tileId = steps.find((step) => step.step_id === stepId)?.tile_id;
+      setOpenSteps((set) => new Set(set).add(stepId));
+      if (tileId !== undefined) setOpenTiles((set) => new Set(set).add(tileId));
+      setScrollTo(stepId);
+    },
+    [steps],
+  );
+  useEffect(() => {
+    if (scrollTo === null) return;
+    document.getElementById(`${anchorPrefix}-step-${scrollTo}`)?.scrollIntoView({ behavior: "smooth", block: "nearest" });
+    setScrollTo(null);
+  }, [scrollTo, anchorPrefix]);
+
+  const renderStep = (step: StepState) => (
+    <StepRow
+      key={step.step_id}
+      step={step}
+      number={numbers.get(step.step_id) ?? step.step_id}
+      anchor={anchor(step.step_id)}
+      open={openSteps.has(step.step_id)}
+      onToggle={() => setOpenSteps((set) => toggle(set, step.step_id))}
+      details={
+        <StepDetails
+          step={step}
+          sessionId={sessionId}
+          tableName={tableName}
+          stepNumber={stepNumber}
+          onOpenStep={openStep}
+        />
+      }
+    />
+  );
 
   if (finished && !expanded) {
     const total = (progress.finished_at ?? progress.started_at) - progress.started_at;
@@ -223,18 +352,15 @@ export default function StepProgress({ progress, onResume }: { progress: TurnPro
             <TileRow
               key={tile.tile_id}
               tile={tile}
-              steps={progress.steps.filter((step) => step.tile_id === tile.tile_id)}
+              steps={steps.filter((step) => step.tile_id === tile.tile_id)}
+              open={openTiles.has(tile.tile_id)}
+              onToggle={() => setOpenTiles((set) => toggle(set, tile.tile_id))}
+              renderStep={renderStep}
             />
           ))}
         </ul>
       )}
-      {!tiles && progress.steps.length > 0 && (
-        <ul className="space-y-1">
-          {progress.steps.map((step) => (
-            <StepRow key={step.step_id} step={step} />
-          ))}
-        </ul>
-      )}
+      {!tiles && steps.length > 0 && <ul className="space-y-1">{steps.map(renderStep)}</ul>}
       {!finished && stageLabel && <div className="mt-1 animate-pulse">{stageLabel}</div>}
       {quiet && <div className="mt-1 text-warn">{t("progress.stillWorking")}</div>}
       {finished && onResume && <ResumeBar onResume={onResume} lost={progress.lost} />}

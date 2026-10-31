@@ -139,6 +139,21 @@ async def test_stopped_turn_continues_from_the_first_unfinished_step(db) -> None
         if event["type"] == "progress" and event["data"]["stage"] == "step"
     ]
     assert steps == [(1, "finished"), (2, "started"), (2, "finished")]
+    # План и детали готового шага приходят и при продолжении (#239).
+    plan = next(event["data"] for event in events if event["type"] == "progress")
+    assert (plan["stage"], plan["status"]) == ("planning", "finished")
+    assert [step["step_id"] for step in plan["steps"]] == [1, 2]
+    resumed = next(
+        event["data"]
+        for event in events
+        if event["type"] == "progress" and event["data"].get("step_id") == 1
+    )
+    assert resumed["input_table"] == "raw"
+    assert resumed["rows"] == 2
+    assert resumed["preview"] == [
+        {"region": "msk", "revenue": 12.5},
+        {"region": "spb", "revenue": 4.0},
+    ]
     assert events[-1]["data"]["turn_id"] == turn_id
     turn = last_turn()
     assert turn["status"] == "ok"

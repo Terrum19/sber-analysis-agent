@@ -118,6 +118,22 @@ export interface RefusalEvent {
   };
 }
 
+/** Строка плана в событии planning finished (#239): шаг до выполнения. */
+export interface PlanStep {
+  step_id: number;
+  tool?: string | null;
+  purpose?: string;
+  /** Откуда шаг берёт данные: $source, $prev, $step_N или имя таблицы. */
+  input: string;
+  arguments?: Record<string, unknown>;
+}
+
+/** Колонка результата шага с типом DuckDB. */
+export interface ResultColumn {
+  name: string;
+  type: string;
+}
+
 /** ProgressPayload бэкенда; пустые поля не приходят. */
 export interface ProgressPayload {
   stage: "planning" | "step" | "insight" | "chart" | "dashboard" | "outline" | "tile";
@@ -131,6 +147,20 @@ export interface ProgressPayload {
   error?: string;
   /** Плитка дашборда, к которой относится шаг или статус. */
   tile_id?: number;
+  /** planning finished: весь план; после перепланирования приходит снова. */
+  steps?: PlanStep[];
+  /** Детали шага (#239): input и arguments — на любом статусе, остальное — на finished. */
+  input?: string;
+  arguments?: Record<string, unknown>;
+  input_table?: string;
+  input_step_id?: number;
+  result_table?: string;
+  rows?: number;
+  result_columns?: ResultColumn[];
+  /** Первые строки результата; остальное — GET /sessions/{id}/results/{table}. */
+  preview?: Record<string, unknown>[];
+  code?: string;
+  code_language?: "sql" | "python";
   /** Ход: приходит в начале planning и outline, по нему ход продолжают после остановки. */
   turn_id?: string;
 }
@@ -153,18 +183,42 @@ export type ChatStreamEvent =
   | RefusalEvent
   | ProgressEvent;
 
-/** Шаг плана в прогрессе хода (по событиям progress/step). */
+/** Неудачная попытка шага: с какими аргументами и почему упала. */
+export interface StepAttempt {
+  attempt: number;
+  error?: string;
+  arguments?: Record<string, unknown>;
+}
+
+/**
+ * Шаг плана в прогрессе хода (по событиям progress: planning и step).
+ * Детали (#239) лежат здесь же: сообщение с прогрессом сохраняется в истории,
+ * поэтому шаг раскрывается и после перезагрузки. Старые сообщения их не имеют.
+ */
 export interface StepState {
   step_id: number;
   tool?: string;
   purpose?: string;
-  status: "started" | "fixing" | "finished" | "failed";
+  /** queued — шаг из плана, ещё не запущен. */
+  status: "queued" | "started" | "fixing" | "finished" | "failed";
   attempt?: number;
   error?: string;
   elapsed_ms?: number;
   /** Шаг падал, но исправился. */
   fixed?: boolean;
   tile_id?: number;
+  input?: string;
+  arguments?: Record<string, unknown>;
+  input_table?: string;
+  input_step_id?: number;
+  result_table?: string;
+  rows?: number;
+  result_columns?: ResultColumn[];
+  preview?: Record<string, unknown>[];
+  code?: string;
+  code_language?: "sql" | "python";
+  /** Попытки исправления по событиям fixing, по порядку. */
+  attempts?: StepAttempt[];
 }
 
 /** Плитка дашборда в прогрессе хода. */
@@ -252,9 +306,17 @@ export function applyProgress(progress: TurnProgress, event: ProgressPayload): T
   } else if (event.stage === "planning") {
     next.planning = event.status === "started";
     if (event.total_steps !== undefined) next.total_steps = event.total_steps;
+    if (event.status === "finished" && event.steps) next.steps = applyPlan(next.steps, event.steps, event.tile_id);
   } else if (event.stage === "step" && event.step_id !== undefined) {
     const index = next.steps.findIndex((step) => step.step_id === event.step_id);
     const prev = index >= 0 ? next.steps[index] : undefined;
+    const attempts =
+      event.status === "fixing"
+        ? [
+            ...(prev?.attempts ?? []),
+            { attempt: event.attempt ?? (prev?.attempts?.length ?? 0) + 1, error: event.error, arguments: event.arguments },
+          ]
+        : prev?.attempts;
     const step: StepState = {
       ...prev,
       step_id: event.step_id,
@@ -266,6 +328,17 @@ export function applyProgress(progress: TurnProgress, event: ProgressPayload): T
       elapsed_ms: event.elapsed_ms ?? prev?.elapsed_ms,
       fixed: event.status === "finished" && prev?.status === "fixing" ? true : prev?.fixed,
       tile_id: event.tile_id ?? prev?.tile_id,
+      input: event.input ?? prev?.input,
+      arguments: event.arguments ?? prev?.arguments,
+      input_table: event.input_table ?? prev?.input_table,
+      input_step_id: event.input_step_id ?? prev?.input_step_id,
+      result_table: event.result_table ?? prev?.result_table,
+      rows: event.rows ?? prev?.rows,
+      result_columns: event.result_columns ?? prev?.result_columns,
+      preview: event.preview ?? prev?.preview,
+      code: event.code ?? prev?.code,
+      code_language: event.code_language ?? prev?.code_language,
+      attempts,
     };
     if (index >= 0) next.steps[index] = step;
     else next.steps.push(step);
@@ -275,6 +348,32 @@ export function applyProgress(progress: TurnProgress, event: ProgressPayload): T
     next.stage = event.stage;
   }
   return next;
+}
+
+/**
+ * План хода (или плитки tileId) целиком: шаги, которых ещё не было, встают
+ * «в очередь». После перепланирования выпавшие из плана шаги в очереди убираем,
+ * а начатые оставляем — они уже что-то сделали с данными.
+ */
+function applyPlan(steps: StepState[], plan: PlanStep[], tileId: number | undefined): StepState[] {
+  const planned = new Set(plan.map((step) => step.step_id));
+  const known = new Map(steps.map((step) => [step.step_id, step]));
+  const others = steps.filter((step) => step.tile_id !== tileId);
+  const ran = steps.filter((step) => step.tile_id === tileId && step.status !== "queued" && !planned.has(step.step_id));
+  const rows = plan.map((item): StepState => {
+    const prev = known.get(item.step_id);
+    if (prev && prev.status !== "queued") return prev;
+    return {
+      step_id: item.step_id,
+      tool: item.tool ?? undefined,
+      purpose: item.purpose || undefined,
+      input: item.input,
+      arguments: item.arguments,
+      status: "queued",
+      tile_id: tileId,
+    };
+  });
+  return [...others, ...ran, ...rows];
 }
 
 /** Применить план дашборда: скелетоны плиток со статусом «в очереди». */

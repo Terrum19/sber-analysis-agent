@@ -6,6 +6,7 @@ PATCH меняет таблицу по умолчанию и/или назван
 Воспоминания сессии (#197) — ``/{id}/memories``: список, добавление,
 включение и выключение записи. ``/{id}/dashboard-ideas`` — варианты
 дашборда по таблице сессии для кнопок в чате (#224).
+``/{id}/results/{table}`` — страница результата шага хода этой сессии (#239).
 Источник правды — SQLite SessionMemory: сессии и их метаданные переживают
 перезапуск.
 """
@@ -15,7 +16,8 @@ import logging
 import uuid
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+import duckdb
+from fastapi import APIRouter, Depends, HTTPException, Path, Query
 
 from app.api.deps import get_db
 from app.api.schemas.chat import (
@@ -27,6 +29,7 @@ from app.api.schemas.chat import (
     SessionCreate,
     SessionOut,
     SessionUpdate,
+    StepResultOut,
 )
 from app.core.dashboards.ideas import generate_ideas
 from app.core.data.duckdb_manager import DuckDBManager
@@ -37,6 +40,9 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 SESSION_LIST_LIMIT = 30
+RESULT_PAGE_LIMIT = 500
+# Имя попадает в SQL как таблица — пускаем только temp_result_vN.
+ResultTable = Annotated[str, Path(pattern=r"^temp_result_v\d+$")]
 
 
 def table_columns(db: DuckDBManager, table: str) -> list[str]:
@@ -162,3 +168,25 @@ def delete_session(session_id: str) -> dict[str, bool]:
     if not deleted:
         raise HTTPException(status_code=404, detail="Сессия не найдена.")
     return {"ok": True}
+
+
+@router.get("/{session_id}/results/{table}", response_model=StepResultOut)
+def read_result(
+    session_id: str,
+    table: ResultTable,
+    db: Annotated[DuckDBManager, Depends(get_db)],
+    offset: Annotated[int, Query(ge=0)] = 0,
+    limit: Annotated[int, Query(ge=1, le=RESULT_PAGE_LIMIT)] = 50,
+) -> StepResultOut:
+    """Страница результата шага; чужой или удалённый результат — 404."""
+    if not existing(session_id).owns_result(table):
+        raise HTTPException(status_code=404, detail="Результат не найден.")
+    try:
+        columns, total = db.result_shape(table)
+        rows = db.to_records(table, limit=limit, offset=offset) if columns else []
+    except duckdb.Error:
+        logger.exception("результат %s не прочитан", table)
+        columns = []
+    if not columns:
+        raise HTTPException(status_code=404, detail="Результат больше недоступен.")
+    return StepResultOut(columns=columns, rows=rows, total=total)

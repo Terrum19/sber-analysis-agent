@@ -627,6 +627,7 @@ export default function ChatPanel({ sessionId }: Props) {
                 {m.progress && (
                   <StepProgress
                     progress={m.progress}
+                    sessionId={sessionId}
                     onResume={
                       m.progress.resumable && m.id && !streaming
                         ? () => resumeTurn(m.id!, m.progress!)

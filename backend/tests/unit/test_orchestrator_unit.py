@@ -200,17 +200,26 @@ def test_progress_events_precede_the_answer(orchestrator):
         "tables": ["raw"],
         "turn_id": events[-1]["data"]["turn_id"],
     }
-    assert progress[1] == {"stage": "planning", "status": "finished", "total_steps": 1}
-    assert progress[2] == {
-        "stage": "step",
-        "status": "started",
-        "step_id": 0,
-        "tool": "aggregate",
-        "purpose": "Мок шаг",
+    planned = {"step_id": 0, "tool": "aggregate", "purpose": "Мок шаг", "input": "$prev"}
+    assert progress[1] == {
+        "stage": "planning",
+        "status": "finished",
+        "total_steps": 1,
+        "steps": [{**planned, "arguments": {}}],
     }
-    assert progress[3]["status"] == "finished"
-    assert progress[3]["step_id"] == 0
-    assert progress[3]["elapsed_ms"] >= 1
+    assert progress[2] == {"stage": "step", "status": "started", **planned, "arguments": {}}
+    finished = progress[3]
+    assert finished["status"] == "finished"
+    assert finished["step_id"] == 0
+    assert finished["elapsed_ms"] >= 1
+    # Что шаг взял и что получил (#239): FakeExecutor кода не сохранял.
+    assert finished["input_table"] == "raw"
+    assert finished["result_table"] == "temp_result_v1"
+    assert finished["rows"] == 2
+    assert finished["result_columns"] == [{"name": "a", "type": "INTEGER"}]
+    assert finished["preview"] == [{"a": 1}, {"a": 2}]
+    assert "input_step_id" not in finished
+    assert "code" not in finished
     assert progress[4] == {"stage": "insight", "status": "started"}
     assert progress[5] == {"stage": "chart", "status": "started"}
 

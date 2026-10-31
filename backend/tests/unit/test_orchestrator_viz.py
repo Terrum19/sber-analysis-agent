@@ -263,7 +263,11 @@ async def test_recovery_answers_the_original_question(db) -> None:
     events = [event async for event in agent.run(request)]
     assert [
         event["data"]["stage"] if event["type"] == "progress" else event["type"] for event in events
-    ] == ["step", "step", "insight", "text", "chart", "chart", "done"]
+    ] == ["planning", "step", "step", "insight", "text", "chart", "chart", "done"]
+    # Перепланированный по уточнению план приходит строками до шагов (#239).
+    assert [step["step_id"] for step in events[0]["data"]["steps"]] == [
+        events[1]["data"]["step_id"]
+    ]
     assert insight.question == "Сравни выручку по регионам"
     # Ответ на уточнение закрывает тот же ход, а не заводит новый.
     turns = SessionMemory("s1")._state["turns"]

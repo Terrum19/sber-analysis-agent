@@ -130,6 +130,8 @@ async def test_codegen_fixes_code_after_sandbox_error(db: DuckDBManager) -> None
         {"segment": "b", "total": 60},
     ]
     assert sandbox.codes == ["broken", "fixed"]
+    # В шаге показывается код, который отработал (#239).
+    assert db.step_code(table) == ("python", "fixed")
     assert PURPOSE in llm.prompts[0]
     assert '"segment": "VARCHAR"' in llm.prompts[0]
     assert "NameError" in llm.prompts[1]

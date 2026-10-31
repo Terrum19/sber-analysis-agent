@@ -99,5 +99,10 @@ async def run_generated_code(
                 prompt = CODEGEN_FIX.format(error=str(exc)[-2000:], code=code)
                 continue
             result = sql_literal(str(workdir / RESULT_FILE))
-            return db.save_step_result(input_table, f"SELECT * FROM read_csv_auto({result})")
+            return db.save_step_result(
+                input_table,
+                f"SELECT * FROM read_csv_auto({result})",
+                code=code,
+                language="python",
+            )
     raise error
