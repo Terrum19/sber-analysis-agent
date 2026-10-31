@@ -90,6 +90,8 @@ class ChatRequest(BaseModel):
     # turn_id остановленного или упавшего хода: продолжить его с чекпоинта,
     # не повторяя выполненные шаги и плитки (question тогда не используется).
     resume_turn: str | None = None
+    # Режим «Проверка» (A-29): проверки шагов, критик ответа и исправление по вердикту.
+    verify: bool = False
 
 
 class ChartPayload(BaseModel):
@@ -148,9 +150,25 @@ class ProgressPayload(BaseModel):
     на ``code_language`` (sql или python), если шаг выполнял код.
     ``turn_id`` — в начале planning и outline: по нему фронт продолжает
     остановленный ход (``ChatRequest.resume_turn``), ``done`` до него не дойдёт.
+
+    Режим «Проверка» (A-29): ``check`` — проверка результата шага
+    (``findings`` на finished), ``review`` — критик (``round``), ``repair`` —
+    исправление ответа (``action``, ``reason``); этапы исправления приходят
+    с ``revision`` 1.
     """
 
-    stage: Literal["planning", "step", "insight", "chart", "dashboard", "outline", "tile"]
+    stage: Literal[
+        "planning",
+        "step",
+        "insight",
+        "chart",
+        "dashboard",
+        "outline",
+        "tile",
+        "check",
+        "review",
+        "repair",
+    ]
     status: Literal["started", "finished", "failed", "fixing"]
     step_id: int | None = None
     tool: str | None = None
@@ -174,6 +192,11 @@ class ProgressPayload(BaseModel):
     code: str | None = None
     code_language: Literal["sql", "python"] | None = None
     turn_id: str | None = None
+    findings: list[dict[str, str]] | None = None
+    round: int | None = None
+    action: str | None = None
+    reason: str | None = None
+    revision: int | None = None
 
 
 class DashboardIdeasRequest(BaseModel):
@@ -216,6 +239,7 @@ class ChatEvent(BaseModel):
         "dashboard_outline",
         "dashboard_fallback",
         "table",
+        "review",
     ]
     data: dict[str, Any] = Field(default_factory=dict)
 

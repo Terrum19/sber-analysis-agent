@@ -111,6 +111,8 @@ class StepPlanner:
         )
         if settings.agent_quality_fixes:
             prompt += PLANNER_RULES
+        # Режим «Проверка» (A-29): замечания критика к ответу — дополнить план или составить заново.
+        prompt += context.get("review", "")
         template = None
         # Плитка дашборда по кнопке (#224) — обычный вопрос, без шаблонов и плиток.
         if not context.get("tile") and is_dashboard_question(question):
