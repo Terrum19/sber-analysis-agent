@@ -334,11 +334,18 @@ class SessionMemory:
         """id текущего хода (None — ход не начат)."""
         return self._turn["turn_id"] if self._turn is not None else None
 
-    def start_turn(self, question: str, reply_to: str | None = None) -> str:
+    def start_turn(
+        self,
+        question: str,
+        reply_to: str | None = None,
+        clarifications: list[dict] | None = None,
+    ) -> str:
         """Начать ход по вопросу пользователя и вернуть его turn_id.
 
         Ход сохраняется сразу со статусом failed: ход, не дошедший до
         finish_turn (сбой процесса, отключение клиента), таким и остаётся.
+        clarifications — ответы на уточняющие вопросы глубокого исследования
+        (A-28): ход хранит их, и их видят план, инсайт и следующие ходы.
         """
         self._turn = {
             "turn_id": uuid.uuid4().hex,
@@ -352,6 +359,8 @@ class SessionMemory:
             "status": "failed",
             "reply_to": reply_to,
         }
+        if clarifications:
+            self._turn["clarifications"] = clarifications
         self._state["turns"].append(self._turn)
         self._open = True
         self._persist()
@@ -382,6 +391,13 @@ class SessionMemory:
     def question(self) -> str | None:
         """Вопрос текущего хода (None — ход не начат)."""
         return self._turn["question"] if self._turn is not None else None
+
+    @property
+    def clarifications(self) -> list[dict]:
+        """Ответы на уточняющие вопросы текущего хода (A-28); нет хода — пусто."""
+        if self._turn is None:
+            return []
+        return self._turn.get("clarifications") or []
 
     def save_checkpoint(self, checkpoint: dict) -> None:
         """Сохранить, докуда дошёл текущий ход: остановленный ход продолжится отсюда.
@@ -465,6 +481,19 @@ class SessionMemory:
                 "purpose": step.purpose,
             }
         )
+
+    def record_review(
+        self, review: dict, draft: dict | None = None, first: dict | None = None
+    ) -> None:
+        """Итог проверки хода (A-29): последний вердикт, черновой ответ и первый вердикт.
+
+        draft и first есть, только если ответ исправлялся.
+        """
+        self._turn["review"] = review
+        if draft is not None:
+            self._turn["draft"] = draft
+        if first is not None:
+            self._turn["first_review"] = first
 
     def record_chart(self, chart_type: str, result_table: str, title: str = "") -> None:
         """Запомнить график текущего хода (для смены вида без LLM)."""
@@ -722,6 +751,7 @@ class SessionMemory:
             "turns": [] if reply else self.recent_turns(),
             "reply": reply,
             "memories": self.context_memories(),
+            "clarifications": self.clarifications,
             "question": question,
             "columns": columns,
             "datasource": datasource,

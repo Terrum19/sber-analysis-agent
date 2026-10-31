@@ -2,7 +2,8 @@
  * Типы стрима чата (синхронизировано с backend/app/api/schemas/chat.py).
  * Фронт получает события: text | chart | dashboard | error | done,
  * в режиме дашборда (#224) ещё dashboard_outline и dashboard_fallback,
- * table — агент сам взял таблицу под вопрос.
+ * table — агент сам взял таблицу под вопрос, review — вердикт проверки ответа
+ * (режим «Проверка», A-29).
  */
 import type { DashboardTile } from "./dashboard";
 
@@ -14,6 +15,8 @@ export interface ChartEvent {
     spec: Record<string, unknown>;
     caption: string;
     result_table?: string;
+    /** Режим «Проверка»: 0 — черновой ответ, 1 — исправленный после проверки. */
+    revision?: number;
   };
 }
 
@@ -31,6 +34,44 @@ export interface DashboardIdea {
   id: string;
   title: string;
   description: string;
+}
+
+/** Тема уточняющего вопроса глубокого исследования (A-28): goal — цель анализа. */
+export type ClarifyAxis = "goal" | "metric" | "period" | "breakdown" | "filter" | "format";
+
+/** Уточняющий вопрос из POST /sessions/{id}/clarify. */
+export interface ClarifyQuestion {
+  id: string;
+  axis: ClarifyAxis;
+  text: string;
+  options: string[];
+  multi: boolean;
+}
+
+/** Ответ пользователя на уточняющий вопрос: уходит в POST /chat полем clarifications. */
+export interface Clarification {
+  question: string;
+  answer: string;
+  axis?: ClarifyAxis;
+}
+
+/**
+ * Карточка уточнений в ленте: вопрос пользователя ещё не ушёл в ход.
+ * answered — пользователь начал исследование (пустой список — пропустил вопросы).
+ */
+export interface ClarifyCardData {
+  question: string;
+  reply_to: string | null;
+  state:
+    | { status: "loading"; started_at: number }
+    | { status: "ready"; questions: ClarifyQuestion[] }
+    | { status: "error"; message: string }
+    | { status: "answered"; clarifications: Clarification[] };
+}
+
+/** Перезагрузка оборвала запрос вопросов: карточка предлагает повторить. */
+export function closeClarify(card: ClarifyCardData): ClarifyCardData {
+  return card.state.status === "loading" ? { ...card, state: { status: "error", message: "" } } : card;
 }
 
 export type TileIntent = "kpi" | "compare" | "trend" | "distribution" | "relation" | "share";
@@ -70,7 +111,60 @@ export interface TextEvent {
     chunk?: string;
     headline?: string;
     details?: string[];
+    /** Режим «Проверка»: 0 — черновой ответ, 1 — исправленный после проверки. */
+    revision?: number;
   };
+}
+
+/** Аномалия результата шага, найденная кодом (режим «Проверка»). */
+export interface StepFinding {
+  code: string;
+  message: string;
+}
+
+export type ReviewCheckId =
+  | "answers_question"
+  | "metric"
+  | "period"
+  | "filters"
+  | "nulls"
+  | "outliers"
+  | "columns"
+  | "joins"
+  | "claims"
+  | "numbers";
+
+export type ReviewVerdict = "ok" | "caveat" | "fix_insight" | "extend_plan" | "replan";
+
+export interface ReviewCheck {
+  id: ReviewCheckId;
+  title: string;
+  status: "ok" | "issue" | "n/a";
+  evidence: string;
+}
+
+export interface ReviewIssue {
+  check: ReviewCheckId;
+  severity: "material" | "minor";
+  message: string;
+  evidence: string;
+  fix: string;
+}
+
+/** Вердикт критика: раунд 1 — по черновому ответу, раунд 2 — по исправленному. */
+export interface ReviewPayload {
+  round: number;
+  verdict: ReviewVerdict;
+  /** Что сделано: совпадает с verdict, кроме понижения и сбоя исправления (caveat). */
+  action: ReviewVerdict;
+  checks: ReviewCheck[];
+  issues: ReviewIssue[];
+  caveats: string[];
+}
+
+export interface ReviewEvent {
+  type: "review";
+  data: ReviewPayload;
 }
 
 export interface ErrorEvent {
@@ -136,7 +230,17 @@ export interface ResultColumn {
 
 /** ProgressPayload бэкенда; пустые поля не приходят. */
 export interface ProgressPayload {
-  stage: "planning" | "step" | "insight" | "chart" | "dashboard" | "outline" | "tile";
+  stage:
+    | "planning"
+    | "step"
+    | "insight"
+    | "chart"
+    | "dashboard"
+    | "outline"
+    | "tile"
+    | "check"
+    | "review"
+    | "repair";
   status: "started" | "finished" | "failed" | "fixing";
   step_id?: number;
   tool?: string;
@@ -163,6 +267,15 @@ export interface ProgressPayload {
   code_language?: "sql" | "python";
   /** Ход: приходит в начале planning и outline, по нему ход продолжают после остановки. */
   turn_id?: string;
+  /** check finished: аномалии результата шага (режим «Проверка»). */
+  findings?: StepFinding[];
+  /** review: раунд проверки. */
+  round?: number;
+  /** repair: каким действием исправляется ответ и почему. */
+  action?: ReviewVerdict;
+  reason?: string;
+  /** 1 — этап исправления ответа после проверки. */
+  revision?: number;
 }
 
 export interface ProgressEvent {
@@ -181,6 +294,7 @@ export type ChatStreamEvent =
   | DoneEvent
   | ClarificationEvent
   | RefusalEvent
+  | ReviewEvent
   | ProgressEvent;
 
 /** Неудачная попытка шага: с какими аргументами и почему упала. */
@@ -219,6 +333,8 @@ export interface StepState {
   code_language?: "sql" | "python";
   /** Попытки исправления по событиям fixing, по порядку. */
   attempts?: StepAttempt[];
+  /** Проверка результата шага (режим «Проверка»): идёт или готова, с находками. */
+  check?: { status: "started" | "finished"; findings: StepFinding[] };
 }
 
 /** Плитка дашборда в прогрессе хода. */
@@ -303,6 +419,17 @@ export function applyProgress(progress: TurnProgress, event: ProgressPayload): T
     if (index >= 0) tiles[index] = tile;
     else tiles.push(tile);
     next.tiles = tiles;
+  } else if (event.stage === "check" && event.step_id !== undefined) {
+    const index = next.steps.findIndex((step) => step.step_id === event.step_id);
+    if (index >= 0) {
+      next.steps[index] = {
+        ...next.steps[index],
+        check: {
+          status: event.status === "finished" ? "finished" : "started",
+          findings: event.findings ?? [],
+        },
+      };
+    }
   } else if (event.stage === "planning") {
     next.planning = event.status === "started";
     if (event.total_steps !== undefined) next.total_steps = event.total_steps;
@@ -391,3 +518,85 @@ export function applyOutline(progress: TurnProgress, outline: DashboardOutlineEv
 
 /** recovery_response кнопки «Пропустить этот шаг» (см. _apply_recovery). */
 export const RECOVERY_SKIP_STEP = JSON.stringify({ action: "skip_step" });
+
+/**
+ * Проверка ответа (режим «Проверка», A-29) по событиям review, repair и
+ * этапам исправления (revision 1). Живёт в своём сообщении между черновым и
+ * исправленным ответом и сохраняется в истории вместе с ним.
+ */
+export interface ReviewState {
+  /** reviewing — работает критик; repairing — ответ исправляется; done / failed — конец. */
+  status: "reviewing" | "repairing" | "done" | "failed";
+  round: number;
+  started_at: number;
+  /** Начало текущего этапа: счётчик секунд этапа. */
+  stage_started_at: number;
+  finished_at?: number;
+  /** Вердикты по раундам, по порядку прихода (после сбоя исправления раунд 1 приходит снова). */
+  reviews: ReviewPayload[];
+  action?: ReviewVerdict;
+  reason?: string;
+  repair_status?: "started" | "finished" | "failed";
+  error?: string;
+  /** Шаги и этапы исправления. */
+  repair?: TurnProgress;
+  /** step_id шагов первого прогона: остальные шаги исправления — «добавлено проверкой». */
+  known_steps?: number[];
+}
+
+export function startReview(knownSteps: number[]): ReviewState {
+  const now = Date.now();
+  return { status: "reviewing", round: 1, started_at: now, stage_started_at: now, reviews: [], known_steps: knownSteps };
+}
+
+/** Применить к проверке событие progress этапа review, repair или исправления. */
+export function applyReviewProgress(state: ReviewState, event: ProgressPayload): ReviewState {
+  const now = Date.now();
+  if (event.stage === "review") {
+    if (event.status === "started") {
+      return { ...state, status: "reviewing", round: event.round ?? state.round, stage_started_at: now };
+    }
+    if (event.status === "failed") {
+      return { ...state, status: "failed", error: event.error, finished_at: now };
+    }
+    return state;
+  }
+  if (event.stage === "repair") {
+    if (event.status === "started") {
+      return {
+        ...state,
+        status: "repairing",
+        repair_status: "started",
+        action: event.action ?? state.action,
+        reason: event.reason ?? state.reason,
+        stage_started_at: now,
+        repair: state.repair ?? { planning: false, steps: [], started_at: now },
+      };
+    }
+    const repair = state.repair && { ...state.repair, finished_at: now, stage: undefined, planning: false };
+    return { ...state, repair_status: event.status === "failed" ? "failed" : "finished", error: event.error ?? state.error, repair };
+  }
+  const repair = applyProgress(state.repair ?? { planning: false, steps: [], started_at: now }, event);
+  return { ...state, repair };
+}
+
+/** Вердикт раунда: раунд 2 или вердикт без исправления — проверка закончена. */
+export function applyReview(state: ReviewState, review: ReviewPayload): ReviewState {
+  const reviews = [...state.reviews, review];
+  const repairs = review.action === "fix_insight" || review.action === "extend_plan" || review.action === "replan";
+  if (review.round >= 2 || !repairs) {
+    return { ...state, reviews, round: review.round, status: "done", finished_at: Date.now() };
+  }
+  return { ...state, reviews, round: review.round, action: review.action };
+}
+
+/** Итоговый вердикт проверки: последний пришедший. */
+export function finalReview(state: ReviewState): ReviewPayload | undefined {
+  return state.reviews[state.reviews.length - 1];
+}
+
+/** Ход закрылся, а проверка не дошла до вердикта: не «работает» вечно. */
+export function closeReview(state: ReviewState): ReviewState {
+  if (state.finished_at !== undefined) return state;
+  return { ...state, status: state.reviews.length ? "done" : "failed", finished_at: Date.now() };
+}

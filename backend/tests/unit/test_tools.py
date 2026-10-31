@@ -595,3 +595,42 @@ def test_validate_plan_accepts_time_bucket_with_column() -> None:
         arguments={"date_column": "event_date", "function": "SUM", "column": "amount"},
     )
     assert validate_plan(ResearchPlan(steps=[step])) == []
+
+
+def test_filter_by_date_keeps_the_whole_day_of_a_timestamp(db: DuckDBManager) -> None:
+    """«По 31.12» на TIMESTAMP — включая 31 декабря после полуночи."""
+    from app.core.tools.sql.atomic import FilterRowsArgs, FilterRowsTool
+
+    db.execute(
+        """
+        CREATE TABLE ts AS SELECT * FROM (
+            VALUES (1, TIMESTAMP '2025-01-01 00:00:00'), (2, TIMESTAMP '2025-03-15 10:30:00'),
+                   (3, TIMESTAMP '2025-12-31 18:00:00'), (4, TIMESTAMP '2026-01-01 00:00:00')
+        ) AS rows(id, happened)
+        """
+    )
+    tool = FilterRowsTool()
+
+    def ids(operator: str, value: object, table: str = "ts") -> list[int]:
+        args = FilterRowsArgs(column="happened", operator=operator, value=value)
+        out = tool.execute(db, table, args)
+        return sorted(row["id"] for row in db.to_records(out))
+
+    assert ids("BETWEEN", ["2025-01-01", "2025-12-31"]) == [1, 2, 3]
+    assert ids("<=", "2025-12-31") == [1, 2, 3]
+    assert ids(">", "2025-12-31") == [4]
+    assert ids("=", "2025-03-15") == [2]
+    # Время указано или колонка — DATE: сравнение как есть
+    assert ids("<=", "2025-12-31 12:00:00") == [1, 2]
+    assert [
+        row["id"]
+        for row in db.to_records(
+            tool.execute(
+                db,
+                "raw",
+                FilterRowsArgs(
+                    column="event_date", operator="BETWEEN", value=["2024-01-01", "2024-02-01"]
+                ),
+            )
+        )
+    ] == [1, 2]

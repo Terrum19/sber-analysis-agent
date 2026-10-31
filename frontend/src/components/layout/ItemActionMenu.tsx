@@ -15,10 +15,6 @@ interface ItemActionMenuProps {
   onTogglePin?: () => void;
   onRename: (newTitle: string) => void;
   onDelete: () => void;
-  /** Плитка: текущий тип графика и доступные варианты. */
-  chartType?: string;
-  chartTypes?: readonly string[];
-  onChartTypeChange?: (type: string) => void;
   /** Плитка: открыть на весь экран во вкладке. */
   onOpen?: () => void;
   /** Плитка: отправить вопрос агенту по всей плитке (F-09). */
@@ -34,9 +30,6 @@ export default function ItemActionMenu({
   onTogglePin,
   onRename,
   onDelete,
-  chartType,
-  chartTypes,
-  onChartTypeChange,
   onOpen,
   onElaborate,
 }: ItemActionMenuProps) {
@@ -44,7 +37,7 @@ export default function ItemActionMenu({
   const menuRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
 
-  const [view, setView] = useState<"menu" | "rename" | "confirm_delete" | "chart_type">("menu");
+  const [view, setView] = useState<"menu" | "rename" | "confirm_delete">("menu");
   const [nameInput, setNameInput] = useState(title);
   const [pos, setPos] = useState({ top: anchorRect.bottom + 4, left: anchorRect.left });
 
@@ -199,17 +192,6 @@ export default function ItemActionMenu({
             <span className="truncate">{renameLabel}</span>
           </button>
 
-          {onChartTypeChange && chartTypes && chartTypes.length > 0 && (
-            <button
-              type="button"
-              onClick={() => setView("chart_type")}
-              className="flex w-full items-center gap-2 rounded-lg px-2.5 py-1.5 text-left text-xs text-graphite-300 hover:bg-graphite-800 hover:text-graphite-100 transition"
-            >
-              <Icon name="chart" size={14} className="shrink-0 text-graphite-400" />
-              <span className="truncate">{t("canvas.chartType")}</span>
-            </button>
-          )}
-
           {onOpen && (
             <button
               type="button"
@@ -247,39 +229,6 @@ export default function ItemActionMenu({
           >
             <Icon name="trash" size={14} className="shrink-0 text-bad" />
             <span className="truncate">{deleteLabel}</span>
-          </button>
-        </div>
-      )}
-
-      {view === "chart_type" && (
-        <div className="p-1 space-y-1">
-          <div className="px-1.5 pb-1 text-[12px] font-medium text-graphite-200">
-            {t("canvas.chartType")}
-          </div>
-          {(chartTypes ?? []).map((type) => (
-            <button
-              key={type}
-              type="button"
-              onClick={() => {
-                onChartTypeChange?.(type);
-                onClose();
-              }}
-              className={`flex w-full items-center justify-between gap-2 rounded-lg px-2.5 py-1.5 text-left text-xs transition ${
-                type === chartType
-                  ? "bg-graphite-800 text-graphite-50"
-                  : "text-graphite-300 hover:bg-graphite-800 hover:text-graphite-100"
-              }`}
-            >
-              <span className="truncate">{t(`chartType.${type}` as any)}</span>
-              {type === chartType && <Icon name="check" size={14} className="shrink-0 text-good" />}
-            </button>
-          ))}
-          <button
-            type="button"
-            onClick={() => setView("menu")}
-            className="mt-1 w-full rounded-md border border-graphite-700 px-2.5 py-1 text-xs text-graphite-300 hover:bg-graphite-800 transition"
-          >
-            {t("sidebar.cancel")}
           </button>
         </div>
       )}

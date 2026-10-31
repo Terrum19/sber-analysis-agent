@@ -5,7 +5,8 @@
 PATCH меняет таблицу по умолчанию и/или название, ходы при этом остаются.
 Воспоминания сессии (#197) — ``/{id}/memories``: список, добавление,
 включение и выключение записи. ``/{id}/dashboard-ideas`` — варианты
-дашборда по таблице сессии для кнопок в чате (#224).
+дашборда по таблице сессии для кнопок в чате (#224). ``/{id}/clarify`` —
+уточняющие вопросы глубокого исследования до начала хода (A-28).
 ``/{id}/results/{table}`` — страница результата шага хода этой сессии (#239).
 ``/{id}/bundle`` и ``/import`` — бандл сессии и импорт его в новую сессию
 (#249); ``/{id}/replay`` — пересчёт графиков импортированной сессии по рецепту
@@ -31,6 +32,9 @@ from starlette.background import BackgroundTask
 
 from app.api.deps import get_db
 from app.api.schemas.chat import (
+    ClarifyOut,
+    ClarifyQuestionOut,
+    ClarifyRequest,
     DashboardIdeasOut,
     DashboardIdeasRequest,
     DashboardPayload,
@@ -43,6 +47,7 @@ from app.api.schemas.chat import (
     SessionUpdate,
     StepResultOut,
 )
+from app.core.agent.clarify import clarify_questions
 from app.core.agent.replay import Replayer, ReplayOut, ReplayRequest
 from app.core.dashboards.ideas import generate_ideas
 from app.core.data.duckdb_manager import DuckDBManager
@@ -300,6 +305,42 @@ def dashboard_ideas(
         logger.exception("идеи дашборда для %s не построены", table)
         raise HTTPException(status_code=502, detail=f"Модель не ответила: {exc}") from exc
     return DashboardIdeasOut(ideas=ideas)
+
+
+@router.post("/{session_id}/clarify", response_model=ClarifyOut)
+def clarify(
+    session_id: str,
+    payload: ClarifyRequest,
+    db: Annotated[DuckDBManager, Depends(get_db)],
+) -> ClarifyOut:
+    """Уточняющие вопросы до начала хода; вопроса хватает — enough_info без вопросов.
+
+    Ход не начинается: ответы придут в POST /chat полем clarifications.
+    Синхронный обработчик идёт в пуле потоков: DuckDB и LLM не держат цикл сервера.
+    """
+    memory = existing(session_id)
+    if memory.table is None:
+        raise HTTPException(status_code=409, detail="К сессии не подключена таблица.")
+    try:
+        questions = asyncio.run(
+            clarify_questions(db, memory, payload.question, reply_to=payload.reply_to)
+        )
+    except Exception as exc:
+        logger.exception("уточняющие вопросы для %s не построены", memory.table)
+        raise HTTPException(status_code=502, detail=f"Модель не ответила: {exc}") from exc
+    return ClarifyOut(
+        enough_info=not questions,
+        questions=[
+            ClarifyQuestionOut(
+                id=str(number),
+                axis=item.axis,
+                text=item.text,
+                options=[option.text for option in item.options],
+                multi=item.multi,
+            )
+            for number, item in enumerate(questions, start=1)
+        ],
+    )
 
 
 @router.delete("/{session_id}")

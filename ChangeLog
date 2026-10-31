@@ -1,3 +1,271 @@
+2026-10-31  Alexander Yurits  <143354682+Terrum19@users.noreply.github.com>
+
+	Сборка открытых PR к сдаче 31.10 и правки стыков.
+	* backend/app/core/tools/sql/atomic.py (FilterRowsTool): Дата без
+	времени на колонке TIMESTAMP — весь день: BETWEEN по '2025-12-31'
+	отрезал 31 декабря после полуночи.  (_whole_days, _next_day)
+	(DAY_BOUNDS): Новые.
+	* backend/app/core/agent/assurance/checks.py (SERVICE_COLUMNS): Новая.
+	Счётчики seasonality не помечаются как константная метрика.
+	* backend/app/core/agent/assurance/loop.py (Assurance._repair): Новый
+	вывод исправления видит уточнения глубокого исследования (A-28).
+	* backend/app/core/export/pdf.py (PdfExporter.export_dashboard): Скрытые
+	плитки (F-15) не выгружаются, как и в Excel.
+	* frontend/src/hooks/useChartTypeChange.ts (executeSave): Спека
+	пересобирается на бэкенде (withRebuiltChartType): одна замена mark
+	рисовала таблицу полосами, сложные виды не менялись.
+	* frontend/src/lib/chartTypes.ts (withChartType): Без тоста: превью при
+	наведении звало его на каждый сложный вид.
+	* frontend/src/store/chatRunStore.ts: График, исправленный проверкой,
+	встаёт на место чернового, а не второй плиткой; 404 сессии (A-26) и
+	закрытие проверки (A-29) вместе.
+	* frontend/src/components/canvas/Canvas.tsx: Видимые плитки (F-15) — и
+	для вкладки «Инсайты» (F-17), и для смены вида (#256).
+	* frontend/src/components/canvas/DashboardTile.tsx: «Открыть чат» и
+	«＋ в дашборды» не начинают перетаскивание плитки.
+	* frontend/src/components/chat/ChatPanel.tsx: «Проверка» и «Глубокое
+	исследование» включаются вместе.
+	* frontend/src/tests/chartTypeChange.runner.mjs: Исходники — от файла
+	теста, а не из /app.
+	* backend/tests/unit/test_tools.py, test_session_bundle.py,
+	test_assurance.py, test_export_dashboard_pdf.py: Тесты того же.
+
+2026-10-31  Dmitriy Yakushonok  <dmitriyyakushonok@yandex.ru>
+
+	Смена типа графика с плитки, стабилизация сайдбара и навигации.
+	* frontend/src/components/canvas/ChartTypePicker.tsx: Новый. Поповер
+	выбора из 9 типов графиков, позиционирование у плитки, превью при наведении.
+	* frontend/src/hooks/useChartTypeChange.ts: Новый. Хук смены типа графика
+	с превью, дебаунсом сохранения 500 мс, защитой от гонок через saveSeqRef
+	и откатом при ошибке сохранения.
+	* frontend/src/components/canvas/DashboardTile.tsx (DashboardTile): Кнопка
+	смены типа графика всегда видна на плитке (включая dense режим, просмотр,
+	редактирование и вкладку «Графики»). Изоляция событий mousedown от drag handle,
+	исправлена работа кнопки удаления плитки.
+	* frontend/src/components/canvas/Canvas.tsx: Подключение useChartTypeChange,
+	передача смены типа во вкладках «Дашборд» и «Графики», синхронизация
+	удаления плиток с sessionStore.
+	* frontend/src/app/dashboard/[id]/page.tsx: Подключение useChartTypeChange,
+	передача dashboardId в openArtifact.
+	* frontend/src/components/layout/ItemActionMenu.tsx: Выбор типа графика убран
+	из меню троеточия в пользу отдельной кнопки на плитке.
+	* frontend/src/components/ui/Icon.tsx: Добавлены SVG-иконки для всех 9 типов
+	графиков (chartBar, chartLine, chartArea, chartScatter, chartHistogram,
+	chartBox, chartHeatmap, chartTable, chartKpi).
+	* frontend/src/lib/chartTypes.ts (CHART_TYPE_ICONS): Иконки для типов графиков.
+	(withChartType): Подстановка snapshot_data в spec.data.values при отсутствии.
+	* frontend/src/components/chat/ChatPanel.tsx: Устранена плавная прокатка истории
+	при открытии сессии (замена smooth scrollIntoView на мгновенное позиционирование
+	scrollTop в useLayoutEffect).
+	* frontend/src/components/layout/RecentDashboards.tsx: Кэширование недавних
+	дашбордов в памяти и sessionStorage, устранение CLS при смене вкладок,
+	сравнение areDashboardsEqual, удаление pathname из зависимостей fetch.
+	* frontend/src/components/layout/LeftSidebar.tsx: Троттлинг syncSessions (30 с),
+	сохранение скролла сайдбара (cachedSidebarScrollTop), currentSessionId
+	ограничен маршрутом /session/.
+	* frontend/src/store/sessionStore.ts (mergeSessions): Проверка hasChanges
+	для исключения лишних ре-рендеров при неизменном списке сессий.
+	* frontend/src/components/layout/TopHeader.tsx: Локальная горизонтальная
+	прокрутка полосы вкладок вместо глобального scrollIntoView.
+	* frontend/src/store/artifactStore.ts, frontend/src/hooks/useOpenArtifact.ts,
+	frontend/src/app/artifact/[id]/page.tsx: Поддержка dashboardId и кнопка
+	«Назад в дашборд» со страницы артефакта.
+	* frontend/src/i18n/dictionary.ts: Переводы для отката типа графика и возврата
+	в дашборд.
+	* frontend/package.json: Добавлен скрипт npm test.
+	* frontend/src/tests/chartTypeChange.runner.mjs,
+	frontend/src/tests/chartTypeChange.test.ts: Набор тестов смены типов графиков,
+	дебаунса, превью, отката ошибок, стабильности сайдбара и скролла чата.
+
+	Улучшение экспорта в PDF: рендеринг таблиц, наклон подписей оси X под 45°
+	и неотделимость заголовков графиков от визуализаций.
+	* backend/app/core/export/charts.py (is_table_spec, _detect_x_axis_overlap,
+	_auto_rotate_x_axis, normalize_spec): Расширено определение табличных спек
+	(проверка полей root chart_type/type/kind, meta/params, кодирования __col/__row/__val
+	и text mark), исключая ошибочный рендеринг таблиц в виде растрового графика.
+	Добавлен автоповорот оси X под -45 градусов при геометрическом наложении подписей.
+	* backend/app/core/export/pdf.py (PdfExporter._build_tile_card, export_answer):
+	Заголовок плитки, инсайт и контент (график или таблица) объединены в единый
+	KeepTogether блок, гарантируя неотделимость заголовка от графика при переносе страниц.
+	Плитки без спецификации корректно классифицируются как табличные.
+	* backend/app/api/routes/artifacts.py (export_artifact): Обработка табличных
+	артефактов без спецификации графика напрямую как таблиц.
+	* backend/tests/unit/test_export_pdf.py, test_export_dashboard_pdf.py:
+	Тесты на расширенное распознавание таблиц, автоповорот осей X под -45°,
+	структуру KeepTogether в карточке плитки и экспорт табличных плиток.
+
+2026-10-31  Dmitriy Yakushonok  <dmitriyyakushonok@yandex.ru>
+
+	Корректное построение тепловой карты, матрицы корреляций и экспорт в PDF.
+	* backend/app/core/viz/vega_spec_builder.py (_heatmap, detect_wide_matrix,
+	is_correlation_matrix, _axis_channel, _temporal_step): Даты на осях
+	тепловой карты получают timeUnit и axis.format, предотвращая epoch-числа.
+	Поддержаны целочисленные оси (distinct <= 50, week_number, hour, weekday).
+	Метрика из y переносится в color. 2D-матрицы и матрицы корреляций
+	автоматически разворачиваются (unpivot) в плоский список ячеек x, y, value,
+	исключая откат в _bar.
+	* backend/app/core/viz/chart_selector.py (fits, fits_columns, select_chart,
+	_by_question): fits и fits_columns запрещают bar для широких матриц,
+	разрешая heatmap и table. select_chart возвращает heatmap для широких матриц.
+	* backend/app/core/viz/chart_choice.py (rejection): Отклоняет bar/line/scatter
+	для широких матриц, предлагая heatmap.
+	* backend/app/core/llm/prompts/chart_selector.py (CHART_KINDS): Матрица
+	корреляций прямо указана как вид heatmap.
+	* backend/app/core/dashboards/recalculate.py (rebuild_spec): Сброс устаревших
+	осей из метаданных при пересборке широкой матрицы.
+	* backend/app/core/export/pdf.py (PdfExporter.export_dashboard): Сохранение
+	unpivoted ячеек спеки heatmap и пересборка спеки при экспорте, предотвращая
+	пустой белый график в PDF.
+	* backend/app/api/routes/artifacts.py (export_artifact): Защита спеки
+	heatmap при экспорте артефакта/ответа в PDF.
+	* backend/sandbox/runner.mjs: Сброс строкового индекса (reset_index) при
+	экспорте DataFrame с нечисловым индексом.
+	* frontend/src/lib/chartTypes.ts (withChartType): Защита сложных видов (heatmap,
+	histogram, box) от подмены mark на чужом encoding без ответа бэкенда.
+	* frontend/src/components/canvas/Canvas.tsx,
+	frontend/src/app/dashboard/[id]/page.tsx: Обработка тоста app:toast.
+	* backend/tests/unit/test_vega_spec_builder.py, test_chart_selector.py,
+	test_chart_choice.py, test_export_dashboard_pdf.py, test_export_pdf.py:
+	Тесты на все сценарии, 100% покрытие vega_spec_builder.py.
+  
+
+2026-10-30  thebulkapro  <saitbatalovbulat200@gmail.com>
+
+	График в несколько дашбордов галочками и переход к чату графика (#237).
+	* backend/app/core/dashboards/models.py (DashboardTile): Поля
+	origin_tile_id, source_session_id, source_turn_id, hidden.
+	(DashboardSummary): Поле origin_keys.
+	* backend/app/core/dashboards/store.py (TILE_COLUMNS): Новая.  Колонки
+	новых полей; в старой базе добавляются при подключении.
+	(list): origin_keys и tiles_count — по видимым плиткам.
+	* backend/app/core/dashboards/generator.py (generate): Параметр
+	turn_id.  Плитки помнят сессию и ход.
+	* backend/app/core/dashboards/recalculate.py (recalculate): Скрытые
+	плитки не пересчитываются.
+	* backend/app/core/export/excel.py (export_dashboard): Скрытые плитки
+	не выгружаются.
+	* backend/app/core/agent/orchestrator.py (_build_dashboard)
+	* backend/app/core/agent/dashboard_turn.py (_build): turn_id хода.
+	* frontend/src/lib/tileOrigin.ts: Новый.  Ключ происхождения, копия
+	внизу сетки, добавление и снятие графика.
+	* frontend/src/components/canvas/AddToDashboardsDialog.tsx: Новый.
+	Окно «＋ в дашборды»: галочки, новый дашборд, итог тостом.
+	* frontend/src/components/canvas/DashboardTile.tsx: Кнопки
+	«＋ в дашборды» и «Открыть чат» в шапке.
+	* frontend/src/components/canvas/Canvas.tsx,
+	frontend/src/app/dashboard/[id]/page.tsx: Окно на плитках, скрытые
+	плитки не рисуются.  Страница дашборда: «Открыть чат», удалённый
+	чат — кнопка неактивна.
+	* frontend/src/components/canvas/Canvas.tsx: Возврат в чат — панель
+	открывает последний сохранённый дашборд сессии, а не черновик:
+	«Сохранить» и «Обновить данные» больше не создают его копию.
+	* frontend/src/components/canvas/Canvas.tsx,
+	frontend/src/app/dashboard/[id]/page.tsx: Кнопка «Отмена» в режиме
+	правки.  Правки не автосохраняются, пока режим не закрыт.
+	* frontend/src/app/dashboards/page.tsx: Превью без скрытых плиток.
+	* frontend/src/components/chat/ChatPanel.tsx: ?turn= — прокрутка
+	к ответу.
+	* frontend/src/store/sessionStore.ts (patchTile): Новая.
+	* frontend/src/store/chatRunStore.ts: Плитка графика помнит сессию
+	и ход.
+	* frontend/src/types/dashboard.ts, frontend/src/api/mockData.ts,
+	frontend/src/i18n/dictionary.ts: То же.
+	* docs/memory.md: Происхождение плиток и скрытые плитки.
+	* backend/tests/unit/test_dashboard_store.py,
+	backend/tests/unit/test_dashboards_api.py: Тесты того же.
+
+2026-10-31  Alexander Yurits  <143354682+Terrum19@users.noreply.github.com>
+
+	Вопрос в удалённую сессию — 404, а не новая пустая сессия.
+	* backend/app/api/routes/chat.py (chat): Несохранённая сессия — 404
+	«Сессия не найдена.»: ход заводил её заново без таблицы и истории, и
+	таблица выбиралась по словам вопроса, хотя вкладка показывала прежнюю.
+	* frontend/src/api/client.ts (streamChat), frontend/src/api/mockData.ts:
+	onClose получает и HTTP-статус.
+	* frontend/src/store/chatRunStore.ts: На 404 — «Сессия удалена на
+	сервере — начните новую сессию», без повтора вопроса.
+	* frontend/src/components/chat/ChatPanel.tsx: 404 сессии при открытии —
+	то же сообщение, а не «Таблица не найдена»; при смене таблицы — текст
+	бэкенда.
+	* frontend/src/i18n/dictionary.ts (chat.sessionGone): Новая.
+	* backend/tests/unit/test_chat_api.py: Удалённая сессия.
+
+2026-10-31  thebulkapro  <saitbatalovbulat200@gmail.com>
+
+	ClickHouse переподключается после рестарта бэкенда.  Раньше его
+	представления пропадали вместе с соединением DuckDB, и сессии над
+	таблицей ClickHouse падали с «таблица не найдена».
+	* backend/app/core/data/restore.py (PASSWORD_VARIABLES): Новый.
+	(RESTORED_KINDS): Добавлен clickhouse.  (password_for): Параметр
+	kind, пароль ClickHouse — из CLICKHOUSE_PASSWORD__<identity> или
+	CLICKHOUSE_PASSWORD.  (connection_string): DSN ClickHouse с паролем.
+	(restore_saved_sources): В предупреждении — переменная своего kind.
+	* backend/app/core/data/connectors/clickhouse.py
+	(ClickHouseDsn.with_password): Новый.
+	* backend/app/core/memory/datasource_store.py: Docstring.
+	* backend/tests/unit/test_datasource_restore.py,
+	backend/tests/unit/test_connectors_clickhouse.py,
+	backend/tests/integration/test_clickhouse_connector.py: Восстановление
+	ClickHouse, отдельная переменная пароля, тот же identity, рестарт на
+	живом сервере.
+	* .env.example: CLICKHOUSE_PASSWORD.
+	* docs/data_connectors.md, docs/memory.md: Восстановление ClickHouse.
+
+2026-10-31  thebulkapro  <saitbatalovbulat200@gmail.com>
+
+	Глубокое исследование: уточняющие вопросы до начала хода (#198).
+	* backend/app/core/agent/clarify.py: Новый.  (clarify_questions): Вопросы
+	по вопросу, таблице, прошлым ходам, воспоминаниям и ходу из reply_to;
+	реплика без исследования — без LLM.  (checked): Вариант с колонкой не из
+	таблицы и связанных отбрасывается, вопрос меньше чем с двумя вариантами
+	и второй вопрос на ту же тему — тоже.  До 3 вызовов с причиной отказа;
+	после последнего хватает двух вопросов, иначе ClarifyFailed.
+	* backend/app/core/llm/prompts/clarify.py: Новый.
+	* backend/app/models/clarify.py: Новый.  (ClarifyAnswer, Clarification)
+	(describe_clarifications): Новые.
+	* backend/app/api/routes/sessions.py (clarify): Новая.
+	POST /api/sessions/{id}/clarify.
+	* backend/app/api/schemas/chat.py (ClarifyRequest, ClarifyOut)
+	(ClarifyQuestionOut): Новые.  (ChatRequest.clarifications): Новое.
+	* backend/app/core/memory/session_memory.py (start_turn): Параметр
+	clarifications.  (clarifications): Новое.  (build_context): Уточнения
+	текущего хода.
+	* backend/app/core/agent/orchestrator.py: Уточнения в ход, инсайт и выбор
+	связанных таблиц.
+	* backend/app/core/agent/planner.py (describe_answers, clarified): Новые.
+	Колонки отбираются по вопросу вместе с ответами.  (describe_turns):
+	Уточнения прошлого хода.
+	* backend/app/core/llm/prompts/step_planner.py (CLARIFICATIONS): Новая.
+	* backend/app/core/agent/insight.py (describe_clarifications): Новая.
+	Цель пользователя отдельной строкой.
+	* backend/app/core/llm/prompts/insight_summary.py (INSIGHT_CLARIFICATIONS)
+	(INSIGHT_GOAL): Новые.
+	* backend/app/core/agent/explainer.py, backend/app/core/tools/read_history.py:
+	Уточнения прошлого хода.
+	* backend/app/core/memory/session_bundle.py (BundleTurn.clarifications):
+	Новое.
+	* backend/app/core/llm/fake_client.py (_fake_clarify): Новая.
+	* frontend/src/components/chat/ClarifyCard.tsx: Новый.
+	* frontend/src/components/chat/ChatPanel.tsx: Тумблер «Глубокое
+	исследование», взаимоисключающий с «Дашбордом»; карточка вопросов до хода;
+	повтор упавшего хода с теми же уточнениями.
+	* frontend/src/components/chat/DashboardIdeas.tsx (Elapsed): Экспорт.
+	* frontend/src/store/sessionStore.ts (deepResearch, setDeepResearch)
+	(ChatMessage.clarify, ChatMessage.failedClarifications): Новые.
+	Оборванный запрос вопросов после перезагрузки — карточка с «Повторить».
+	* frontend/src/store/chatRunStore.ts (startRun): Параметр clarifications.
+	(ChatRun.failedClarifications): Новое.
+	* frontend/src/types/chat.ts (ClarifyQuestion, Clarification)
+	(ClarifyCardData, closeClarify): Новые.
+	* frontend/src/api/client.ts (clarifyQuestions): Новая.  (streamChat):
+	Поле clarifications.
+	* frontend/src/api/mockData.ts (mockClarify): Новая.
+	* frontend/src/i18n/dictionary.ts: Тексты глубокого исследования.
+	* docs/memory.md, docs/prompts.md, docs/repo_structure.md: Уточнения.
+	* backend/tests/unit/test_clarify.py: Новый.
+	* backend/tests/unit/test_plan_execution.py (FakeMemory): Поле
+	clarifications.
+
 2026-10-31  thebulkapro  <saitbatalovbulat200@gmail.com>
 
 	Поделиться сессией: файл .session с таблицами в parquet (#251).
@@ -155,6 +423,46 @@
 	2 при длинных; Дамерау–Левенштейн), ё = е; нужны все слова запроса.
 	Карточки по убыванию совпадения, вопрос весит больше текста.
 	(markText): Подсвечивается совпавшая часть каждого слова.
+
+2026-10-31  Alexander Yurits  <143354682+Terrum19@users.noreply.github.com>
+
+	Режим «Проверка»: проверки шагов, критик ответа и исправление по
+	вердикту (A-29, #257; F-18, #258).
+	* backend/app/core/agent/assurance/checks.py: Новый. Аномалии результата
+	шага без LLM: пусто, фильтр оставил < 1 %, join раздул строки, ряд
+	схлопнулся в строку, ≥ 30 % NULL, неполный крайний период time_bucket,
+	константа. Первые четыре исправляет fix_step, как ошибку шага.
+	* backend/app/core/agent/assurance/evidence.py: Новый. Улики критика:
+	шаги со строками на входе и выходе, пропуски, выбросы по IQR, медиана и
+	диапазон дат использованных колонок, неиспользованные колонки, факты.
+	* backend/app/core/agent/assurance/critic.py: Новый. Чек-лист из 10
+	пунктов, вердикт ok / caveat / fix_insight / extend_plan / replan;
+	settle: material без улик — minor, extend / replan без material —
+	оговорка, во втором раунде — только ok или caveat.
+	* backend/app/core/agent/assurance/loop.py: Новый. Критик -> исправление
+	(вывод заново, шаги к плану, план заново) -> повторный критик, одно
+	исправление на ход; сбой исправления — оговорка.
+	* backend/app/core/agent/orchestrator.py (_check_step, _build_chart):
+	Новые. verify — проверка шагов в _execute_plan и цикл после чернового
+	ответа; text и chart с revision.
+	* backend/app/api/schemas/chat.py: ChatRequest.verify, стадии check /
+	review / repair, событие review.
+	* backend/app/core/memory/session_memory.py (record_review): Новая.
+	* backend/app/core/agent/planner.py, insight.py: Замечания проверки в
+	промпте (context["review"], review).
+	* backend/app/core/llm/fake_client.py: Review — ok.
+	* scripts/eval.py: --verify; оценивается последняя версия ответа;
+	вердикты и исправленные ответы в отчёте.
+	* frontend/src/components/chat/ReviewCard.tsx: Новый. Карточка
+	проверки: перебор чек-листа, вердикт, проблемы, оговорки, шаги
+	исправления; DraftAnswer — «Ответ до проверки».
+	* frontend/src/components/chat/StepProgress.tsx: Значок проверки шага,
+	аномалии, «добавлено проверкой».
+	* frontend/src/components/chat/ChatPanel.tsx: Тумблер и чип «Проверка».
+	* frontend/src/store/chatRunStore.ts: События проверки — в карточку,
+	черновой ответ сворачивается при revision 1.
+	* frontend/src/types/chat.ts, api/client.ts, api/mockData.ts,
+	i18n/dictionary.ts: Типы, verify в запросе, мок-сценарий, строки.
 
 2026-10-31  Alexander Yurits  <143354682+Terrum19@users.noreply.github.com>
 

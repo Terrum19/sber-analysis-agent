@@ -72,9 +72,19 @@ class FakeLLM:
             )
         if schema.__name__ in ("DashboardIdeas", "DashboardOutline", "ChartChoices"):
             return schema.model_validate(_fake_dashboard(schema.__name__, user))
+        if schema.__name__ == "ClarifyAnswer":
+            return schema.model_validate(_fake_clarify(user))
         if schema.__name__ == "AnswerChart":
             # Без выбора шага: график ответа строит эвристика select_chart.
             return schema(step_id=None, chart_type="table", x=None, y=None, color=None, limit=None)
+        if schema.__name__ == "Review":
+            # Режим «Проверка» (A-29): всё в порядке, ответ не исправляется.
+            from app.models.review import CHECKS
+
+            return schema(
+                checks=[{"id": key, "status": "ok", "evidence": "FakeLLM"} for key in CHECKS],
+                verdict="ok",
+            )
         if schema.__name__ == "Insight":
             return schema(
                 headline="Исследование завершено",
@@ -82,6 +92,41 @@ class FakeLLM:
                 limits="Результаты основаны на доступных в таблице данных",
             )
         return schema.model_validate({})
+
+
+def _fake_clarify(user: str) -> dict:
+    """Уточнения глубокого исследования (A-28) для CI: вопрос с числом однозначен.
+
+    Иначе — цель, разрез по колонкам из промпта и форма ответа.
+    """
+    question = re.search(r"Вопрос пользователя: (.*)", user)
+    if question is None or re.search(r"\d", question.group(1)):
+        return {"enough_info": True, "questions": []}
+    columns = [name for name in PLAN_COLUMNS if name in user]
+    return {
+        "enough_info": False,
+        "questions": [
+            {
+                "axis": "goal",
+                "text": "Зачем вам этот анализ?",
+                "options": [{"text": "Найти просадку"}, {"text": "Сравнить группы"}],
+            },
+            {
+                "axis": "breakdown",
+                "text": "В каком разрезе смотреть?",
+                "options": [
+                    *({"text": f"По {name}", "columns": [name]} for name in columns),
+                    {"text": "Без разреза"},
+                ],
+                "multi": True,
+            },
+            {
+                "axis": "format",
+                "text": "В каком виде нужен ответ?",
+                "options": [{"text": "Одно число"}, {"text": "Рейтинг"}],
+            },
+        ],
+    }
 
 
 def _fake_dashboard(schema: str, user: str) -> dict:

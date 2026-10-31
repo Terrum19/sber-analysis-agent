@@ -8,7 +8,7 @@
  * - Режим дашборда (#224): переключатель под строкой ввода, варианты по кнопке
  *   «Автоматическая генерация», ход с mode: "dashboard" открывает /dashboard/{id}
  */
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import {
   getSession,
@@ -17,6 +17,7 @@ import {
   exportArtifact,
   renameTableApi,
   fetchDashboardIdeas,
+  clarifyQuestions,
   type DashboardRequest,
 } from "@/api/client";
 import { useSessionStore, useSessionDatabase, tableTitle, type ChatMessage } from "@/store/sessionStore";
@@ -29,6 +30,7 @@ import { downloadBlob, safeFilename } from "@/lib/download";
 import Icon from "@/components/ui/Icon";
 import ClarificationCard from "@/components/chat/ClarificationCard";
 import StepProgress from "@/components/chat/StepProgress";
+import ReviewCard, { DraftAnswer } from "@/components/chat/ReviewCard";
 import TableBriefCard from "@/components/chat/TableBriefCard";
 import DashboardPreviewCard from "@/components/chat/DashboardPreviewCard";
 import AnswerActions from "@/components/chat/AnswerActions";
@@ -37,10 +39,13 @@ import RecipeBanner from "@/components/chat/RecipeBanner";
 import StepsList from "@/components/chat/StepsList";
 import LlmStatusBanner from "@/components/chat/LlmStatusBanner";
 import DashboardIdeas, { type IdeasState } from "@/components/chat/DashboardIdeas";
+import ClarifyCard from "@/components/chat/ClarifyCard";
 import { useLlmStatus } from "@/hooks/useLlmStatus";
 import { useT } from "@/i18n/useT";
 import {
   RECOVERY_SKIP_STEP,
+  type Clarification,
+  type ClarifyCardData,
   type DashboardEvent,
   type DashboardIdea,
   type TurnProgress,
@@ -86,10 +91,16 @@ export default function ChatPanel({ sessionId }: Props) {
   const streaming = run?.status === "running";
   const lastFailedQuestion = run?.failedQuestion ?? null;
   const [dashboardMode, setDashboardMode] = useState(false);
+  // Режим «Проверка» (A-29): после ответа агент проверяет его и при необходимости исправляет
+  const [verifyMode, setVerifyMode] = useState(false);
+  // Глубокое исследование (A-28): держится до конца сессии, с дашбордом не совмещается
+  const deepMode = useSessionStore((s) => Boolean(s.deepResearch[sessionId]));
+  const setDeepResearch = useSessionStore((s) => s.setDeepResearch);
   const [ideas, setIdeas] = useState<IdeasState | null>(null);
   const ideasRequestRef = useRef(0);
   // Сообщение с карточкой уточнения, на которую ещё можно ответить
   const activeClarificationId = run?.clarificationId ?? null;
+  const scrollContainerRef = useRef<HTMLDivElement | null>(null);
   const messagesEndRef = useRef<HTMLDivElement | null>(null);
   const inputRef = useRef<HTMLTextAreaElement | null>(null);
   // Ответ, на который пользователь отвечает: уходит в reply_to (F-12).
@@ -99,6 +110,8 @@ export default function ChatPanel({ sessionId }: Props) {
   const highlightTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const messages = useSessionStore((s) => s.messages);
+  // Агент готовит уточняющие вопросы: новый вопрос подождёт
+  const clarifying = messages.some((m) => m.clarify?.state.status === "loading");
   const addMessage = useSessionStore((s) => s.addMessage);
   const removeMessage = useSessionStore((s) => s.removeMessage);
   const removeLastFailedMessage = useSessionStore((s) => s.removeLastFailedMessage);
@@ -170,7 +183,7 @@ export default function ChatPanel({ sessionId }: Props) {
         })
         .catch((err) => {
           if (err?.status === 404) {
-            setTableError(t("chat.tableNotFound"));
+            setTableError(t("chat.sessionGone"));
           }
         });
     }
@@ -188,7 +201,8 @@ export default function ChatPanel({ sessionId }: Props) {
       }
     } catch (err: any) {
       if (err?.status === 404) {
-        setTableError(t("chat.tableNotFound"));
+        // 404 — нет таблицы или самой сессии: текст бэкенда говорит, чего именно
+        setTableError(err?.detail || t("chat.tableNotFound"));
       } else {
         setTableError(err?.detail || err?.message || t("chat.tableNotFound"));
       }
@@ -202,9 +216,25 @@ export default function ChatPanel({ sessionId }: Props) {
     if (run?.unseen) markSeen(sessionId);
   }, [run?.unseen, sessionId, markSeen]);
 
+  // Мгновенная прокрутка к последнему сообщению при открытии сессии/переключении вкладок
+  // и при новых сообщениях (без плавной «прокатки» всей истории с начала до конца)
+  const scrollToBottom = () => {
+    if (scrollContainerRef.current) {
+      scrollContainerRef.current.scrollTop = scrollContainerRef.current.scrollHeight;
+    } else {
+      messagesEndRef.current?.scrollIntoView({ behavior: "auto" });
+    }
+  };
+
+  useLayoutEffect(() => {
+    scrollToBottom();
+  }, [sessionId, messages, streaming]);
+
   useEffect(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [messages, streaming]);
+    scrollToBottom();
+    const rafId = requestAnimationFrame(scrollToBottom);
+    return () => cancelAnimationFrame(rafId);
+  }, [sessionId, messages, streaming]);
 
   // Цитата и варианты дашборда не должны «протечь» в другую сессию или таблицу.
   useEffect(() => {
@@ -286,6 +316,19 @@ export default function ChatPanel({ sessionId }: Props) {
     if (focusTurn) scrollToTurn(focusTurn.turnId);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [focusTurn]);
+  // «Открыть чат» с плитки дашборда: ?turn= — прокрутить к ответу, когда лента загрузится.
+  const jumpTurnRef = useRef<string | null>(null);
+  useEffect(() => {
+    jumpTurnRef.current = new URLSearchParams(window.location.search).get("turn");
+  }, [sessionId]);
+  useEffect(() => {
+    const turnId = jumpTurnRef.current;
+    if (!turnId || !messages.some((m) => m.turn_id === turnId)) return;
+    jumpTurnRef.current = null;
+    window.history.replaceState(null, "", window.location.pathname);
+    setTimeout(() => scrollToTurn(turnId), 400);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [messages]);
 
   /**
    * Отправить вопрос. recoveryResponse — ответ на уточнение: тогда q — то, что
@@ -303,6 +346,8 @@ export default function ChatPanel({ sessionId }: Props) {
           replyTo?: string | null;
           /** Ход строит дашборд; по умолчанию — если включён режим и вопрос из строки ввода. */
           dashboard?: DashboardRequest;
+          /** Уточнения повторяемого хода глубокого исследования: вопросы заново не задаются. */
+          clarifications?: Clarification[];
         },
   ) {
     if (!activeTable) {
@@ -315,7 +360,7 @@ export default function ChatPanel({ sessionId }: Props) {
         : optionsOrRecovery;
     const recoveryResponse = options?.recoveryResponse;
     const q = textToSend || input;
-    if (!q.trim() || streaming) return;
+    if (!q.trim() || streaming || clarifying) return;
     const dashboard: DashboardRequest | undefined =
       options?.dashboard ?? (dashboardMode && !textToSend && !recoveryResponse ? { idea: null } : undefined);
     if (dashboard) closeIdeas();
@@ -378,11 +423,62 @@ export default function ChatPanel({ sessionId }: Props) {
     registerSession(sessionId, q.length > 48 ? `${q.slice(0, 47)}…` : q);
     if (!textToSend) setInput("");
     setReplyTarget(null);
+    // Глубокое исследование: сначала уточняющие вопросы, ход — после ответа на них
+    if (deepMode && !dashboard && !recoveryResponse && !options?.isRetry) {
+      askClarify({ question: q, reply_to: quote?.turn_id ?? null, state: { status: "loading", started_at: Date.now() } });
+      return;
+    }
     startRun(sessionId, q, {
       retryQuestion,
       recoveryResponse,
       replyTo: quote?.turn_id ?? null,
       dashboard,
+      verify: verifyMode && !dashboard,
+      clarifications: options?.clarifications,
+      onDashboardBuilt: (dashboardId) => router.push(`/dashboard/${dashboardId}`),
+    });
+  }
+
+  /**
+   * Уточняющие вопросы глубокого исследования (A-28): карточка в ленте, пока
+   * хода нет. Вопроса хватает — карточка убирается и ход начинается сразу.
+   * messageId — повтор после ошибки в той же карточке.
+   */
+  function askClarify(card: ClarifyCardData, messageId?: string) {
+    const id = messageId ?? `msg-clarify-${Date.now().toString(36)}`;
+    const store = useSessionStore.getState();
+    if (messageId) {
+      store.updateMessage(id, { clarify: card }, sessionId);
+    } else {
+      store.addMessage({ id, role: "agent", content: "", clarify: card }, sessionId);
+    }
+    const patch = (state: ClarifyCardData["state"]) =>
+      useSessionStore.getState().updateMessage(id, { clarify: { ...card, state } }, sessionId);
+    clarifyQuestions(sessionId, card.question, card.reply_to)
+      .then((result) => {
+        if (result.enough_info || result.questions.length === 0) {
+          useSessionStore.getState().removeMessage(id, sessionId);
+          runResearch(card);
+        } else {
+          patch({ status: "ready", questions: result.questions });
+        }
+      })
+      .catch((err: any) => patch({ status: "error", message: err?.status === 502 ? "" : err?.detail || err?.message || "" }));
+  }
+
+  /** Ход глубокого исследования с ответами на вопросы карточки; пустой список — без уточнений. */
+  function runResearch(card: ClarifyCardData, clarifications?: Clarification[], messageId?: string) {
+    if (messageId) {
+      useSessionStore
+        .getState()
+        .updateMessage(messageId, { clarify: { ...card, state: { status: "answered", clarifications: clarifications ?? [] } } }, sessionId);
+    }
+    const answered = clarifications && clarifications.length > 0 ? clarifications : undefined;
+    startRun(sessionId, card.question, {
+      retryQuestion: card.question,
+      replyTo: card.reply_to,
+      clarifications: answered,
+      verify: verifyMode,
       onDashboardBuilt: (dashboardId) => router.push(`/dashboard/${dashboardId}`),
     });
   }
@@ -407,6 +503,7 @@ export default function ChatPanel({ sessionId }: Props) {
       replyTo: null,
       resumeTurn: progress.turn_id,
       dashboard: progress.tiles ? { idea: null } : undefined,
+      verify: verifyMode && !progress.tiles,
       onDashboardBuilt: (dashboardId) => router.push(`/dashboard/${dashboardId}`),
     });
   }
@@ -547,7 +644,7 @@ export default function ChatPanel({ sessionId }: Props) {
       </div>
 
       {/* Лента сообщений */}
-      <div className="flex-1 space-y-5 overflow-y-auto px-4 py-6 md:px-8">
+      <div ref={scrollContainerRef} className="flex-1 space-y-5 overflow-y-auto px-4 py-6 md:px-8">
         {/* Ссылка-рецепт: графики без точек пересчитываются по кнопке (#250) */}
         <RecipeBanner sessionId={sessionId} messages={messages} />
         {messages.length === 0 ? (
@@ -612,7 +709,10 @@ export default function ChatPanel({ sessionId }: Props) {
             </div>
           </div>
         ) : (
-          messages.map((m, i) => (
+          messages.map((m, i) =>
+            m.superseded ? (
+              <DraftAnswer key={m.id || i} message={m} />
+            ) : (
             <div
               key={m.id || i}
               id={m.turn_id ? `turn-${m.turn_id}` : undefined}
@@ -635,6 +735,8 @@ export default function ChatPanel({ sessionId }: Props) {
                     : "w-full text-graphite-200"
                 }`}
               >
+                {m.review && <ReviewCard review={m.review} sessionId={sessionId} />}
+
                 {m.progress && (
                   <StepProgress
                     progress={m.progress}
@@ -643,6 +745,26 @@ export default function ChatPanel({ sessionId }: Props) {
                       m.progress.resumable && m.id && !streaming
                         ? () => resumeTurn(m.id!, m.progress!)
                         : undefined
+                    }
+                  />
+                )}
+
+                {/* Ответ исправлен после проверки (режим «Проверка») */}
+                {m.revised && (
+                  <div className="mb-1 inline-flex items-center gap-1 rounded-full bg-good/10 px-2 py-0.5 text-[11px] text-good">
+                    <Icon name="check" size={11} />
+                    {t("verify.updated")}
+                  </div>
+                )}
+
+                {/* Уточняющие вопросы глубокого исследования */}
+                {m.clarify && (
+                  <ClarifyCard
+                    data={m.clarify}
+                    active={!streaming && i === messages.length - 1}
+                    onStart={(clarifications) => runResearch(m.clarify!, clarifications, m.id)}
+                    onRetry={() =>
+                      askClarify({ ...m.clarify!, state: { status: "loading", started_at: Date.now() } }, m.id)
                     }
                   />
                 )}
@@ -728,6 +850,7 @@ export default function ChatPanel({ sessionId }: Props) {
                             isRetry: true,
                             messageIdToReplace: m.id,
                             dashboard: m.failedDashboard,
+                            clarifications: m.failedClarifications,
                           });
                         }}
                         className="inline-flex items-center gap-1.5 rounded-lg bg-danger hover:bg-danger/90 px-3 py-1.5 text-xs font-semibold text-white shadow-sm transition cursor-pointer"
@@ -866,7 +989,8 @@ export default function ChatPanel({ sessionId }: Props) {
                 )}
               </span>
             </div>
-          ))
+            ),
+          )
         )}
         <div ref={messagesEndRef} />
       </div>
@@ -886,7 +1010,13 @@ export default function ChatPanel({ sessionId }: Props) {
               <span className="truncate">{t("chat.failedBanner", { q: lastFailedQuestion })}</span>
             </div>
             <button
-              onClick={() => sendQuestion(lastFailedQuestion, { isRetry: true, dashboard: run?.failedDashboard })}
+              onClick={() =>
+                sendQuestion(lastFailedQuestion, {
+                  isRetry: true,
+                  dashboard: run?.failedDashboard,
+                  clarifications: run?.failedClarifications,
+                })
+              }
               disabled={!activeTable}
               className="inline-flex items-center gap-1.5 rounded-lg bg-danger hover:bg-danger/90 px-3 py-1.5 text-xs font-semibold text-white shadow transition whitespace-nowrap disabled:opacity-50 cursor-pointer"
             >
@@ -917,7 +1047,7 @@ export default function ChatPanel({ sessionId }: Props) {
           {/* Чип режима дашборда: × выключает режим */}
           {dashboardMode && (
             <span className="mt-1 mb-1 inline-flex items-center gap-1 rounded-full border border-graphite-600 bg-graphite-800 py-0.5 pl-2 pr-1 text-[12px] text-graphite-100">
-              📊 {t("dashboard.chip")}
+              {t("dashboard.chip")}
               <button
                 onClick={() => {
                   setDashboardMode(false);
@@ -925,6 +1055,32 @@ export default function ChatPanel({ sessionId }: Props) {
                 }}
                 className="flex h-4 w-4 items-center justify-center rounded-full text-graphite-400 hover:bg-graphite-700 hover:text-graphite-100"
                 title={t("dashboard.chipOff")}
+              >
+                <Icon name="x" size={10} />
+              </button>
+            </span>
+          )}
+          {/* Чип режима проверки: × выключает режим */}
+          {verifyMode && !dashboardMode && (
+            <span className="mt-1 mb-1 mr-1 inline-flex items-center gap-1 rounded-full border border-graphite-600 bg-graphite-800 py-0.5 pl-2 pr-1 text-[12px] text-graphite-100">
+              {t("verify.chip")}
+              <button
+                onClick={() => setVerifyMode(false)}
+                className="flex h-4 w-4 items-center justify-center rounded-full text-graphite-400 hover:bg-graphite-700 hover:text-graphite-100"
+                title={t("verify.chipOff")}
+              >
+                <Icon name="x" size={10} />
+              </button>
+            </span>
+          )}
+          {/* Чип глубокого исследования: × выключает режим */}
+          {deepMode && (
+            <span className="mt-1 mb-1 inline-flex items-center gap-1 rounded-full border border-graphite-600 bg-graphite-800 py-0.5 pl-2 pr-1 text-[12px] text-graphite-100">
+              🔍 {t("research.chip")}
+              <button
+                onClick={() => setDeepResearch(sessionId, false)}
+                className="flex h-4 w-4 items-center justify-center rounded-full text-graphite-400 hover:bg-graphite-700 hover:text-graphite-100"
+                title={t("research.chipOff")}
               >
                 <Icon name="x" size={10} />
               </button>
@@ -973,6 +1129,8 @@ export default function ChatPanel({ sessionId }: Props) {
                   ? t("chat.clarifyPlaceholder")
                   : dashboardMode
                   ? t("dashboard.placeholder")
+                  : deepMode
+                  ? t("research.placeholder")
                   : t("chat.placeholder")
               }
               className="max-h-40 min-h-[36px] flex-1 resize-none overflow-y-hidden bg-transparent py-2 text-sm leading-5 text-graphite-100 placeholder-graphite-500 outline-none disabled:cursor-not-allowed disabled:opacity-60"
@@ -989,7 +1147,7 @@ export default function ChatPanel({ sessionId }: Props) {
             ) : (
               <button
                 onClick={() => sendQuestion()}
-                disabled={!input.trim() || !activeTable || !llmReady}
+                disabled={!input.trim() || !activeTable || !llmReady || clarifying}
                 className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-graphite-100 text-graphite-950 hover:bg-graphite-50 disabled:bg-graphite-700 disabled:text-graphite-500 disabled:cursor-not-allowed transition"
                 title={t("chat.send")}
               >
@@ -1003,6 +1161,7 @@ export default function ChatPanel({ sessionId }: Props) {
           <button
             onClick={() => {
               if (dashboardMode) closeIdeas();
+              else setDeepResearch(sessionId, false);
               setDashboardMode(!dashboardMode);
             }}
             aria-pressed={dashboardMode}
@@ -1015,6 +1174,41 @@ export default function ChatPanel({ sessionId }: Props) {
           >
             <Icon name="layout" size={13} />
             {t("dashboard.toggle")}
+          </button>
+          {/* Режим «Проверка» (A-29): с дашбордом не совмещается */}
+          <button
+            onClick={() => setVerifyMode(!verifyMode)}
+            disabled={dashboardMode}
+            aria-pressed={verifyMode && !dashboardMode}
+            title={dashboardMode ? t("verify.dashboardHint") : t("verify.toggleHint")}
+            className={`inline-flex items-center gap-1.5 rounded-full border px-3 py-1 text-xs transition disabled:cursor-not-allowed disabled:opacity-40 ${
+              verifyMode && !dashboardMode
+                ? "border-graphite-400 bg-graphite-700 text-graphite-50"
+                : "border-graphite-700 text-graphite-400 hover:bg-graphite-800 hover:text-graphite-200"
+            }`}
+          >
+            <Icon name="check" size={13} />
+            {t("verify.toggle")}
+          </button>
+          {/* Глубокое исследование (A-28): включение выключает режим дашборда */}
+          <button
+            onClick={() => {
+              if (!deepMode) {
+                setDashboardMode(false);
+                closeIdeas();
+              }
+              setDeepResearch(sessionId, !deepMode);
+            }}
+            aria-pressed={deepMode}
+            title={t("research.toggleHint")}
+            className={`inline-flex items-center gap-1.5 rounded-full border px-3 py-1 text-xs transition ${
+              deepMode
+                ? "border-graphite-400 bg-graphite-700 text-graphite-50"
+                : "border-graphite-700 text-graphite-400 hover:bg-graphite-800 hover:text-graphite-200"
+            }`}
+          >
+            <Icon name="search" size={13} />
+            {t("research.toggle")}
           </button>
           {dashboardMode && (
             <button

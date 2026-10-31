@@ -18,6 +18,8 @@ from app.core.agent.quality_fixes import (
 from app.core.data.duckdb_manager import DuckDBManager
 from app.core.llm.client import LLMClient
 from app.core.llm.prompts.insight_summary import (
+    INSIGHT_CLARIFICATIONS,
+    INSIGHT_GOAL,
     INSIGHT_MEMORIES,
     INSIGHT_SUMMARY,
     INSIGHT_SUPPORTING,
@@ -64,6 +66,8 @@ class InsightGenerator:
         result_tool: str = "",
         source: str | None = None,
         inputs: dict[int, str] | None = None,
+        clarifications: list[dict] | None = None,
+        review: str = "",
     ) -> Insight:
         """Сформировать Insight по финальной таблице.
 
@@ -76,6 +80,9 @@ class InsightGenerator:
         правило headline (RESULT_SHAPES).
         source — исходная таблица сессии, inputs — шаг -> его входная
         таблица: пропуски и отсечённое лимитом видны только в них.
+        clarifications — ответы на уточняющие вопросы глубокого исследования
+        (A-28): вывод отвечает на заявленную цель.
+        review — замечания проверки к прошлому выводу (режим «Проверка», A-29).
         """
         from app.core.data.duckdb_manager import DuckDBManager
 
@@ -84,13 +91,15 @@ class InsightGenerator:
         supporting = [
             (purpose, db.to_records(table, limit=10)) for purpose, table in supporting or []
         ]
-        notes = describe_memories(memories or [])
+        notes = describe_memories(memories or []) + describe_clarifications(clarifications or [])
         tested = has_p_value([result, *(rows for _, rows in supporting)])
         if not settings.agent_quality_fixes:
             extra = "\n".join(f"- {purpose}: {rows}" for purpose, rows in supporting)
             prompt = INSIGHT_SUMMARY.format(question=question, result=result)
             prompt += describe_supporting(extra, tested)
-            return await self.llm.complete_structured("Ты — аналитик.", prompt + notes, Insight)
+            return await self.llm.complete_structured(
+                "Ты — аналитик.", prompt + notes + review, Insight
+            )
         # Строки — компактной таблицей с ISO-датами: repr datetime мешает модели читать ряд.
         shown = format_rows(result)
         extra = "\n".join(f"- {purpose}:\n{format_rows(rows)}" for purpose, rows in supporting)
@@ -119,6 +128,7 @@ class InsightGenerator:
         shape = RESULT_SHAPES.get(result_tool, shape)
         plan = describe_steps(steps or [])
         prompt += INSIGHT_RULES.format(plan=plan, facts=facts, shape=shape, hints="".join(hints))
+        prompt += review
         # Опора — весь промпт: условия шагов плана («> 150», «2024»), воспоминания, порог 0.05.
         return await self._grounded(prompt)
 
@@ -161,6 +171,16 @@ def describe_supporting(extra: str, tested: bool) -> str:
     """Сопутствующие результаты — когда они есть, порог p_value — когда есть тест."""
     text = INSIGHT_SUPPORTING.format(supporting=extra) if extra else ""
     return text + (P_VALUE_RULE if tested else "")
+
+
+def describe_clarifications(clarifications: list[dict]) -> str:
+    """Блок уточнений для вывода: цель — отдельной строкой; без уточнений — пусто."""
+    if not clarifications:
+        return ""
+    answers = "\n".join(f"- {item['question']} — {item['answer']}" for item in clarifications)
+    goals = [item["answer"] for item in clarifications if item.get("axis") == "goal"]
+    goal = INSIGHT_GOAL.format(goal="; ".join(goals)) if goals else ""
+    return INSIGHT_CLARIFICATIONS.format(answers=answers) + goal
 
 
 def describe_memories(memories: list[str]) -> str:

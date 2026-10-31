@@ -8,15 +8,18 @@
  */
 import { create } from "zustand";
 import { persist, createJSONStorage } from "zustand/middleware";
-import { closeInterrupted } from "@/types/chat";
+import { closeClarify, closeInterrupted, closeReview } from "@/types/chat";
 import type { DashboardTile } from "@/types/dashboard";
 import type {
   ChartEvent,
+  Clarification,
   ClarificationEvent,
+  ClarifyCardData,
   DashboardEvent,
   DashboardFallbackEvent,
   DashboardIdea,
   RefusalEvent,
+  ReviewState,
   TurnProgress,
 } from "@/types/chat";
 import type { Datasource, SessionResponse, TableBrief } from "@/types/datasource";
@@ -41,10 +44,20 @@ export interface ChatMessage {
   refusal?: RefusalEvent["data"];
   /** Прогресс хода по событиям progress. */
   progress?: TurnProgress;
+  /** Проверка ответа (режим «Проверка», A-29): вердикт, исправление и его шаги. */
+  review?: ReviewState;
+  /** Черновой ответ, заменённый исправленным после проверки: свёрнут в «Ответ до проверки». */
+  superseded?: boolean;
+  /** Ответ, исправленный после проверки: подпись «Обновлено после проверки». */
+  revised?: boolean;
   /** Исходный текст вопроса, вызвавший ошибку (для кнопки повтора). */
   failedQuestion?: string;
   /** Упавший ход был в режиме дашборда: повтор идёт с тем же idea (#224). */
   failedDashboard?: { idea: DashboardIdea | null };
+  /** Уточнения упавшего хода глубокого исследования (A-28): повтор идёт с ними же. */
+  failedClarifications?: Clarification[];
+  /** Карточка уточняющих вопросов глубокого исследования (A-28). */
+  clarify?: ClarifyCardData;
   /** Своего запроса не хватило: баннер и кнопки остальных идей (#224). */
   dashboardFallback?: DashboardFallbackEvent["data"];
   /** Подсказки для уточнения/повтора (если backend прислал clarification_needed). */
@@ -153,6 +166,9 @@ export interface SessionState {
   /** Названия вариантов дашборда, по которым в сессии уже строили (#224): их не предлагаем снова. */
   usedIdeas: Record<string, string[]>;
   markIdeaUsed: (sessionId: string, title: string) => void;
+  /** Сессии с включённым глубоким исследованием (A-28): режим держится до конца сессии. */
+  deepResearch: Record<string, boolean>;
+  setDeepResearch: (sessionId: string, on: boolean) => void;
 
   setSession: (id: string) => void;
   /*
@@ -168,6 +184,8 @@ export interface SessionState {
   removeMessage: (id: string, sessionId?: string) => void;
   removeLastFailedMessage: (sessionId?: string) => void;
   addTile: (tile: DashboardTile, sessionId?: string) => void;
+  /** Дописать плитку сессии по id (например, ход, где построен график). */
+  patchTile: (tileId: string, patch: Partial<DashboardTile>, sessionId?: string) => void;
   setTiles: (tiles: DashboardTile[]) => void;
   selectTile: (index: number | null) => void;
   setDatasource: (datasource: Datasource | null) => void;
@@ -250,6 +268,15 @@ export const useSessionStore = create<SessionState>()(
       sessionTableCache: {},
       pendingQuestions: {},
       usedIdeas: {},
+      deepResearch: {},
+
+      setDeepResearch: (sessionId, on) =>
+        set((s) => {
+          const next = { ...s.deepResearch };
+          if (on) next[sessionId] = true;
+          else delete next[sessionId];
+          return { deepResearch: next };
+        }),
 
       markIdeaUsed: (sessionId, title) =>
         set((s) => {
@@ -368,6 +395,19 @@ export const useSessionStore = create<SessionState>()(
           useCanvasStore.getState().addTile(tile);
         }
         set((st) => patchSession(st, sessionId, (snap) => ({ ...snap, tiles: [...snap.tiles, tile] })));
+      },
+      patchTile: (tileId, patch, sessionId) => {
+        const s = get();
+        const canvas = useCanvasStore.getState();
+        if ((sessionId ?? s.sessionId) === s.sessionId && !canvas.dashboardId) {
+          canvas.setTiles(canvas.tiles.map((tile) => (tile.id === tileId ? { ...tile, ...patch } : tile)));
+        }
+        set((st) =>
+          patchSession(st, sessionId, (snap) => ({
+            ...snap,
+            tiles: snap.tiles.map((tile) => (tile.id === tileId ? { ...tile, ...patch } : tile)),
+          })),
+        );
       },
       setTiles: (tiles) => {
         if (!useCanvasStore.getState().dashboardId) {
@@ -585,6 +625,8 @@ export const useSessionStore = create<SessionState>()(
           delete nextPending[sessionId];
           const nextUsedIdeas = { ...s.usedIdeas };
           delete nextUsedIdeas[sessionId];
+          const nextDeepResearch = { ...s.deepResearch };
+          delete nextDeepResearch[sessionId];
           const isActiveDeleted = s.sessionId === sessionId;
           return {
             databases: nextDatabases,
@@ -594,11 +636,13 @@ export const useSessionStore = create<SessionState>()(
             sessionTableCache: nextTableCache,
             pendingQuestions: nextPending,
             usedIdeas: nextUsedIdeas,
+            deepResearch: nextDeepResearch,
             ...(isActiveDeleted ? { sessionId: null, messages: [], tiles: [], selectedTile: null } : {}),
           };
         }),
       mergeSessions: (remoteSessions: SessionResponse[]) =>
         set((s) => {
+          let hasChanges = false;
           const nextDatabases = s.databases.map((d) => ({
             ...d,
             tables: [...d.tables],
@@ -632,10 +676,14 @@ export const useSessionStore = create<SessionState>()(
                 sessions: [],
               };
               nextDatabases.push(db);
+              hasChanges = true;
             }
 
             if (db) {
-              nextSessionDb[remote.session_id] = db.id;
+              if (nextSessionDb[remote.session_id] !== db.id) {
+                nextSessionDb[remote.session_id] = db.id;
+                hasChanges = true;
+              }
               const sessionExists = db.sessions.some((x) => x.id === remote.session_id);
               if (!sessionExists) {
                 db.sessions = [
@@ -646,17 +694,26 @@ export const useSessionStore = create<SessionState>()(
                   },
                   ...db.sessions,
                 ];
+                hasChanges = true;
               } else if (remote.title) {
-                // Название на бэкенде — источник правды (переименование, #147).
-                db.sessions = db.sessions.map((x) =>
-                  x.id === remote.session_id ? { ...x, title: remote.title || x.title } : x
-                );
+                const currentSession = db.sessions.find((x) => x.id === remote.session_id);
+                if (currentSession && currentSession.title !== remote.title) {
+                  db.sessions = db.sessions.map((x) =>
+                    x.id === remote.session_id ? { ...x, title: remote.title || x.title } : x
+                  );
+                  hasChanges = true;
+                }
               }
             }
 
             if (remote.table && !nextActiveTable[remote.session_id]) {
               nextActiveTable[remote.session_id] = remote.table;
+              hasChanges = true;
             }
+          }
+
+          if (!hasChanges) {
+            return {};
           }
 
           return {
@@ -692,6 +749,7 @@ export const useSessionStore = create<SessionState>()(
         sessionActiveTable: state.sessionActiveTable,
         sessionTableCache: state.sessionTableCache,
         usedIdeas: state.usedIdeas,
+        deepResearch: state.deepResearch,
       }),
       onRehydrateStorage: () => (state) => {
         if (state) {
@@ -711,13 +769,21 @@ export const useSessionStore = create<SessionState>()(
             delete state.sessionTableCache["demo-kpi"];
             // Страница загружена заново: ни один стрим хода не жив, незаконченный
             // прогресс в ленте — оборванный ход, а не «Всё ещё работаю…» навсегда.
+            // Оборванный запрос уточняющих вопросов — карточка с «Повторить».
             for (const tables of Object.values(state.sessionTableCache)) {
               for (const snapshot of Object.values(tables)) {
-                snapshot.messages = snapshot.messages.map((m) =>
-                  m.progress && m.progress.finished_at === undefined
-                    ? { ...m, progress: closeInterrupted(m.progress) }
-                    : m,
-                );
+                snapshot.messages = snapshot.messages.map((m) => {
+                  let next = m;
+                  if (m.progress && m.progress.finished_at === undefined) {
+                    next = { ...next, progress: closeInterrupted(m.progress) };
+                  }
+                  // Проверка, оборванная перезагрузкой, не «проверяет» вечно
+                  if (m.review && m.review.finished_at === undefined) {
+                    next = { ...next, review: closeReview(m.review) };
+                  }
+                  if (m.clarify) next = { ...next, clarify: closeClarify(m.clarify) };
+                  return next;
+                });
               }
             }
           }

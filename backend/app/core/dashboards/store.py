@@ -20,9 +20,17 @@ CREATE TABLE IF NOT EXISTS dashboard_tiles (
   id TEXT PRIMARY KEY, dashboard_id TEXT REFERENCES dashboards(id) ON DELETE CASCADE,
   order_index INTEGER, title TEXT, source_step_id INTEGER, result_table TEXT,
   spec_json TEXT, insight TEXT, is_kpi INTEGER,
-  layout_json TEXT, snapshot_json TEXT, snapshot_at REAL);
+  layout_json TEXT, snapshot_json TEXT, snapshot_at REAL,
+  origin_tile_id TEXT, source_session_id TEXT, source_turn_id TEXT, hidden INTEGER DEFAULT 0);
 CREATE INDEX IF NOT EXISTS ix_dashboards_session ON dashboards(session_id);
 """
+
+TILE_COLUMNS = {
+    "origin_tile_id": "TEXT",
+    "source_session_id": "TEXT",
+    "source_turn_id": "TEXT",
+    "hidden": "INTEGER DEFAULT 0",
+}
 
 
 def snapshot_records(records: Any) -> Any:
@@ -43,6 +51,10 @@ class DashboardStore:
         connection.row_factory = sqlite3.Row
         connection.execute("PRAGMA foreign_keys = ON")
         connection.executescript(SCHEMA)
+        existing = {row["name"] for row in connection.execute("PRAGMA table_info(dashboard_tiles)")}
+        for name, kind in TILE_COLUMNS.items():
+            if name not in existing:
+                connection.execute(f"ALTER TABLE dashboard_tiles ADD COLUMN {name} {kind}")
         return connection
 
     @contextmanager
@@ -95,20 +107,27 @@ class DashboardStore:
     def list(self, session_id: str | None = None) -> list[DashboardSummary]:
         with self._transaction() as connection:
             rows = connection.execute(
-                "SELECT dashboards.*, COUNT(dashboard_tiles.id) AS tiles_count"
-                " FROM dashboards"
-                " LEFT JOIN dashboard_tiles ON dashboard_tiles.dashboard_id = dashboards.id"
-                " WHERE ? IS NULL OR dashboards.session_id = ?"
-                " GROUP BY dashboards.id"
-                " ORDER BY dashboards.updated_at DESC",
+                "SELECT * FROM dashboards"
+                " WHERE ? IS NULL OR session_id = ?"
+                " ORDER BY updated_at DESC",
                 (session_id, session_id),
             ).fetchall()
+            tile_rows = connection.execute(
+                "SELECT dashboard_id, id, origin_tile_id FROM dashboard_tiles"
+                " WHERE NOT hidden ORDER BY order_index"
+            ).fetchall()
+        keys: dict[str, list[str]] = {}
+        for tile_row in tile_rows:
+            keys.setdefault(tile_row["dashboard_id"], []).append(
+                tile_row["origin_tile_id"] or tile_row["id"]
+            )
         return [
             DashboardSummary(
                 id=row["id"],
                 session_id=row["session_id"],
                 title=row["title"],
-                tiles_count=row["tiles_count"],
+                tiles_count=len(keys.get(row["id"], [])),
+                origin_keys=keys.get(row["id"], []),
                 created_at=row["created_at"],
                 updated_at=row["updated_at"],
             )
@@ -213,8 +232,9 @@ class DashboardStore:
     ) -> None:
         connection.executemany(
             "INSERT INTO dashboard_tiles (id, dashboard_id, order_index, title, source_step_id,"
-            " result_table, spec_json, insight, is_kpi, layout_json, snapshot_json, snapshot_at)"
-            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            " result_table, spec_json, insight, is_kpi, layout_json, snapshot_json, snapshot_at,"
+            " origin_tile_id, source_session_id, source_turn_id, hidden)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             [
                 (
                     tile.id,
@@ -231,6 +251,10 @@ class DashboardStore:
                     if tile.snapshot_data is None
                     else json.dumps(snapshot_records(tile.snapshot_data), ensure_ascii=False),
                     tile.snapshot_at,
+                    tile.origin_tile_id,
+                    tile.source_session_id,
+                    tile.source_turn_id,
+                    int(tile.hidden),
                 )
                 for order_index, tile in enumerate(tiles)
             ],
@@ -251,4 +275,8 @@ class DashboardStore:
             if row["snapshot_json"] is None
             else json.loads(row["snapshot_json"]),
             snapshot_at=row["snapshot_at"],
+            origin_tile_id=row["origin_tile_id"],
+            source_session_id=row["source_session_id"],
+            source_turn_id=row["source_turn_id"],
+            hidden=bool(row["hidden"]),
         )

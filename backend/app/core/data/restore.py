@@ -1,15 +1,12 @@
 """Источники БД переживают перезапуск бэкенда.
 
-Таблицы PostgreSQL подключены временными представлениями поверх ``ATTACH``:
-в файле DuckDB они не сохраняются. Поэтому источник после успешного
+Таблицы PostgreSQL и ClickHouse подключены временными представлениями поверх
+``ATTACH``: в файле DuckDB они не сохраняются. Поэтому источник после успешного
 подключения запоминается в SQLite (``remember``), при старте переподключается
 в фоне (``restore_saved_sources``), а по ``DELETE /api/datasources/{id}``
 отключается и забывается (``forget``). Пароль на диск не попадает: он берётся
-из ``POSTGRES_PASSWORD__<identity>`` или ``POSTGRES_PASSWORD``.
-
-ClickHouse тоже запоминается — его адрес без пароля нужен бандлу сессии
-(#249), — но после рестарта пока не переподключается: переподключаются
-только источники ``RESTORED_KINDS``.
+из ``POSTGRES_PASSWORD__<identity>`` или ``POSTGRES_PASSWORD``, у ClickHouse —
+из ``CLICKHOUSE_PASSWORD__<identity>`` или ``CLICKHOUSE_PASSWORD``.
 """
 
 import asyncio
@@ -21,6 +18,7 @@ from dotenv import dotenv_values
 
 from app.config import ENV_FILES, settings
 from app.core.data import ingest
+from app.core.data.connectors import clickhouse
 from app.core.data.connectors.base import BaseConnector
 from app.core.data.connectors.clickhouse import ClickHouseConnector
 from app.core.data.connectors.factory import build_connector
@@ -31,8 +29,8 @@ from app.core.memory.profile_memory import ProfileMemory
 
 logger = logging.getLogger(__name__)
 
-PASSWORD_VARIABLE = "POSTGRES_PASSWORD"
-RESTORED_KINDS = ("postgres",)
+PASSWORD_VARIABLES = {"postgres": "POSTGRES_PASSWORD", "clickhouse": "CLICKHOUSE_PASSWORD"}
+RESTORED_KINDS = tuple(PASSWORD_VARIABLES)
 
 
 def remember(
@@ -55,13 +53,14 @@ def remember(
     (store or DatasourceStore()).save(record)
 
 
-def password_for(identity: str) -> str | None:
-    """Пароль источника: POSTGRES_PASSWORD__<identity>, иначе общий POSTGRES_PASSWORD.
+def password_for(identity: str, kind: str = "postgres") -> str | None:
+    """Пароль источника: <VAR>__<identity>, иначе общий <VAR> (VAR — по kind в PASSWORD_VARIABLES).
 
     Окружение процесса важнее файлов .env, backend/.env важнее корневого — как в Settings.
     """
+    variable = PASSWORD_VARIABLES[kind]
     sources = [os.environ, *(dotenv_values(path) for path in reversed(ENV_FILES))]
-    for name in (f"{PASSWORD_VARIABLE}__{identity}", PASSWORD_VARIABLE):
+    for name in (f"{variable}__{identity}", variable):
         for values in sources:
             if values.get(name):
                 return values[name]
@@ -70,12 +69,14 @@ def password_for(identity: str) -> str | None:
 
 def connection_string(record: DatasourceRecord) -> str | None:
     """Строка подключения сохранённого источника с паролем из env (None — пароля нет)."""
-    dsn = parse_dsn(record.dsn)
+    dsn = clickhouse.parse_dsn(record.dsn) if record.kind == "clickhouse" else parse_dsn(record.dsn)
     if dsn.password is None:
         return record.dsn
-    password = password_for(record.identity)
+    password = password_for(record.identity, record.kind)
     if password is None:
         return None
+    if record.kind == "clickhouse":
+        return dsn.with_password(password)
     return f"{dsn.connection_string()} password={quote_value(password)}"
 
 
@@ -88,9 +89,9 @@ def restore_source(db, record: DatasourceRecord, dsn: str) -> list[str]:
 async def restore_saved_sources(db, store: DatasourceStore | None = None) -> list[str]:
     """Переподключить сохранённые источники по очереди; вернуть identity восстановленных.
 
-    Каждый источник — в отдельном потоке с таймаутом POSTGRES_RESTORE_TIMEOUT_S.
-    Ошибка источника пишется в лог и не мешает остальным. Источники не из
-    RESTORED_KINDS (ClickHouse) пропускаются.
+    Каждый источник — в отдельном потоке с таймаутом POSTGRES_RESTORE_TIMEOUT_S
+    (общий для PostgreSQL и ClickHouse). Ошибка источника пишется в лог и не
+    мешает остальным. Источники не из RESTORED_KINDS пропускаются.
     """
     try:
         records = await asyncio.to_thread((store or DatasourceStore()).list)
@@ -103,13 +104,14 @@ async def restore_saved_sources(db, store: DatasourceStore | None = None) -> lis
         try:
             dsn = connection_string(record)
             if dsn is None:
+                variable = PASSWORD_VARIABLES[record.kind]
                 logger.warning(
                     "Источник %s (%s) не восстановлен: задайте пароль в %s__%s или %s",
                     record.identity,
                     record.dsn,
-                    PASSWORD_VARIABLE,
+                    variable,
                     record.identity,
-                    PASSWORD_VARIABLE,
+                    variable,
                 )
                 continue
             tables = await asyncio.wait_for(
