@@ -152,11 +152,120 @@ export function insightLines(card: InsightCardData): string[] {
   ];
 }
 
-/** Поиск по вопросу и тексту, без учёта регистра. */
+// Нечёткий поиск: слово запроса ищется в словах карточки подстрокой, а если
+// нет — началом слова с опечатками (окончания русских слов меняются:
+// «выручка» находит «выручки», «продажм» — «продажи»).
+
+type Word = { text: string; start: number; end: number };
+
+const WORD = /[\p{L}\p{N}_]+/gu;
+
+const fold = (text: string) => text.toLowerCase().replace(/ё/g, "е");
+
+function wordsOf(text: string): Word[] {
+  return [...text.matchAll(WORD)].map((m) => {
+    const start = m.index ?? 0;
+    return { text: fold(m[0]), start, end: start + m[0].length };
+  });
+}
+
+function queryTokens(query: string): string[] {
+  return [...new Set(wordsOf(query).map((w) => w.text))];
+}
+
+/** Сколько опечаток прощаем слову запроса: короткие — только подстрокой. */
+const allowedTypos = (length: number) => (length < 4 ? 0 : length <= 6 ? 1 : 2);
+
+/**
+ * Лучшее совпадение слова запроса со словом текста: оценка 0..1 и длина
+ * совпавшей части от начала слова (для подсветки), или null.
+ */
+function matchWord(token: string, word: string): { score: number; from: number; to: number } | null {
+  const at = word.indexOf(token);
+  if (at !== -1) return { score: at === 0 ? 1 : 0.9, from: at, to: at + token.length };
+  const typos = allowedTypos(token.length);
+  if (typos === 0) return null;
+
+  // Расстояние Дамерау–Левенштейна (с перестановкой соседних букв) от слова
+  // запроса до каждого начала слова текста; берём лучшее начало
+  const n = token.length;
+  const m = Math.min(word.length, n + typos);
+  let prev2: number[] = [];
+  let prev = Array.from({ length: m + 1 }, (_, j) => j);
+  for (let i = 1; i <= n; i++) {
+    const row = [i];
+    for (let j = 1; j <= m; j++) {
+      const cost = token[i - 1] === word[j - 1] ? 0 : 1;
+      let d = Math.min(prev[j] + 1, row[j - 1] + 1, prev[j - 1] + cost);
+      if (i > 1 && j > 1 && token[i - 1] === word[j - 2] && token[i - 2] === word[j - 1]) {
+        d = Math.min(d, prev2[j - 2] + 1);
+      }
+      row.push(d);
+    }
+    prev2 = prev;
+    prev = row;
+  }
+  let best: { d: number; j: number } | null = null;
+  for (let j = Math.max(1, n - typos); j <= m; j++) {
+    if (prev[j] <= typos && (!best || prev[j] < best.d)) best = { d: prev[j], j };
+  }
+  if (!best) return null;
+  return { score: 0.8 - (0.3 * best.d) / typos, from: 0, to: best.j };
+}
+
+function bestScore(token: string, words: Word[]): number {
+  let best = 0;
+  for (const word of words) {
+    const hit = matchWord(token, word.text);
+    if (hit && hit.score > best) best = hit.score;
+    if (best === 1) break;
+  }
+  return best;
+}
+
+/**
+ * Нечёткий поиск по вопросу и тексту: каждое слово запроса должно найтись.
+ * Карточки идут по убыванию совпадения, при равенстве — в прежнем порядке.
+ */
 export function filterInsights(cards: InsightCardData[], query: string): InsightCardData[] {
-  const q = norm(query);
-  if (!q) return cards;
-  return cards.filter((card) => norm([card.question, ...insightLines(card)].join(" ")).includes(q));
+  const tokens = queryTokens(query);
+  if (tokens.length === 0) return cards;
+  const phrase = norm(query);
+  const scored: { card: InsightCardData; score: number }[] = [];
+  for (const card of cards) {
+    const questionWords = wordsOf(card.question);
+    const textWords = insightLines(card).flatMap(wordsOf);
+    let score = 0;
+    for (const token of tokens) {
+      // Совпадение в вопросе весит чуть больше, чем в тексте вывода
+      const s = Math.max(bestScore(token, questionWords) * 1.1, bestScore(token, textWords));
+      if (s === 0) {
+        score = 0;
+        break;
+      }
+      score += s;
+    }
+    if (score === 0) continue;
+    if (norm([card.question, ...insightLines(card)].join(" ")).includes(phrase)) score += 0.5;
+    scored.push({ card, score });
+  }
+  return scored.sort((a, b) => b.score - a.score).map((item) => item.card);
+}
+
+/** Куски текста, совпавшие со словами запроса, — для подсветки. */
+function matchRanges(text: string, query: string): [number, number][] {
+  const tokens = queryTokens(query);
+  if (tokens.length === 0) return [];
+  const ranges: [number, number][] = [];
+  for (const word of wordsOf(text)) {
+    let best: { score: number; from: number; to: number } | null = null;
+    for (const token of tokens) {
+      const hit = matchWord(token, word.text);
+      if (hit && (!best || hit.score > best.score)) best = hit;
+    }
+    if (best) ranges.push([word.start + best.from, Math.min(word.end, word.start + best.to)]);
+  }
+  return ranges;
 }
 
 export type TextPart = { text: string; kind: "plain" | "num" | "match" };
@@ -181,15 +290,14 @@ function splitNumbers(text: string): TextPart[] {
 
 /** Текст на куски: совпадения поиска и числа подсвечиваются при просмотре. */
 export function markText(text: string, query = ""): TextPart[] {
-  const q = query.trim().toLowerCase();
-  if (!q) return splitNumbers(text);
+  const ranges = matchRanges(text, query);
+  if (ranges.length === 0) return splitNumbers(text);
   const parts: TextPart[] = [];
-  const lower = text.toLowerCase();
   let pos = 0;
-  for (let at = lower.indexOf(q); at !== -1; at = lower.indexOf(q, pos)) {
-    if (at > pos) parts.push(...splitNumbers(text.slice(pos, at)));
-    parts.push({ text: text.slice(at, at + q.length), kind: "match" });
-    pos = at + q.length;
+  for (const [from, to] of ranges) {
+    if (from > pos) parts.push(...splitNumbers(text.slice(pos, from)));
+    parts.push({ text: text.slice(from, to), kind: "match" });
+    pos = to;
   }
   if (pos < text.length) parts.push(...splitNumbers(text.slice(pos)));
   return parts;
