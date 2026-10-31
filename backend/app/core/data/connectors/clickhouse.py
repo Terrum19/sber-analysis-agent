@@ -156,6 +156,14 @@ class ClickHouseDsn:
         secure = " secure=true" if self.secure else ""
         return f"host={self.host} port={self.port} user={self.user} dbname={self.database}{secure}"
 
+    def with_password(self, password: str) -> str:
+        """DSN clickhouse:// с паролем: parse_dsn соберёт из него тот же источник (identity)."""
+        scheme = "clickhouses" if self.secure else "clickhouse"
+        user = urllib.parse.quote(self.user, safe="")
+        secret = urllib.parse.quote(password, safe="")
+        database = urllib.parse.quote(self.database, safe="")
+        return f"{scheme}://{user}:{secret}@{self.host}:{self.port}/{database}"
+
     def scrub(self, text: str) -> str:
         if not self.password:
             return text

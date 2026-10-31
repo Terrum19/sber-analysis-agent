@@ -10,6 +10,7 @@ from app.api.deps import get_db
 from app.api.routes.chat import iterate_in_thread
 from app.core.data.duckdb_manager import DuckDBManager
 from app.core.llm.fake_client import FakeLLM
+from app.core.memory.session_memory import SessionMemory
 from app.main import app
 
 
@@ -21,6 +22,8 @@ def fake_llm(monkeypatch: pytest.MonkeyPatch) -> Iterator[FakeLLM]:
     monkeypatch.setattr("app.core.agent.insight.LLMClient", FakeLLM)
     db = DuckDBManager(":memory:")
     app.dependency_overrides[get_db] = lambda: db
+    # Чат принимает только сохранённые сессии: «s1» — сессия без таблицы.
+    SessionMemory("s1", db).set_meta(None, None)
     yield FakeLLM()
     app.dependency_overrides.pop(get_db)
 
@@ -39,6 +42,16 @@ def test_chat_stream_forbids_proxy_buffering() -> None:
     assert "content-encoding" not in response.headers
     assert response.text.startswith("data: ")
     assert '"type":"error"' in response.text
+
+
+def test_chat_rejects_a_deleted_session() -> None:
+    SessionMemory.delete("s1")
+    response = TestClient(app).post(
+        "/api/chat", json={"session_id": "s1", "question": "Что в данных?"}
+    )
+    assert response.status_code == 404
+    assert response.json() == {"detail": "Сессия не найдена."}
+    assert not SessionMemory("s1").exists()
 
 
 def test_chat_stream_accepts_recovery_response() -> None:

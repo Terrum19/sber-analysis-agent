@@ -281,7 +281,7 @@ class DashboardTurn:
                 )
             )
         dashboard = await DashboardGenerator(db=self.db).generate(
-            request.session_id, title, _arrange(dashboard_tiles)
+            request.session_id, title, _arrange(dashboard_tiles), turn_id=memory.turn_id
         )
         emit(_progress_event("dashboard", "finished"))
         payload = DashboardPayload.from_dashboard(dashboard)

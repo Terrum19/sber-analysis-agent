@@ -78,3 +78,23 @@ def test_outside_turn_nothing_is_counted():
     usage_module._usage.set(None)
     assert start_call() is None
     record_usage({"prompt_tokens": 1})
+
+
+def test_phase_prefixes_review_and_repair_keys():
+    """«Проверка»: критик — review, исправление — repair/… с теми же ключами, что у хода."""
+    sent: list[dict] = []
+    track_usage(sink=sent.append)
+
+    with llm_scope(phase="review"):
+        record_usage({"prompt_tokens": 1, "completion_tokens": 1})
+    with llm_scope(phase="repair"):
+        with llm_scope(stage="planning"):
+            record_usage({"prompt_tokens": 1, "completion_tokens": 1})
+        with llm_scope(step_id=12):
+            record_usage({"prompt_tokens": 1, "completion_tokens": 1})
+
+    assert [event["data"]["key"] for event in sent] == [
+        "review",
+        "repair/planning",
+        "repair/step:12",
+    ]

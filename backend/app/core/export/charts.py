@@ -48,11 +48,50 @@ def is_table_spec(spec: dict[str, Any] | None) -> bool:
     """Определить, представляет ли спецификация табличный вид вместо графической визуализации."""
     if not spec or not isinstance(spec, dict):
         return False
-    usermeta = spec.get("usermeta")
-    if isinstance(usermeta, dict):
-        chart_type = str(usermeta.get("chart_type") or usermeta.get("requested_type") or "").lower()
-        if chart_type in ("table", "grid", "dataframe"):
+
+    table_type_names = {"table", "grid", "dataframe", "data_table", "tabular", "raw_table"}
+
+    # 1. Проверка явного типа графика в корне спеки или в секциях метаданных
+    candidate_types: list[Any] = [
+        spec.get("chart_type"),
+        spec.get("requested_type"),
+        spec.get("type"),
+        spec.get("kind"),
+    ]
+    for meta_key in ("usermeta", "meta", "params"):
+        meta_val = spec.get(meta_key)
+        if isinstance(meta_val, dict):
+            candidate_types.extend(
+                [
+                    meta_val.get("chart_type"),
+                    meta_val.get("requested_type"),
+                    meta_val.get("type"),
+                    meta_val.get("kind"),
+                ]
+            )
+
+    for c_type in candidate_types:
+        if c_type and str(c_type).strip().lower() in table_type_names:
             return True
+
+    # 2. Проверка служебных полей табличного кодирования vega_spec_builder (__col, __row, __val)
+    encoding = spec.get("encoding")
+    if isinstance(encoding, dict):
+        x_field = (
+            encoding.get("x", {}).get("field") if isinstance(encoding.get("x"), dict) else None
+        )
+        y_field = (
+            encoding.get("y", {}).get("field") if isinstance(encoding.get("y"), dict) else None
+        )
+        text_field = (
+            encoding.get("text", {}).get("field")
+            if isinstance(encoding.get("text"), dict)
+            else None
+        )
+        if x_field == "__col" or y_field == "__row" or text_field == "__val":
+            return True
+
+    # 3. Проверка mark: text
     mark = spec.get("mark")
     mark_type = mark.get("type") if isinstance(mark, dict) else mark
     if mark_type == "text":
@@ -61,6 +100,13 @@ def is_table_spec(spec: dict[str, Any] | None) -> bool:
             isinstance(t, dict) and ("fold" in t or "window" in t) for t in transforms
         ):
             return True
+        if (
+            isinstance(encoding, dict)
+            and "text" in encoding
+            and ("x" in encoding and "y" in encoding)
+        ):
+            return True
+
     return False
 
 
@@ -117,6 +163,116 @@ def validate_chart_spec(spec: dict[str, Any]) -> dict[str, Any]:
     return clean_spec
 
 
+def _detect_x_axis_overlap(
+    x_encoding: dict[str, Any],
+    data_values: list[dict[str, Any]] | None,
+    plot_width: float,
+) -> bool:
+    """Определить, накладываются ли подписи на оси X при горизонтальном размещении."""
+    if not isinstance(x_encoding, dict):
+        return False
+
+    axis = x_encoding.get("axis")
+    if isinstance(axis, dict):
+        current_angle = axis.get("labelAngle")
+        if current_angle not in (None, 0):
+            return False
+
+    # Для непрерывных числовых шкал без явного списка значений Vega-Lite сама генерирует деления
+    x_type = str(x_encoding.get("type") or "").lower()
+    has_explicit_axis_values = isinstance(axis, dict) and isinstance(axis.get("values"), list)
+    if x_type == "quantitative" and not has_explicit_axis_values:
+        return False
+
+    distinct_labels: list[str] = []
+    seen: set[str] = set()
+
+    # 1. Попытка извлечь метки из scale.domain
+    scale = x_encoding.get("scale")
+    if isinstance(scale, dict) and isinstance(scale.get("domain"), list):
+        for item in scale["domain"]:
+            if item is not None:
+                s = str(item)
+                if s not in seen:
+                    seen.add(s)
+                    distinct_labels.append(s)
+
+    # 2. Попытка извлечь метки из axis.values
+    if not distinct_labels and isinstance(axis, dict) and isinstance(axis.get("values"), list):
+        for item in axis["values"]:
+            if item is not None:
+                s = str(item)
+                if s not in seen:
+                    seen.add(s)
+                    distinct_labels.append(s)
+
+    # 3. Извлечь уникальные значения из data_values по полю field
+    field_name = x_encoding.get("field")
+    if not distinct_labels and field_name and isinstance(data_values, list):
+        for row in data_values:
+            if isinstance(row, dict) and field_name in row:
+                val = row[field_name]
+                if val is not None:
+                    s = str(val)
+                    if s not in seen:
+                        seen.add(s)
+                        distinct_labels.append(s)
+
+    n = len(distinct_labels)
+    if n <= 1:
+        return False
+
+    slot_width = plot_width / n
+    max_len = max(len(s) for s in distinct_labels)
+    avg_len = sum(len(s) for s in distinct_labels) / n
+
+    needed_max = max_len * 6.5 + 8.0
+    needed_avg = avg_len * 6.0 + 6.0
+
+    return bool(needed_max > slot_width or needed_avg > slot_width)
+
+
+def _auto_rotate_x_axis(spec: dict[str, Any], default_width: int = DEFAULT_WIDTH) -> None:
+    """Проверить наложение подписей на оси X и повернуть их под -45 градусов при необходимости."""
+    root_data = spec.get("data")
+    root_values = root_data.get("values") if isinstance(root_data, dict) else None
+
+    def _process_view(view: dict[str, Any], parent_values: list[dict[str, Any]] | None) -> None:
+        if not isinstance(view, dict):
+            return
+
+        view_data = view.get("data")
+        view_values = view_data.get("values") if isinstance(view_data, dict) else parent_values
+
+        encoding = view.get("encoding")
+        if isinstance(encoding, dict) and "x" in encoding and isinstance(encoding["x"], dict):
+            x_enc = encoding["x"]
+            view_width = view.get("width")
+            w = (
+                float(view_width)
+                if isinstance(view_width, (int, float)) and view_width > 0
+                else float(default_width)
+            )
+            plot_width = max(100.0, w - 90.0)
+            if _detect_x_axis_overlap(
+                x_enc, view_values if isinstance(view_values, list) else None, plot_width
+            ):
+                axis = x_enc.setdefault("axis", {})
+                if isinstance(axis, dict):
+                    axis["labelAngle"] = -45
+
+        for sub_key in ("layer", "concat", "vconcat", "hconcat"):
+            sub_views = view.get(sub_key)
+            if isinstance(sub_views, list):
+                for sub in sub_views:
+                    if isinstance(sub, dict):
+                        _process_view(sub, view_values)
+        if "spec" in view and isinstance(view["spec"], dict):
+            _process_view(view["spec"], view_values)
+
+    _process_view(spec, root_values if isinstance(root_values, list) else None)
+
+
 def normalize_spec(spec: dict[str, Any], width: int = DEFAULT_WIDTH) -> dict[str, Any]:
     """Адаптировать спецификацию Vega-Lite для автономного рендеринга.
 
@@ -147,6 +303,8 @@ def normalize_spec(spec: dict[str, Any], width: int = DEFAULT_WIDTH) -> dict[str
         normalized["autosize"] = {"type": "pad", "contains": "padding"}
     elif autosize in ("fit", "fit-x", "fit-y"):
         normalized["autosize"] = "pad"
+
+    _auto_rotate_x_axis(normalized, default_width=width)
 
     return normalized
 

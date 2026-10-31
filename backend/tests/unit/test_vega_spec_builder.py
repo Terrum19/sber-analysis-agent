@@ -2,10 +2,12 @@
 
 import datetime as dt
 import json
+import re
 import uuid
 from decimal import Decimal
 
 import pytest
+import vl_convert as vlc
 
 from app.core.data.duckdb_manager import DuckDBManager
 from app.core.viz.vega_spec_builder import (
@@ -13,12 +15,21 @@ from app.core.viz.vega_spec_builder import (
     COUNT_TITLE,
     SPEC_ROW_LIMIT,
     VEGA_LITE_SCHEMA,
+    _temporal_step,
     build_vega_spec,
     chart_title,
     column_aliases,
+    detect_wide_matrix,
     field_ref,
+    heatmap_axis_candidates,
+    heatmap_metric_candidate,
     infer_field_type,
     infer_field_types,
+    is_correlation_matrix,
+    is_fractional_column,
+    is_heatmap_axis,
+    is_integer_column,
+    is_integer_value,
     ordered_column,
     to_json_value,
 )
@@ -225,6 +236,147 @@ def test_heatmap_needs_two_categories(data: list[dict]) -> None:
     assert spec["usermeta"]["chart_type"] != "heatmap"
 
 
+def test_heatmap_cohort_auto_without_xy() -> None:
+    cohort = [
+        {"cohort_week": dt.date(2024, 1, 1), "week_number": 0, "retention": 1.0},
+        {"cohort_week": dt.date(2024, 1, 8), "week_number": 0, "retention": 1.0},
+        {"cohort_week": dt.date(2024, 1, 1), "week_number": 1, "retention": 0.65},
+    ]
+    spec = build_vega_spec("heatmap", data=cohort)
+    assert spec["usermeta"]["chart_type"] == "heatmap"
+    assert spec["encoding"]["x"]["field"] == "cohort_week"
+    assert spec["encoding"]["x"]["type"] == "ordinal"
+    assert spec["encoding"]["x"]["timeUnit"] == "yearmonthdate"
+    assert spec["encoding"]["x"]["axis"]["format"] == "%d.%m.%Y"
+    assert spec["encoding"]["y"]["field"] == "week_number"
+    assert spec["encoding"]["y"]["type"] == "ordinal"
+    assert spec["encoding"]["color"]["field"] == "retention"
+    assert spec["encoding"]["color"]["type"] == "quantitative"
+
+
+def test_heatmap_cohort_explicit_xy() -> None:
+    cohort = [
+        {"cohort_week": dt.date(2024, 1, 1), "week_number": 0, "retention": 1.0},
+        {"cohort_week": dt.date(2024, 1, 8), "week_number": 0, "retention": 1.0},
+    ]
+    spec = build_vega_spec(
+        "heatmap", data=cohort, x="cohort_week", y="week_number", color="retention"
+    )
+    assert spec["usermeta"]["chart_type"] == "heatmap"
+    assert spec["encoding"]["x"]["field"] == "cohort_week"
+    assert spec["encoding"]["x"]["timeUnit"] == "yearmonthdate"
+    assert spec["encoding"]["x"]["axis"]["format"] == "%d.%m.%Y"
+    assert spec["encoding"]["y"]["field"] == "week_number"
+    assert spec["encoding"]["color"]["field"] == "retention"
+
+
+def test_heatmap_weekday_hour_orders_all_int() -> None:
+    grid = [{"weekday": w, "hour": h, "orders": w * 24 + h} for w in range(7) for h in range(24)]
+    spec = build_vega_spec("heatmap", data=grid)
+    assert spec["usermeta"]["chart_type"] == "heatmap"
+    assert spec["encoding"]["x"]["field"] == "weekday"
+    assert spec["encoding"]["y"]["field"] == "hour"
+    assert spec["encoding"]["color"]["field"] == "orders"
+
+
+def test_heatmap_y_metric_moved_to_color_when_color_none() -> None:
+    data = [
+        {"region": "msk", "segment": "b2b", "revenue": 100.5},
+        {"region": "spb", "segment": "b2c", "revenue": 50.2},
+    ]
+    spec = build_vega_spec("heatmap", data=data, x="region", y="revenue", color=None)
+    assert spec["usermeta"]["chart_type"] == "heatmap"
+    assert spec["encoding"]["y"]["field"] != "revenue"
+    assert spec["encoding"]["y"]["field"] == "segment"
+    assert spec["encoding"]["color"]["field"] == "revenue"
+    assert spec["usermeta"]["y"] == "segment"
+    assert spec["usermeta"]["color"] == "revenue"
+
+
+def test_heatmap_y_metric_with_color_set_clears_y() -> None:
+    data = [
+        {"region": "msk", "revenue": 100.5},
+        {"region": "spb", "revenue": 50.2},
+    ]
+    spec = build_vega_spec("heatmap", data=data, x="region", y="revenue", color="revenue")
+    assert spec["usermeta"]["chart_type"] == "bar"
+
+
+def test_heatmap_x_metric_clears_x() -> None:
+    data = [
+        {"region": "msk", "revenue": 100.5},
+        {"region": "spb", "revenue": 50.2},
+    ]
+    spec = build_vega_spec("heatmap", data=data, x="revenue", y="region")
+    assert spec["usermeta"]["chart_type"] == "bar"
+
+
+def test_heatmap_temporal_step_helpers() -> None:
+    assert _temporal_step([]) == ("yearmonthdate", "%d.%m.%Y")
+    assert _temporal_step(["2024-01", "2024-02"]) == ("yearmonth", "%m.%Y")
+    assert _temporal_step([dt.datetime(2024, 1, 1, 10, 0), dt.datetime(2024, 1, 8, 10, 0)]) == (
+        "yearmonthdate",
+        "%d.%m.%Y",
+    )
+    assert _temporal_step(["invalid-date"]) == ("yearmonthdate", "%d.%m.%Y")
+    assert _temporal_step([dt.date(2024, 1, 1), dt.date(2024, 1, 15)]) == (
+        "yearmonthdate",
+        "%d.%m.%Y",
+    )
+    assert _temporal_step([dt.date(2024, 1, 1)], "month") == ("yearmonth", "%m.%Y")
+    assert _temporal_step([dt.date(2024, 1, 1), dt.date(2024, 2, 1)], "order_period") == (
+        "yearmonth",
+        "%m.%Y",
+    )
+    assert _temporal_step([dt.date(2024, 1, 1)], "week") == ("yearmonthdate", "%d.%m.%Y")
+    assert _temporal_step([dt.date(2024, 1, 1)], "some_col") == ("yearmonthdate", "%d.%m.%Y")
+
+
+def test_integer_and_fractional_helpers() -> None:
+    assert is_integer_value(1) is True
+    assert is_integer_value(1.0) is False
+    assert is_integer_value(1.5) is False
+    assert is_integer_value(True) is False
+    assert is_integer_value(None) is False
+    assert is_integer_value("1") is False
+    assert is_integer_value(float("nan")) is False
+
+    records = [{"i": 1, "f": 1.5, "b": True, "large": idx} for idx in range(60)]
+    assert is_integer_column(records, "i") is True
+    assert is_integer_column(records, "f") is False
+    assert is_integer_column([], "i") is False
+    assert is_fractional_column(records, "f") is True
+    assert is_fractional_column(records, "i") is False
+
+    types = {"i": "quantitative", "f": "quantitative", "large": "quantitative", "cat": "nominal"}
+    assert is_heatmap_axis(records, types, None) is False
+    assert is_heatmap_axis(records, types, "unknown") is False
+    assert is_heatmap_axis(records, types, "cat") is True
+    assert is_heatmap_axis(records, types, "i") is True
+    assert is_heatmap_axis(records, types, "f") is False
+    assert is_heatmap_axis(records, types, "large") is False
+
+    assert heatmap_axis_candidates(records, types) == ["cat", "i"]
+    assert heatmap_metric_candidate(records, types) == "f"
+    assert heatmap_metric_candidate(records, {"cat": "nominal"}) is None
+
+    records_large_int = [{"large": idx, "other": 1} for idx in range(60)]
+    types_large = {"large": "quantitative", "other": "quantitative"}
+    assert heatmap_metric_candidate(records_large_int, types_large) == "large"
+
+    records_order = [{"hour": 1, "other": 2}]
+    types_order = {"hour": "quantitative", "other": "quantitative"}
+    assert heatmap_metric_candidate(records_order, types_order) == "other"
+    assert heatmap_metric_candidate(records_order, {"hour": "quantitative"}) == "hour"
+
+
+def test_line_quantitative_not_order_name() -> None:
+    data = [{"qty": 1, "revenue": 10.0}, {"qty": 2, "revenue": 20.0}]
+    spec = build_vega_spec("line", data=data, x="qty", y="revenue")
+    assert spec["encoding"]["x"]["field"] == "qty"
+    assert spec["encoding"]["x"]["type"] == "quantitative"
+
+
 def test_table_folds_columns() -> None:
     spec = build_vega_spec("table", None, data=[{"a.b": 1, "region": "msk"}])
     assert spec["mark"] == "text"
@@ -370,3 +522,199 @@ def test_ordered_column_prefers_dates_then_names() -> None:
     assert ordered_column({"region": "nominal", "month": "temporal"}) == "month"
     assert ordered_column({"region": "nominal", "year": "quantitative"}) == "year"
     assert ordered_column({"region": "nominal", "revenue": "quantitative"}) is None
+
+
+def test_heatmap_overflow_and_corner_coverage() -> None:
+    # Overflow/NaN in Decimal float conversion
+    assert is_integer_value(Decimal("1e10000")) is False
+    assert is_integer_value(Decimal("NaN")) is False
+    # Non-standard field type for axis check
+    assert is_heatmap_axis([{"x": 1}], {"x": "unknown_type"}, "x") is False
+    # _temporal_step with unparseable/non-date types
+    assert _temporal_step([123, object()]) == ("yearmonthdate", "%d.%m.%Y")
+    # Heatmap where color was picked (existing column, but nominal, not quantitative),
+    # so color channel falls back to count and color is removed from usermeta
+    spec = build_vega_spec(
+        "heatmap",
+        data=[{"region": "msk", "segment": "b2b"}],
+        color="region",
+    )
+    assert spec["usermeta"]["chart_type"] == "heatmap"
+    assert "color" not in spec["usermeta"]
+
+    # Heatmap where y is metric, color is None, but no replacements exist -> falls back to bar
+    # and usermeta x, y are set to bar channels
+    spec_bar = build_vega_spec(
+        "heatmap",
+        data=[{"region": "msk", "revenue": 10.5}],
+        x="region",
+        y="revenue",
+        color=None,
+    )
+    assert spec_bar["usermeta"]["chart_type"] == "bar"
+    assert spec_bar["usermeta"]["x"] == "region"
+    assert spec_bar["usermeta"]["y"] == "revenue"
+
+
+def test_heatmap_cohort_svg_renders_date_labels_not_epoch() -> None:
+    cohort = [
+        {"cohort_week": dt.date(2024, 1, 1), "week_number": 0, "retention": 1.0},
+        {"cohort_week": dt.date(2024, 1, 8), "week_number": 0, "retention": 1.0},
+        {"cohort_week": dt.date(2024, 1, 1), "week_number": 1, "retention": 0.65},
+    ]
+    spec = build_vega_spec("heatmap", data=cohort)
+    svg = vlc.vegalite_to_svg(spec)
+    labels = re.findall(r"<text[^>]*>(.*?)</text>", svg)
+    assert "01.01.2024" in labels
+    assert "08.01.2024" in labels
+    assert not any("1704" in label for label in labels)
+
+
+def test_heatmap_wide_correlation_matrix_without_index_column() -> None:
+    records = [
+        {"male": 1.0, "age": 0.14, "isAlive": -0.15},
+        {"male": 0.14, "age": 1.0, "isAlive": -0.31},
+        {"male": -0.15, "age": -0.31, "isAlive": 1.0},
+    ]
+    spec = build_vega_spec("heatmap", "corr_table", data=records, title="Корреляционная матрица")
+    assert spec["usermeta"]["chart_type"] == "heatmap"
+    assert spec["mark"] == "rect"
+    assert spec["encoding"]["color"]["scale"]["scheme"] == "redblue"
+    assert spec["encoding"]["color"]["scale"]["domain"] == [-1, 1]
+    assert spec["encoding"]["x"]["scale"]["domain"] == ["male", "age", "isAlive"]
+    assert spec["encoding"]["y"]["scale"]["domain"] == ["male", "age", "isAlive"]
+    assert len(spec["data"]["values"]) == 9
+    svg = vlc.vegalite_to_svg(spec)
+    assert "male" in svg
+    assert "isAlive" in svg
+
+
+def test_heatmap_wide_correlation_matrix_with_feature_column() -> None:
+    records = [
+        {"feature": "Price", "Price": 1.0, "Area": 0.4},
+        {"feature": "Area", "Price": 0.4, "Area": 1.0},
+    ]
+    spec = build_vega_spec("heatmap", data=records)
+    assert spec["usermeta"]["chart_type"] == "heatmap"
+    assert spec["mark"] == "rect"
+    assert spec["encoding"]["color"]["title"] == "Корреляция"
+    assert len(spec["data"]["values"]) == 4
+
+
+def test_heatmap_wide_general_pivot_matrix() -> None:
+    records = [
+        {"segment": "b2b", "2021": 100.0, "2022": 120.0, "2023": 150.0},
+        {"segment": "b2c", "2021": 80.0, "2022": 90.0, "2023": 110.0},
+    ]
+    spec = build_vega_spec("heatmap", data=records)
+    assert spec["usermeta"]["chart_type"] == "heatmap"
+    assert spec["encoding"]["color"]["scale"]["scheme"] == "blues"
+    assert spec["encoding"]["color"]["title"] == "Значение"
+    assert spec["encoding"]["x"]["scale"]["domain"] == ["2021", "2022", "2023"]
+    assert spec["encoding"]["y"]["scale"]["domain"] == ["b2b", "b2c"]
+    assert len(spec["data"]["values"]) == 6
+
+
+def test_heatmap_rejects_unique_row_id_and_long_text() -> None:
+    # 5 rows with unique "column_name" (primary key), 1 nominal "type", 1 float metric, 1 large int, 1 long text
+    records = [
+        {
+            "column_name": f"col_{i}",
+            "type": "num" if i % 2 == 0 else "txt",
+            "fill_pct": 90.0 + i,
+            "unique_cnt": 1500 + i,
+            "description": "very long description of column values exceeding fifty characters easily "
+            * 2,
+        }
+        for i in range(5)
+    ]
+    types = infer_field_types(records)
+    assert is_heatmap_axis(records, types, "column_name") is False
+    assert is_heatmap_axis(records, types, "description") is False
+    assert is_heatmap_axis(records, types, "unique_cnt") is False
+    assert is_heatmap_axis(records, types, "type") is True
+    # Because only 1 axis candidate exists, falls back to bar chart
+    spec = build_vega_spec("heatmap", data=records)
+    assert spec["usermeta"]["chart_type"] == "bar"
+    assert spec["mark"] == "bar"
+
+
+def test_wide_matrix_helpers_corner_cases() -> None:
+    assert detect_wide_matrix([], {}) is None
+    assert detect_wide_matrix([{"a": 1}], {"a": "quantitative"}) is None
+    assert (
+        detect_wide_matrix([{"a": 1, "b": 2}], {"a": "quantitative", "b": "quantitative"}) is None
+    )
+    # 3 non-quant columns -> None
+    assert (
+        detect_wide_matrix(
+            [{"a": "x", "b": "y", "c": "z", "v": 1, "w": 2}],
+            {
+                "a": "nominal",
+                "b": "nominal",
+                "c": "nominal",
+                "v": "quantitative",
+                "w": "quantitative",
+            },
+        )
+        is None
+    )
+    # 1 non-quant, 2 order quant columns -> None
+    assert (
+        detect_wide_matrix(
+            [{"label": "a", "year": 2021, "month": 5}, {"label": "b", "year": 2022, "month": 6}],
+            {"label": "nominal", "year": "quantitative", "month": "quantitative"},
+        )
+        is None
+    )
+    # is_correlation_matrix corner cases
+    assert is_correlation_matrix([{"a": 1.0}], ["a", "b"]) is False
+    assert is_correlation_matrix([{"a": "invalid"}], ["a"]) is False
+    assert is_correlation_matrix([{"a": 2.5}], ["a"]) is False
+    assert is_correlation_matrix([{"a": Decimal("NaN")}], ["a"]) is False
+    assert is_correlation_matrix([{"a": Decimal("1e10000")}], ["a"]) is False
+    assert is_correlation_matrix([{"a": 0.0}], ["a"]) is False
+    assert is_correlation_matrix([{"a": 1.0, "b": None}, {"a": None, "b": 1.0}], ["a", "b"]) is True
+    # is_heatmap_axis with empty records
+    assert is_heatmap_axis([], {"col": "nominal"}, "col") is True
+    # is_heatmap_axis with empty column values
+    assert is_heatmap_axis([{"empty": None}], {"empty": "nominal"}, "empty") is True
+    # distinct > 50 on integer column (with duplicate rows so not a primary key)
+    assert (
+        is_heatmap_axis([{"large": i % 55} for i in range(110)], {"large": "quantitative"}, "large")
+        is False
+    )
+    # non-order int with negative values or > 50
+    assert (
+        is_heatmap_axis(
+            [{"code": -5}],
+            {"code": "quantitative"},
+            "code",
+        )
+        is False
+    )
+    assert (
+        is_heatmap_axis(
+            [{"code": 100}],
+            {"code": "quantitative"},
+            "code",
+        )
+        is False
+    )
+
+
+def test_heatmap_wide_matrix_explicit_invalid_xy_unpivots_not_bar() -> None:
+    # When user/model mistakenly passes numeric metric columns as x and y on a wide correlation matrix,
+    # it must NOT fall back to _bar, but instead unpivot the wide matrix into heatmap cells.
+    records = [
+        {"male": 1.0, "age": -0.14, "isAlive": -0.05},
+        {"male": -0.14, "age": 1.0, "isAlive": 0.65},
+        {"male": -0.05, "age": 0.65, "isAlive": 1.0},
+    ]
+    spec = build_vega_spec("heatmap", data=records, x="male", y="age")
+    assert spec["usermeta"]["chart_type"] == "heatmap"
+    assert spec["mark"] == "rect"
+    assert len(spec["data"]["values"]) == 9
+    assert spec["encoding"]["color"]["title"] == "Корреляция"
+    assert spec["encoding"]["x"]["field"] == "x"
+    assert spec["encoding"]["y"]["field"] == "y"

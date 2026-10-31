@@ -1042,3 +1042,178 @@ def test_api_export_chart_render_failure_adds_warning_in_pdf(
     reader = pypdf.PdfReader(io.BytesIO(resp.content))
     text = "".join(p.extract_text() or "" for p in reader.pages)
     assert "График не удалось отобразить в PDF (ошибка рендеринга визуализации)" in text
+
+
+def test_api_export_heatmap_unpivots_wide_matrix(client: TestClient, monkeypatch) -> None:
+    """Проверка того, что экспорт артефакта heatmap с широкой матрицей пересобирает спеку в unpivoted ячейки."""
+    db: DuckDBManager = client.app.dependency_overrides[get_db]()
+    db.execute(
+        "CREATE TABLE temp_result_v77 AS SELECT 1.0 AS a, -0.2 AS b UNION ALL SELECT -0.2 AS a, 1.0 AS b"
+    )
+    memory = SessionMemory("heatmap_export_session", db)
+    memory.set_table("raw")
+    memory.start_turn("Построй корреляции")
+    memory.finish_turn(
+        "ok",
+        result_table="temp_result_v77",
+        result_columns=["a", "b"],
+    )
+
+    rendered_specs: list[dict] = []
+
+    def mock_render(spec, **kwargs):
+        rendered_specs.append(spec)
+        return b"fake_png"
+
+    monkeypatch.setattr("app.api.routes.artifacts.render_chart_png", mock_render)
+
+    resp = client.post(
+        "/api/artifacts/export",
+        json={
+            "session_id": "heatmap_export_session",
+            "format": "pdf",
+            "result_ref": "temp_result_v77",
+            "spec": {"usermeta": {"chart_type": "heatmap"}},
+        },
+    )
+    assert resp.status_code == 200
+    assert len(rendered_specs) == 1
+    # Спека должна содержать 4 unpivoted ячейки x, y, value
+    assert len(rendered_specs[0]["data"]["values"]) == 4
+    assert rendered_specs[0]["encoding"]["x"]["field"] == "x"
+    assert rendered_specs[0]["encoding"]["y"]["field"] == "y"
+
+
+def test_is_table_spec_extended_detection() -> None:
+    """Проверка расширенного определения табличных спецификаций."""
+    from app.core.export.charts import is_table_spec, render_chart_png
+
+    assert is_table_spec({"chart_type": "table"}) is True
+    assert is_table_spec({"type": "table"}) is True
+    assert is_table_spec({"kind": "dataframe"}) is True
+    assert is_table_spec({"meta": {"chart_type": "grid"}}) is True
+    assert is_table_spec({"encoding": {"x": {"field": "__col"}, "y": {"field": "__row"}}}) is True
+    assert is_table_spec({"encoding": {"text": {"field": "__val"}}}) is True
+    assert (
+        is_table_spec(
+            {
+                "mark": "text",
+                "encoding": {
+                    "x": {"field": "col"},
+                    "y": {"field": "row"},
+                    "text": {"field": "val"},
+                },
+            }
+        )
+        is True
+    )
+    # Обычный mark: text без кодирования не считается таблицей (KPI или одиночный текст)
+    assert is_table_spec({"mark": "text"}) is False
+    assert is_table_spec({"mark": "bar"}) is False
+    assert is_table_spec(None) is False
+    assert is_table_spec({}) is False
+
+    # render_chart_png не должен рендерить табличные спеки в растр
+    assert render_chart_png({"chart_type": "table"}) is None
+    assert render_chart_png({"encoding": {"x": {"field": "__col"}}}) is None
+
+
+def test_normalize_spec_x_axis_auto_rotation() -> None:
+    """Если подписи по оси X накладываются, они должны быть повернуты под -45 градусов."""
+    from app.core.export.charts import normalize_spec
+
+    # 1. Длинные перекрывающиеся категории -> labelAngle: -45
+    spec_dense = {
+        "mark": "bar",
+        "data": {
+            "values": [
+                {"month": "Январь 2024", "v": 10},
+                {"month": "Февраль 2024", "v": 20},
+                {"month": "Март 2024", "v": 30},
+                {"month": "Апрель 2024", "v": 40},
+                {"month": "Май 2024", "v": 50},
+                {"month": "Июнь 2024", "v": 60},
+                {"month": "Июль 2024", "v": 70},
+                {"month": "Август 2024", "v": 80},
+                {"month": "Сентябрь 2024", "v": 90},
+                {"month": "Октябрь 2024", "v": 100},
+                {"month": "Ноябрь 2024", "v": 110},
+                {"month": "Декабрь 2024", "v": 120},
+            ]
+        },
+        "encoding": {
+            "x": {"field": "month", "type": "nominal"},
+            "y": {"field": "v", "type": "quantitative"},
+        },
+    }
+    norm_dense = normalize_spec(spec_dense, width=640)
+    assert norm_dense["encoding"]["x"]["axis"]["labelAngle"] == -45
+
+    # 2. Небольшое количество коротких категорий -> labelAngle не выставляется
+    spec_sparse = {
+        "mark": "bar",
+        "data": {
+            "values": [
+                {"cat": "A", "v": 10},
+                {"cat": "B", "v": 20},
+                {"cat": "C", "v": 30},
+            ]
+        },
+        "encoding": {
+            "x": {"field": "cat", "type": "nominal"},
+            "y": {"field": "v", "type": "quantitative"},
+        },
+    }
+    norm_sparse = normalize_spec(spec_sparse, width=640)
+    axis = norm_sparse["encoding"]["x"].get("axis", {})
+    assert axis.get("labelAngle") in (None, 0)
+
+    # 3. Уже заданный ненулевой угол не перезаписывается
+    spec_custom = {
+        "mark": "bar",
+        "data": spec_dense["data"],
+        "encoding": {
+            "x": {"field": "month", "type": "nominal", "axis": {"labelAngle": 90}},
+            "y": {"field": "v", "type": "quantitative"},
+        },
+    }
+    norm_custom = normalize_spec(spec_custom, width=640)
+    assert norm_custom["encoding"]["x"]["axis"]["labelAngle"] == 90
+
+    # 4. Числовая ось без явных меток не считается перекрывающейся
+    spec_quant = {
+        "mark": "point",
+        "data": {"values": [{"x": float(i), "y": float(i * 2)} for i in range(50)]},
+        "encoding": {
+            "x": {"field": "x", "type": "quantitative"},
+            "y": {"field": "y", "type": "quantitative"},
+        },
+    }
+    norm_quant = normalize_spec(spec_quant, width=640)
+    assert norm_quant["encoding"]["x"].get("axis", {}).get("labelAngle") in (None, 0)
+
+    # 5. Метки из scale.domain
+    spec_domain = {
+        "mark": "bar",
+        "encoding": {
+            "x": {
+                "field": "city",
+                "type": "nominal",
+                "scale": {
+                    "domain": [
+                        "Санкт-Петербург",
+                        "Нижний Новгород",
+                        "Екатеринбург",
+                        "Новосибирск",
+                        "Владивосток",
+                        "Ростов-на-Дону",
+                        "Красноярск",
+                        "Калининград",
+                    ]
+                },
+            },
+            "y": {"field": "val", "type": "quantitative"},
+        },
+    }
+    norm_domain = normalize_spec(spec_domain, width=640)
+    assert norm_domain["encoding"]["x"]["axis"]["labelAngle"] == -45

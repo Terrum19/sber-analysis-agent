@@ -7,6 +7,7 @@ from pydantic import BaseModel, Field, StringConstraints, model_validator
 
 from app.api.schemas.dashboard import DashboardTileOut
 from app.core.dashboards.models import Dashboard
+from app.models.clarify import MAX_CLARIFICATIONS, Axis, Clarification
 from app.models.dashboard_plan import DashboardIdea
 from app.models.research_step import NOTE_LIMIT
 
@@ -99,6 +100,10 @@ class ChatRequest(BaseModel):
     # turn_id остановленного или упавшего хода: продолжить его с чекпоинта,
     # не повторяя выполненные шаги и плитки (question тогда не используется).
     resume_turn: str | None = None
+    # Режим «Проверка» (A-29): проверки шагов, критик ответа и исправление по вердикту.
+    verify: bool = False
+    # Ответы на уточняющие вопросы глубокого исследования (A-28): в план, инсайт и журнал хода.
+    clarifications: list[Clarification] | None = Field(default=None, max_length=MAX_CLARIFICATIONS)
 
 
 class ChartPayload(BaseModel):
@@ -157,9 +162,25 @@ class ProgressPayload(BaseModel):
     на ``code_language`` (sql или python), если шаг выполнял код.
     ``turn_id`` — в начале planning и outline: по нему фронт продолжает
     остановленный ход (``ChatRequest.resume_turn``), ``done`` до него не дойдёт.
+
+    Режим «Проверка» (A-29): ``check`` — проверка результата шага
+    (``findings`` на finished), ``review`` — критик (``round``), ``repair`` —
+    исправление ответа (``action``, ``reason``); этапы исправления приходят
+    с ``revision`` 1.
     """
 
-    stage: Literal["planning", "step", "insight", "chart", "dashboard", "outline", "tile"]
+    stage: Literal[
+        "planning",
+        "step",
+        "insight",
+        "chart",
+        "dashboard",
+        "outline",
+        "tile",
+        "check",
+        "review",
+        "repair",
+    ]
     status: Literal["started", "finished", "failed", "fixing"]
     step_id: int | None = None
     tool: str | None = None
@@ -183,6 +204,11 @@ class ProgressPayload(BaseModel):
     code: str | None = None
     code_language: Literal["sql", "python"] | None = None
     turn_id: str | None = None
+    findings: list[dict[str, str]] | None = None
+    round: int | None = None
+    action: str | None = None
+    reason: str | None = None
+    revision: int | None = None
 
 
 class DashboardIdeasRequest(BaseModel):
@@ -201,6 +227,28 @@ class DashboardIdeasOut(BaseModel):
     """Ответ POST /sessions/{id}/dashboard-ideas: варианты дашборда для кнопок."""
 
     ideas: list[DashboardIdea]
+
+
+class ClarifyRequest(BaseModel):
+    """Тело POST /sessions/{id}/clarify: вопрос до начала хода и ответ, к которому он."""
+
+    question: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1)]
+    reply_to: str | None = None
+
+
+class ClarifyQuestionOut(BaseModel):
+    id: str
+    axis: Axis
+    text: str
+    options: list[str]
+    multi: bool = False
+
+
+class ClarifyOut(BaseModel):
+    """Ответ POST /sessions/{id}/clarify: вопроса хватает или вопросы для карточки."""
+
+    enough_info: bool
+    questions: list[ClarifyQuestionOut] = Field(default_factory=list)
 
 
 class StepResultOut(BaseModel):
@@ -225,6 +273,7 @@ class ChatEvent(BaseModel):
         "dashboard_outline",
         "dashboard_fallback",
         "table",
+        "review",
         "usage",
     ]
     data: dict[str, Any] = Field(default_factory=dict)

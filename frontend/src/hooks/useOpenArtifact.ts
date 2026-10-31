@@ -9,8 +9,8 @@ export function useOpenArtifact() {
   const router = useRouter();
   const saveArtifact = useArtifactStore((s) => s.saveArtifact);
 
-  return function openArtifact(tile: DashboardTile, sessionId?: string) {
-    const id = saveArtifact(tile, sessionId);
+  return function openArtifact(tile: DashboardTile, sessionId?: string, dashboardId?: string) {
+    const id = saveArtifact(tile, sessionId, dashboardId);
     router.push(`/artifact/${id}`);
   };
 }

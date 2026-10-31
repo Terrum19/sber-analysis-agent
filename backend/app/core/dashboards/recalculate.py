@@ -4,7 +4,12 @@ from dataclasses import dataclass, field
 from app.core.dashboards.models import Dashboard
 from app.core.dashboards.store import DashboardStore, snapshot_records
 from app.core.data.duckdb_manager import DuckDBManager
-from app.core.viz.vega_spec_builder import SPEC_ROW_LIMIT, build_vega_spec
+from app.core.viz.vega_spec_builder import (
+    SPEC_ROW_LIMIT,
+    build_vega_spec,
+    detect_wide_matrix,
+    infer_field_types,
+)
 
 
 @dataclass
@@ -24,15 +29,20 @@ def rebuild_spec(spec: dict, result_table: str | None, records: list[dict]) -> d
         if column.get("field") and column.get("title")
     }
     title = spec.get("title")
+    target_type = usermeta.get("requested_type") or usermeta.get("chart_type") or "bar"
+    is_matrix = bool(records and detect_wide_matrix(records, infer_field_types(records)))
+    x = None if is_matrix else usermeta.get("x")
+    y = None if is_matrix else usermeta.get("y")
+    color = None if is_matrix else usermeta.get("color")
     return build_vega_spec(
-        usermeta.get("requested_type") or usermeta.get("chart_type") or "bar",
+        target_type,
         result_table=result_table,
         data=records,
         titles=titles,
         title=title if isinstance(title, str) else None,
-        x=usermeta.get("x"),
-        y=usermeta.get("y"),
-        color=usermeta.get("color"),
+        x=x,
+        y=y,
+        color=color,
     )
 
 
@@ -62,7 +72,7 @@ def recalculate(
         return None
     stale_tiles = set()
     for tile in dashboard.tiles:
-        if not tile.result_table:
+        if tile.hidden or not tile.result_table:
             continue
         # Под одним lock: очистка temp_result_vN не удалит таблицу между проверкой и чтением.
         with db.lock:

@@ -391,3 +391,14 @@ def test_stream_without_quality_fixes_shows_at_once(db, monkeypatch):
     llm = AnswersLLM(["Всего 41 строка", "\n- деталь"])
     _, _, shown = stream(InsightGenerator(llm=llm, db=db))
     assert shown == ["Всего 41 строка", "\n- деталь"] and len(llm.prompts) == 1
+
+
+def test_stream_prompt_has_clarifications(db):
+    """Ответы на уточнения глубокого исследования (A-28) доходят и до стримового вывода."""
+    llm = AnswersLLM(["Всего **2** строки\n", "- деталь"])
+    gen = InsightGenerator(llm=llm, db=db)
+    clarified = [{"question": "Какая цель?", "answer": "сравнить регионы", "axis": "goal"}]
+
+    asyncio.run(gen.stream("Тест", "temp_result_v1", clarifications=clarified, emit=lambda _: None))
+
+    assert "сравнить регионы" in llm.prompts[0]

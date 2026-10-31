@@ -691,3 +691,73 @@ def test_clarification_after_a_failed_step_is_not_a_refusal(sales_db: DuckDBMana
     )
     [check] = runner.check_turn({"refusal": True}, failed_step, sales_db)
     assert check.reason.startswith("ждали отказ, агент запросил уточнение: ")
+
+
+# --- режим «Проверка» (A-29) ---
+
+REVIEWED_EVENTS = [
+    {"type": "text", "data": {"headline": "черновик", "details": [], "revision": 0}},
+    {"type": "chart", "data": {"spec": {"mark": "bar"}, "caption": "черновик", "revision": 0}},
+    {
+        "type": "review",
+        "data": {
+            "round": 1,
+            "verdict": "extend_plan",
+            "action": "extend_plan",
+            "issues": [{"message": "выбросы"}],
+            "caveats": [],
+        },
+    },
+    {"type": "text", "data": {"headline": "исправлено", "details": ["медиана"], "revision": 1}},
+    {"type": "chart", "data": {"spec": {"mark": "line"}, "caption": "исправлено", "revision": 1}},
+    {
+        "type": "review",
+        "data": {"round": 2, "verdict": "caveat", "action": "caveat", "caveats": ["x"]},
+    },
+    {"type": "done", "data": {}},
+]
+
+
+def test_reviewed_turn_is_scored_by_its_final_answer() -> None:
+    turn = make_turn(REVIEWED_EVENTS)
+
+    assert runner.answer_text(turn) == "исправлено\nмедиана"
+    assert runner.chart_types(turn) == ["line"]
+    assert "черновик" not in runner.visible_text(turn)
+    assert runner.review_of(turn) == {
+        "verdict": "caveat",
+        "action": "extend_plan",
+        "repaired": True,
+        "issues": ["выбросы"],
+        "caveats": ["x"],
+    }
+    assert runner.review_of(make_turn(ANSWER_EVENTS)) is None
+
+
+def test_review_summary_and_report_line() -> None:
+    reviewed = [
+        result("a", 2, True, review={"verdict": "ok", "action": "ok", "repaired": False}),
+        result("b", 2, True, review={"verdict": "caveat", "action": "replan", "repaired": True}),
+        result("c", 2, False, review={"verdict": "ok", "action": "fix_insight", "repaired": True}),
+    ]
+
+    report = runner.summarize(reviewed, "fake", FIXTURE, date(2026, 10, 31))
+
+    assert report["review"] == {
+        "reviewed": 3,
+        "first_actions": {"ok": 1, "replan": 1, "fix_insight": 1},
+        "final_verdicts": {"ok": 2, "caveat": 1},
+        "repaired": 2,
+        "repaired_passed": 1,
+    }
+    assert "исправлено ответов 2, из них прошли 1" in runner.render(report)
+    assert runner.summarize(SAMPLE_RESULTS, "fake", FIXTURE, date(2026, 10, 31))["review"] is None
+
+
+async def test_run_turn_sends_verify() -> None:
+    orchestrator = ScriptedOrchestrator([{"type": "done", "data": {}}])
+
+    await runner.run_turn(orchestrator, runner.Trace(), "session", "вопрос", verify=True)
+
+    assert orchestrator.requests[0].verify is True
+    assert runner.parse_args(["--fake", "--verify"]).verify is True

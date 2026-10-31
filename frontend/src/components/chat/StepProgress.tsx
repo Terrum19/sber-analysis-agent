@@ -8,6 +8,8 @@
  * «N шагов · X с · N токенов», по клику раскрывается. В режиме дашборда (#224) вместо
  * плоского списка — плитки плана, у каждой свой статус и свои шаги.
  * Остановленный или упавший ход с готовыми шагами — кнопка «Продолжить».
+ * В режиме «Проверка» (A-29) у шага — значок проверки его результата и
+ * найденные аномалии; в исправлении ответа новые шаги помечены «добавлено проверкой».
  */
 import { useCallback, useEffect, useId, useMemo, useState, type ReactNode } from "react";
 import StepDetails from "@/components/chat/StepDetails";
@@ -61,7 +63,7 @@ function tokensLabel(locale: Locale, count: number): string {
  * Пока LLM пишет — «~N» с пульсом: ответ считается по пришедшим кускам, промпт
  * станет известен в конце вызова.
  */
-function Tokens({ tokens, separated = false }: { tokens?: ScopeTokens; separated?: boolean }) {
+export function Tokens({ tokens, separated = false }: { tokens?: ScopeTokens; separated?: boolean }) {
   const t = useT();
   const locale = useUiStore((s) => s.locale);
   if (!tokens) return null;
@@ -101,6 +103,7 @@ function StepRow({
   onToggle,
   details,
   tokens,
+  added,
 }: {
   step: StepState;
   number: number;
@@ -109,6 +112,8 @@ function StepRow({
   onToggle: () => void;
   details: ReactNode;
   tokens?: ScopeTokens;
+  /** Шаг дописан проверкой ответа (режим «Проверка»). */
+  added?: boolean;
 }) {
   const t = useT();
   const icon =
@@ -158,11 +163,36 @@ function StepRow({
             {note}
           </span>
         )}
+        {added && <span className="shrink-0 rounded bg-graphite-800 px-1 text-[10.5px] text-graphite-300">{t("verify.added")}</span>}
+        {step.check?.status === "started" && (
+          <span className="inline-flex shrink-0 items-center gap-1 text-graphite-500">
+            <Icon name="refresh" size={11} className="animate-spin" />
+            {t("verify.checking")}
+          </span>
+        )}
+        {step.check?.status === "finished" && step.check.findings.length === 0 && (
+          <span className="shrink-0 text-good" title={t("verify.stepClean")}>
+            <Icon name="search" size={11} />
+          </span>
+        )}
+        {step.check?.status === "finished" && step.check.findings.length > 0 && (
+          <span className="inline-flex shrink-0 items-center gap-0.5 text-warn" title={step.check.findings.map((f) => f.message).join("\n")}>
+            <Icon name="alertTriangle" size={11} />
+            {step.check.findings.length}
+          </span>
+        )}
         <Tokens tokens={tokens} />
         {step.elapsed_ms !== undefined && step.status !== "fixing" && (
           <span className="shrink-0 tabular-nums text-graphite-500">{duration(t, step.elapsed_ms)}</span>
         )}
       </button>
+      {step.check?.status === "finished" && step.check.findings.length > 0 && (
+        <ul className="ml-[3.25rem] mt-0.5 space-y-0.5 text-[11.5px] text-warn/90">
+          {step.check.findings.map((finding, index) => (
+            <li key={index}>⚠ {finding.message}</li>
+          ))}
+        </ul>
+      )}
       {open && details}
     </li>
   );
@@ -266,10 +296,13 @@ export default function StepProgress({
   progress,
   sessionId,
   onResume,
+  knownSteps,
 }: {
   progress: TurnProgress;
   sessionId?: string;
   onResume?: () => void;
+  /** Исправление ответа: шаги первого прогона; остальные помечены «добавлено проверкой». */
+  knownSteps?: ReadonlySet<number>;
 }) {
   const t = useT();
   const locale = useUiStore((s) => s.locale);
@@ -333,6 +366,7 @@ export default function StepProgress({
       open={openSteps.has(step.step_id)}
       onToggle={() => setOpenSteps((set) => toggle(set, step.step_id))}
       tokens={progress.usage?.[stepTokensKey(step)]}
+      added={knownSteps !== undefined && !knownSteps.has(step.step_id)}
       details={
         <StepDetails
           step={step}

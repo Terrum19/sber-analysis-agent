@@ -96,6 +96,31 @@ def test_rejection_explains_what_does_not_fit() -> None:
     # Без колонок — проверка по первым категории и числу, как раньше.
     assert rejection(ChartPick(chart_type="bar"), STORES) is None
 
+    # Heatmap: y метрика при пустом color переносится в color, если есть вторая категория
+    choice_repaired = ChartPick(chart_type="heatmap", x="store_id", y="revenue", color=None)
+    assert rejection(choice_repaired, STORES) is None
+    assert choice_repaired.y == "category"
+    assert choice_repaired.color == "revenue"
+
+    # Heatmap: y метрика без второй категории возвращает понятный отказ
+    two_cols = [{"region": "msk", "revenue": 10.5}]
+    choice_bad_y = ChartPick(chart_type="heatmap", x="region", y="revenue", color=None)
+    assert rejection(choice_bad_y, two_cols) == (
+        "heatmap: y='revenue' — числовая метрика; x и y должны быть "
+        "категориями (или датой и номером периода), а число — в color"
+    )
+
+    # Heatmap: y метрика при уже занятом color возвращает отказ
+    choice_busy_color = ChartPick(chart_type="heatmap", x="store_id", y="revenue", color="category")
+    assert "y='revenue' — числовая метрика" in rejection(choice_busy_color, STORES)
+
+    # Heatmap: x метрика возвращает отказ
+    choice_bad_x = ChartPick(chart_type="heatmap", x="revenue", y="category")
+    assert rejection(choice_bad_x, STORES) == (
+        "heatmap: x='revenue' — числовая метрика; x и y должны быть "
+        "категориями (или датой и номером периода), а число — в color"
+    )
+
 
 def test_limit_keeps_the_top_rows_by_y() -> None:
     many = [{"store_id": store, "revenue": float(store % 7)} for store in range(40)]
@@ -144,3 +169,16 @@ def test_tile_switches_view_from_its_own_rows() -> None:
     assert bar["data"]["values"] == table["data"]["values"]
     assert bar["usermeta"]["result_table"] == "temp_result_v1"
     assert respec({"mark": "bar"}, "line") == {"mark": "bar"}
+
+
+def test_rejection_accepts_wide_matrix_for_heatmap() -> None:
+    records = [
+        {"male": 1.0, "age": 0.14, "isAlive": -0.15},
+        {"male": 0.14, "age": 1.0, "isAlive": -0.31},
+        {"male": -0.15, "age": -0.31, "isAlive": 1.0},
+    ]
+    assert rejection(ChartPick(chart_type="heatmap"), records) is None
+    rej = rejection(ChartPick(chart_type="bar", x="male", y="age"), records)
+    assert rej is not None
+    assert "матрицу" in rej
+    assert "heatmap" in rej

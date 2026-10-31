@@ -12,7 +12,7 @@
 
 import time
 from collections.abc import Callable, Iterator
-from contextlib import contextmanager
+from contextlib import contextmanager, suppress
 from contextvars import ContextVar
 from dataclasses import dataclass, field
 from typing import Any
@@ -112,8 +112,13 @@ _scope: ContextVar[dict[str, Any] | None] = ContextVar("llm_scope", default=None
 
 
 def scope_key(fields: dict[str, Any]) -> str:
-    """«planning», «step:3», «tile:2/step:5», «tile:2/outline»: так фронт находит строку прогресса."""
+    """«planning», «step:3», «tile:2/step:5», «repair/planning»: так фронт находит строку прогресса.
+
+    phase — часть хода со своим прогрессом («Проверка»: review, repair), идёт первой.
+    """
     parts = []
+    if fields.get("phase"):
+        parts.append(str(fields["phase"]))
     if fields.get("tile_id") is not None:
         parts.append(f"tile:{fields['tile_id']}")
     if fields.get("step_id") is not None:
@@ -136,7 +141,9 @@ def llm_scope(**fields: Any) -> Iterator[None]:
     try:
         yield
     finally:
-        _scope.reset(token)
+        # Место вокруг yield генератора: закрыт в другом контексте — сбрасывать нечего.
+        with suppress(ValueError):
+            _scope.reset(token)
 
 
 def track_usage(sink: Callable[[dict], None] | None = None) -> TurnUsage:
