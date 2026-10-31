@@ -488,6 +488,38 @@ export function mockStreamChat(
   };
 }
 
+/** Уточняющие вопросы глубокого исследования для мок-режима (A-28): вопрос с числом однозначен. */
+export async function mockClarify(question: string) {
+  await new Promise((resolve) => setTimeout(resolve, 1200));
+  if (/\d/.test(question)) return { enough_info: true, questions: [] };
+  return {
+    enough_info: false,
+    questions: [
+      {
+        id: "1",
+        axis: "goal" as const,
+        text: "Зачем вам этот анализ?",
+        options: ["Найти просадку", "Сравнить регионы", "Объяснить рост", "Прогноз"],
+        multi: false,
+      },
+      {
+        id: "2",
+        axis: "period" as const,
+        text: "За какой период смотреть?",
+        options: ["2024 год", "Последний квартал", "Весь период"],
+        multi: false,
+      },
+      {
+        id: "3",
+        axis: "breakdown" as const,
+        text: "В каком разрезе?",
+        options: ["По регионам", "По категориям", "По месяцам"],
+        multi: true,
+      },
+    ],
+  };
+}
+
 /** Варианты дашборда для мок-режима (#224). */
 export async function mockDashboardIdeas(exclude: string[] = []) {
   await new Promise((resolve) => setTimeout(resolve, 1200));

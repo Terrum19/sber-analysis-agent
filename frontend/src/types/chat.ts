@@ -33,6 +33,44 @@ export interface DashboardIdea {
   description: string;
 }
 
+/** Тема уточняющего вопроса глубокого исследования (A-28): goal — цель анализа. */
+export type ClarifyAxis = "goal" | "metric" | "period" | "breakdown" | "filter" | "format";
+
+/** Уточняющий вопрос из POST /sessions/{id}/clarify. */
+export interface ClarifyQuestion {
+  id: string;
+  axis: ClarifyAxis;
+  text: string;
+  options: string[];
+  multi: boolean;
+}
+
+/** Ответ пользователя на уточняющий вопрос: уходит в POST /chat полем clarifications. */
+export interface Clarification {
+  question: string;
+  answer: string;
+  axis?: ClarifyAxis;
+}
+
+/**
+ * Карточка уточнений в ленте: вопрос пользователя ещё не ушёл в ход.
+ * answered — пользователь начал исследование (пустой список — пропустил вопросы).
+ */
+export interface ClarifyCardData {
+  question: string;
+  reply_to: string | null;
+  state:
+    | { status: "loading"; started_at: number }
+    | { status: "ready"; questions: ClarifyQuestion[] }
+    | { status: "error"; message: string }
+    | { status: "answered"; clarifications: Clarification[] };
+}
+
+/** Перезагрузка оборвала запрос вопросов: карточка предлагает повторить. */
+export function closeClarify(card: ClarifyCardData): ClarifyCardData {
+  return card.state.status === "loading" ? { ...card, state: { status: "error", message: "" } } : card;
+}
+
 export type TileIntent = "kpi" | "compare" | "trend" | "distribution" | "relation" | "share";
 
 /** План дашборда: плитки, которые начнут строиться. */

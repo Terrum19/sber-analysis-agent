@@ -24,7 +24,7 @@ interface Props {
   onClose: () => void;
 }
 
-function Elapsed({ since }: { since: number }) {
+export function Elapsed({ since }: { since: number }) {
   const t = useT();
   const [now, setNow] = useState(() => Date.now());
   useEffect(() => {

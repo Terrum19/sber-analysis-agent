@@ -16,6 +16,7 @@ from pydantic import model_validator
 from app.core.llm.prompts.step_planner import IMPORTED_TURN
 from app.core.tools.base import BaseTool, ToolArgs, ToolContext
 from app.core.tools.stats._common import rows_result
+from app.models.clarify import describe_clarifications
 
 COLUMNS = ["turn", "question", "answer", "status", "plan"]
 STATUSES = {"ok": "ответ получен", "failed": "ход упал", "clarification": "ход ждал уточнения"}
@@ -59,7 +60,7 @@ class ReadHistoryTool(BaseTool):
         rows = [
             (
                 turn["number"],
-                turn["question"],
+                turn["question"] + clarified(turn),
                 turn.get("headline") or "",
                 STATUSES.get(turn["status"], turn["status"]) + imported_mark(turn),
                 json.dumps(_plan(turn), ensure_ascii=False, default=str) if turn["steps"] else "",
@@ -72,6 +73,12 @@ class ReadHistoryTool(BaseTool):
 
     def execute(self, db, input_table: str, args: ReadHistoryArgs) -> str:
         raise TypeError("read_history исполняется только через arun: ему нужна память сессии")
+
+
+def clarified(turn: dict) -> str:
+    """Уточнения хода к вопросу (A-28); без уточнений — пусто."""
+    answers = describe_clarifications(turn.get("clarifications") or [])
+    return f" (уточнения: {answers})" if answers else ""
 
 
 def imported_mark(turn: dict) -> str:

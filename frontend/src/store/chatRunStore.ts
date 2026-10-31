@@ -18,6 +18,7 @@ import {
   applyOutline,
   applyProgress,
   hasFinishedWork,
+  type Clarification,
   type DashboardEvent,
   type TurnProgress,
 } from "@/types/chat";
@@ -32,6 +33,8 @@ export interface ChatRun {
   failedQuestion: string | null;
   /** Режим дашборда упавшего хода: повтор из баннера идёт с ним же. */
   failedDashboard?: DashboardRequest;
+  /** Уточнения упавшего хода (A-28): повтор идёт с ними же, без новых вопросов. */
+  failedClarifications?: Clarification[];
   /** Карточка уточнения, на которую ещё можно ответить. */
   clarificationId: string | null;
 }
@@ -122,19 +125,22 @@ export function startRun(
     dashboard?: DashboardRequest;
     /** «Продолжить» остановленный ход: turn_id из его прогресса, вопрос пользователя уже в ленте. */
     resumeTurn?: string;
+    /** Ответы на уточняющие вопросы глубокого исследования (A-28). */
+    clarifications?: Clarification[];
     /** Дашборд хода собран: открыть его вкладку, если пользователь всё ещё в этой сессии. */
     onDashboardBuilt?: (dashboardId: string) => void;
   },
 ) {
   if (isRunning(sessionId)) return;
   const store = useSessionStore.getState();
-  const { retryQuestion, recoveryResponse, dashboard } = options;
+  const { retryQuestion, recoveryResponse, dashboard, clarifications } = options;
   const runs = useChatRunStore.getState();
   runs.patchRun(sessionId, {
     status: "running",
     unseen: false,
     failedQuestion: null,
     failedDashboard: undefined,
+    failedClarifications: undefined,
     clarificationId: null,
     ...(recoveryResponse ? {} : { question: q }),
   });
@@ -167,10 +173,17 @@ export function startRun(
   };
   // Дашборд хода в режиме дашборда: после done открываем его вкладку
   let builtDashboardId: string | null = null;
-  const failDashboard = dashboard ? { failedDashboard: dashboard } : {};
+  const failDashboard = {
+    ...(dashboard ? { failedDashboard: dashboard } : {}),
+    ...(clarifications ? { failedClarifications: clarifications } : {}),
+  };
   const fail = () => {
     streamHadError = true;
-    runs.patchRun(sessionId, { failedQuestion: retryQuestion, failedDashboard: dashboard });
+    runs.patchRun(sessionId, {
+      failedQuestion: retryQuestion,
+      failedDashboard: dashboard,
+      failedClarifications: clarifications,
+    });
   };
 
   // Что показали пользователю: нужно для PDF/Excel ответа (F-10).
@@ -354,7 +367,7 @@ export function startRun(
         unseen: !cancelled && !isViewing(sessionId),
       });
     },
-    { recoveryResponse, replyTo: options.replyTo, dashboard, resumeTurn: options.resumeTurn },
+    { recoveryResponse, replyTo: options.replyTo, dashboard, resumeTurn: options.resumeTurn, clarifications },
   );
   stoppers.set(sessionId, () => {
     cancelled = true;

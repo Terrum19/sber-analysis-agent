@@ -8,11 +8,13 @@
  */
 import { create } from "zustand";
 import { persist, createJSONStorage } from "zustand/middleware";
-import { closeInterrupted } from "@/types/chat";
+import { closeClarify, closeInterrupted } from "@/types/chat";
 import type { DashboardTile } from "@/types/dashboard";
 import type {
   ChartEvent,
+  Clarification,
   ClarificationEvent,
+  ClarifyCardData,
   DashboardEvent,
   DashboardFallbackEvent,
   DashboardIdea,
@@ -45,6 +47,10 @@ export interface ChatMessage {
   failedQuestion?: string;
   /** Упавший ход был в режиме дашборда: повтор идёт с тем же idea (#224). */
   failedDashboard?: { idea: DashboardIdea | null };
+  /** Уточнения упавшего хода глубокого исследования (A-28): повтор идёт с ними же. */
+  failedClarifications?: Clarification[];
+  /** Карточка уточняющих вопросов глубокого исследования (A-28). */
+  clarify?: ClarifyCardData;
   /** Своего запроса не хватило: баннер и кнопки остальных идей (#224). */
   dashboardFallback?: DashboardFallbackEvent["data"];
   /** Подсказки для уточнения/повтора (если backend прислал clarification_needed). */
@@ -153,6 +159,9 @@ export interface SessionState {
   /** Названия вариантов дашборда, по которым в сессии уже строили (#224): их не предлагаем снова. */
   usedIdeas: Record<string, string[]>;
   markIdeaUsed: (sessionId: string, title: string) => void;
+  /** Сессии с включённым глубоким исследованием (A-28): режим держится до конца сессии. */
+  deepResearch: Record<string, boolean>;
+  setDeepResearch: (sessionId: string, on: boolean) => void;
 
   setSession: (id: string) => void;
   /*
@@ -250,6 +259,15 @@ export const useSessionStore = create<SessionState>()(
       sessionTableCache: {},
       pendingQuestions: {},
       usedIdeas: {},
+      deepResearch: {},
+
+      setDeepResearch: (sessionId, on) =>
+        set((s) => {
+          const next = { ...s.deepResearch };
+          if (on) next[sessionId] = true;
+          else delete next[sessionId];
+          return { deepResearch: next };
+        }),
 
       markIdeaUsed: (sessionId, title) =>
         set((s) => {
@@ -585,6 +603,8 @@ export const useSessionStore = create<SessionState>()(
           delete nextPending[sessionId];
           const nextUsedIdeas = { ...s.usedIdeas };
           delete nextUsedIdeas[sessionId];
+          const nextDeepResearch = { ...s.deepResearch };
+          delete nextDeepResearch[sessionId];
           const isActiveDeleted = s.sessionId === sessionId;
           return {
             databases: nextDatabases,
@@ -594,6 +614,7 @@ export const useSessionStore = create<SessionState>()(
             sessionTableCache: nextTableCache,
             pendingQuestions: nextPending,
             usedIdeas: nextUsedIdeas,
+            deepResearch: nextDeepResearch,
             ...(isActiveDeleted ? { sessionId: null, messages: [], tiles: [], selectedTile: null } : {}),
           };
         }),
@@ -692,6 +713,7 @@ export const useSessionStore = create<SessionState>()(
         sessionActiveTable: state.sessionActiveTable,
         sessionTableCache: state.sessionTableCache,
         usedIdeas: state.usedIdeas,
+        deepResearch: state.deepResearch,
       }),
       onRehydrateStorage: () => (state) => {
         if (state) {
@@ -711,13 +733,17 @@ export const useSessionStore = create<SessionState>()(
             delete state.sessionTableCache["demo-kpi"];
             // Страница загружена заново: ни один стрим хода не жив, незаконченный
             // прогресс в ленте — оборванный ход, а не «Всё ещё работаю…» навсегда.
+            // Оборванный запрос уточняющих вопросов — карточка с «Повторить».
             for (const tables of Object.values(state.sessionTableCache)) {
               for (const snapshot of Object.values(tables)) {
-                snapshot.messages = snapshot.messages.map((m) =>
-                  m.progress && m.progress.finished_at === undefined
-                    ? { ...m, progress: closeInterrupted(m.progress) }
-                    : m,
-                );
+                snapshot.messages = snapshot.messages.map((m) => {
+                  let next = m;
+                  if (m.progress && m.progress.finished_at === undefined) {
+                    next = { ...next, progress: closeInterrupted(m.progress) };
+                  }
+                  if (m.clarify) next = { ...next, clarify: closeClarify(m.clarify) };
+                  return next;
+                });
               }
             }
           }

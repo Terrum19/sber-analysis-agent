@@ -60,6 +60,7 @@ backend/
 │   │   │       ├── column_extract.py   — названия и описания колонок из документа-описания, ответ JSON
 │   │   │       ├── step_planner.py     — вопрос -> список ResearchStep
 │   │   │       ├── insight_summary.py  — результат -> вывод на бизнес-языке
+│   │   │       ├── clarify.py          — уточняющие вопросы глубокого исследования (A-28)
 │   │   │       └── chart_selector.py   — график ответа: шаг, вид, колонки (LLM)
 │   │   │
 │   │   ├── agent/          — ОРКЕСТРАЦИЯ: конвейер исследования
@@ -69,6 +70,7 @@ backend/
 │   │   │   ├── replay.py          — пересчёт импортированной сессии по рецепту, без LLM (#250)
 │   │   │   ├── parser.py          — ROBUST-парсинг вывода LLM (несколько стратегий)
 │   │   │   ├── insight.py         — генерация финального вывода
+│   │   │   ├── clarify.py         — уточняющие вопросы до хода: LLM, проверка колонок, повторы (A-28)
 │   │   │   ├── chart_pick.py      — график ответа: таблица шага, вид и колонки (LLM)
 │   │   │   ├── turn_log.py        — лог хода: время инсайта и графика, строка итога
 │   │   │   └── recovery.py        — ошибки: какие сбои шага исправляет планировщик
@@ -163,6 +165,7 @@ backend/
 │   ├── models/            — доменные Pydantic-модели (контракты конвейера)
 │   │   ├── research_step.py   — ResearchStep: тул, колонки, parameters, флаг LLM-кодген
 │   │   ├── insight.py         — Insight: headline, details, limits
+│   │   ├── clarify.py         — уточняющие вопросы и ответы глубокого исследования (A-28)
 │   │   ├── enrichment.py      — ColumnEnrichment/EnrichmentBatch: названия и описания колонок
 │   │   └── datasource.py      — Datasource: тип, путь/DSN, таблицы
 │   │

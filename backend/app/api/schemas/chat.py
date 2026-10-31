@@ -7,6 +7,7 @@ from pydantic import BaseModel, Field, StringConstraints, model_validator
 
 from app.api.schemas.dashboard import DashboardTileOut
 from app.core.dashboards.models import Dashboard
+from app.models.clarify import MAX_CLARIFICATIONS, Axis, Clarification
 from app.models.dashboard_plan import DashboardIdea
 from app.models.research_step import NOTE_LIMIT
 
@@ -99,6 +100,8 @@ class ChatRequest(BaseModel):
     # turn_id остановленного или упавшего хода: продолжить его с чекпоинта,
     # не повторяя выполненные шаги и плитки (question тогда не используется).
     resume_turn: str | None = None
+    # Ответы на уточняющие вопросы глубокого исследования (A-28): в план, инсайт и журнал хода.
+    clarifications: list[Clarification] | None = Field(default=None, max_length=MAX_CLARIFICATIONS)
 
 
 class ChartPayload(BaseModel):
@@ -201,6 +204,28 @@ class DashboardIdeasOut(BaseModel):
     """Ответ POST /sessions/{id}/dashboard-ideas: варианты дашборда для кнопок."""
 
     ideas: list[DashboardIdea]
+
+
+class ClarifyRequest(BaseModel):
+    """Тело POST /sessions/{id}/clarify: вопрос до начала хода и ответ, к которому он."""
+
+    question: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1)]
+    reply_to: str | None = None
+
+
+class ClarifyQuestionOut(BaseModel):
+    id: str
+    axis: Axis
+    text: str
+    options: list[str]
+    multi: bool = False
+
+
+class ClarifyOut(BaseModel):
+    """Ответ POST /sessions/{id}/clarify: вопроса хватает или вопросы для карточки."""
+
+    enough_info: bool
+    questions: list[ClarifyQuestionOut] = Field(default_factory=list)
 
 
 class StepResultOut(BaseModel):

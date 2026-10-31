@@ -17,6 +17,7 @@ import {
   exportArtifact,
   renameTableApi,
   fetchDashboardIdeas,
+  clarifyQuestions,
   type DashboardRequest,
 } from "@/api/client";
 import { useSessionStore, useSessionDatabase, tableTitle, type ChatMessage } from "@/store/sessionStore";
@@ -37,10 +38,13 @@ import RecipeBanner from "@/components/chat/RecipeBanner";
 import StepsList from "@/components/chat/StepsList";
 import LlmStatusBanner from "@/components/chat/LlmStatusBanner";
 import DashboardIdeas, { type IdeasState } from "@/components/chat/DashboardIdeas";
+import ClarifyCard from "@/components/chat/ClarifyCard";
 import { useLlmStatus } from "@/hooks/useLlmStatus";
 import { useT } from "@/i18n/useT";
 import {
   RECOVERY_SKIP_STEP,
+  type Clarification,
+  type ClarifyCardData,
   type DashboardEvent,
   type DashboardIdea,
   type TurnProgress,
@@ -86,6 +90,9 @@ export default function ChatPanel({ sessionId }: Props) {
   const streaming = run?.status === "running";
   const lastFailedQuestion = run?.failedQuestion ?? null;
   const [dashboardMode, setDashboardMode] = useState(false);
+  // Глубокое исследование (A-28): держится до конца сессии, с дашбордом не совмещается
+  const deepMode = useSessionStore((s) => Boolean(s.deepResearch[sessionId]));
+  const setDeepResearch = useSessionStore((s) => s.setDeepResearch);
   const [ideas, setIdeas] = useState<IdeasState | null>(null);
   const ideasRequestRef = useRef(0);
   // Сообщение с карточкой уточнения, на которую ещё можно ответить
@@ -99,6 +106,8 @@ export default function ChatPanel({ sessionId }: Props) {
   const highlightTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const messages = useSessionStore((s) => s.messages);
+  // Агент готовит уточняющие вопросы: новый вопрос подождёт
+  const clarifying = messages.some((m) => m.clarify?.state.status === "loading");
   const addMessage = useSessionStore((s) => s.addMessage);
   const removeMessage = useSessionStore((s) => s.removeMessage);
   const removeLastFailedMessage = useSessionStore((s) => s.removeLastFailedMessage);
@@ -303,6 +312,8 @@ export default function ChatPanel({ sessionId }: Props) {
           replyTo?: string | null;
           /** Ход строит дашборд; по умолчанию — если включён режим и вопрос из строки ввода. */
           dashboard?: DashboardRequest;
+          /** Уточнения повторяемого хода глубокого исследования: вопросы заново не задаются. */
+          clarifications?: Clarification[];
         },
   ) {
     if (!activeTable) {
@@ -315,7 +326,7 @@ export default function ChatPanel({ sessionId }: Props) {
         : optionsOrRecovery;
     const recoveryResponse = options?.recoveryResponse;
     const q = textToSend || input;
-    if (!q.trim() || streaming) return;
+    if (!q.trim() || streaming || clarifying) return;
     const dashboard: DashboardRequest | undefined =
       options?.dashboard ?? (dashboardMode && !textToSend && !recoveryResponse ? { idea: null } : undefined);
     if (dashboard) closeIdeas();
@@ -378,11 +389,60 @@ export default function ChatPanel({ sessionId }: Props) {
     registerSession(sessionId, q.length > 48 ? `${q.slice(0, 47)}…` : q);
     if (!textToSend) setInput("");
     setReplyTarget(null);
+    // Глубокое исследование: сначала уточняющие вопросы, ход — после ответа на них
+    if (deepMode && !dashboard && !recoveryResponse && !options?.isRetry) {
+      askClarify({ question: q, reply_to: quote?.turn_id ?? null, state: { status: "loading", started_at: Date.now() } });
+      return;
+    }
     startRun(sessionId, q, {
       retryQuestion,
       recoveryResponse,
       replyTo: quote?.turn_id ?? null,
       dashboard,
+      clarifications: options?.clarifications,
+      onDashboardBuilt: (dashboardId) => router.push(`/dashboard/${dashboardId}`),
+    });
+  }
+
+  /**
+   * Уточняющие вопросы глубокого исследования (A-28): карточка в ленте, пока
+   * хода нет. Вопроса хватает — карточка убирается и ход начинается сразу.
+   * messageId — повтор после ошибки в той же карточке.
+   */
+  function askClarify(card: ClarifyCardData, messageId?: string) {
+    const id = messageId ?? `msg-clarify-${Date.now().toString(36)}`;
+    const store = useSessionStore.getState();
+    if (messageId) {
+      store.updateMessage(id, { clarify: card }, sessionId);
+    } else {
+      store.addMessage({ id, role: "agent", content: "", clarify: card }, sessionId);
+    }
+    const patch = (state: ClarifyCardData["state"]) =>
+      useSessionStore.getState().updateMessage(id, { clarify: { ...card, state } }, sessionId);
+    clarifyQuestions(sessionId, card.question, card.reply_to)
+      .then((result) => {
+        if (result.enough_info || result.questions.length === 0) {
+          useSessionStore.getState().removeMessage(id, sessionId);
+          runResearch(card);
+        } else {
+          patch({ status: "ready", questions: result.questions });
+        }
+      })
+      .catch((err: any) => patch({ status: "error", message: err?.status === 502 ? "" : err?.detail || err?.message || "" }));
+  }
+
+  /** Ход глубокого исследования с ответами на вопросы карточки; пустой список — без уточнений. */
+  function runResearch(card: ClarifyCardData, clarifications?: Clarification[], messageId?: string) {
+    if (messageId) {
+      useSessionStore
+        .getState()
+        .updateMessage(messageId, { clarify: { ...card, state: { status: "answered", clarifications: clarifications ?? [] } } }, sessionId);
+    }
+    const answered = clarifications && clarifications.length > 0 ? clarifications : undefined;
+    startRun(sessionId, card.question, {
+      retryQuestion: card.question,
+      replyTo: card.reply_to,
+      clarifications: answered,
       onDashboardBuilt: (dashboardId) => router.push(`/dashboard/${dashboardId}`),
     });
   }
@@ -647,6 +707,18 @@ export default function ChatPanel({ sessionId }: Props) {
                   />
                 )}
 
+                {/* Уточняющие вопросы глубокого исследования */}
+                {m.clarify && (
+                  <ClarifyCard
+                    data={m.clarify}
+                    active={!streaming && i === messages.length - 1}
+                    onStart={(clarifications) => runResearch(m.clarify!, clarifications, m.id)}
+                    onRetry={() =>
+                      askClarify({ ...m.clarify!, state: { status: "loading", started_at: Date.now() } }, m.id)
+                    }
+                  />
+                )}
+
                 {/* Текст сообщения */}
                 {m.content && (
                   <div
@@ -728,6 +800,7 @@ export default function ChatPanel({ sessionId }: Props) {
                             isRetry: true,
                             messageIdToReplace: m.id,
                             dashboard: m.failedDashboard,
+                            clarifications: m.failedClarifications,
                           });
                         }}
                         className="inline-flex items-center gap-1.5 rounded-lg bg-danger hover:bg-danger/90 px-3 py-1.5 text-xs font-semibold text-white shadow-sm transition cursor-pointer"
@@ -886,7 +959,13 @@ export default function ChatPanel({ sessionId }: Props) {
               <span className="truncate">{t("chat.failedBanner", { q: lastFailedQuestion })}</span>
             </div>
             <button
-              onClick={() => sendQuestion(lastFailedQuestion, { isRetry: true, dashboard: run?.failedDashboard })}
+              onClick={() =>
+                sendQuestion(lastFailedQuestion, {
+                  isRetry: true,
+                  dashboard: run?.failedDashboard,
+                  clarifications: run?.failedClarifications,
+                })
+              }
               disabled={!activeTable}
               className="inline-flex items-center gap-1.5 rounded-lg bg-danger hover:bg-danger/90 px-3 py-1.5 text-xs font-semibold text-white shadow transition whitespace-nowrap disabled:opacity-50 cursor-pointer"
             >
@@ -925,6 +1004,19 @@ export default function ChatPanel({ sessionId }: Props) {
                 }}
                 className="flex h-4 w-4 items-center justify-center rounded-full text-graphite-400 hover:bg-graphite-700 hover:text-graphite-100"
                 title={t("dashboard.chipOff")}
+              >
+                <Icon name="x" size={10} />
+              </button>
+            </span>
+          )}
+          {/* Чип глубокого исследования: × выключает режим */}
+          {deepMode && (
+            <span className="mt-1 mb-1 inline-flex items-center gap-1 rounded-full border border-graphite-600 bg-graphite-800 py-0.5 pl-2 pr-1 text-[12px] text-graphite-100">
+              🔍 {t("research.chip")}
+              <button
+                onClick={() => setDeepResearch(sessionId, false)}
+                className="flex h-4 w-4 items-center justify-center rounded-full text-graphite-400 hover:bg-graphite-700 hover:text-graphite-100"
+                title={t("research.chipOff")}
               >
                 <Icon name="x" size={10} />
               </button>
@@ -973,6 +1065,8 @@ export default function ChatPanel({ sessionId }: Props) {
                   ? t("chat.clarifyPlaceholder")
                   : dashboardMode
                   ? t("dashboard.placeholder")
+                  : deepMode
+                  ? t("research.placeholder")
                   : t("chat.placeholder")
               }
               className="max-h-40 min-h-[36px] flex-1 resize-none overflow-y-hidden bg-transparent py-2 text-sm leading-5 text-graphite-100 placeholder-graphite-500 outline-none disabled:cursor-not-allowed disabled:opacity-60"
@@ -989,7 +1083,7 @@ export default function ChatPanel({ sessionId }: Props) {
             ) : (
               <button
                 onClick={() => sendQuestion()}
-                disabled={!input.trim() || !activeTable || !llmReady}
+                disabled={!input.trim() || !activeTable || !llmReady || clarifying}
                 className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-graphite-100 text-graphite-950 hover:bg-graphite-50 disabled:bg-graphite-700 disabled:text-graphite-500 disabled:cursor-not-allowed transition"
                 title={t("chat.send")}
               >
@@ -1003,6 +1097,7 @@ export default function ChatPanel({ sessionId }: Props) {
           <button
             onClick={() => {
               if (dashboardMode) closeIdeas();
+              else setDeepResearch(sessionId, false);
               setDashboardMode(!dashboardMode);
             }}
             aria-pressed={dashboardMode}
@@ -1015,6 +1110,26 @@ export default function ChatPanel({ sessionId }: Props) {
           >
             <Icon name="layout" size={13} />
             {t("dashboard.toggle")}
+          </button>
+          {/* Глубокое исследование (A-28): включение выключает режим дашборда */}
+          <button
+            onClick={() => {
+              if (!deepMode) {
+                setDashboardMode(false);
+                closeIdeas();
+              }
+              setDeepResearch(sessionId, !deepMode);
+            }}
+            aria-pressed={deepMode}
+            title={t("research.toggleHint")}
+            className={`inline-flex items-center gap-1.5 rounded-full border px-3 py-1 text-xs transition ${
+              deepMode
+                ? "border-graphite-400 bg-graphite-700 text-graphite-50"
+                : "border-graphite-700 text-graphite-400 hover:bg-graphite-800 hover:text-graphite-200"
+            }`}
+          >
+            <Icon name="search" size={13} />
+            {t("research.toggle")}
           </button>
           {dashboardMode && (
             <button

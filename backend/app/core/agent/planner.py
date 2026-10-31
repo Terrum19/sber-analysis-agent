@@ -24,6 +24,7 @@ from app.core.data.semantic_select import (
 )
 from app.core.llm.prompts.quality_rules import PLANNER_RULES
 from app.core.llm.prompts.step_planner import (
+    CLARIFICATIONS,
     DASHBOARD_CUSTOM,
     DASHBOARD_PLAN,
     DASHBOARD_TEMPLATE,
@@ -40,6 +41,7 @@ from app.core.llm.prompts.step_planner import (
     STEP_PLANNER,
 )
 from app.core.tools.registry import tool_registry
+from app.models.clarify import describe_clarifications
 from app.models.research_step import (
     PREVIOUS,
     SOURCE,
@@ -76,11 +78,12 @@ class StepPlanner:
         tools = tool_registry.describe()
         columns = all_columns = context.get("columns", [])
         profile = context.get("profile")
+        clarifications = context.get("clarifications") or []
+        # Метрику или разрез пользователь мог назвать только в уточнении (A-28).
+        focus = clarified(question, clarifications)
         if profile is not None:
             # Отбираем топ-5 релевантных колонок (семантический отбор, docs/architecture.md)
-            columns = select_columns(
-                question, columns, profile=profile, titles=context.get("titles")
-            )
+            columns = select_columns(focus, columns, profile=profile, titles=context.get("titles"))
         start = int(context.get("next_step_id", 0))
         if settings.agent_tool_topk:
             tools = select_tools(question)
@@ -96,7 +99,7 @@ class StepPlanner:
             [name for name in all_columns if name not in columns],
             profile,
             context.get("titles"),
-            question=question,
+            question=focus,
         )
         described = f"{described}\n{others}" if others else described
         related = describe_related(context.get("datasource"), context.get("related", []))
@@ -109,6 +112,7 @@ class StepPlanner:
             executed=context.get("executed", "нет"),
             next_step_id=start,
             question=question,
+            clarifications=describe_answers(clarifications),
         )
         if settings.agent_quality_fixes:
             prompt += PLANNER_RULES
@@ -197,6 +201,23 @@ def describe_memories(memories: list[str]) -> str:
     return MEMORIES.format(memories="\n".join(f"- {text}" for text in memories))
 
 
+def describe_answers(clarifications: list[dict]) -> str:
+    """Блок уточнений промпта (A-28); без уточнений блока нет."""
+    if not clarifications:
+        return ""
+    answers = "\n".join(
+        f"- {item['question']} — {item['answer']}"
+        + (" (цель пользователя)" if item.get("axis") == "goal" else "")
+        for item in clarifications
+    )
+    return CLARIFICATIONS.format(answers=answers)
+
+
+def clarified(question: str, clarifications: list[dict]) -> str:
+    """Вопрос вместе с ответами на уточнения: по нему отбираются колонки и связанные таблицы."""
+    return " ".join([question, *(item["answer"] for item in clarifications)])
+
+
 def describe_history(context: dict) -> str:
     """Блок истории промпта: черновик из цепочки ответа или прошлые ходы."""
     chain = context.get("reply") or []
@@ -264,6 +285,8 @@ def describe_turns(turns: list[dict], table: str | None = None) -> str:
         if turn.get("steps"):
             plan = json.dumps(_turn_steps(turn), ensure_ascii=False, default=str)
             lines.append(f"   План: {plan}")
+        if turn.get("clarifications"):
+            lines.append(f"   Уточнения: {describe_clarifications(turn['clarifications'])}")
         if turn.get("headline"):
             lines.append(f"   Ответ: {turn['headline']}")
         elif turn.get("status") in NO_ANSWER:

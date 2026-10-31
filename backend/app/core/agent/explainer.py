@@ -20,6 +20,7 @@ from app.core.llm.prompts.explainer import EXPLAINER, EXPLAINER_MEMORIES, NUMBER
 from app.core.memory.session_memory import SessionMemory
 from app.core.tools.base import identifier
 from app.core.tools.registry import tool_registry
+from app.models.clarify import describe_clarifications
 from app.models.insight import Insight
 
 logger = logging.getLogger(__name__)
@@ -96,6 +97,8 @@ def describe_journal(turns: list[dict], db: DuckDBManager | None) -> str:
 def _describe_turn(turn: dict, db: DuckDBManager | None, preview: bool) -> str:
     mark = " (пользователь отвечает на этот ход)" if turn.get("focus") else ""
     lines = [f"Ход {turn.get('number', '?')}{mark}. Вопрос: {turn['question']}"]
+    if turn.get("clarifications"):
+        lines.append(f"   Уточнения: {describe_clarifications(turn['clarifications'])}")
     tables = turn.get("tables") or []
     if tables:
         rows = _rows(db, tables[0])

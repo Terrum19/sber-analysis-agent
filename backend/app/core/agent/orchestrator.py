@@ -51,6 +51,10 @@ SessionMemory состояние ожидания уточнения (``pending_
 подтверждением, без шагов и инсайта. Воспоминания сессии идут в инсайт.
 Шаги получают память сессии: по ней read_history ищет прошлые ходы.
 
+Ответы на уточняющие вопросы глубокого исследования (A-28, ``clarifications``
+запроса) пишутся в ход: их видят планировщик, инсайт и следующие ходы.
+Сами вопросы задаёт отдельная ручка до начала хода (agent/clarify.py).
+
 Вопрос о прошлых ответах агента («как ты это посчитал?», «что значит
 p-value в ответе?») планировщик помечает маршрутом ``answer``: шагов нет,
 ответ строит agent/explainer.py по журналу ходов сессии. Туда же идёт любой
@@ -74,7 +78,7 @@ from app.api.schemas.chat import ChatRequest, DashboardPayload, PlanStepOut, Pro
 from app.core.agent.chart_pick import ChartPicker
 from app.core.agent.explainer import Explainer
 from app.core.agent.insight import InsightGenerator
-from app.core.agent.planner import PlanInvalid, StepPlanner, is_dashboard_question
+from app.core.agent.planner import PlanInvalid, StepPlanner, clarified, is_dashboard_question
 from app.core.agent.recovery import STEP_FIX_ATTEMPTS, fixable
 from app.core.agent.step_executor import StepExecutor, resolve_input, tool_kind
 from app.core.agent.triage import small_talk_reply
@@ -371,7 +375,11 @@ class AgentOrchestrator:
             return
         # Ответ на уточнение продолжает ход, в котором упал шаг.
         if pending is None or not memory.resume_turn(pending.get("turn_id")):
-            memory.start_turn(request.question, reply_to=request.reply_to)
+            memory.start_turn(
+                request.question,
+                reply_to=request.reply_to,
+                clarifications=[item.model_dump() for item in request.clarifications or []],
+            )
         turn_id = memory.turn_id
         set_turn_id(turn_id)
         self._mark_running(turn_id)
@@ -657,6 +665,7 @@ class AgentOrchestrator:
                 supporting=execution.supporting,
                 steps=execution.steps,
                 memories=memory.context_memories(),
+                clarifications=memory.clarifications,
                 result_tool=execution.result_tool,
                 source=memory.table,
                 inputs=execution.inputs,
@@ -815,7 +824,9 @@ class AgentOrchestrator:
             context["catalog"] = relations.describe_catalog(self.db, catalog, request.question)
             tables = catalog
         else:
-            context["related"] = self._related(memory.table, request.question)
+            context["related"] = self._related(
+                memory.table, clarified(request.question, memory.clarifications)
+            )
             tables = [memory.table, *(item.table for item in context["related"])]
         logger.debug(">>> run() планируем шаги (planner.plan)")
         emit(_progress_event("planning", "started", tables=tables, turn_id=memory.turn_id))
