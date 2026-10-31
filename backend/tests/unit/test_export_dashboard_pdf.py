@@ -145,6 +145,25 @@ def test_export_dashboard_pdf_kpi_only(tmp_path: Path) -> None:
     assert "45.0 млн" in text or "45" in text
 
 
+def test_export_dashboard_pdf_skips_hidden_tiles(tmp_path: Path) -> None:
+    """Скрытая плитка (график убран из дашборда) в PDF не попадает."""
+    dashboard = Dashboard(
+        id="dash-hidden",
+        session_id="sess-hidden",
+        title="Со скрытой",
+        tiles=[
+            DashboardTile(title="Выручка", is_kpi=True, snapshot_data={"value": 45000000}),
+            DashboardTile(title="Убранная", is_kpi=True, snapshot_data={"value": 7}, hidden=True),
+        ],
+    )
+
+    path = PdfExporter().export_dashboard(dashboard, str(tmp_path / "hidden.pdf"))
+    text = "".join(page.extract_text() or "" for page in pypdf.PdfReader(path).pages)
+    assert "Выручка" in text
+    assert "Убранная" not in text
+    assert "Всего плиток: 1" in text.replace("\xa0", " ")
+
+
 def test_export_dashboard_pdf_with_duckdb(tmp_path: Path) -> None:
     """Дашборд с вычиткой данных из DuckDB для плиток без snapshot_data."""
     exporter = PdfExporter()

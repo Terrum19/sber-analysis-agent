@@ -601,7 +601,12 @@ class PdfExporter:
 
         Returns:
             Путь к сгенерированному файлу.
+
+        Скрытые плитки (график убран из дашборда, где построен) не выгружаются.
         """
+        dashboard = dashboard.model_copy(
+            update={"tiles": [tile for tile in dashboard.tiles if not tile.hidden]}
+        )
         doc = SimpleDocTemplate(
             path,
             pagesize=A4,
