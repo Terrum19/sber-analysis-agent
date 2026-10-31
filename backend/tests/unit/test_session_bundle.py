@@ -430,3 +430,27 @@ def test_bundle_describes_every_turn_table_without_password(machines) -> None:
     assert (orders["kind"], orders["source_table"]) == ("postgres", "orders")
     assert ":***@" in orders["dsn"]
     assert sales["hash"] == table_origin.content_hash(author, "sales")
+
+
+def test_import_memories_skips_blank_text() -> None:
+    """Пустая запись бандла не становится воспоминанием."""
+    memory = SessionMemory("blank")
+    item = {"source": "user", "created_at": "2026-10-31T00:00:00Z"}
+    memory.import_memories([{**item, "text": "   "}, {**item, "text": "выручка  — без НДС"}])
+
+    assert [item["text"] for item in memory.memories(True)] == ["выручка — без НДС"]
+
+
+def test_replay_of_a_turn_without_chart_keeps_its_table() -> None:
+    """Ход без графика получает таблицу пересчёта, а chart не появляется."""
+    memory = SessionMemory("replayed")
+    memory.start_turn("Сколько строк?")
+    memory.finish_turn("ok", headline="10")
+    turn_id = memory.turns[0]["turn_id"]
+
+    memory.record_replay({turn_id: ["temp_result_v3"]}, {turn_id: "temp_result_v3"})
+
+    turn = memory.turns[0]
+    assert turn["results"] == ["temp_result_v3"]
+    assert turn["result_table"] == "temp_result_v3"
+    assert turn.get("chart") is None
