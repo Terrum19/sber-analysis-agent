@@ -12,6 +12,7 @@
 - Архитектура — [Architecture.md](Architecture.md)
 - Сценарии и критерии жюри с нашими результатами — [Criteria.md](Criteria.md)
 - Прогоны вопросов организаторов — [TestCases.md](TestCases.md)
+- Бенчмарки по ходу разработки — [Benchmarks.md](Benchmarks.md)
 
 ## Возможности
 
