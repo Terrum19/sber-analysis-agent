@@ -42,7 +42,7 @@ jobs:
     env:
       COMPOSE_FILE: docker-compose.yml:docker-compose.ci.yml
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       # Запуск у пользователя — без .env (start.sh / start.bat, #167).
       - name: Compose works without .env
