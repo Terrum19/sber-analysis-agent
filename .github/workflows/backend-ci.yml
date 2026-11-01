@@ -37,9 +37,9 @@ jobs:
       run:
         working-directory: backend
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.11"
           cache: pip
@@ -50,7 +50,7 @@ jobs:
 
       # WASM-песочница (issue #26): Pyodide под Node.js 20 и колёса пакетов анализа
       # данных; без них тесты песочницы пропускаются, поэтому ставим их всегда.
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: "20"
           cache: npm
@@ -60,7 +60,7 @@ jobs:
         working-directory: backend/sandbox
         run: npm ci --no-audit --no-fund
 
-      - uses: actions/cache@v4
+      - uses: actions/cache@v6
         with:
           path: backend/sandbox/node_modules/pyodide/*.whl
           key: pyodide-wheels-${{ hashFiles('backend/sandbox/package-lock.json', 'backend/sandbox/fetch_packages.py') }}
@@ -112,7 +112,7 @@ jobs:
           { echo "### Бенчмарк профилирования"; cat profile_benchmark.md; } >> "$GITHUB_STEP_SUMMARY"
           exit $status
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: always()
         with:
           name: profile-benchmark
@@ -124,7 +124,7 @@ jobs:
         if: failure()
         run: coverage html
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: failure()
         with:
           name: coverage-html
@@ -171,9 +171,9 @@ jobs:
       TEST_POSTGRES_DSN: postgresql://sber:sber@localhost:5432/sber_demo
       TEST_CLICKHOUSE_DSN: clickhouse://sber:sber@localhost:9000/sber_demo
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.11"
           cache: pip
