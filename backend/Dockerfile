@@ -1,6 +1,6 @@
-FROM node:20-slim AS node
+FROM node:26-slim AS node
 
-FROM python:3.11-slim
+FROM python:3.15-slim
 
 # Node.js 20 для WASM-песочницы (Pyodide); в Debian bookworm только 18-я версия
 # без модели разрешений, поэтому бинарник берётся из официального образа.
