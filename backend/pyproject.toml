@@ -9,9 +9,9 @@ dependencies = [
     "pydantic>=2.7",
     "pydantic-settings>=2.3",
     "python-multipart>=0.0.9",
-    "duckdb>=1.0,<2",
-    "openai==1.109.1",     # OpenAI-совместимый клиент к локальному vLLM/Ollama; с 3.3 падает structured output
-    "instructor==1.3.2",   # structured output
+    "duckdb>=1.0,<3",
+    "openai==3.41.0",     # OpenAI-совместимый клиент к локальному vLLM/Ollama; с 3.3 падает structured output
+    "instructor==1.17.0",   # structured output
     "httpx==0.28.1",       # клиент LLM и проверка Ollama; openai 3.3 его уже не тянет
     "openpyxl>=3.1",       # экспорт Excel
     "pandas>=2.2",
